@@ -515,9 +515,8 @@ fn store_round_trip_rebuilds_the_same_ledger() {
 
 #[test]
 fn a_stored_row_with_one_edit_excerpt_reads_back_as_a_one_item_list() {
-    // The store holds transcripts written before a call could change several files: their rows carry
-    // `"edit": {…}`, one object. Reading one back is a one-item list, so nothing is migrated and a
-    // resumed daemon draws the row it drew yesterday (R161).
+    // Older rows carry `"edit": {…}`, one object. Reading one back is a one-item list, so nothing is
+    // migrated and a resumed daemon draws the same row.
     let s = store();
     let (tr, _) = seeded(&s);
     let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
@@ -2452,9 +2451,8 @@ fn a_run_of_rows_lands_whole_or_not_at_all() {
     assert!(s.connection().is_autocommit());
 }
 
-/// MEASURED: under a competing writer, a row per transaction is what made the re-seat take
-/// minutes, and a run per transaction is not. 971 rows written one autocommit `INSERT` each, every
-/// one its own trip for the file's single write lock. The number of trips is asserted, not the time.
+/// Under a competing writer, one autocommit `INSERT` per row is one trip each for the file's write
+/// lock, and a re-seat takes minutes; a run per transaction does not. Trips are asserted, not time.
 #[test]
 fn a_run_takes_the_write_lock_once_per_chunk_not_once_per_row() {
     let path = std::env::temp_dir().join(format!(
@@ -3546,8 +3544,7 @@ fn named_in_matches_title_or_slug_in_the_workspace() {
 }
 
 /// What opening one session reads, keyed and index-only: the corpus counts the banner takes,
-/// the session's own row, and the transcript it resumes. Measured on a copy of this box's 10 GB
-/// store (R158): the counts were 1.80 GB of it, because three of the five scanned `adjudication`.
+/// the session's own row, and the transcript it resumes. None may scan `adjudication`.
 #[test]
 fn the_reads_an_open_makes_reach_a_row_by_an_index() {
     let s = store();
@@ -3583,8 +3580,8 @@ fn the_reads_an_open_makes_reach_a_row_by_an_index() {
              adjudication on this box's store: {lines:#?}"
         );
     }
-    // Named, not merely absent: the counts are the one statement that must not fall back to the
-    // primary key's index either, because that is 11 MB against the v42 index's 5.
+    // Named, not merely absent: the counts must not fall back to the primary key's index either,
+    // which is about twice the size of the v42 index.
     let counts = plan(&corpus_counts_sql());
     assert!(
         counts
@@ -3874,7 +3871,7 @@ fn open_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// One open waiting on a locked file does not hold up an open of another file (R230).
+/// One open waiting on a locked file does not hold up an open of another file.
 #[test]
 fn a_slow_open_of_one_store_does_not_block_opening_another() {
     let dir = open_dir("other");

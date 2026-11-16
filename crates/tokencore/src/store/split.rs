@@ -1,15 +1,6 @@
-//! The store split (`docs/store-split.md`): two files, one schema each, one writer each.
-//!
-//! The table assignment is DATA and lives here alone: [`place_of`] answers which file a table's
-//! rows are in, so a table's NAME decides its file and nothing has to remember the list. Each file
-//! is created from the tree's own DDL filtered by that assignment, so neither file can drift from
-//! what `Store::migrate` builds on a single-file store.
-//!
-//! A box reaches that layout one project at a time (§ Carving one project), and the state in
-//! between is this module's too: `sessions.db` is then the shared file, holding the shared tables
-//! and the project tables of every key not carved out of it yet, `projects/<key>.db` exists for the
-//! keys a carve recorded, and [`carved_keys`] is the record. [`shared_path`] and [`file_of`] answer
-//! where a table's rows are in either shape, so no caller has to know which one it is reading.
+//! The store split (`docs/store-split.md`): two files, one schema and one writer each. [`place_of`]
+//! is the only table assignment, and each file's DDL is the tree's own filtered by it. Mid-carve,
+//! `sessions.db` is the shared file; [`shared_path`] and [`file_of`] answer for either shape.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -256,10 +247,8 @@ pub fn shared_path(dir: &Path) -> PathBuf {
     }
 }
 
-/// Where `table`'s rows for `key` are, in the shape the directory is in: a project table of a key
-/// no carve has taken yet is still in `sessions.db`, which is the answer
-/// `Config::store_at().path(table)` needs - a path to a project file that does not exist is a
-/// create waiting to happen.
+/// Where `table`'s rows for `key` are in the directory's current shape. An uncarved key's project
+/// table is still in `sessions.db`; a path to a project file that does not exist would be created.
 pub fn file_of(dir: &Path, key: &str, table: &str) -> PathBuf {
     let shared = shared_path(dir);
     let project = dir.join(PROJECTS_DIR).join(format!("{key}.db"));
@@ -322,7 +311,7 @@ fn without_cross_file_keys(sql: String) -> String {
 
 /// One file's writer: the thread that owns its one write connection, and the queue a caller hands
 /// work to. `run` sends and waits, so a caller holds no lock across a write; `exec`/`write_tx` keep
-/// their own connection until P3 re-points the daemon at this queue.
+/// their own connection.
 pub struct Writer {
     path: PathBuf,
     jobs: Option<mpsc::Sender<Job>>,
@@ -512,12 +501,8 @@ impl StoreSet {
     }
 }
 
-/// A handle onto one key's two files: both connections in one [`Store`], so a call routes by
-/// [`place_of`] and no caller names a file. `create` is the daemon's door, which makes the files
-/// when they are not there; a reader's door leaves them alone, and a data directory whose store
-/// has not been split is [`refuse_unsplit`]'s refusal by name.
-/// [`open_handle`] for a reader that must not write: both files opened read-only, nothing created
-/// or migrated. A directory still mid-transition has no read-only door and is refused.
+/// [`open_handle`] for a reader that must not write: both files read-only, nothing created or
+/// migrated. A directory still mid-transition is refused.
 pub fn open_reader_handle(dir: &Path, key: &str) -> Result<Store> {
     check_key(key)?;
     refuse_unsplit(dir)?;
@@ -537,6 +522,8 @@ pub fn open_reader_handle(dir: &Path, key: &str) -> Result<Store> {
     Ok(Store::of_set(shared.shared.clone(), project))
 }
 
+/// Both of one key's files in one [`Store`], routed by [`place_of`]. `create` is the daemon's door
+/// and makes missing files. An unsplit data directory is refused by [`refuse_unsplit`].
 pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     check_key(key)?;
     let projects = dir.join(PROJECTS_DIR);
@@ -584,11 +571,9 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     Ok(Store::of_set(shared.shared.clone(), project))
 }
 
-/// A data directory mid-transition: `sessions.db` is the shared file, and a key has a project file
-/// of its own only once a carve recorded it. An uncarved key opens that file as its ONLY one - its
-/// project rows are still in it - but as a set's handle: the listing must not fall back to the
-/// single-file query, which reads the history this file no longer holds whole (a carved project's
-/// transcripts are in its own file), and would answer a cut-down session list.
+/// A directory mid-transition: an uncarved key opens `sessions.db` as its only file, but as a set's
+/// handle, since the single-file listing would read history that carved projects no longer keep
+/// here and answer a cut-down session list.
 fn open_transition(dir: &Path, key: &str) -> Result<Store> {
     let legacy = dir.join(LEGACY_FILE);
     let shared = Store::open(&legacy)?;
@@ -651,9 +636,8 @@ pub(crate) fn refuse_creating_beside_legacy(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The single file a daemon used to write, with nothing carved out of it yet: splitting it is the
-/// operator's, because a daemon that started by copying would be copying a store nobody had
-/// stopped writing to.
+/// The legacy single file, nothing carved out yet: splitting it is the operator's job, since a
+/// daemon that started by copying would copy a store nobody had stopped writing to.
 pub fn refuse_unsplit(dir: &Path) -> Result<()> {
     if dir.join(LEGACY_FILE).is_file() && !dir.join(SHARED_FILE).is_file() {
         return Err(unsplit(dir));

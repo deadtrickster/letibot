@@ -1,9 +1,6 @@
-//! The recall index: one row per UNIT of a project's past conversation, and the tier's vector for
-//! it when the box has an embedder. A unit is a person's turn and the reply it got, so the index is
-//! searched by what was asked rather than by which row happened to contain a word.
-//!
-//! It lives in the project file, which is what makes "this project's past" the file's own question:
-//! no key is filtered here, and a set's other folders are not in the way.
+//! The recall index: one row per unit (a person's turn and its reply) of a project's past, plus a
+//! vector when the box has an embedder, so search is by what was asked. It lives in the project
+//! file, so no key is filtered here.
 
 use rusqlite::params;
 

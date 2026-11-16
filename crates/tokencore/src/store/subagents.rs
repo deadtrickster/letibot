@@ -358,13 +358,9 @@ impl Store {
             let rows = st.query_map([], |r| r.get::<_, String>(0))?;
             rows.collect::<std::result::Result<_, _>>()?
         };
-        // The last row is read with the same "newest transcript, then highest seq" rule
-        // `sessions_matching` uses, and for the same reason: a compaction fork is written in the
-        // same millisecond as the transcript it forked from, so the rowid is what breaks the tie.
-        //
-        // The rows are COLLECTED before anything is read from another file: on a single-file store
-        // the two reads are one connection, and a second guard on it, taken while the first is
-        // held, is a deadlock rather than a wait.
+        // Last row by newest transcript then highest seq, as `sessions_matching`: a compaction fork
+        // shares its parent's millisecond, so rowid breaks the tie. Rows are collected before another
+        // file is read, since on a single-file store a second guard on the one connection deadlocks.
         let mut children: Vec<UnrecordedChild> = {
             let conn = self.conn();
             let mut st = conn.prepare(

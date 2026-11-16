@@ -530,7 +530,7 @@ fn number_before(line: &str, label: &str) -> u64 {
         .unwrap_or_else(|| panic!("no number before {label:?} in {line:?}"))
 }
 
-/// P0's done-test: a write serialised behind another connection's transaction reports the WAIT.
+/// A write serialised behind another connection's transaction reports the WAIT.
 /// The lock is held 300 ms and the body then spends a second of its own, so the line says which
 /// of the two the call spent its time on, the handler's sleep and the ladder's pauses together.
 #[test]
@@ -708,7 +708,7 @@ fn a_stop_ends_a_laddered_wait_within_a_second() {
     let db = TempDb::new("watched");
     let s = Store::open(&db.0).unwrap();
     seed(&s);
-    // Held until after the assertions: the 10 s the plan names, and longer if the stop is missed.
+    // Held until after the assertions, and longer if the stop is missed.
     let (release, holder) = hold_write_lock(&db.0);
     let stop = Arc::new(AtomicBool::new(false));
     let told = Arc::new(AtomicU64::new(0));

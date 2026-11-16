@@ -1,6 +1,5 @@
-//! P1's done-tests (`docs/store-split.md` § Build plan): every table in exactly one file, a file from
-//! a newer build refused by name, and a second open of a set that is not a second connection. Every
-//! one of them runs on a directory of its own under `$TMPDIR`.
+//! The split layout: every table in exactly one file, a file from a newer build refused by name, and
+//! a second open of a set that is not a second connection. Each runs on its own `$TMPDIR` directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -136,7 +135,7 @@ fn every_table_is_in_exactly_one_file() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
-/// A P1 done-test: a project file written by a newer build refuses to open, and the refusal says
+/// A project file written by a newer build refuses to open, and the refusal says
 /// which file and which two versions - all a person staring at a daemon that will not start gets.
 #[test]
 fn a_newer_project_file_is_refused_by_name() {
@@ -164,7 +163,7 @@ fn a_newer_project_file_is_refused_by_name() {
     assert!(said.contains(&SCHEMA_VERSION.to_string()), "{said}");
 }
 
-/// A P1 done-test: opening the set twice in one process is a no-op, not a second connection. The
+/// Opening the set twice in one process is a no-op, not a second connection. The
 /// count is this directory's own descriptors, which no other test in the binary can move.
 #[test]
 fn opening_the_set_twice_is_not_a_second_connection() {
@@ -273,10 +272,8 @@ fn a_key_that_is_not_a_name_is_refused() {
         "a refused key created something"
     );
 }
-/// P3's half of the assignment: one handle over both files routes each call by `place_of`, so an
-/// index row lands in `shared.db` and a session's own state in the project file without the caller
-/// saying which. A single-file store routes nothing - it has one connection - which is why every
-/// call site kept its meaning.
+/// One handle over both files routes each call by `place_of`: index rows land in `shared.db`, a
+/// session's own state in the project file, without the caller saying which.
 #[test]
 fn a_handles_call_lands_in_the_file_its_table_is_assigned() {
     let dir = temp("routes");
@@ -294,7 +291,7 @@ fn a_handles_call_lands_in_the_file_its_table_is_assigned() {
     })
     .expect("a session row");
     // A foreign key to `session` would refuse this row in a file that has no index; the project
-    // file drops those keys for exactly this reason (P1), so the row lands.
+    // file drops those keys for this reason, so the row lands.
     set.put_todos("s1", &[]).expect("a todo row");
     let count = |table: &str, path: &Path| -> i64 {
         Connection::open(path)

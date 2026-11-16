@@ -713,10 +713,9 @@ pub struct StablePrefixRecord {
 }
 
 impl StablePrefixRecord {
-    /// The content address: a hash over dialect, system, tools and the rest. The dialect is in
-    /// it because the row stores TOKENS, and two dialects render one text to different ones;
-    /// the byte vocabulary is hashed in only for a `bytes:` source, so GGUF ids never move.
-    /// The effort is in it because renderers write it into the system turn; `None` hashes as before.
+    /// The content address. The dialect is in it because the row stores tokens; the byte vocabulary
+    /// only for a `bytes:` source, so GGUF ids never move. The effort is in it because renderers
+    /// write it into the system turn, and `None` hashes as before.
     pub fn id(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.dialect_sha.as_bytes());
@@ -1149,20 +1148,18 @@ pub enum TodoNeed {
         question: String,
         options: Vec<String>,
     },
-    /// Something OUTSIDE this machine's bookkeeping - a review on a forge, a deploy, a person's
-    /// other tool - which no snapshot here can watch. `what` is the row's own words for it. The
-    /// check is quiet on the row for a bounded time from `since_ms` (wall-clock ms, so a restart
-    /// keeps the window); a wait without one is past its window.
+    /// Something outside this machine's bookkeeping (a forge review, a deploy) that no snapshot can
+    /// watch. The check is quiet for a bounded time from `since_ms`, wall-clock so a restart keeps the
+    /// window; a wait without one is past its window.
     External {
         #[serde(default)]
         what: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since_ms: Option<u64>,
     },
-    /// An [`TodoNeed::Operator`] edge the operator has ANSWERED: met, always, and kept on the row
-    /// as the reply, so a submitted row becomes unblocked with its answer attached. `ask` is the
-    /// room's id when the reply is a peer's rather than the operator's - it is what a settle is
-    /// matched on, and `default` so every edge written before asks existed reads back.
+    /// An [`TodoNeed::Operator`] edge that was answered: always met, the reply kept on the row.
+    /// `ask` is the room's id when a peer replied, which a settle matches on; `default` so edges
+    /// written before asks existed still read back.
     Answered {
         question: String,
         reply: String,
@@ -1547,10 +1544,8 @@ pub(crate) const HISTORY_SQL: &str = "SELECT
             AND i.kind <> 'offer'
           ORDER BY i.seq DESC LIMIT 1)";
 
-/// The session list for a split set: the same columns in the same order, and the four the
-/// transcript answers are `NULL`/`0`, because the index cannot read a project file. The set's own
-/// project file fills them afterwards ([`HISTORY_SQL`]). A free function so a split test can
-/// compare the two.
+/// The session list for a split set: same columns and order, with the four transcript columns
+/// `NULL`/`0` because the index cannot read a project file; [`HISTORY_SQL`] fills them afterwards.
 pub(crate) fn sessions_index_sql(filter: &str) -> String {
     format!(
         "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
@@ -1646,10 +1641,9 @@ impl Store {
         Self::open_sharing(path, true)
     }
 
-    /// A split set's one handle: `shared.db` and `projects/<key>.db` under `dir`, created if they
-    /// are not there, routing every call by [`split::place_of`]. One handle rather than two so no
-    /// caller has to know, and so a body that wrote to both files is the only thing that changes
-    /// - see [`Store::write_tx_at`].
+    /// A split set's one handle over `shared.db` and `projects/<key>.db` under `dir`, created if
+    /// missing, routing every call by [`split::place_of`] so no caller has to know. See
+    /// [`Store::write_tx_at`] for a body that writes both.
     pub fn open_set(dir: &Path, key: &str) -> Result<Self> {
         split::open_handle(dir, key, true)
     }
@@ -2512,7 +2506,7 @@ impl Store {
         }
         if from < 42 {
             // v42: the corpus counts are read at every open, and without this index they scan the
-            // adjudication table - on this box's store, 990 MB per count. One build, at one start.
+            // whole adjudication table. Built once, at one start.
             let has_corpus: bool = self.conn().query_row(
                 "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'adjudication')",
                 [],
@@ -2565,10 +2559,8 @@ impl Store {
             }
         }
         if from < 46 {
-            // v46: what the operator pointed at in an editor, on the prompt journal beside its
-            // attachments. A defaulted column, so a prompt queued before it reads as one with no
-            // context - which is what it had.
-            // A split store's `shared.db` holds no `queued_prompt`: that file has nothing to add.
+            // v46: editor context on the prompt journal. Defaulted, so an older queued prompt reads
+            // as one with no context. A split `shared.db` holds no `queued_prompt`.
             let has = |sql: &str| -> bool {
                 self.conn()
                     .prepare(sql)
@@ -3088,10 +3080,9 @@ impl Store {
         self.append_items_with_context(transcript_id, first_seq, rows, None)
     }
 
-    /// [`Store::append_items`], plus the session's context row when `context` is given:
-    /// `(session id, tokens, cached, ledger)`, as [`Store::set_context`] takes them. A missing
-    /// session row is not an error: context is a measurement. The rows and the context are two
-    /// commits on a split set - the history and the index, and no transaction spans them.
+    /// [`Store::append_items`] plus the session's context row when given, as [`Store::set_context`]
+    /// takes it. A missing session row is not an error. On a split set these are two commits, since
+    /// no transaction spans the history and the index.
     pub fn append_items_with_context<'a, I>(
         &self,
         transcript_id: &str,
@@ -3338,10 +3329,8 @@ impl Store {
             .optional()?)
     }
 
-    /// Every session in the store, newest activity first: what a picker or `letibot --sessions` is
-    /// drawn from. Ordered by the last row written and not `created_at`, because the question is
-    /// which one I was just in. Archived sessions are NOT here: `--archived` asks for them with
-    /// [`Store::list_sessions_archived`], and a resume names one by id ([`Store::session`]).
+    /// Every unarchived session, newest activity first. Ordered by the last row written, not
+    /// `created_at`, because the question is which one I was just in.
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>> {
         self.list_sessions_archived(Archived::No)
     }
@@ -3360,14 +3349,9 @@ impl Store {
         filter: &str,
         args: &[&dyn rusqlite::ToSql],
     ) -> Result<Vec<StoredSession>> {
-        // Count and last activity read the newest `seq` by key: `seq` is dense from 0 and rows are
-        // written in time order, so neither needs a row scan. The "current transcript" subquery orders
-        // by `created_at DESC, rowid DESC`, because a fork shares its parent's millisecond and needs it.
-        // The session list, timed: it is what a picker, `--sessions` and the fleet view read,
-        // and until this it was one of the reads no instrument could see.
-        //
-        // On a split set the index cannot read `transcript`: the history columns come from the
-        // set's own project file below, and stay empty for a session another file holds.
+        // `seq` is dense from 0 and written in time order, so count and last activity need no scan.
+        // The current-transcript subquery breaks ties on `rowid` because a fork shares its parent's
+        // millisecond. On a split set the history columns come from the project file below.
         let sql = match self.project.is_some() {
             true => sessions_index_sql(filter),
             false => sessions_sql(filter),
@@ -4006,10 +3990,9 @@ impl Store {
                 s.items
             )));
         }
-        // Order matters: `transcript.session_id` is a foreign key and
-        // `foreign_keys` is on. One IMMEDIATE transaction per file, because a split set keeps the
-        // history and the index in two and no transaction spans them: the history goes first, so
-        // a session row is never left pointing at a transcript that is gone.
+        // `transcript.session_id` is a foreign key with `foreign_keys` on. One IMMEDIATE transaction
+        // per file since none spans a split set: history first, so a session row never points at
+        // a transcript that is gone.
         self.write_tx_at("transcript", |tx| {
             tx.execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
             Ok(())
@@ -4208,10 +4191,10 @@ impl Store {
     }
 
     /// Shapes this operator approved by hand, under this workspace: the warm start for the shape
-    /// cache, which was in-memory and died with the process, exactly when a restart needed it.
+    /// cache, so a restart does not lose them.
     pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
         // The rows are the corpus's file and the workspace they belong to is the index's, so a
-        // split set needs two reads where one JOIN used to do: the sessions first, the rows after.
+        // split set needs two reads instead of a JOIN: the sessions first, the rows after.
         let mine: std::collections::HashSet<String> = {
             let conn = self.conn();
             let mut st = conn.prepare("SELECT id FROM session WHERE workspace_root = ?1")?;
@@ -4285,7 +4268,7 @@ impl Store {
         let mut out = Vec::new();
         for row in rows {
             let (request_id, session_id, tool, arguments_json) = row?;
-            // A JOIN used to drop a row whose session the store does not hold; so does this.
+            // A row whose session the store does not hold is dropped, as a JOIN would.
             if let Some(workspace_root) = workspaces.get(&session_id) {
                 out.push(ShapelessAdmit {
                     request_id,
@@ -4327,8 +4310,7 @@ impl Store {
         Ok(CorpusCounts {
             total: total as u64,
             decided_by_operator: asked as u64,
-            // `measured` is `consulted`, not `verdict_by LIKE 'model%'`: that predicate was a
-            // tautology which counted every row as measured, and this banner said so.
+            // `measured` is `consulted`, not `verdict_by LIKE 'model%'`, which matches every row.
             measured: measured as u64,
             disagreements: disagreements as u64,
             model_decided: model_decided as u64,
@@ -4343,10 +4325,9 @@ impl Store {
         busy::retry_sql(|| self.at_sql(sql).execute(sql, p.clone()))
     }
 
-    /// A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT`, taken again while busy.
-    /// IMMEDIATE because a deferred transaction that reads first holds a lock it cannot upgrade.
-    /// This takes the FIRST file of a set - the index's - which is where every caller without a
-    /// table of its own writes; a body that writes a project table wants [`Store::write_tx_at`].
+    /// `BEGIN IMMEDIATE`, the body, `COMMIT`, retried while busy. IMMEDIATE because a deferred
+    /// transaction that reads first cannot upgrade its lock. Writes the index file; a body that
+    /// writes a project table wants [`Store::write_tx_at`].
     #[track_caller]
     pub fn write_tx<T>(
         &self,

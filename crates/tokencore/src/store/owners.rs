@@ -1,9 +1,6 @@
-//! Who an owner is, what it holds, and the journal of what was done to it (`docs/lifecycle.md` d.2).
-//!
-//! Three tables and no policy: an `owner` is the unit things belong to and are reaped as a whole, a
-//! `holding` is one resource of one owner on one host, and `reap_event` is append-only. The proof
-//! that a holding is the owner's lives on the RESOURCE - a cgroup, a directory root, a run file, a
-//! label - and these rows are its index and its journal, never the proof itself.
+//! Owners, their holdings, and the journal of what was done to them (`docs/lifecycle.md` d.2).
+//! No policy here. The proof that a holding is the owner's lives on the resource (cgroup, directory,
+//! run file, label); these rows are its index and journal, never the proof.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -601,10 +598,9 @@ impl Store {
         Ok(())
     }
 
-    /// Write one holding, replacing the row its three keys name. An upsert, so a discovery pass
-    /// re-inserts a row somebody deleted by hand instead of colliding with nothing. `host` is
-    /// written as `''` for this box and read back as `None`: SQLite treats NULLs in a primary key
-    /// as distinct, so a NULL there would make every write a new row.
+    /// Upsert one holding by its three keys, so a discovery pass restores a row deleted by hand.
+    /// `host` is stored as `''` for this box and read back as `None`, because SQLite treats NULLs in
+    /// a primary key as distinct and every write would be a new row.
     pub fn put_holding(&self, h: &HoldingRow) -> Result<()> {
         self.exec(
             "INSERT INTO holding (owner_id, kind, host, handle, class, state, stamp, bytes,

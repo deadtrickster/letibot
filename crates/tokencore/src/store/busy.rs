@@ -2,23 +2,18 @@
 //! file, so a write takes `BEGIN IMMEDIATE` and retries within a budget; only a non-busy
 //! failure is an error.
 //!
-//! The wait itself is measured, not inferred: [`on_busy`] is a busy handler of the store's own
-//! that sleeps the retry and adds the sleep up, so a lock wait shows as `waited N ms` on the
-//! call's line. A laddered call's attempt sleeps at most [`LADDER_ATTEMPT`] there, because the
-//! handler sleeps holding the process's one connection; the rest of the wait is between attempts.
-//!
-//! The line, on a daemon's stderr:
+//! [`on_busy`] sleeps each retry and sums the sleep, so a lock wait shows as `waited N ms`. A
+//! laddered attempt sleeps at most [`LADDER_ATTEMPT`] there, since the handler holds the process's
+//! one connection. The lines, on a daemon's stderr:
 //!
 //! ```text
 //! store: a call at store/procs.rs:345 took 11405 ms (waited 11400 ms, 0 busy retries)
 //! store: a call at store.rs:3150 failed after 87 ms (waited 0 ms, 2 busy retries, 3 at this site): database is locked
 //! ```
 //!
-//! The first is a call over [`SLOW_CALL`]; `waited` is how much of it SQLite's busy handler slept.
-//! A `queued N ms behind another thread` part, when present, is the wait for this process's
-//! connection while another thread used it; the rest is I/O. The second is a [`Flavour`] failure - a write that lost the lock or a
-//! filesystem that refused it - logged however fast it was, with how many of that kind have
-//! reached a caller at that `file:line` since the process started.
+//! A call over [`SLOW_CALL`], where `queued N ms behind another thread` is a wait for this
+//! process's connection; and a [`Flavour`] failure, logged however fast, with its count at that
+//! `file:line` since the process started.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -26,12 +21,11 @@ use std::time::{Duration, Instant};
 
 use super::{Result, Store, StoreError};
 
-/// How long a write keeps trying after the first `SQLITE_BUSY`. Ninety seconds: the minute
-/// this used to be plus the 30 s one attempt used to sleep inside the handler.
+/// How long a write keeps trying after the first `SQLITE_BUSY`.
 pub const BUSY_RETRY_TOTAL: Duration = Duration::from_secs(90);
 
 /// The first pause between attempts; it doubles up to [`BUSY_RETRY_MAX_STEP`]. The cap is short
-/// because the ladder now does the polling a long in-handler wait used to do.
+/// because the ladder does the polling, not a long in-handler wait.
 const BUSY_RETRY_FIRST: Duration = Duration::from_millis(50);
 const BUSY_RETRY_MAX_STEP: Duration = Duration::from_millis(250);
 
@@ -153,8 +147,8 @@ impl StoreError {
 }
 
 /// The name of a failure worth counting by call site: a write that lost the lock and a
-/// filesystem that refused it. No retry fixes either, and the logs of 2026-11 counted them by
-/// grep; this is the same count on the line that already names the site.
+/// filesystem that refused it. No retry fixes either, so they are counted on the line that already
+/// names the site.
 pub(super) trait Flavour {
     fn flavour(&self) -> Option<&'static str>;
 }
@@ -306,7 +300,7 @@ pub(super) fn retry_busy<T, E: Flavour>(
 }
 
 /// A store call that took longer than this is logged: one slow writer stalls every daemon
-/// sharing the file, and the store split is to be measured against the stalls actually seen.
+/// sharing the file.
 pub const SLOW_CALL: Duration = Duration::from_secs(1);
 
 /// What an instrumented call says about itself: a line if it was slow, and a line if it failed

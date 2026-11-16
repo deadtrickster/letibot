@@ -14,11 +14,9 @@ CREATE TABLE IF NOT EXISTS seat_todo (
 );
 "#;
 
-/// A seat's own background jobs (`seat_job_start`): `job`'s class with a `seat` where that table
-/// has a `session_id`, and for the same reason - a seat is not a session, so there is no row for
-/// the foreign key to point at. One row per handle, UPSERTED: a job has one state at a time, and
-/// the settlement is the same job as the start. `start` is `/proc/<pid>/stat`'s `starttime`, the
-/// half of a pid that survives reuse.
+/// A seat's background jobs: `job`'s class keyed by `seat`, since a seat is not a session and has no
+/// row for a foreign key. Upserted per handle, as a job has one state at a time. `start` is
+/// `/proc/<pid>/stat`'s `starttime`, the half of a pid that survives reuse.
 pub const SEAT_JOB_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS seat_job (
     seat       TEXT NOT NULL,
@@ -319,7 +317,7 @@ mod tests {
         );
     }
 
-    /// A v41 store - one from the build before this table - gains it on its next open, and the
+    /// A v41 store, without this table, gains it on its next open, and the
     /// next bridge reads what was written into it.
     #[test]
     fn a_v41_store_gains_the_seat_job_table() {

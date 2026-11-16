@@ -1,15 +1,6 @@
-//! The migration from one `sessions.db` to the split store (`docs/store-split.md`): `shared.db`
-//! and `projects/<key>.db` out, `sessions.db.pre-split` left behind.
-//!
-//! Two doors: [`migrate`] is the whole file in one offline pass, and [`carve`] takes one project key
-//! out at a time so every other project's daemon keeps running (§ Carving one project). [`finish`]
-//! is the last step of the second road, which renames the file every daemon has written since R92
-//! once nothing is left in it.
-//!
-//! The project key comes from a session's ROOT, never from its own `workspace_root`: a child's is
-//! the worktree it works in, and hashing that is what gives 570 folders where the roots give 29.
-//! Every check of step 4 is a refusal - a pass that does not add up renames nothing, so the old
-//! file keeps its name and a daemon still finds a whole store.
+//! Migration from one `sessions.db` to the split store: [`migrate`] in one offline pass, [`carve`]
+//! one project at a time while other daemons run, [`finish`] renames the emptied file.
+//! The key comes from a session's root, never a child's worktree. Every check is a refusal.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -26,10 +17,8 @@ use crate::store::{Result, SCHEMA_VERSION, Store, StoreError, pragmas};
 /// (§ Migration, step 5), because it is the only copy of everything until they are sure.
 pub const KEPT_SUFFIX: &str = ".pre-split";
 
-/// The key a `workspace_root` hashes to: the first twelve hex characters of its SHA-256 over the
-/// path with nothing appended - the key the folder's daemon socket and log already wear
-/// (`crates/bridge/src/daemon.rs::key`). Over the RECORDED string, so a folder that no longer
-/// exists still has the key its sessions were written under.
+/// The first twelve hex characters of SHA-256 over the recorded path, the same key as the
+/// folder's daemon socket and log, so a folder that no longer exists keeps its sessions' key.
 pub fn project_key(workspace_root: &str) -> String {
     let mut h = Sha256::new();
     h.update(workspace_root.as_bytes());
@@ -180,10 +169,9 @@ pub fn blocking_claims(
     live_claims(&mine, host, alive)
 }
 
-/// Carve `key` out of `store` (`docs/store-split.md` § Carving one project): one project file, the
-/// same per-table and chain checks a whole pass makes, the key recorded in `sessions.db`, and only
-/// then that key's rows deleted from it. The refusal under a live writer claim is this function's
-/// and not a command's, so a caller cannot copy out a session a daemon is writing.
+/// Carve `key` out of `store`: one project file, the same checks as a whole pass, the key recorded,
+/// then its rows deleted. Refusing under a live writer claim lives here so no caller can copy out a
+/// session a daemon is writing.
 pub fn carve(
     store: &Path,
     data_dir: &Path,
@@ -320,9 +308,8 @@ fn carve_into(
 }
 
 /// One key's rows of every project table, out of the shared file. The `transcript_item` triggers
-/// refuse a DELETE, so they are dropped and put back from their own `sqlite_master` text; and
-/// `stable_prefix` keeps every row a project not carved yet still names (§ Table assignment
-/// duplicates it per file, so one prefix can be two projects').
+/// refuse a DELETE, so they are dropped and restored from `sqlite_master`. `stable_prefix` keeps rows
+/// a not-yet-carved project still names, since one prefix can belong to two projects.
 fn delete_key_rows(conn: &Connection) -> Result<()> {
     let triggers = triggers_on(conn, split::PROJECT_TABLES)?;
     for (name, _) in &triggers {
@@ -406,10 +393,8 @@ fn refuse_cross_key_forks(conn: &Connection) -> Result<()> {
     }
 }
 
-/// A carve's own debris: the file, and the journal beside it, because a half-written project file
-/// is worse than none and the next attempt would refuse it as a carved project. The directory goes
-/// too when this carve was the one that made it - an empty `projects/` is a line in a listing that
-/// says a carve happened.
+/// A carve's debris: the file and its journal, since the next attempt would refuse a half-written
+/// file as a carved project. The directory goes too when this carve made it.
 fn remove_written_file(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(appended(path, suffix));
@@ -419,10 +404,9 @@ fn remove_written_file(path: &Path) {
     }
 }
 
-/// `--finish` (`docs/store-split.md` § Carving one project, the last step): once every key is
-/// carved, `sessions.db` holds no project row and is renamed to the shared file P3 opens. The
-/// project tables go with the rename: the finished layout has them in the project files alone, and
-/// an empty `adjudication` table in `shared.db` is the thing the whole pass refuses by name.
+/// `--finish`: once every key is carved, `sessions.db` holds no project row and is renamed to the
+/// shared file. The project tables go with it, since an empty `adjudication` in `shared.db` is
+/// something the whole pass refuses.
 pub fn finish(
     store: &Path,
     data_dir: &Path,
