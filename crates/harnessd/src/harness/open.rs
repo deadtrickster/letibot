@@ -4042,24 +4042,27 @@ impl Harness {
                     let text = args.get("text").and_then(|t| t.as_str()).unwrap_or("");
                     let Some(room) = self.room.clone() else {
                         self.hub.warn(
-                            format!("lifecycle_{event}"),
-                            "a lifecycle layer asked for a room message, and this session has no \
-                             room: nothing was said",
+                            "lifecycle_refused",
+                            format!(
+                                "`lifecycle_{event}` asked for a room message, and this session \
+                                 has no room: nothing was said"
+                            ),
                         );
                         continue;
                     };
                     let mut said = serde_json::Map::new();
                     said.insert("text".into(), serde_json::Value::String(text.to_string()));
                     if let Err(why) = room.call("say", &serde_json::Value::Object(said)) {
-                        self.hub.warn(format!("lifecycle_{event}"), why);
+                        self.hub
+                            .warn("lifecycle_refused", format!("`lifecycle_{event}`: {why}"));
                     }
                 }
                 other => {
                     self.hub.warn(
-                        format!("lifecycle_{event}"),
+                        "lifecycle_refused",
                         format!(
-                            "a lifecycle layer asked for `{other}`, and an event performs `say`, \
-                             `add_todo`, `arm` and `room_say`: nothing was done"
+                            "`lifecycle_{event}` asked for `{other}`, and an event performs \
+                             `say`, `add_todo`, `arm` and `room_say`: nothing was done"
                         ),
                     );
                 }
