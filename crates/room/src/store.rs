@@ -87,6 +87,30 @@ fn trim<T>(rows: &mut BTreeMap<u64, T>) -> Vec<T> {
     out
 }
 
+/// The ids past [`RING`], oldest first: what a put would move to the closed segment, named before
+/// anything leaves the memory so the trim can wait until the file holds them.
+fn leaving<T>(rows: &BTreeMap<u64, T>) -> Vec<u64> {
+    rows.keys()
+        .take(rows.len().saturating_sub(RING))
+        .copied()
+        .collect()
+}
+
+/// fsync a file's directory. A compaction's rename changes a NAME, and a new file is a name too:
+/// only the directory's own sync makes either survive a power cut rather than a process exit.
+fn sync_dir(path: &Path) {
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    if let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
+        eprintln!(
+            "room: items store directory {} not synced ({e})",
+            dir.display()
+        );
+    }
+}
+
 impl Store {
     /// Read `path` into the shadow. The bytes are decoded as far as they will go and an unreadable
     /// line is skipped and said - a torn last line is the ordinary wreckage of a crash. What the
@@ -243,12 +267,20 @@ impl Store {
         // The record is the item the caller holds even when the trim drops it straight back out:
         // a replay re-inserts and re-trims, so the two can disagree about history, never about
         // the newest version of a row that is live.
-        let gone = {
+        let gone: Vec<Item> = {
             let rows = self.items.entry(project.to_string()).or_default();
             rows.insert(item.id, item.clone());
-            trim(rows)
+            leaving(rows)
+                .into_iter()
+                .filter_map(|id| rows.get(&id).cloned())
+                .collect()
         };
-        self.close(project, gone.into_iter().map(Out::Item).collect());
+        if self.close(project, gone.iter().cloned().map(Out::Item).collect()) {
+            let rows = self.items.entry(project.to_string()).or_default();
+            for row in &gone {
+                rows.remove(&row.id);
+            }
+        }
         self.write(&[Record::Item {
             project: project.to_string(),
             item,
@@ -265,22 +297,20 @@ impl Store {
 
     /// Put an ownership claim as it now stands.
     pub fn put_claim(&mut self, project: &str, claim: crate::own::Claim) {
-        let gone = {
+        let gone: Vec<crate::own::Claim> = {
             let rows = self.claims.entry(project.to_string()).or_default();
             rows.insert(claim.id, claim.clone());
-            let mut ended: Vec<crate::own::Claim> = rows
-                .values()
-                .filter(|c| c.ended.is_some())
-                .cloned()
-                .collect();
+            let ended: Vec<&crate::own::Claim> =
+                rows.values().filter(|c| c.ended.is_some()).collect();
             let past = ended.len().saturating_sub(crate::own::ENDED_KEEP);
-            ended.truncate(past);
-            for old in &ended {
-                rows.remove(&old.id);
-            }
-            ended
+            ended[..past].iter().map(|old| (*old).clone()).collect()
         };
-        self.close(project, gone.into_iter().map(Out::Claim).collect());
+        if self.close(project, gone.iter().cloned().map(Out::Claim).collect()) {
+            let rows = self.claims.entry(project.to_string()).or_default();
+            for row in &gone {
+                rows.remove(&row.id);
+            }
+        }
         self.write(&[Record::Claim {
             project: project.to_string(),
             claim,
@@ -289,12 +319,20 @@ impl Store {
 
     /// Put the question as it now stands - asked, or answered.
     pub fn put_question(&mut self, project: &str, question: Question) {
-        let gone = {
+        let gone: Vec<Question> = {
             let rows = self.questions.entry(project.to_string()).or_default();
             rows.insert(question.id, question.clone());
-            trim(rows)
+            leaving(rows)
+                .into_iter()
+                .filter_map(|id| rows.get(&id).cloned())
+                .collect()
         };
-        self.close(project, gone.into_iter().map(Out::Question).collect());
+        if self.close(project, gone.iter().cloned().map(Out::Question).collect()) {
+            let rows = self.questions.entry(project.to_string()).or_default();
+            for row in &gone {
+                rows.remove(&row.id);
+            }
+        }
         self.write(&[Record::Question {
             project: project.to_string(),
             question,
@@ -344,10 +382,11 @@ impl Store {
     }
 
     /// File the rows the ring just dropped. A row is written here once, so the last line naming an
-    /// id is the state it closed in.
-    fn close(&self, project: &str, rows: Vec<Out>) {
+    /// id is the state it closed in. Answers whether the segment holds them - `true` when there is
+    /// nothing to file - because that is what the caller's trim may commit on.
+    fn close(&self, project: &str, rows: Vec<Out>) -> bool {
         if rows.is_empty() {
-            return;
+            return true;
         }
         let records: Vec<Record> = rows
             .into_iter()
@@ -366,7 +405,7 @@ impl Store {
                 },
             })
             .collect();
-        self.append(&self.closed_path(), &records);
+        self.append(&self.closed_path(), &records).is_some()
     }
 
     /// Look in the closed segment, newest line first: it is append-only, so the last line that
@@ -409,7 +448,8 @@ impl Store {
         self.compact();
     }
 
-    /// Append lines to one of the store's files, answering how many bytes they came to. A store
+    /// Append lines to one of the store's files, answering how many bytes they came to, and sync
+    /// them: a row the room says happened is on the disk before the next one is answered. A store
     /// that will not take a line says so once and the rooms continue: the shadow is the truth this
     /// process keeps, and the next compaction writes the file from it.
     fn append(&self, path: &Path, records: &[Record]) -> Option<u64> {
@@ -420,13 +460,22 @@ impl Store {
                 buf.push('\n');
             }
         }
+        let fresh = !path.exists();
         match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-            .and_then(|mut f| f.write_all(buf.as_bytes()))
-        {
-            Ok(()) => Some(buf.len() as u64),
+            .and_then(|mut f| {
+                f.write_all(buf.as_bytes())?;
+                f.sync_data()
+            }) {
+            Ok(()) => {
+                if fresh {
+                    // A new file is a NAME as well as data, and only the directory holds that.
+                    sync_dir(path);
+                }
+                Some(buf.len() as u64)
+            }
             Err(e) => {
                 eprintln!(
                     "room: items store {} not written ({e}); the rooms continue in memory",
@@ -486,10 +535,19 @@ impl Store {
             }
         }
         let tmp = self.path.with_extension("items-tmp");
-        let done =
-            std::fs::write(&tmp, buf.as_bytes()).and_then(|()| std::fs::rename(&tmp, &self.path));
+        // The tmp file is synced before it is renamed: a rename over the live file that had not
+        // reached the disk would leave a crash holding the new name and an empty file.
+        let done = std::fs::File::create(&tmp)
+            .and_then(|mut f| {
+                f.write_all(buf.as_bytes())?;
+                f.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&tmp, &self.path));
         match done {
-            Ok(()) => self.bytes = buf.len() as u64,
+            Ok(()) => {
+                self.bytes = buf.len() as u64;
+                sync_dir(&self.path);
+            }
             Err(e) => eprintln!(
                 "room: items store {} not compacted ({e}); appends continue",
                 self.path.display()
