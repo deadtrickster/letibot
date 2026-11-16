@@ -9,8 +9,8 @@ use letibot_tools::remote::{Hosts, Paths, Ssh, expand_root};
 use letibot_tools::rpc;
 
 use super::gate::{
-    Done, GateControl, GateRun, GateVerdict, StepEnd, StepExit, StepMemory, assemble, clause_of,
-    judge, many, now_ms, read_excerpt, tempfile_in,
+    Done, GateControl, GateRun, GateVerdict, Judged, StepEnd, StepExit, StepMemory,
+    apparatus_absent_words, assemble, clause_of, judge, many, now_ms, read_excerpt, tempfile_in,
 };
 use super::git;
 
@@ -57,40 +57,16 @@ pub struct Apparatus {
 }
 
 impl Apparatus {
-    /// The line the first step's row carries when this gate did something to the project's demand -
-    /// and nothing at all when it did not, so a gate on a machine that has everything reads as before.
-    fn evidence(
-        &self,
-        host: &str,
-        steps: usize,
-        dropped: &[String],
-        wrapped: bool,
-    ) -> Option<String> {
-        let mut said = Vec::new();
-        if !dropped.is_empty() {
-            said.push(format!(
-                "[gate on `{host}`: `{APPARATUS_ENV}=1` was TAKEN OFF {} of {} — \
-                 this machine cannot meet it ({}), so the tests that need it SKIPPED here and \
-                 THIS IS NOT A PASS for them; every other test in those steps ran as the project \
-                 wrote them, and each one that did not run printed its own SKIPPED line with the \
-                 reason. Give the machine the apparatus and the demand comes back by itself]",
-                dropped.len(),
-                many(steps, "step", "steps"),
-                self.missing.join("; "),
-            ));
-        }
-        if wrapped {
-            said.push(format!(
+    /// The line the first step's row carries when this gate wrapped a step in a scope of its own,
+    /// and nothing when it did not, so a gate on a machine that has everything reads as before.
+    fn evidence(&self, host: &str, wrapped: bool) -> Option<String> {
+        wrapped.then(|| {
+            format!(
                 "[gate on `{host}`: each step was started in a delegated scope of its own \
                  (`systemd-run --user --scope -p Delegate=yes`), because that is what gives a \
                  step here the cgroup v2 subtree the project's step demands]"
-            ));
-        }
-        if said.is_empty() {
-            None
-        } else {
-            Some(said.join("\n"))
-        }
+            )
+        })
     }
 }
 
@@ -110,35 +86,35 @@ pub fn apparatus_prefix(step: &str) -> Option<&str> {
 /// One step as this machine will be asked to run it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Planned<'a> {
-    /// The command. The project's own text, unless [`Planned::dropped`].
+    /// The command, the project's own text.
     pub command: &'a str,
-    /// The demand was taken off, because this machine cannot meet it.
-    pub dropped: bool,
+    /// This machine cannot meet the demand, so the step is not run: a skip is not a pass.
+    pub blocked: bool,
     /// Start it inside a transient delegated scope, so it has a cgroup of its own.
     pub own_scope: bool,
 }
 
 /// [`Planned`] for one step on one machine - pure, so the three answers are a unit test.
 pub fn plan_step<'a>(step: &'a str, apparatus: &Apparatus) -> Planned<'a> {
-    let Some(command) = apparatus_prefix(step) else {
+    if apparatus_prefix(step).is_none() {
         // A step that demands nothing is run exactly as it was written, and is not wrapped: the
         // scope exists for the apparatus, not as a new habit.
         return Planned {
             command: step,
-            dropped: false,
+            blocked: false,
             own_scope: false,
         };
-    };
+    }
     if !apparatus.missing.is_empty() {
         return Planned {
-            command,
-            dropped: true,
+            command: step,
+            blocked: true,
             own_scope: false,
         };
     }
     Planned {
         command: step,
-        dropped: false,
+        blocked: false,
         own_scope: apparatus.own_scope,
     }
 }
@@ -251,12 +227,26 @@ pub fn run_on_host(
     // where it can be met the gate meets it (a delegated scope of its own)
     let apparatus = remote.apparatus(steps);
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
-    let mut dropped: Vec<String> = Vec::new();
     let mut wrapped = false;
     for (i, step) in steps.iter().enumerate() {
         let plan = plan_step(step, &apparatus);
-        if plan.dropped {
-            dropped.push(step.clone());
+        if plan.blocked {
+            let what = apparatus.missing.join("\n");
+            done.push(Done {
+                command: step.clone(),
+                started_ms: now_ms(),
+                elapsed_ms: 0,
+                judged: Judged {
+                    outcome: MergeGateOutcome::NotRun,
+                    output: String::new(),
+                    verdict: Some(GateVerdict::Infra(apparatus_absent_words(
+                        step,
+                        &what,
+                        Some(name),
+                    ))),
+                },
+            });
+            break;
         }
         wrapped |= plan.own_scope;
         let started = now_ms();
@@ -271,7 +261,7 @@ pub fn run_on_host(
         } else {
             plan.command
         };
-        let end = remote.run_step(command, plan.own_scope, (i + 1, steps.len()), ctl);
+        let (end, refused) = remote.run_step(command, plan.own_scope, (i + 1, steps.len()), ctl);
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(
             step,
@@ -279,6 +269,7 @@ pub fn run_on_host(
             StepMemory::Elsewhere(name.to_string()),
             0,
             ctl.budget,
+            &refused,
         );
         let last = judged.verdict.is_some();
         done.push(Done {
@@ -291,10 +282,8 @@ pub fn run_on_host(
             break;
         }
     }
-    // What this gate did to the project's demand, on the first row of the log: a step whose demand was
-    // taken off it ran without the tests that need that apparatus, and a skipped apparatus test is
-    // announced here or it is a pass nobody can see through.
-    if let Some(line) = apparatus.evidence(name, steps.len(), &dropped, wrapped)
+    // A step wrapped in a scope of its own is said on the first row of the log.
+    if let Some(line) = apparatus.evidence(name, wrapped)
         && let Some(first) = done.first_mut()
     {
         first.judged.output = if first.judged.output.is_empty() {
@@ -715,14 +704,17 @@ impl Remote {
         own_scope: bool,
         at: (usize, usize),
         ctl: &GateControl,
-    ) -> StepEnd {
+    ) -> (StepEnd, String) {
         let n = self.next();
         let log = match tempfile_in(&self.local) {
             Ok(l) => l,
-            Err(e) => return StepEnd::Infra(e),
+            Err(e) => return (StepEnd::Infra(e), String::new()),
         };
         if let Err(e) = std::fs::File::create(&log) {
-            return StepEnd::Infra(format!("{}: {e}", log.display()));
+            return (
+                StepEnd::Infra(format!("{}: {e}", log.display())),
+                String::new(),
+            );
         }
         // The same tail as a local gate's: this box's copy of the log is what the polls append to, so a
         // pane reads the running step of a gate on another machine here.
@@ -730,7 +722,28 @@ impl Remote {
         let _running = super::gate::step_guard(&self.local);
         let end = self.run_step_into(n, step, own_scope, &log, ctl);
         let _ = std::fs::remove_file(&log);
-        end
+        let refused = match end {
+            StepEnd::Red(..) => self.refusals(n),
+            _ => String::new(),
+        };
+        (end, refused)
+    }
+
+    /// What `apparatus::present` appended to the step's refusals file there (the launcher names it
+    /// beside the step's output). Nothing when it cannot be read: a red is then the code's.
+    fn refusals(&self, n: usize) -> String {
+        let tag = format!("{}-refused", self.tag(n));
+        let script = format!(
+            "echo '{tag}'; cat '{}.refused' 2>/dev/null; true",
+            self.out_path(n)
+        );
+        match self.call("reading the step's refusals", &script, SETUP_BOUND) {
+            Ok(said) => said
+                .split_once(&format!("{tag}\n"))
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        }
     }
 
     fn run_step_into(
@@ -1054,6 +1067,8 @@ pub fn launcher_script(
          ulimit -c 0\n\
          cd '{tree}' || exit 97\n\
          export CARGO_TARGET_DIR='{target}'\n\
+         rm -f '{out}.refused'\n\
+         export LETIBOT_APPARATUS_REFUSALS='{out}.refused'\n\
          ( {run} ) > '{out}' 2>&1\n\
          echo $? > '{exit}'\n"
     )

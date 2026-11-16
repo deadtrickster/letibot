@@ -40,13 +40,15 @@ exec 9>"$LOCK"
 echo "gate: waiting for $LOCK" >&2
 flock 9
 echo "gate: lock held" >&2
-sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" \
+# A skip is not a pass: a test whose apparatus is missing fails instead of skipping.
+sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
   cargo test --workspace --no-fail-fast >"$L/$N.test.log" 2>&1
 find "$G/home" "$R" \( -name 'sessions.db' -o -name 'shared.db' \) 2>/dev/null | sed 's/^/ISOLATED: /' | head -3
 find "$G" -name 'sessions.db' | sed 's/^/LEAKED: /'
 ok=$(grep -cE '^test result: ok\.' "$L/$N.test.log" || true)
 bad=$(grep -cE '^test result: FAILED|^error(\[|:)' "$L/$N.test.log" || true)
-echo "suites ok=$ok bad=$bad"
+skips=$(grep -c 'THIS IS NOT A PASS' "$L/$N.test.log" || true)
+echo "suites ok=$ok bad=$bad; skip lines (live services, opt-ins): $skips"
 if [ "$bad" != 0 ] || [ "$ok" -lt 140 ]; then
   grep -E '^test result: FAILED|^error|FAILED$|panicked' "$L/$N.test.log" | head -20
   exit 3

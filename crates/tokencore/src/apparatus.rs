@@ -70,6 +70,7 @@ fn present_given(what: &str, here: bool, required: bool) -> Option<()> {
         return Some(());
     }
     if required {
+        note_refusal(what);
         panic!(
             "LETIBOT_REQUIRE_APPARATUS is set, and {what} is not on this machine.\n\n\
              This run does not accept a skip. Either run it where the apparatus is, or \
@@ -82,6 +83,25 @@ fn present_given(what: &str, here: bool, required: bool) -> Option<()> {
          \x20 its absence a failure rather than a skip."
     );
     None
+}
+
+/// The file a gate names in [`REFUSALS_ENV`] for its step. A gate reads a refusal from it, never
+/// from a panic's words, so a failing test that quotes them stays red.
+pub const REFUSALS_ENV: &str = "LETIBOT_APPARATUS_REFUSALS";
+
+/// One line per refusal, appended to the gate's file. Best effort: no file, no gate reading it.
+fn note_refusal(what: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os(REFUSALS_ENV).filter(|p| !p.is_empty()) else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{}", what.replace('\n', " "));
+    }
 }
 
 /// `Some(())` when what this test needs could exist on this platform at all, `None` after saying

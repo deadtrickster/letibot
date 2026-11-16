@@ -636,11 +636,10 @@ fn a_repository_recreated_at_the_same_path_is_sent_whole() {
 // The demand a step makes of the MACHINE `LETIBOT_REQUIRE_APPARATUS=1` is the project's
 // and it is right: a test that skips must not read as a pass.
 
-/// A machine that cannot meet the demand runs the step without it, and the row says so. The
-/// prefix comes off that ONE step and nothing else about it moves, and the evidence a
-/// person reads leads with the fact
+/// A machine that cannot meet the demand does not run the step without it: the run is Blocked
+/// (unjudged), the demanding step is `not_run`, and the steps before it ran as written.
 #[test]
-fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() {
+fn a_machine_that_cannot_meet_the_demand_blocks_the_step() {
     let _only = only_rig();
     let rig = Rig::new("apparatus", FAKE_SSH_ANSWERS);
     rig.answers("cgroup=no\nbwrap=yes\n");
@@ -651,36 +650,23 @@ fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() 
         ],
         120,
     );
-    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
-    // What the machine was actually asked to run: the assignment is gone from the step's head
-    // and nothing else about it moved. (Asserted on the launcher rather than on the environment
-    // because a gate run under `LETIBOT_REQUIRE_APPARATUS=1` would export it to every child.)
-    let launcher = rig.launcher(1);
+    let GateVerdict::Infra(why) = &run.verdict else {
+        panic!("a skip is not a pass: {run:#?}");
+    };
+    assert!(why.contains("UNJUDGED, not red"), "{why}");
     assert!(
-        launcher.contains("( sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]' )"),
-        "{launcher}"
+        why.contains("a cgroup v2 subtree this user may write (the process-lifetime tree)"),
+        "{why}"
     );
-    assert!(
-        !launcher.contains("LETIBOT_REQUIRE_APPARATUS=1"),
-        "{launcher}"
-    );
-    // The row leads with the fact, and says it in the tree's own idiom.
-    let first = &run.steps[0].output;
-    assert!(
-        first.starts_with("[gate on `fake`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 2"),
-        "{first}"
-    );
-    assert!(
-        first.contains("a cgroup v2 subtree this user may write (the process-lifetime tree)"),
-        "{first}"
-    );
-    assert!(first.contains("THIS IS NOT A PASS"), "{first}");
-    // The step that made no demand is not touched, and no step is wrapped.
+    assert!(why.contains("`fake`"), "{why}");
+    assert_eq!(run.steps[0].outcome, MergeGateOutcome::Passed, "{run:#?}");
+    assert_eq!(run.steps[1].outcome, MergeGateOutcome::NotRun, "{run:#?}");
     assert!(
         rig.launcher(0).contains("( echo the first step )"),
         "{}",
         rig.launcher(0)
     );
+    assert!(!run.steps[0].output.contains("TAKEN OFF"), "{run:#?}");
 }
 
 /// A machine that HAS the apparatus runs the project's step exactly as it was written, and the
@@ -751,7 +737,7 @@ fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
 }
 
 /// The net under all of it: a step that refuses to skip is UNJUDGED, not red, whatever the
-/// probe said. Twenty-one targets failing with one sentence is a fact about the machine, and a gate
+/// probe said, read from the refusals file on the host. Twenty-one targets failing with one sentence is a fact about the machine, and a gate
 /// that reds for it is a gate whose red is ignored.
 #[test]
 fn a_step_that_refused_to_skip_is_unjudged_and_not_red() {
@@ -770,8 +756,10 @@ fn a_step_that_refused_to_skip_is_unjudged_and_not_red() {
         "error: 1 target failed:",
         "    `-p letibot-tools --test confine`",
     ];
+    // `apparatus::present` appends to the file the launcher names, then panics.
     let step = format!(
-        "LETIBOT_REQUIRE_APPARATUS=1 printf '%s\\n' {}; exit 101",
+        "LETIBOT_REQUIRE_APPARATUS=1 true; echo 'a cgroup v2 subtree this user may write (the \
+         process-lifetime tree)' >> \"$LETIBOT_APPARATUS_REFUSALS\"; printf '%s\\n' {}; exit 101",
         refusal
             .iter()
             .map(|l| format!("'{l}'"))

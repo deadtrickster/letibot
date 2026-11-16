@@ -80,11 +80,6 @@ pub const GATE_KILLED: &str = "the gate's step was killed before it could judge 
 /// one sentence is a fact about the MACHINE, and a gate that reds for that is a gate whose
 pub const APPARATUS_ABSENT: &str = "the gate could not run here";
 
-/// The two halves of the sentence `letibot_tokencore::apparatus::present_given` refuses with. Two
-/// independent phrases, because the classifier must not fire on a test that merely QUOTES the words
-/// (this tree's own tests do), and a rewording has to break both to go unnoticed.
-const APPARATUS_SAID: (&str, &str) = (" is not on this machine", "does not accept a skip");
-
 /// A count and its noun, spelled: `1 process`, `3 processes`. The number is in hand when the row
 /// is written, and a row is read by a person and by a model, so `process(es)` is a placeholder
 /// standing where a word belongs.
@@ -557,27 +552,16 @@ pub enum RedCause {
     ApparatusAbsent(String),
 }
 
-/// The apparatus a `LETIBOT_REQUIRE_APPARATUS` refusal names, out of the step's own words - or `None`
-/// when this output is not that refusal. A workspace run prints it as
-///
-/// ```text
-/// thread 'jobwatch::tests::a_subagent_settles_through_the_jobs_own_channel' (805) panicked at
-/// crates/tokencore/src/apparatus.rs:181:9:
-/// LETIBOT_REQUIRE_APPARATUS is set, and a process-lifetime tree (cgroup v2; process groups on
-/// macOS) is not on this machine.
-/// ```
-///
-/// The rule is a COUNT and not a pairing: the refusal sits on the line after `panicked at`, which a
-/// step run with `-- --nocapture` does not promise to keep adjacent, so every panic must have a
-/// refusal to go with it. A genuine failure leaves a panic with no refusal behind it.
-fn apparatus_absent(out: &str) -> Option<String> {
-    let (refused, skip) = APPARATUS_SAID;
-    if !out.contains(refused) || !out.contains(skip) {
-        return None;
-    }
-    let panics = out.matches("panicked at").count();
-    let refusals = out.matches(refused).count();
-    if refusals < panics {
+/// The apparatus a step's refusals name, or `None` when the step is not that refusal. `refused` is
+/// the file `letibot_tokencore::apparatus` appends to (`LETIBOT_APPARATUS_REFUSALS`), never the
+/// output's words, so a failing test that quotes them is red. Every panic needs its refusal.
+fn apparatus_absent(out: &str, refused: &str) -> Option<String> {
+    let lines: Vec<&str> = refused
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() || lines.len() < out.matches("panicked at").count() {
         return None;
     }
     let elsewhere = super::setup::step_words(out).any(|l| {
@@ -589,28 +573,13 @@ fn apparatus_absent(out: &str) -> Option<String> {
     if elsewhere {
         return None;
     }
-    // The apparatus, in the refusal's own words. A workspace run names several, so all of them are
-    // collected - one sentence per thing is what a reader acts on.
+    // One per line, because an apparatus NAME has commas and semicolons of its own.
     let mut said: Vec<String> = Vec::new();
-    for line in out.lines().filter(|l| l.contains(refused)) {
-        let Some(from) = line.find("is set, and ").map(|i| i + "is set, and ".len()) else {
-            continue;
-        };
-        let rest = &line[from..];
-        let Some(to) = rest.find(refused) else {
-            continue;
-        };
-        let what = rest[..to].trim().to_string();
-        if !what.is_empty() && !said.contains(&what) {
-            said.push(what);
+    for what in lines {
+        if !said.iter().any(|s| s == what) {
+            said.push(what.to_string());
         }
     }
-    if said.is_empty() {
-        said.push("apparatus it demands".to_string());
-    }
-    // One per line, because an apparatus NAME has commas and semicolons of its own - `a usable
-    // confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)` - so no
-    // punctuation can tell one name from two.
     Some(said.join("\n"))
 }
 
@@ -633,9 +602,8 @@ pub(crate) fn apparatus_absent_words(step: &str, what: &str, machine: Option<&st
          (`LETIBOT_REQUIRE_APPARATUS=1`), so the step refused to skip and nothing it would have \
          judged was judged. This is a fact about the MACHINE and not about the code: the tip is \
          UNJUDGED, not red, and the queue is not halted by it. Either provision the machine — \
-         `letibot_tokencore::apparatus` names each thing and what supplies it — or take the demand \
-         off the step for this machine, which the host gate does by itself and says in the row's \
-         evidence"
+         `letibot_tokencore::apparatus` names each thing and what supplies it — or run the gate \
+         on a machine that has it. A skip is not a pass, so no gate takes the demand off"
     )
 }
 
@@ -674,7 +642,7 @@ fn shows_a_verdict(out: &str) -> bool {
 
 /// Read a red step ([`RedCause`]). Pure, so the measured case is a unit test: `exit` is how the
 /// leader ended, `memory` what its cgroup's counters said, `out` the end of its output.
-fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
+fn red_cause(out: &str, exit: StepExit, memory: &StepMemory, refused: &str) -> RedCause {
     let code_failed = super::setup::shows_code_failing(out) && !shows_a_kill(out);
     match memory {
         StepMemory::Used(u) if u.cap.is_some() && u.killed_at_cap() => {
@@ -696,7 +664,7 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
     // The machine's absence, before the code's - a `LETIBOT_REQUIRE_APPARATUS` refusal is a PANIC, and
     // [`super::setup::shows_code_failing`] reads `panicked at` as the code failing, so this order is
     // the whole of the fix.
-    if let Some(what) = apparatus_absent(out) {
+    if let Some(what) = apparatus_absent(out, refused) {
         return RedCause::ApparatusAbsent(what);
     }
     // A child killed far from the cap (the OOM killer took a rustc) leaves cargo with its own code and the kill in the output, so the output's signal is the answer.
@@ -930,9 +898,13 @@ fn run_steps(
     };
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
-        let (end, mem, leftover) = run_step(&bound, step, &launch(step), (i + 1, steps.len()));
+        let refusals = scratch.path().join(format!("refused-{}", i + 1));
+        let _ = std::fs::remove_file(&refusals);
+        let (end, mem, leftover) =
+            run_step(&bound, step, &launch(step), (i + 1, steps.len()), &refusals);
         let elapsed = now_ms().saturating_sub(started);
-        let judged = judge(step, end, mem, leftover, ctl.budget);
+        let refused = std::fs::read_to_string(&refusals).unwrap_or_default();
+        let judged = judge(step, end, mem, leftover, ctl.budget, &refused);
         let last = judged.verdict.is_some();
         done.push(Done {
             command: step.clone(),
@@ -955,6 +927,7 @@ pub(crate) fn judge(
     mem: StepMemory,
     leftover: usize,
     budget: Duration,
+    refused: &str,
 ) -> Judged {
     let exit = match &outcome {
         StepEnd::Red(_, e) => Some(*e),
@@ -974,7 +947,7 @@ pub(crate) fn judge(
             // A step that did not pass is read once more before it is called red: killed at the cap
             // or near it with no failing code, is the gate's limit, and killed by a signal before any
             // code failed is somebody else's hand. Neither judged the branch.
-            let cause = red_cause(&out, exit, &mem);
+            let cause = red_cause(&out, exit, &mem, refused);
             let clause = match &mem {
                 StepMemory::Used(u) => u.clause(),
                 StepMemory::Uncapped(_) => "uncapped".to_string(),
@@ -1194,6 +1167,7 @@ fn run_step(
     step: &str,
     command: &str,
     at: (usize, usize),
+    refusals: &Path,
 ) -> (StepEnd, StepMemory, usize) {
     use std::os::unix::process::CommandExt;
     let Bound {
@@ -1257,6 +1231,7 @@ fn run_step(
         None => cmd.args(&inner[1..]),
     };
     env.apply(&mut cmd);
+    cmd.env(letibot_tokencore::apparatus::REFUSALS_ENV, refusals);
     no_core_dumps(&mut cmd);
     let child = cmd
         .current_dir(worktree)

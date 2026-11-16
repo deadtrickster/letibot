@@ -256,7 +256,7 @@ const ENDED_IN_WARNINGS: &str = "warning: function `answer_frames` is never used
 #[test]
 fn the_measured_death_near_the_cap_is_killed_at_the_cap_not_red() {
     for exit in [StepExit::Signal(libc::SIGKILL), StepExit::Code(101)] {
-        let cause = red_cause(ENDED_IN_WARNINGS, exit, &measured(0));
+        let cause = red_cause(ENDED_IN_WARNINGS, exit, &measured(0), "");
         let RedCause::KilledAtCap(how) = &cause else {
             panic!("{exit:?}: {cause:?}");
         };
@@ -305,12 +305,12 @@ fn an_oom_kill_counted_in_the_cgroup_is_killed_at_the_cap_whatever_the_output_sa
     let out = "error: could not compile `letibot-tui` (lib test)\n\nCaused by:\n  process \
                    didn't exit successfully: `rustc …` (signal: 9, SIGKILL: kill)\n";
     assert!(matches!(
-        red_cause(out, StepExit::Code(101), &measured(3)),
+        red_cause(out, StepExit::Code(101), &measured(3), ""),
         RedCause::KilledAtCap(how) if how.contains("killed 3 processes")
     ));
     // Near the cap with no count, the same output is a kill, not a verdict.
     assert!(matches!(
-        red_cause(out, StepExit::Code(101), &measured(0)),
+        red_cause(out, StepExit::Code(101), &measured(0), ""),
         RedCause::KilledAtCap(_)
     ));
 }
@@ -322,7 +322,7 @@ fn an_oom_kill_counted_in_the_cgroup_is_killed_at_the_cap_whatever_the_output_sa
 fn failing_code_is_red_and_a_signal_far_from_the_cap_is_unjudged() {
     let failed = "test result: FAILED. 1 passed; 1 failed\nerror: 1 target failed\n";
     assert_eq!(
-        red_cause(failed, StepExit::Code(101), &measured(0)),
+        red_cause(failed, StepExit::Code(101), &measured(0), ""),
         RedCause::Code
     );
     let far = StepMemory::Used(MemoryUse {
@@ -332,26 +332,26 @@ fn failing_code_is_red_and_a_signal_far_from_the_cap_is_unjudged() {
         ..MemoryUse::default()
     });
     assert_eq!(
-        red_cause("merge gate: FAIL\n", StepExit::Code(1), &far),
+        red_cause("merge gate: FAIL\n", StepExit::Code(1), &far, ""),
         RedCause::Code
     );
     assert_eq!(
-        red_cause(ENDED_IN_WARNINGS, StepExit::Signal(libc::SIGKILL), &far),
+        red_cause(ENDED_IN_WARNINGS, StepExit::Signal(libc::SIGKILL), &far, ""),
         RedCause::KilledBySignal(libc::SIGKILL)
     );
     assert_eq!(
-        red_cause(failed, StepExit::Signal(libc::SIGTERM), &far),
+        red_cause(failed, StepExit::Signal(libc::SIGTERM), &far, ""),
         RedCause::Code,
         "a failure it printed before the signal is still a failure"
     );
     // Uncapped (no delegated scope): only the signal can tell.
     let uncapped = StepMemory::Uncapped("old-style start".into());
     assert_eq!(
-        red_cause(ENDED_IN_WARNINGS, StepExit::Code(101), &uncapped),
+        red_cause(ENDED_IN_WARNINGS, StepExit::Code(101), &uncapped, ""),
         RedCause::Code
     );
     assert_eq!(
-        red_cause(ENDED_IN_WARNINGS, StepExit::Signal(9), &uncapped),
+        red_cause(ENDED_IN_WARNINGS, StepExit::Signal(9), &uncapped, ""),
         RedCause::KilledBySignal(9)
     );
 }
@@ -371,7 +371,7 @@ fn a_failing_test_beside_a_kill_is_still_red() {
         ..MemoryUse::default()
     });
     assert_eq!(
-        red_cause(out, StepExit::Code(101), &far),
+        red_cause(out, StepExit::Code(101), &far, ""),
         RedCause::Code,
         "the failing test is the verdict, and a kill beside it is the box's business"
     );
@@ -379,7 +379,7 @@ fn a_failing_test_beside_a_kill_is_still_red() {
     let killed = "Caused by:\n  process didn't exit successfully: `rustc` (signal: 9, SIGKILL: \
                       kill)\n";
     assert_eq!(
-        red_cause(killed, StepExit::Code(101), &far),
+        red_cause(killed, StepExit::Code(101), &far, ""),
         RedCause::KilledBySignal(9)
     );
 }
@@ -399,7 +399,7 @@ fn a_child_the_box_killed_far_from_the_cap_is_unjudged_not_red() {
         ..MemoryUse::default()
     });
     assert_eq!(
-        red_cause(out, StepExit::Code(101), &far),
+        red_cause(out, StepExit::Code(101), &far, ""),
         RedCause::KilledBySignal(libc::SIGKILL),
         "nothing was judged: the compiler was killed, not the code"
     );
@@ -410,6 +410,7 @@ fn a_child_the_box_killed_far_from_the_cap_is_unjudged_not_red() {
         far.clone(),
         0,
         Duration::from_secs(1800),
+        "",
     );
     assert_eq!(judged.outcome, MergeGateOutcome::Killed);
     let Some(GateVerdict::Infra(why)) = judged.verdict else {
@@ -424,7 +425,10 @@ fn a_child_the_box_killed_far_from_the_cap_is_unjudged_not_red() {
     );
     // A step that judged the code and then died is still the code's red.
     let failed = "test result: FAILED. 1 passed; 1 failed\nerror: 1 target failed\n";
-    assert_eq!(red_cause(failed, StepExit::Code(101), &far), RedCause::Code);
+    assert_eq!(
+        red_cause(failed, StepExit::Code(101), &far, ""),
+        RedCause::Code
+    );
 }
 
 /// A step that refused to skip is the machine's, not the branch's: many apparatus refusals beside
@@ -453,8 +457,10 @@ fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
         refusal("jobwatch::tests::a", what),
         refusal("supervise::tests::b", what),
     );
+    // What `apparatus::present` appended to the gate's refusals file, one line per refusal.
+    let refused = format!("{what}\n{what}\n");
     assert_eq!(
-        red_cause(&out, StepExit::Code(101), &elsewhere()),
+        red_cause(&out, StepExit::Code(101), &elsewhere(), &refused),
         RedCause::ApparatusAbsent(what.to_string())
     );
     // The verdict is the gate's own: unjudged, and the row is `not_run`.
@@ -464,6 +470,7 @@ fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
         StepMemory::Elsewhere("lab2x1".into()),
         0,
         Duration::from_secs(1800),
+        &refused,
     );
     assert_eq!(judged.outcome, MergeGateOutcome::NotRun);
     let Some(GateVerdict::Infra(why)) = judged.verdict else {
@@ -486,13 +493,13 @@ fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
         out
     );
     assert_eq!(
-        red_cause(&mixed, StepExit::Code(101), &elsewhere()),
+        red_cause(&mixed, StepExit::Code(101), &elsewhere(), &refused),
         RedCause::Code
     );
     // And so is a compile error, whatever the refusals said.
     let broken = format!("{out}\nerror[E0308]: mismatched types\n");
     assert_eq!(
-        red_cause(&broken, StepExit::Code(101), &elsewhere()),
+        red_cause(&broken, StepExit::Code(101), &elsewhere(), &refused),
         RedCause::Code
     );
     // A run that only MENTIONS the words (a test of the message itself) is not a refusal.
@@ -500,9 +507,63 @@ fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
         red_cause(
             "test result: ok. 1 passed\nassert!(!m.contains(\"is not on this machine\"));\n",
             StepExit::Code(101),
-            &elsewhere()
+            &elsewhere(),
+            ""
         ),
         RedCause::Code
+    );
+}
+
+/// A genuine failure whose panic quotes the refusal's words is red: the refusal is read from the
+/// gate's file, which only `apparatus::present` writes, so nothing requeues it as the machine's.
+#[test]
+fn a_panic_quoting_the_refusal_phrases_is_red_not_infra() {
+    let out = "thread 'quotes' (7) panicked at crates/x/src/lib.rs:1:1:\n\
+               LETIBOT_REQUIRE_APPARATUS is set, and a cgroup v2 subtree is not on this machine.\n\n\
+               This run does not accept a skip.\n\n\
+               test result: FAILED. 0 passed; 1 failed\n";
+    let far = StepMemory::Uncapped("no cgroup".into());
+    assert_eq!(
+        red_cause(out, StepExit::Code(101), &far, ""),
+        RedCause::Code
+    );
+    let judged = judge(
+        "LETIBOT_REQUIRE_APPARATUS=1 cargo test",
+        StepEnd::Red(out.into(), StepExit::Code(101)),
+        far,
+        0,
+        Duration::from_secs(60),
+        "",
+    );
+    assert_eq!(judged.outcome, MergeGateOutcome::Failed);
+    assert!(matches!(judged.verdict, Some(GateVerdict::Failed(_))));
+}
+
+/// The refusals file is the gate's: a step that refuses writes it through the env the gate gives
+/// it, and the run is unjudged, not red.
+#[test]
+fn a_step_that_refuses_writes_the_gates_refusals_file() {
+    let wt = std::env::temp_dir().join(format!("letibot-gate-refused-{}", std::process::id()));
+    std::fs::create_dir_all(&wt).unwrap();
+    let stop = AtomicBool::new(false);
+    let alive = || true;
+    let ctl = GateControl {
+        deadline: Instant::now() + Duration::from_secs(60),
+        budget: Duration::from_secs(60),
+        stop: &stop,
+        alive: &alive,
+    };
+    let step = "echo 'a cgroup v2 subtree' >> \"$LETIBOT_APPARATUS_REFUSALS\"; \
+                echo \"thread 't' (1) panicked at x.rs:1:1:\"; exit 101"
+        .to_string();
+    let run = run_with_memory(&wt, &[step], &ctl, Ask::Uncapped);
+    let _ = std::fs::remove_dir_all(&wt);
+    let GateVerdict::Infra(why) = &run.verdict else {
+        panic!("a refusal is the machine's: {run:#?}");
+    };
+    assert!(
+        why.contains("a cgroup v2 subtree is not on this machine"),
+        "{why}"
     );
 }
 
@@ -523,6 +584,8 @@ fn the_row_names_every_apparatus_the_step_demanded() {
         out,
         StepExit::Code(101),
         &StepMemory::Elsewhere("lab2x1".into()),
+        "a cgroup v2 subtree this user may write (the process-lifetime tree)\n\
+         a vocabulary GGUF (/nope.gguf)\n",
     ) else {
         panic!("two refusals are still the machine's");
     };
@@ -1186,6 +1249,7 @@ fn a_row_whose_end_is_as_big_as_the_cap_allows_still_fits_beside_the_gate_note()
         StepMemory::Uncapped(why),
         0,
         Duration::from_secs(60),
+        "",
     )
     .output;
     let _ = std::fs::remove_file(&log);

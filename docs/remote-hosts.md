@@ -528,7 +528,7 @@ where this daemon has no cgroup of its own]` - which the model's copy drops like
 `LETIBOT_REQUIRE_APPARATUS=1` is **the project's** demand and not the gate's: this repository's `AGENTS.md`
 writes it on step 3 so a test that skips cannot read as a pass. The gate's job is to run the step as the
 project wrote it - but *which machine* runs it is the gate's, and a demand a machine cannot meet has to be
-**met, dropped or said**, never turned into a verdict about a branch.
+**met or blocked**, never turned into a verdict about a branch. A skip is not a pass.
 
 A gate step runs in the ssh session's cgroup, which the user may not write (`writable=no`), so
 `Cgroup2::probe`'s `mkdir` fails - while `systemd-run --user --scope -p Delegate=yes` answers 0 there. The
@@ -541,26 +541,21 @@ makes a directory in its own cgroup and removes it, then tries the same inside t
 |---|---|
 | `cgroup=here` (and `bwrap=yes`) | nothing - the steps run byte for byte as the project wrote them |
 | `cgroup=own-scope` | starts each step that carries the demand inside a transient delegated scope, and **keeps the demand** |
-| anything missing | takes `LETIBOT_REQUIRE_APPARATUS=1` off **that one step** and says so in the row |
+| anything missing | runs nothing from **that step** on: the step is `not_run` and the verdict is `GateVerdict::Infra` (unjudged, Blocked) |
 
 The wrap is `( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c '<step>' )` inside the
 launcher's subshell: `systemd-run --scope` execs the command in place and answers with its exit status, so the
 pid file, the group kill and `$?` mean what they meant before. A probe that cannot answer changes **nothing**,
-because reading a failed probe as *absent* would take a demand off a machine that has everything. The row says
-which happened, in the gate's own words, so no classifier reads it (`setup::step_words` drops it):
+because reading a failed probe as *absent* would block a machine that has everything. A wrapped step is said on
+the first row, in the gate's own words, so no classifier reads it (`setup::step_words` drops it).
 
-```text
-[gate on `lab2x1`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5 step(s) — this machine
- cannot meet it (a cgroup v2 subtree this user may write (the process-lifetime tree)), so the
- tests that need it SKIPPED here and THIS IS NOT A PASS for them; …]
-```
-
-**The net under it: a refusal is not a verdict.** Whatever the probe said, a step that failed and whose
+**The net under it: a refusal is not a verdict.** On this machine's gate, a step that failed and whose
 **every panic is a `LETIBOT_REQUIRE_APPARATUS` refusal** is `RedCause::ApparatusAbsent`: the row is `not_run`
-and the verdict is `GateVerdict::Infra`, so the tip goes back to `gating` and is gated again in a minute, never
-`red`. The rule is a count and not a pairing, because the refusal is on the line AFTER `panicked at` and
-`-- --nocapture` does not promise to keep them adjacent: one genuine failure among sixteen refusals leaves a
-panic with no refusal behind it, and the step stays red.
+and the verdict is `GateVerdict::Infra`, never `red`. Refusals are counted from the file the gate names in
+`LETIBOT_APPARATUS_REFUSALS`, which `apparatus::present` appends to, never from the output's words: a failing
+test that quotes the refusal stays red. One genuine failure among sixteen refusals leaves a panic with no
+refusal behind it, and the step stays red. A host step's refusals file is on the host, so a refusal there
+reads as red.
 
 **On a machine where that call fails**, give it systemd's own delegation, then log out and in so the user
 manager restarts:

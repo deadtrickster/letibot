@@ -31,8 +31,9 @@ fi
 # The command line is rebuilt in front of the caller's NAME=VALUE pairs, so the caller's win.
 set -- HOME="$S/home" XDG_DATA_HOME="$S/data" XDG_STATE_HOME="$S/state" XDG_RUNTIME_DIR="$S/run" \
   CARGO_HOME="${CARGO_HOME:-$real/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$real/.rustup}" "$@"
-# Kept from the caller by name. No keys, sockets, XDG_CONFIG_HOME, XDG_CACHE_HOME or LETIBOT_*.
-for n in PATH USER LOGNAME LANG LC_ALL TZ TMPDIR CARGO_TARGET_DIR CARGO_BUILD_JOBS; do
+# Kept from the caller by name: the gate's own refusals file and nothing else of LETIBOT_*.
+# No keys, sockets, XDG_CONFIG_HOME or XDG_CACHE_HOME.
+for n in PATH USER LOGNAME LANG LC_ALL TZ TMPDIR CARGO_TARGET_DIR CARGO_BUILD_JOBS LETIBOT_APPARATUS_REFUSALS; do
   eval "has=\${$n+x}"
   # shellcheck disable=SC2154 # assigned by the eval above
   if [ -n "$has" ]; then
