@@ -236,6 +236,43 @@ impl Skill {
         None
     }
 
+    /// The folder the skill's `SKILL.md` sits in, symlinks resolved: a confined shell sees the
+    /// real path once it is bound, never the link. `None` for a skill with no file.
+    pub fn base_dir(&self) -> Option<PathBuf> {
+        let dir = self.path.as_deref()?.parent()?;
+        Some(std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+    }
+
+    /// The line every delivery of the body carries, so `scripts/x.sh` in the body has a root.
+    pub fn base_dir_line(&self) -> Option<String> {
+        self.base_dir().map(|dir| {
+            format!(
+                "Base directory for this skill: {} - relative paths in the skill resolve \
+                 against it.",
+                dir.display()
+            )
+        })
+    }
+
+    /// Bind [`Skill::base_dir`] read-only into a confined session's view, so the skill's own
+    /// scripts run with no view ask. `Some` only when a confined backend refused the bind.
+    pub fn bind_base_dir(&self, backend: &dyn crate::backend::ExecBackend) -> Option<String> {
+        let dir = self.base_dir()?;
+        let view = backend.boundary()?.view;
+        // `Replaced` too: a folder under `/tmp` is a fresh tmpfs inside, not the host's files.
+        if view.classify(&dir) == crate::exec::confine::Presence::Inside {
+            return None;
+        }
+        backend
+            .grant_into_view(
+                &dir,
+                false,
+                &format!("the skill `{}`'s own folder", self.name),
+            )
+            .err()
+            .map(|e| format!("`{}` could not be bound into the view: {e}", dir.display()))
+    }
+
     /// What this skill is scored on: its whole frontmatter, never its body. A one-line
     /// `description` cannot carry "beamer" to a prompt that says "latex presentation", and the
     /// body is thousands of words that would drown the subject rather than describe it.
@@ -1380,7 +1417,7 @@ impl Tool for SkillTool {
         )
     }
 
-    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
         let query = args.get("query").and_then(|v| v.as_str());
         let action = args
             .get("action")
@@ -1415,7 +1452,7 @@ impl Tool for SkillTool {
                                  action=\"list\" names the skill that fits here."
                             ),
                         ),
-                        None => Invocation::ok(loaded(&skill)),
+                        None => Invocation::ok(loaded_into(&skill, ctx)),
                     },
                     Err(why) => Invocation::failed(format!("no skill named `{name}`"), why),
                 }
@@ -1459,7 +1496,7 @@ impl Tool for SkillTool {
                     );
                 }
                 let body = match self.registry.load_any(&name) {
-                    Ok(skill) => loaded(&skill),
+                    Ok(skill) => loaded_into(&skill, ctx),
                     Err(why) => return Invocation::failed(format!("no skill named `{name}`"), why),
                 };
                 let next: Vec<String> = rest
@@ -1480,15 +1517,29 @@ impl Tool for SkillTool {
     }
 }
 
-/// One skill as the tool hands it over: the name, its one line, where it was found, and the body.
+/// One skill as the tool hands it over: the name, its one line, where it was found, its folder,
+/// and the body.
 fn loaded(skill: &Skill) -> String {
+    let dir = skill
+        .base_dir_line()
+        .map(|l| format!("{l}\n"))
+        .unwrap_or_default();
     format!(
-        "# {}  [{}]\n{}\n\n{}",
+        "# {}  [{}]\n{}\n{dir}\n{}",
         skill.name,
         skill.source.label(),
         skill.description,
         skill.body
     )
+}
+
+/// [`loaded`], with the skill's folder bound into the caller's view first.
+fn loaded_into(skill: &Skill, ctx: &InvokeCtx<'_>) -> String {
+    let mut out = loaded(skill);
+    if let Some(why) = skill.bind_base_dir(ctx.backend) {
+        out.push_str(&format!("\n\n{why}"));
+    }
+    out
 }
 
 #[cfg(test)]

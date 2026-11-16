@@ -274,9 +274,10 @@ pub fn preloaded(registry: &SkillRegistry, names: &[String]) -> Option<String> {
         match registry.load_any(name) {
             Ok(skill) => {
                 out.push_str(&format!(
-                    "#### {}  [{}]\n{}\n\n",
+                    "#### {}  [{}]\n{}{}\n\n",
                     skill.name,
                     skill.source.label(),
+                    crate::policy_skills::dir_line(&skill),
                     skill.body
                 ));
             }

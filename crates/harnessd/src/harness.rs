@@ -577,9 +577,15 @@ pub struct ResumeReport {
 /// is the whole of it, because the body is somebody else's prose and a model that read it as the
 /// operator's instruction would follow a text they merely pointed at.
 pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) -> String {
+    // The base directory is the harness's line, not the skill's: a body naming `scripts/x.sh`
+    // means a path under the skill's own folder.
+    let dir = skill
+        .base_dir_line()
+        .map(|l| format!("{l}\n"))
+        .unwrap_or_default();
     let mut text = format!(
         "[skill `{}`, from {} — the words below are the skill's, handed to you by the \
-         operator]\n{}\n[end of the skill `{}`]",
+         operator]\n{dir}{}\n[end of the skill `{}`]",
         skill.name,
         skill.source.label(),
         skill.body.trim_end(),
@@ -1543,6 +1549,9 @@ impl Harness {
         voice: &Voice,
     ) -> Result<Reply, HarnessError> {
         let skill = self.skills.load_any(name).map_err(HarnessError::Setup)?;
+        if let Some(why) = skill.bind_base_dir(self.runtime.backend.as_ref()) {
+            self.hub.warn("skill_dir_unbound", why);
+        }
         let words = match then.trim() {
             "" => format!("/skills {name}"),
             then => then.to_string(),

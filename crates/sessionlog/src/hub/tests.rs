@@ -1117,3 +1117,27 @@ fn a_calls_decision_is_one_settled_after_the_mark() {
     );
     assert_eq!(hub.settled_after(mark.as_deref(), "other"), None);
 }
+
+/// Lead #42: a second load of a skill still queued is collapsed into the first, and says so.
+#[test]
+fn a_second_load_of_a_queued_skill_is_collapsed() {
+    let hub = Hub::new("s");
+    let a = hub.attach("tui", "operator", Caps::default(), 0);
+    let load = |then: &str| CommandKind::LoadSkill {
+        name: "pane-screenshot".into(),
+        then: then.into(),
+    };
+    hub.submit(&a.head_id, "c1", 0, load(""));
+    let f = hub.submit(&a.head_id, "c2", 0, load(""));
+    assert!(
+        matches!(f, ServerFrame::Accepted { ref note, .. } if note.contains("collapsed")),
+        "{f:?}"
+    );
+    // The operator's own words after the name are a different request, and still queue.
+    hub.submit(&a.head_id, "c3", 0, load("look at pane 2"));
+    let mut loads = 0;
+    while let Some(c) = hub.try_command() {
+        loads += usize::from(matches!(c.kind, CommandKind::LoadSkill { .. }));
+    }
+    assert_eq!(loads, 2);
+}

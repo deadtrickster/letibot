@@ -3436,6 +3436,14 @@ impl Harness {
             }
         }
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
+        // A declared skill's scripts run from its own folder, so the folder joins the view now.
+        for name in &cfg.skills {
+            if let Ok(skill) = parts.skills.load_any(name)
+                && let Some(why) = skill.bind_base_dir(&*runtime.backend)
+            {
+                hub.warn("skill_dir_unbound", why);
+            }
+        }
         // The directories this session's ROLE names in `guidance:`, normalised once: they are read
         // into the prompt here AND closed over below, so a later tool call in one of them says
         // nothing twice.

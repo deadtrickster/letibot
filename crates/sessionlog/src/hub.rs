@@ -1860,7 +1860,18 @@ impl Hub {
             }
 
             let stale = expected_seq != 0 && expected_seq < actual;
+            // A second load of a skill still queued would hand its body over twice.
+            let collapsed = match &kind {
+                CommandKind::LoadSkill { name, then } => g.commands.iter().any(|q| {
+                    matches!(&q.kind, CommandKind::LoadSkill { name: n, then: t }
+                        if n == name && (t == then || then.trim().is_empty()))
+                }),
+                _ => false,
+            };
             let note = match (&kind, stale) {
+                (CommandKind::LoadSkill { name, .. }, _) if collapsed => {
+                    format!("`{name}` is already queued — this load is collapsed into it")
+                }
                 (CommandKind::Prompt { .. }, true) => {
                     format!("{REJECT_STALE_SEQ}: queued anyway as a follow-up user item")
                 }
@@ -2002,7 +2013,7 @@ impl Hub {
                 (CommandKind::Interrupt { reason }, Some(sink)) => Some((sink, reason.clone())),
                 _ => None,
             };
-            if deliver.is_none() {
+            if deliver.is_none() && !collapsed {
                 g.commands.push_back(QueuedCommand {
                     head_id: head_id.to_string(),
                     identity: identity.clone(),

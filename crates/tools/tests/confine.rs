@@ -1532,3 +1532,54 @@ fn a_sessions_build_dirs_from_the_gc_root_are_writable_with_no_ask() {
     drop(h);
     let _ = std::fs::remove_dir_all(&gc);
 }
+
+/// A skill's body names `scripts/x.sh` relative to its own folder: loading it names that folder,
+/// and the folder joins the view read-only, so the script runs with no view ask.
+#[test]
+fn a_loaded_skills_own_scripts_run_from_its_folder_with_no_view_ask() {
+    use letibot_tools::builtins::skill::{SkillRegistry, SkillTool};
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = confined!("a_loaded_skills_own_scripts_run");
+    let home = std::env::temp_dir().join(format!("letibot-skill-dir-{}", std::process::id()));
+    let dir = home.join("pane-shot");
+    std::fs::create_dir_all(dir.join("scripts")).expect("skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: pane-shot\ndescription: render a pane\n---\nRun `scripts/x.sh`.\n",
+    )
+    .expect("skill file");
+    let script = dir.join("scripts/x.sh");
+    std::fs::write(&script, "#!/bin/sh\necho skill-script-ran\n").expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let real = dir.canonicalize().expect("real dir");
+    let registry = SkillRegistry::load_from_dirs(std::slice::from_ref(&home));
+    h.rt.registry
+        .register(Box::new(SkillTool::new(std::sync::Arc::new(registry))))
+        .expect("skill tool");
+
+    let loaded = payload(&h.call(
+        "skill",
+        &serde_json::json!({"action": "load", "name": "pane-shot"}).to_string(),
+    ));
+    let ran = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": format!("cat {d}/SKILL.md >/dev/null && {d}/scripts/x.sh", d = real.display()),
+        })
+        .to_string(),
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(
+        loaded.contains(&format!(
+            "Base directory for this skill: {}",
+            real.display()
+        )),
+        "{loaded}"
+    );
+    let text = payload(&ran);
+    assert!(text.contains("skill-script-ran"), "{text}");
+    assert!(
+        !format!("{ran:?}").contains("outside this session's view"),
+        "no view ask: {ran:?}"
+    );
+}

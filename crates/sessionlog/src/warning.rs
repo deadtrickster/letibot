@@ -623,6 +623,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // from the row, the title, the seat. Facts about where you are.
     ("resume_note", Class::Routine, Action::Nothing),
     ("open_note", Class::Routine, Action::Nothing),
+    // A skill's own folder could not join the confined view, so its scripts will not run.
+    ("skill_dir_unbound", Class::Failure, Action::Nothing),
     // What a daemon restart brought back, or only reminded the model of: a fact about where
     // the session stands after a restart the operator made. A child that could not come back is
     // said in the detail and is not a fault of this session.
@@ -1712,15 +1714,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_98_routine_16_refused_and_109_failures() {
+    fn the_table_is_98_routine_16_refused_and_110_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 223, "the table's size");
+        assert_eq!(TABLE.len(), 224, "the table's size");
         assert_eq!(count(Class::Routine), 98, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 16, "the sixteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 109);
+        assert_eq!(count(Class::Failure), 110);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

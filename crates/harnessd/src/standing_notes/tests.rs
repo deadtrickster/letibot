@@ -740,6 +740,27 @@ fn a_skill_handed_over_is_labelled_and_the_rest_of_the_line_follows_it() {
     );
 }
 
+/// A skill read from a file names its folder, so `scripts/x.sh` in its body has a root.
+#[test]
+fn a_skill_handed_over_names_its_base_directory() {
+    let dir = dir("skill-base-dir");
+    let mut skill = letibot_tools::builtins::skill::Skill::new(
+        "pane-shot",
+        "render a pane",
+        "Run `scripts/x.sh`.",
+        letibot_tools::builtins::skill::SkillSource::Operator,
+    );
+    skill.path = Some(dir.join("SKILL.md"));
+    let real = dir.canonicalize().expect("real");
+    let line = format!("Base directory for this skill: {}", real.display());
+    let said = crate::harness::skill_message(&skill, "");
+    assert!(said.contains(&line), "{said}");
+    assert!(
+        crate::policy_skills::rules(&skill, "every call").contains(&line),
+        "a policy delivery names it too"
+    );
+}
+
 /// A skill a session was STARTED with arrives whole, and the name it was started with is
 /// the one that is read. `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s
 /// landing place, so a name that resolves to nothing is said rather than dropped.

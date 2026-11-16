@@ -21,10 +21,19 @@ pub fn rules(skill: &Skill, at: &str) -> String {
     format!(
         "{MARK} `{}`, the harness's own text, not the operator's message] These are rules for {at} \
          on this box. They are not a suggestion and not background help: follow them now and for \
-         the rest of this session. They are given once.\n\n{}",
+         the rest of this session. They are given once.\n\n{}{}",
         skill.name,
+        dir_line(skill),
         skill.body.trim_end()
     )
+}
+
+/// The skill's base directory as a line of its own, or nothing for a skill with no file.
+pub fn dir_line(skill: &Skill) -> String {
+    skill
+        .base_dir_line()
+        .map(|l| format!("{l}\n"))
+        .unwrap_or_default()
 }
 
 /// The pinned policy skills as one block of the standing notes, or `None` when none is pinned.
@@ -39,9 +48,10 @@ pub fn pinned_block(registry: &SkillRegistry) -> Option<String> {
     );
     for s in pinned {
         out.push_str(&format!(
-            "#### {}  [{}]\n{}\n\n",
+            "#### {}  [{}]\n{}{}\n\n",
             s.name,
             s.source.label(),
+            dir_line(&s),
             s.body.trim_end()
         ));
     }
