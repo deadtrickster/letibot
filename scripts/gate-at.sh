@@ -28,18 +28,9 @@ for o in "$TD"/debug/build/letibot-builtins-*/output; do
   fi
 done
 # A test that forgets to isolate its data dir must not reach the operator's store, and a head or
-# bridge a test starts must not open the operator's sockets. Cargo and rustup stay where they are.
+# bridge a test starts must not open the operator's sockets: scripts/gate-env.sh builds the env.
 G="$L/$N.xdg"
 rm -rf "$G"
-mkdir -p "$G/data" "$G/state" "$G/home"
-[ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$G/home/.gitconfig"
-# Sandboxed tools bind the real .cargo and .rustup onto $HOME's; a bind needs a real directory.
-mkdir -p "$G/home/.cargo" "$G/home/.rustup"
-# Remote-host tests reach the fleet, so the hosts and their ssh keys come along; providers do not.
-mkdir -p "$G/home/.config/letibot"
-for f in hosts.toml keys known_hosts; do
-  [ -e "$HOME/.config/letibot/$f" ] && ln -s "$HOME/.config/letibot/$f" "$G/home/.config/letibot/$f"
-done
 # Socket paths have a 108-byte limit, so the runtime dir is short.
 R=$(mktemp -d "${TMPDIR:-/tmp}/g.XXXX") || exit 2
 chmod 700 "$R"
@@ -49,10 +40,8 @@ exec 9>"$LOCK"
 echo "gate: waiting for $LOCK" >&2
 flock 9
 echo "gate: lock held" >&2
-# Config and cache follow HOME, so a fixture that moves HOME takes them along.
-# shellcheck disable=SC2097,SC2098 # the real $HOME locates cargo; the moved HOME is for the tests only
-env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-  HOME="$G/home" XDG_RUNTIME_DIR="$R" XDG_DATA_HOME="$G/data" XDG_STATE_HOME="$G/state" CARGO_TARGET_DIR="$TD" cargo test --workspace --no-fail-fast >"$L/$N.test.log" 2>&1
+sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" \
+  cargo test --workspace --no-fail-fast >"$L/$N.test.log" 2>&1
 find "$G/home" "$R" \( -name 'sessions.db' -o -name 'shared.db' \) 2>/dev/null | sed 's/^/ISOLATED: /' | head -3
 find "$G" -name 'sessions.db' | sed 's/^/LEAKED: /'
 ok=$(grep -cE '^test result: ok\.' "$L/$N.test.log" || true)

@@ -1787,13 +1787,15 @@ impl Config {
             embedder: EmbedderSlot::default(),
             wordfreq: crate::embeddings::Wordfreq::default(),
             mode: letibot_tools::mode::UNSEEN_PROJECT,
-            permission: parse_permission(),
+            // The seed, which a fresh box starts with. The operator's file and search key are read
+            // by `read_the_box`: a fixture judged by them passes or fails by whose box it ran on.
+            permission: letibot_tools::permission::seed(),
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
             perimeter: None,
             view_grants: None,
             kept_views: Vec::new(),
-            web_search: default_web_search(),
+            web_search: None,
             web_fetch: false,
             context_window: None,
             media_marker: None,
@@ -1906,10 +1908,12 @@ impl Config {
         cfg
     }
 
-    /// Read this box's own directories, once: its instruction file, its box-wide notes and
-    /// its skill roots. The one place `$HOME` is read for any of them, so everything below takes
+    /// Read this box's own directories, once: its instruction file, its box-wide notes,
+    /// its skill roots, its permission rules and its search key. The one place `$HOME` is read for any of them, so everything below takes
     /// them off a config and a caller that never calls this reads an empty box.
     pub fn read_the_box(&mut self) {
+        self.permission = parse_permission();
+        self.web_search = default_web_search();
         self.box_dirs = crate::leticode_config::BoxDirs::for_this_box();
         self.box_skills = letibot_tools::builtins::skill::SkillDirs::for_this_box(
             None,

@@ -214,6 +214,7 @@ fn daemon_at(
     cfg.session_id = "s-first".into();
     cfg.vocab_gguf = Some(gguf);
     cfg.mode = base;
+    cfg.web_search = Some("brave".into());
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     let registry = letibot_sessionlog::registry::Registry::new();
     for (id, parent) in [
