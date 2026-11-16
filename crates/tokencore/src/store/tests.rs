@@ -1876,7 +1876,7 @@ fn a_v51_store_gains_the_prompt_sender_and_lane_columns() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// A journal written before v54 reads as prompts, and a queued skill load then round-trips.
+/// A journal written before v55 reads as prompts, and a queued skill load then round-trips.
 #[test]
 fn a_v53_store_gains_the_queued_skill_column() {
     let path = std::env::temp_dir().join(format!(
