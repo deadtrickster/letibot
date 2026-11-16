@@ -208,6 +208,7 @@ impl SteeringSource for HubSteering {
         };
         if let Some(cmd) = cmd {
             let peer = cmd.peer();
+            let crid = cmd.client_request_id.clone();
             return match cmd.kind {
                 CommandKind::Prompt {
                     text,
@@ -245,7 +246,7 @@ impl SteeringSource for HubSteering {
                         }
                         beside = crate::editor_context::text(c, "");
                     }
-                    let words = match peer {
+                    let mut words = match peer {
                         Some(from) => SteeringMessage::from_a_peer(
                             letibot_transcript::Speaker::signed(&from, &text),
                             extra,
@@ -253,6 +254,8 @@ impl SteeringSource for HubSteering {
                         ),
                         None => SteeringMessage::operator_with(text, extra),
                     };
+                    // Tagged, so the hub keeps the prompt journaled while a refused round holds it.
+                    words.prompts = vec![crid.clone()];
                     // What was captured is the harness's row, read first, and the words come out of
                     // the next poll: the between-turns door's order, and never the speaker's words.
                     match beside {
@@ -264,7 +267,10 @@ impl SteeringSource for HubSteering {
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .push_front(words);
-                            Some(SteeringMessage::normal(said))
+                            Some(SteeringMessage {
+                                prompts: vec![crid],
+                                ..SteeringMessage::normal(said)
+                            })
                         }
                         None => Some(words),
                     }

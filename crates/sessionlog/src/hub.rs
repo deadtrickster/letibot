@@ -505,9 +505,10 @@ impl CommandQueue {
             self.taken.push(c.clone());
         }
     }
-    /// The taken prompts' rows are stored, so the journal lets them go.
-    fn stored(&mut self) {
-        self.taken.clear();
+    /// The taken prompts' rows are stored, so the journal lets them go, but for `held`: request
+    /// ids still held outside the transcript.
+    fn stored(&mut self, held: &[String]) {
+        self.taken.retain(|c| held.contains(&c.client_request_id));
         self.sync();
     }
     fn len(&self) -> usize {
@@ -858,9 +859,10 @@ impl Hub {
     }
 
     /// Every row this session holds is stored, so the prompts taken before now are in the
-    /// transcript and leave the journal. Called by the harness after a full persist.
-    pub fn prompts_stored(&self) {
-        self.lock().commands.stored();
+    /// transcript and leave the journal, but for `held`: the request ids of prompts a refused
+    /// round handed back. Called by the harness after a full persist.
+    pub fn prompts_stored(&self, held: &[String]) {
+        self.lock().commands.stored(held);
     }
 
     /// Mark this session as served by the thread that is opening it, not by the worker. See
@@ -2613,7 +2615,7 @@ mod mode_steering_tests {
         assert!(matches!(hub.take_own_work(), OwnWork::Command(_)));
         assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
         assert_eq!(kept.lock().unwrap().len(), 1, "taken, not yet stored");
-        hub.prompts_stored();
+        hub.prompts_stored(&[]);
         assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
         assert!(
             kept.lock().unwrap().is_empty(),

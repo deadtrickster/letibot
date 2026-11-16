@@ -30,6 +30,9 @@ pub struct SteeringMessage {
     pub notice: Option<letibot_transcript::NoticeKind>,
     /// An agent's prompt through a head, by its handle: stored as `Speaker::Peer`, never the operator's.
     pub peer: Option<String>,
+    /// The request ids of the queued prompts this message carries, so a source that journals them
+    /// keeps them while the message is held outside the transcript.
+    pub prompts: Vec<String>,
 }
 
 impl SteeringMessage {
@@ -42,6 +45,7 @@ impl SteeringMessage {
             from_session: None,
             notice: None,
             peer: None,
+            prompts: Vec::new(),
         }
     }
 
@@ -56,6 +60,7 @@ impl SteeringMessage {
             from_session: None,
             notice: Some(letibot_transcript::NoticeKind::Monitor),
             peer: None,
+            prompts: Vec::new(),
         }
     }
 
@@ -71,6 +76,7 @@ impl SteeringMessage {
             from_session: Some(from.into()),
             notice: None,
             peer: None,
+            prompts: Vec::new(),
         }
     }
 
@@ -84,6 +90,7 @@ impl SteeringMessage {
             from_session: None,
             notice: None,
             peer: None,
+            prompts: Vec::new(),
         }
     }
 
@@ -98,6 +105,7 @@ impl SteeringMessage {
             from_session: None,
             notice: None,
             peer: None,
+            prompts: Vec::new(),
         }
     }
 
@@ -124,6 +132,7 @@ impl SteeringMessage {
             from_session: None,
             notice: None,
             peer: None,
+            prompts: Vec::new(),
         }
     }
 
@@ -317,6 +326,7 @@ impl Pending {
                 // would lose its picture at the boundary - the merge keeps one item, so
                 // it has to keep everything that item was going to be.
                 last.extra.extend(m.extra);
+                last.prompts.extend(m.prompts);
             } else {
                 self.queued.push(m);
             }

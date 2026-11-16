@@ -4470,7 +4470,7 @@ impl Harness {
     ) -> Result<bool, HarnessError> {
         let Some(store) = &self.store else {
             self.persisted = self.session.ledger.rows().len();
-            self.hub.prompts_stored();
+            self.hub.prompts_stored(&self.held_prompts());
             return Ok(false);
         };
         let rows = self.session.ledger.rows();
@@ -4570,9 +4570,20 @@ impl Harness {
             }
         }
         self.seal_fork();
-        // Every row is stored, so the prompts the turn took are in the transcript.
-        self.hub.prompts_stored();
+        // Every row is stored, so the prompts the turn took are in the transcript, but for the
+        // steers a refused round handed back.
+        self.hub.prompts_stored(&self.held_prompts());
         Ok(carried)
+    }
+
+    /// The request ids of the prompts handed back by a refused round, which no row holds yet.
+    fn held_prompts(&self) -> Vec<String> {
+        self.handed_back
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .flat_map(|m| m.prompts.iter().cloned())
+            .collect()
     }
 
     /// The round's prompt size onto the session row. See the call in `run_rounds`

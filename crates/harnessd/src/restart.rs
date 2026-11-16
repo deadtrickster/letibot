@@ -2086,7 +2086,7 @@ mod journal_tests {
             matches!(&c.kind, CommandKind::Prompt { text, .. } if text == "carry on after the restart"),
             "{c:?}"
         );
-        second.prompts_stored();
+        second.prompts_stored(&[]);
         assert!(second.journal_settled(std::time::Duration::from_secs(30)));
         let third = Hub::new("s-killed");
         assert_eq!(

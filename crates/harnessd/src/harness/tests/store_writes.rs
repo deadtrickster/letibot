@@ -707,3 +707,42 @@ fn a_store_wait_is_said_while_it_waits() {
     assert_eq!(said.len(), 1, "one line for one wait: {said:?}");
     assert!(said[0].contains("so far"), "{}", said[0]);
 }
+
+/// A steer a refused round handed back is still journaled: the session can park on a limit for
+/// hours, and a restart must find the steer in the queue rather than in a buffer that died.
+#[test]
+fn a_steer_taken_by_a_refused_round_survives_a_restart() {
+    use letibot_turn::SteeringSource;
+    let dir = Scratch::new("b7-steer-back");
+    let Some((mut h, path)) = harness_on_a_store(&dir, "b7-steer-back") else {
+        return;
+    };
+    crate::restart::StoreJournal::attach(&h.hub, &path);
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    h.hub.submit(
+        &head.head_id,
+        "steer-1",
+        0,
+        letibot_sessionlog::hub::CommandKind::Prompt {
+            text: "use the other port".into(),
+            attachments: Vec::new(),
+            context: None,
+            from: None,
+            delivery: Default::default(),
+        },
+    );
+    let mut steering = h.steering();
+    let taken = steering.try_next().expect("the round takes the steer");
+    // The round is refused, and its own rows (a limit notice) are stored after it.
+    steering.give_back(vec![taken]);
+    h.persist().expect("the refused round's rows are stored");
+    assert!(h.hub.journal_settled(std::time::Duration::from_secs(30)));
+    drop(steering);
+    drop(h);
+    let back = Hub::new("b7-steer-back");
+    assert_eq!(
+        crate::restart::StoreJournal::attach(&back, &path),
+        1,
+        "the steer is gone from the queue, the journal and the transcript"
+    );
+}
