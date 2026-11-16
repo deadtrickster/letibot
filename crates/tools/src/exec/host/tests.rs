@@ -619,6 +619,10 @@ impl ScopeTree for PlainTree {
             .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
         std::fs::write(path.join("cgroup.procs"), b"")
             .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
+        // A kernel's scope always answers its process count, and a reader that needed the file
+        // and found none would read the scope as one it cannot see rather than one that is empty.
+        std::fs::write(path.join("pids.current"), b"0")
+            .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
         Ok(ScopeId {
             kind,
             name: name.to_string(),
@@ -667,6 +671,85 @@ impl ScopeTree for PlainTree {
     fn list(&self) -> Vec<ScopeId> {
         Vec::new()
     }
+
+    /// The cap in the file a kernel would keep it in: the test reads `pids.max` back, so a spawn
+    /// that never applied one is a missing file and not a silent pass.
+    fn cap_tasks(&self, scope: &ScopeId, n: u32) -> Result<(), String> {
+        std::fs::write(scope.path.join("pids.max"), n.to_string())
+            .map_err(|e| format!("{}: {e}", scope.path.display()))
+    }
+
+    /// What the kernel would answer. The test writes `pids.events` into the scope's directory to
+    /// stand in for a loop that has just had a fork refused.
+    fn task_use(&self, scope: &ScopeId) -> Option<super::super::scope::TaskUse> {
+        super::super::scope::task_use_at(&scope.path)
+    }
+}
+
+/// A job whose scope refused a fork at its process cap is ended, and the job beside it is not.
+/// `pids.max` only REFUSES the fork, so the ending is the host's own watcher ([`watch_task_cap`]),
+/// and this is measured on a tree of directories with the cap and the kernel's counter written
+/// where a kernel keeps them.
+#[test]
+fn a_job_that_forks_past_its_process_cap_is_ended_while_its_neighbour_survives() {
+    let root = std::env::temp_dir().join(format!("letibot-tasks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
+    h.set_tasks_max(8);
+    let ask = |command: &str| SpawnRequest {
+        command: command.into(),
+        slug: None,
+        cwd: "/".into(),
+        scope: ScopeKind::Session,
+        scope_name: None,
+        background: true,
+        env: vec![],
+        tty: false,
+        memory: None,
+        env_trailer: false,
+    };
+    let neighbour = h.spawn(&ask("sleep 5")).expect("the neighbour runs");
+    // `sleep 5` and not a real loop: this tree signals nothing on purpose, so a child has to end
+    // by itself rather than be left behind by the test.
+    let looped = h.spawn(&ask("sleep 5")).expect("the capped job runs");
+    let scope = h.job(&looped).expect("the row").scope.path.clone();
+    assert_eq!(
+        std::fs::read_to_string(scope.join("pids.max"))
+            .unwrap_or_default()
+            .trim(),
+        "8",
+        "the cap never reached the job's own scope"
+    );
+    // What the kernel does when a loop forks past the cap, and the whole of what a watcher can see.
+    std::fs::write(scope.join("pids.events"), "max 1\n").unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < until && h.job(&looped).expect("the row").state.is_running() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let ended = h.job(&looped).expect("the row");
+    assert!(
+        !ended.state.is_running(),
+        "a job past its process cap was left running"
+    );
+    assert!(
+        ended.state.word().contains("process cap"),
+        "the row does not say why it ended: {}",
+        ended.state.word()
+    );
+    let beside = h.job(&neighbour).expect("the row");
+    assert!(
+        beside.state.is_running(),
+        "a neighbour's cap must not end this job: {:?}",
+        beside.state
+    );
+    // The kill is recorded like every other one: a reaping nobody can read back is not a fact.
+    assert!(
+        h.reap_log().iter().any(|r| r.scope.path == scope),
+        "the kill at the process cap left no reaping record"
+    );
+    let _ = h.kill_job(&neighbour);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The record of what a host did is bounded, and the oldest go first: a reaping, a promotion

@@ -103,6 +103,7 @@ NAME is a seat a spawn uses, or `subagent`, the floor under every spawn. Window 
 | `disk_floor_action` | freeze \| kill | freeze | both, project wins | what the floor does to them; `job_resume` thaws a frozen job |
 | `io_pressure_full` | percent | 60 | both, project wins | system io `full` pressure (avg10) that, held for 20s, throttles the top writer through io.max; 0 = off |
 | `disk_watch` | list of paths | ["/build", $CARGO_TARGET_DIR] | both, project wins | filesystems the floor watches besides each job's cwd; replaces the default |
+| `tasks_max` | int | 512 | both, project wins | processes one job's cgroup may hold (`pids.max`); a job that forks past it is ended; 0 = no cap |
 
 ## `[output]`
 

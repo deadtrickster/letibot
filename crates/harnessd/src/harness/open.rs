@@ -1416,6 +1416,13 @@ impl Harness {
                     &cfg.workspace,
                     cfg.read_project_config,
                 ));
+                // The process cap a fork loop meets: `[exec] tasks_max`, the project's over the
+                // user's. Every job's scope carries it, so one session's loop cannot fill the box.
+                h.set_tasks_max(crate::leticode_config::tasks_max(
+                    &cfg.leticode_user,
+                    &cfg.workspace,
+                    cfg.read_project_config,
+                ));
                 h.protect_model_server(
                     cfg.endpoint.port,
                     format!(

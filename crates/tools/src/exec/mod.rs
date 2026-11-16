@@ -58,6 +58,7 @@ pub use scope::{
     Cgroup2, CpuBurn, DAEMON_LEAF, HOST_KILL, Holding, MemoryUse, Migration, NoScopes, Reaped,
     Reaping, ScopeId, ScopeKind, ScopeTree, SiblingScope, TOP_COMMANDS, cpu_use_of,
     delegate_memory, holding_of, host_tree, human_bytes, join_script, live_members, memory_use_of,
+    task_delegation,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};
