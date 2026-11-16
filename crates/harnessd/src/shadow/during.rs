@@ -286,7 +286,12 @@ pub fn skill_picks(
 ) -> Result<Vec<super::verdict::Pick>, String> {
     use super::runner::Outcome;
     use super::verdict::{Drift, Verdict};
-    let Outcome::Verdict(Verdict::During { drift, offers }) = outcome else {
+    let Outcome::Verdict(Verdict::During {
+        drift,
+        offers,
+        strict,
+    }) = outcome
+    else {
         return Err("no verdict".into());
     };
     let skills: Vec<_> = offers
@@ -303,6 +308,10 @@ pub fn skill_picks(
     }
     if stale {
         return Err("stale: the operator spoke after the judged row".into());
+    }
+    // A stateless check has no spans, so a quote could be a tool's output: recorded, never acted on.
+    if !strict {
+        return Err("not strict: a stateless check's offers do not act".into());
     }
     Ok(skills)
 }

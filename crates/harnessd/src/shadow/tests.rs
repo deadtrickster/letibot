@@ -261,7 +261,7 @@ fn the_schema_and_the_verdict_space_are_closed() {
 ```"#;
     assert!(matches!(
         verdict::check(Job::During, one, &s).verdict,
-        Ok(Verdict::During { drift: Drift::OnPlan, ref offers }) if offers.len() == 1
+        Ok(Verdict::During { drift: Drift::OnPlan, ref offers, .. }) if offers.len() == 1
     ));
 }
 
@@ -1361,7 +1361,13 @@ fn only_a_sure_fresh_verdict_with_skill_picks_acts() {
         name: n.into(),
         quote: "make the talk slides".into(),
     };
-    let v = |drift: Drift, offers: Vec<Pick>| Outcome::Verdict(Verdict::During { drift, offers });
+    let v = |drift: Drift, offers: Vec<Pick>| {
+        Outcome::Verdict(Verdict::During {
+            drift,
+            offers,
+            strict: true,
+        })
+    };
     let ok = skill_picks(&v(Drift::OnPlan, vec![p("slides"), p("note:a.md")]), false).unwrap();
     assert_eq!(ok, vec![p("slides")]);
     assert!(skill_picks(&v(Drift::Unsure, vec![p("slides")]), false).is_err());
@@ -1371,6 +1377,30 @@ fn only_a_sure_fresh_verdict_with_skill_picks_acts() {
     assert!(skill_picks(&Outcome::Void("schema".into()), false).is_err());
     let three = v(Drift::OnPlan, vec![p("a"), p("b"), p("c")]);
     assert_eq!(skill_picks(&three, false).unwrap().len(), 2);
+}
+
+/// I17 (c): a stateless check's quotes carry no author, so its offers are recorded and never act.
+#[test]
+fn a_stateless_during_offer_never_acts() {
+    use super::during::skill_picks;
+    let one = r#"{"verdict":"on_plan","offers":[{"name":"gate","quote":"run the gate next"}]}"#;
+    let mut s = Shown {
+        data: TURN.into(),
+        shortlist: vec!["gate".into()],
+        ..Shown::default()
+    };
+    let stateless = Outcome::Verdict(verdict::check(Job::During, one, &s).verdict.unwrap());
+    let why = skill_picks(&stateless, false).unwrap_err();
+    assert!(why.contains("not strict"), "{why}");
+    s.strict = true;
+    s.spans.push(super::verdict::Span {
+        start: 0,
+        end: s.data.len(),
+        author: super::words::Author::Operator,
+        row: None,
+    });
+    let strict = Outcome::Verdict(verdict::check(Job::During, one, &s).verdict.unwrap());
+    assert_eq!(skill_picks(&strict, false).unwrap().len(), 1);
 }
 
 /// The pre-filter takes skills in the blended order the offers score, then notes by shared words.

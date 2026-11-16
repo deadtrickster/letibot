@@ -427,6 +427,7 @@ fn relayed_call(
         reading: req.baseline.clone(),
         view_read: view_read(req),
         gate: gate.cloned(),
+        task: req.trail.operator_words().first().map(|u| u.text.clone()),
     }
 }
 
@@ -440,6 +441,8 @@ fn view_read(req: &AdjudicationRequest) -> Option<String> {
     (only_path && read)
         .then(|| req.arguments.get("path")?.as_str().map(str::to_string))
         .flatten()
+        // A path with a newline in it would write its own lines into the judge's brief.
+        .filter(|p| !p.chars().any(char::is_control))
 }
 
 /// The answer as one word for the shadow's record: what the call did, or that nobody decided.

@@ -77,6 +77,8 @@ pub struct RelayedCall {
     pub view_read: Option<String>,
     /// The asker's own gate. `None` is an asker whose rules nobody passed, and nothing acts on it.
     pub gate: Option<AskerGate>,
+    /// The operator's latest words in the asker's trail: the stated task a judge reads.
+    pub task: Option<String>,
 }
 
 /// What the asking session's gate holds, for a judge of its call: its real workspace and its

@@ -72,7 +72,8 @@ impl Job {
 
     /// Whether the runner drops a late verdict as stale. Only turn_end's: a late during verdict is
     /// still a drift measurement, and its skill pick has its own stale rule where it acts
-    /// (`during::operator_since`). Permission is observe-only.
+    /// (`during::operator_since`). Permission answers inside its own deadline, as the oracle's
+    /// bounded wait, so it is never late.
     pub fn acts(self) -> bool {
         self == Job::TurnEnd
     }
@@ -200,7 +201,8 @@ pub fn open_for(cfg: &crate::config::Config, watched_model: &str, wake: Wake) ->
         let (events, wake) = (events.clone(), wake.clone());
         Box::new(move |position, outcome| {
             // turn_end acts at the next wake. A during verdict waits for the next round, where
-            // its skill pick may act. Permission is observe-only, recorded and no more.
+            // its skill pick may act. Permission acts through `oracle::ShadowOracle`, which
+            // waits on its own ask; a queued outcome is only recorded.
             let during = job == Job::During && matches!(outcome, runner::Outcome::Verdict(_));
             if !(job == Job::TurnEnd || during) || *outcome == runner::Outcome::Superseded {
                 return;

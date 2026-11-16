@@ -138,6 +138,8 @@ pub enum Verdict {
     During {
         drift: Drift,
         offers: Vec<Pick>,
+        /// The offers' quotes were checked against authored spans. Only then may they act.
+        strict: bool,
     },
     Permission {
         decision: Decision,
@@ -449,6 +451,7 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
             }
             log.done(Verdict::During {
                 drift,
+                strict: shown.strict,
                 offers: r
                     .offers
                     .into_iter()

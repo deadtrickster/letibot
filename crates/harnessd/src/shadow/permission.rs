@@ -1,5 +1,6 @@
-//! The `permission` job, observe-only: every call the gate put in front of the operator is judged
-//! by the shadow once the card settles, without waiting, and the operator's answer is the label.
+//! The `permission` job beside the operator: every call the gate put in front of them is judged
+//! once the card settles, and their answer is the label. It decides only as the oracle
+//! (`super::oracle`), within stage 1.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -359,15 +360,12 @@ fn shape(path: &str) -> String {
     format!("read {}", prefix.display())
 }
 
-/// The seat kind of a review-queue asker, or `None` for any other session.
-fn queue_kind(role: Option<&str>) -> Option<&'static str> {
-    let role = role?;
-    if role.starts_with("reviewer of ") {
-        Some("reviewer")
-    } else if role.ends_with("'s gatekeeper") {
-        Some("gatekeeper")
-    } else {
-        None
+/// The seat kind of a review-queue asker, from its session id and never its role string: a
+/// role is a label the queue wrote, and a label is no membership.
+fn queue_kind(asker: &str) -> Option<&'static str> {
+    match letibot_tools::grant_ledger::queue_of(asker)? {
+        root if root == asker => Some("gatekeeper"),
+        _ => Some("reviewer"),
     }
 }
 
@@ -376,7 +374,10 @@ fn queue_kind(role: Option<&str>) -> Option<&'static str> {
 /// the seat kind.
 pub fn scope(c: &RelayedCall, home: &std::path::Path) -> Result<(String, &'static str), String> {
     let path = c.view_read.clone().ok_or("not a read-only view widening")?;
-    let kind = queue_kind(c.role.as_deref()).ok_or("not a review-queue seat")?;
+    if path.chars().any(char::is_control) {
+        return Err("the path carries a control character".into());
+    }
+    let kind = queue_kind(&c.asker).ok_or("not a review-queue seat")?;
     let gate = c.gate.as_ref().ok_or("the asker's gate is not known")?;
     super::guard::read_passes(&path, home)?;
     super::guard::within_roots(&path, &super::guard::read_roots(&gate.workspace))?;
@@ -454,7 +455,7 @@ impl Relay {
         self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn shown_for(&self, c: &RelayedCall) -> Shown {
+    pub(crate) fn shown_for(&self, c: &RelayedCall) -> Shown {
         let workspace = c
             .gate
             .as_ref()
@@ -472,16 +473,37 @@ impl Relay {
             workspace,
             home: self.home.clone(),
         };
-        let mut s = shown(&c.req_id, &c.tool, &c.arguments, &rules, None, call);
+        let mut s = shown(
+            &c.req_id,
+            &c.tool,
+            &c.arguments,
+            &rules,
+            c.task.as_deref(),
+            call,
+        );
+        // The asker wrote the call, so its bytes are the asker's: never quotable as the operator's.
+        let asker = super::words::Author::Peer(c.asker.clone());
+        let line = format!("call: {} {}", c.tool, c.arguments);
+        if let Some(at) = s.data.find(&line) {
+            s.spans.push(super::verdict::Span {
+                start: at,
+                end: at + line.len(),
+                author: asker.clone(),
+                row: None,
+            });
+        }
         s.data.push_str(&format!(
-            "\nasked by: {} (relayed)\nlayer A: {}\n",
-            c.role.as_deref().unwrap_or(&c.asker),
-            c.reading
+            "\nasked by: {} (relayed)\n",
+            c.role.as_deref().unwrap_or(&c.asker)
         ));
+        s.push_said("layer A:", asker.clone(), None, &c.reading);
         if let Some(p) = &c.view_read {
-            s.data.push_str(&format!(
-                "asking: read access to {p}, outside the asker's view; no write, exec or network\n"
-            ));
+            s.push_said(
+                "asking: read access, outside the asker's view; no write, exec or network:",
+                asker,
+                None,
+                p,
+            );
         }
         s
     }

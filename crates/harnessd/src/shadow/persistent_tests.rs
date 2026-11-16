@@ -829,6 +829,37 @@ fn a_restart_on_different_rows_starts_over() {
     );
 }
 
+/// I17 (d): resume checks the last kept turn's hash chain, which covers every row an earlier turn
+/// was sent, so an earlier turn's changed rows start the conversation over.
+#[test]
+fn a_restart_on_an_earlier_turns_changed_rows_starts_over() {
+    let talk = Talk::new(|_| r#"{"verdict":"unsure"}"#.into(), "");
+    let rows = Arc::new(Rows::default());
+    let items = two_turns();
+    let (s, rx) = started(rows.clone(), talk.clone());
+    s.feed(feed::rows_of(&items[..2], 0));
+    ask_turn_end(&s, &rx, 0);
+    s.feed(feed::rows_of(&items, 2));
+    s.advance(0);
+    ask_turn_end(&s, &rx, 2);
+    drop(s);
+
+    let after = Talk::new(|_| r#"{"verdict":"unsure"}"#.into(), "");
+    let (s, rx) = started(rows.clone(), after.clone());
+    let mut other = items.clone();
+    other[1] = said("A different first answer.");
+    s.feed(feed::rows_of(&other, 0));
+    ask_turn_end(&s, &rx, 2);
+    assert_eq!(after.sent.lock().unwrap()[0].len(), 1, "started over");
+    assert!(
+        rows.titles()
+            .iter()
+            .any(|t| t.starts_with("resume · turn_end · not resumed:")),
+        "{:?}",
+        rows.titles()
+    );
+}
+
 #[test]
 fn kept_turns_with_a_gap_are_not_resumed() {
     let k = |turn: usize| super::resume::Kept {
