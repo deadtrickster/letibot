@@ -59,7 +59,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R330 | B10 merge queue: gate steps inherit the daemon's env, a skip passes, a seat approves its own branch, no fetch | Code work | B10: I84, I85, I86, I87, I88; L; after B9 (R329) |
 | R331 | B11 launcher: verbs become billed prompts, a second providers.toml, a store that ignores XDG | Code work | B11: I78, I79, I80; M; after B9 (R329) |
 | R332 | B12 store carve: rows committed after the claim check are deleted uncopied | Code work | B12: I53; S; after - |
-| R333 | B13 rooms: gap replay drops rows below a live push and acks over them | Code work | B13: I98; S; after - |
+| R333 | B13 rooms: gap replay drops rows below a live push and acks over them | Code work | built on `b13-rooms`: seen-set above `acked`, paged gap replay (`inbox.after`), no ack before the gap is replayed; left: a full gate, the redial race has no test, I101 (lead 13) is R349 |
 | R334 | B14 plugins and MCP: unpinned layers decide, MCP servers inherit the env, `.mcp.json` trusted by prefix | Code work | B14: I93, I94, I95; M; after - |
 | R335 | B15 header facts: header ctx survives a clear, a reseat and a re-ingest | Code work | B15: I72; M; after B1 (R320), B6 (R326) |
 | R336 | B16 workflow stability: the orchestration layer fails silently | Code work | B16: I28, I81, I100, leads 27-33, 37; M |
@@ -939,6 +939,15 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 ## R333 - B13 rooms: gap replay drops rows below a live push and acks over them
 
 **Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B13 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I98. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**Built, 2026-11-16 (branch `b13-rooms`).** `bridge/src/rooms.rs`: `delivered` is a set of the seqs handed over above `acked` plus their top, so a replayed row older than the open push is handed over and not dropped as a repeat. A join digest carries the coordinator's next unused seq, so it is delivered outside that bookkeeping - on the snapshot it also marked that seq, and the first live row after a reconnect was dropped. `replay_the_gap` pages with the new `Request::Inbox { after }` until a short page, and stops when a coordinator that ignores `after` answers the same page again. `ack_delivered` acks nothing until the live generation's gap is fully replayed and every row since was taken (`gap_closed`); a row the stream did not take reopens the gap. The ack ceiling is still the first unseen pending row.
+
+**Tests.** `bridge/tests/room_gap.rs` `gap_rows_older_than_the_open_cap_are_not_acked_away`: a real `Server`, a bridge that leaves, 300 rows naming it, a new bridge. On the base 236 of 300 never reach the stream (rows 1-236: the open push gave the newest 64 and the replay dropped the rest as repeats). With the set but one page only, rows 201-236 are missing. With the fix all 300 arrive, the inbox still holds the 200 oldest after two supervisor passes, and they are acked once seen. `letibot-room` and `letibot-bridge` tests green (536), fmt and clippy `-D warnings` clean.
+
+**Residue.**
+- The race path (a round trip that redials and acks before the supervisor replays) is closed by `gap_closed` but has no test.
+- An older coordinator ignores `after`: the replay then reads one page, as before.
+- Lead 13 (I101, a queue seat cannot be messaged from another project) is placed in R349 by INTEGRATION and waits on decision 21. Not built here.
 
 **Scope.** `bridge/src/rooms.rs` replay and ack. A seen-set above `acked`, ack only the highest contiguous seq, page until a short page.
 

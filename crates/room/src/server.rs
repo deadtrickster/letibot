@@ -2784,7 +2784,11 @@ impl Server {
                     room,
                 }
             }
-            Request::Inbox { attention, limit } => {
+            Request::Inbox {
+                attention,
+                limit,
+                after,
+            } => {
                 let handles = self.handles();
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let (rows, skipped) = chat.inbox(
@@ -2792,7 +2796,7 @@ impl Server {
                     self.family(name).as_deref(),
                     *attention,
                     limit.map_or(chat::MAX_READ, |n| n as usize),
-                    |m| self.visible(name, seat, project, m),
+                    |m| after.is_none_or(|a| m.seq > a) && self.visible(name, seat, project, m),
                 );
                 Response::Inbox {
                     rows: rows.into_iter().map(|m| self.shown(m, &handles)).collect(),

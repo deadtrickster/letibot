@@ -206,6 +206,7 @@ fn an_external_in_a_is_in_as_roster_and_hosts_and_not_bs() {
     match cc.call(Request::Inbox {
         attention: Attention::All,
         limit: None,
+        after: None,
     }) {
         Response::Inbox { rows, .. } => {
             assert!(rows.iter().all(|m| m.room != project_room(B)), "{rows:?}")

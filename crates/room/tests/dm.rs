@@ -348,6 +348,7 @@ fn inbox_of(s: &Seated) -> Vec<u64> {
     match s.call(Request::Inbox {
         attention: letibot_room::chat::Attention::ToMe,
         limit: Some(50),
+        after: None,
     }) {
         Response::Inbox { rows, .. } => rows.iter().map(|m| m.seq).collect(),
         other => panic!("expected an inbox: {other:?}"),

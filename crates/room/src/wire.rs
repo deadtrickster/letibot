@@ -275,6 +275,9 @@ pub enum Request {
         attention: crate::chat::Attention,
         #[serde(default)]
         limit: Option<u32>,
+        /// Only rows above this seq, so a reader pages past a full page without acking it.
+        #[serde(default)]
+        after: Option<u64>,
     },
     /// Move this principal's inbox cursor to `seq`.
     Ack { seq: u64 },

@@ -649,6 +649,21 @@ struct Pending {
     raised: bool,
 }
 
+/// The seqs handed to the stream above the acked cursor, and the newest of them.
+#[derive(Default)]
+struct Handed {
+    seqs: std::collections::BTreeSet<u64>,
+    top: u64,
+}
+
+/// A join digest from the coordinator, not a row of the log.
+fn is_digest(m: &Value) -> bool {
+    m["kind"] == "system" && m["author"] == letibot_room::chat::DIGEST_AUTHOR
+}
+
+/// Rows per inbox page in a gap replay: the coordinator's read cap.
+const GAP_PAGE: u32 = letibot_room::chat::MAX_READ as u32;
+
 struct Inner {
     path: PathBuf,
     live: Mutex<Option<Live>>,
@@ -661,8 +676,9 @@ struct Inner {
     observing: Mutex<Vec<Hook>>,
     generation: AtomicU64,
     ids: AtomicU64,
-    /// The newest seq handed to the stream, so a replay never repeats a push.
-    delivered: Mutex<u64>,
+    /// What was handed to the stream above `acked`, so a replay never repeats a push and an older
+    /// row a replay brings is still handed over.
+    delivered: Mutex<Handed>,
     /// Addressed messages pushed and not yet seen, by seq.
     pending: Mutex<std::collections::BTreeMap<u64, Pending>>,
     reraise_after: Mutex<Duration>,
@@ -671,6 +687,8 @@ struct Inner {
     /// The connection generation whose gap was replayed, so one gap is fetched once however the
     /// connection was opened - a pass of the supervisor's loop, or a round trip that redialled.
     replayed: AtomicU64,
+    /// A row the stream did not take since the last replay began, so the gap is fetched again.
+    untaken: AtomicBool,
     /// The coordinator start the last welcome named. A different one means the log restarted, so
     /// `delivered` no longer orders anything.
     instance: Mutex<Option<u64>>,
@@ -713,11 +731,12 @@ impl RoomLink {
                 observing: Mutex::new(Vec::new()),
                 generation: AtomicU64::new(0),
                 ids: AtomicU64::new(0),
-                delivered: Mutex::new(0),
+                delivered: Mutex::new(Handed::default()),
                 pending: Mutex::new(std::collections::BTreeMap::new()),
                 reraise_after: Mutex::new(reraise_after()),
                 acked: AtomicU64::new(0),
                 replayed: AtomicU64::new(0),
+                untaken: AtomicBool::new(false),
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
                 share: AtomicBool::new(false),
@@ -839,7 +858,7 @@ impl RoomLink {
                         .inner
                         .delivered
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = 0;
+                        .unwrap_or_else(|e| e.into_inner()) = Handed::default();
                     self.pending_map().clear();
                     self.inner.acked.store(0, Ordering::SeqCst);
                 }
@@ -1002,19 +1021,25 @@ impl RoomLink {
     /// `true` when this call handed `m` over and moved the mark. An `owed` message stays pending
     /// until the model shows it saw it.
     fn deliver_once(&self, m: &Value, names_you: bool, owed: bool, deliver: &Deliver) -> bool {
+        // A join digest carries the next unused seq, not its own: marking it would drop that row.
+        if is_digest(m) {
+            return deliver(m, names_you);
+        }
         let seq = m["seq"].as_u64().unwrap_or(0);
-        let mut last = self
+        let mut handed = self
             .inner
             .delivered
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if seq <= *last {
+        if seq == 0 || seq <= self.inner.acked.load(Ordering::SeqCst) || handed.seqs.contains(&seq)
+        {
             return false;
         }
         // The mark moves only once the writer took the message - and a line the rule silenced was
         // taken: it is seen, and it is nobody's to be owed again.
         if deliver(m, names_you) {
-            *last = seq;
+            handed.seqs.insert(seq);
+            handed.top = handed.top.max(seq);
             if owed && seq > 0 {
                 self.pending_map().insert(
                     seq,
@@ -1027,6 +1052,8 @@ impl RoomLink {
             }
             return true;
         }
+        // Not taken: no ack until a fresh replay has handed it over.
+        self.inner.untaken.store(true, Ordering::SeqCst);
         false
     }
 
@@ -1159,8 +1186,18 @@ impl RoomLink {
 
     /// What was missed since the cursor, through `attention`. The cursor is not moved.
     pub fn inbox(&self, attention: Attention, limit: u32) -> Result<Value, String> {
+        self.inbox_after(attention, limit, None)
+    }
+
+    /// [`RoomLink::inbox`], only the rows above `after`.
+    pub fn inbox_after(
+        &self,
+        attention: Attention,
+        limit: u32,
+        after: Option<u64>,
+    ) -> Result<Value, String> {
         self.request(&json!({
-            "type": "inbox", "attention": attention.word(), "limit": limit,
+            "type": "inbox", "attention": attention.word(), "limit": limit, "after": after,
         }))
     }
 
@@ -1172,17 +1209,40 @@ impl RoomLink {
     /// to the call that opened it, because other round trips redial on their own retry and a gap
     /// nobody replays is a message the model never sees.
     fn replay_the_gap(&self, deliver: &Deliver) {
+        if self.gap_closed() {
+            return;
+        }
         let generation = self.inner.generation.load(Ordering::SeqCst);
-        if self.inner.replayed.load(Ordering::SeqCst) == generation {
-            return;
+        self.inner.untaken.store(false, Ordering::SeqCst);
+        // Every page, not the first: the open push holds only the newest rows, so a backlog past
+        // one page has a middle nothing else hands over.
+        let mut after = None;
+        loop {
+            let Ok(reply) = self.inbox_after(Attention::ToMe, GAP_PAGE, after) else {
+                return;
+            };
+            let rows = reply["rows"].as_array().cloned().unwrap_or_default();
+            for m in &rows {
+                self.replay(m, deliver);
+            }
+            let last = rows.last().and_then(|m| m["seq"].as_u64());
+            // A coordinator that ignores `after` answers the same page again: stop there.
+            if rows.len() < GAP_PAGE as usize || last.is_none() || last <= after {
+                break;
+            }
+            after = last;
         }
-        let Ok(reply) = self.inbox(Attention::ToMe, 200) else {
-            return;
-        };
-        for m in reply["rows"].as_array().into_iter().flatten() {
-            self.replay(m, deliver);
+        // The generation read at the start: a redial during the pages is a gap of its own.
+        if !self.inner.untaken.load(Ordering::SeqCst) {
+            self.inner.replayed.store(generation, Ordering::SeqCst);
         }
-        self.inner.replayed.store(generation, Ordering::SeqCst);
+    }
+
+    /// The gap of the live connection is replayed and every row since was taken.
+    fn gap_closed(&self) -> bool {
+        !self.inner.untaken.load(Ordering::SeqCst)
+            && self.inner.replayed.load(Ordering::SeqCst)
+                == self.inner.generation.load(Ordering::SeqCst)
     }
 
     /// Ack the cursor to what the stream handed Claude Code. Off the reader thread: a round trip
@@ -1196,11 +1256,17 @@ impl RoomLink {
             // Read AFTER the connection: a welcome naming a new coordinator start resets this mark,
             // since its log's seqs start again and the old number would mark unseen messages read,
             // so `replay_the_gap` would never fetch them.
-            let delivered = *self
+            // Never before the gap is replayed: the open push holds only the newest rows, and an ack
+            // over the older ones takes them out of the inbox unseen.
+            if !self.gap_closed() {
+                return;
+            }
+            let delivered = self
                 .inner
                 .delivered
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(|e| e.into_inner())
+                .top;
             // Never past a message the model has not seen: a push is a write, not a delivery.
             let upto = match self.pending_map().keys().next() {
                 Some(first) => delivered.min(first - 1),
@@ -1212,6 +1278,12 @@ impl RoomLink {
             match self.round_trip(&json!({ "type": "ack", "seq": upto })) {
                 Ok(_) => {
                     self.inner.acked.fetch_max(upto, Ordering::SeqCst);
+                    self.inner
+                        .delivered
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .seqs
+                        .retain(|s| *s > upto);
                     return;
                 }
                 Err(_) => self.drop_connection(),

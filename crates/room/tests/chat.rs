@@ -296,6 +296,7 @@ fn dms_mentions_threads_and_the_inbox() {
     match a2.call(Request::Inbox {
         attention: Attention::Mentions,
         limit: None,
+        after: None,
     }) {
         Response::Inbox {
             rows,
@@ -317,6 +318,7 @@ fn dms_mentions_threads_and_the_inbox() {
     match a2.call(Request::Inbox {
         attention: Attention::All,
         limit: None,
+        after: None,
     }) {
         Response::Inbox { rows, .. } => assert!(rows.is_empty()),
         other => panic!("{other:?}"),
@@ -411,6 +413,7 @@ fn chat_history_seq_cursor_and_dedup_survive_a_coordinator_restart() {
     match cc.call(Request::Inbox {
         attention: Attention::All,
         limit: Some(10),
+        after: None,
     }) {
         Response::Inbox { rows, .. } => assert_eq!(
             rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
@@ -511,6 +514,7 @@ fn a_message_to_a_session_that_is_away_is_delivered_when_it_connects() {
     match back.call(Request::Inbox {
         attention: Attention::All,
         limit: None,
+        after: None,
     }) {
         Response::Inbox { rows, .. } => {
             assert!(rows.iter().any(|r| r.seq == m.seq), "{rows:?}");
@@ -556,6 +560,7 @@ fn an_absent_members_inbox_is_bounded_and_the_ring_still_has_the_rest() {
     match back.call(Request::Inbox {
         attention: Attention::All,
         limit: None,
+        after: None,
     }) {
         Response::Inbox { rows, .. } => {
             assert_eq!(rows.len(), sent, "the ring still has all {sent}");
