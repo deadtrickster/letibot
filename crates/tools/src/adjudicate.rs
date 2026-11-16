@@ -2927,7 +2927,10 @@ impl AdjudicatedGate {
 impl Gate for AdjudicatedGate {
     /// The ladder, stopped where a card would be raised. The same body as [`Gate::admit`] with
     /// the adjudicator, the guard model and the circuit breaker switched off, so a look a plugin
-    /// declared can never block on a head or close the session's gate to its own model.
+    /// declared can never block on a head or close the session's gate to its own model. What is
+    /// left of the ladder is the operator's own rules and a read: a point's grant, a shape, a
+    /// session grant and a reviewer's probe are answers taken for calls that ask, and none of them
+    /// reaches a call that may not.
     fn admit_unasked(&mut self, call: &GateCall<'_>) -> GateDecision {
         let breaker = std::mem::take(&mut self.breaker);
         self.unasked = true;
@@ -3583,8 +3586,11 @@ impl Gate for AdjudicatedGate {
         // 2. The point this session sits at. It governs `Tier::MayApprove` and nothing else, so
         //    this arm cannot widen what a point may not. Exec is excepted unless the mode follows
         //    it, and `ran_unread` widens nothing: an unreadable exec asks where a readable one does.
+        //    A look that may not ask (`admit_unasked`) is admitted here only as a read: a read is
+        //    what every point admits, and a plugin's tool carries an access its own layer declared.
         if (access != Access::Exec || self.exec_follows_mode)
             && self.mode.admits_unasked(&req.tier, access)
+            && (!self.unasked || access == Access::Read)
         {
             let d = AdjudicationDecision::selected(
                 &req,
@@ -3622,6 +3628,7 @@ impl Gate for AdjudicatedGate {
         // 2b. A review-queue seat at a point that admits exec, inside the reviewer's limits.
         if self.reviewer_limits
             && !self.exec_follows_mode
+            && !self.unasked
             && unconfined_code.is_none()
             && ran_unread.is_none()
             && a_reviewers_probe(self.mode, access, &req.tier, &baseline)
@@ -3645,9 +3652,11 @@ impl Gate for AdjudicatedGate {
         let program = grant_program(&baseline);
         // A shape the operator approved for the session, here or under this workspace before. The
         // key holes literals, so a call that runs a holed body never matches, and only a point
-        // whose grants are per session honours it.
+        // whose grants are per session honours it. A look that may not ask is admitted by neither
+        // standing answer: both are the ladder's, and a look reaches the ladder's rules only.
         if let Tier::MayApprove = req.tier
             && self.mode.grants == crate::mode::GrantScope::Session
+            && !self.unasked
             && shape_may_stand_in(call, &baseline)
             && unconfined_code.is_none()
             && let Some(shape) = &req.shape
@@ -3664,6 +3673,7 @@ impl Gate for AdjudicatedGate {
         }
 
         if unconfined_code.is_none()
+            && !self.unasked
             && let Some(g) = self.grants.iter().find(|g| {
                 g.covers(
                     &req.tier,

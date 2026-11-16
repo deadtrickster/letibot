@@ -121,3 +121,49 @@ fn three_unasked_refusals_do_not_open_the_breaker() {
         "the ordinary call reached the adjudicator exactly once"
     );
 }
+
+/// An unpinned layer's tool carries capabilities the layer declared itself, and a look has no card
+/// and no breaker behind it. So a look is admitted by the rules the operator wrote and by a read,
+/// which every point admits; a point that grants writes unasked does not reach it.
+#[test]
+fn an_unpinned_layer_tool_is_not_admitted_by_the_mode_arm() {
+    let args = json!({"path": "src/lib.rs", "content": "x"});
+
+    // `writes allowed` admits this write with nobody consulted. A look may not spend that.
+    let (mut g, asked) = counting(crate::mode::Mode::WRITES_ALLOWED);
+    match g.admit_unasked(&call("write", &args)) {
+        GateDecision::Refuse {
+            outcome: ToolOutcome::NotRun { why },
+            ..
+        } => assert!(why.starts_with("would need your approval:"), "{why}"),
+        other => panic!("the mode arm admitted a look: {other:?}"),
+    }
+    assert_eq!(asked.load(Ordering::Relaxed), 0, "and nobody was asked");
+
+    // A rule the operator wrote is the one door that still admits it unasked.
+    let config = crate::permission::config_to_ruleset(
+        &json!({"write": {"src/*": "allow"}})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    let (g, _) = counting(crate::mode::Mode::WRITES_ALLOWED);
+    let mut g = g.with_permission(config);
+    assert_eq!(g.admit_unasked(&call("write", &args)), GateDecision::Admit);
+
+    // A read is what every point admits, and a look at one changes nothing.
+    let (mut g, _) = counting(crate::mode::Mode::ALWAYS_ASK);
+    let reading = GateCall {
+        name: "read",
+        access: Access::Read,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: "/w",
+        target_exists: Some(true),
+        scripts: &[],
+        preview: &[],
+    };
+    assert_eq!(g.admit_unasked(&reading), GateDecision::Admit);
+}
