@@ -2210,6 +2210,63 @@ fn a_job_and_everything_under_it_keep_no_core_dump() {
 /// could not be written would be measured as a cap that never fired.
 #[test]
 fn a_job_past_its_cap_is_killed_whole_while_its_neighbour_survives() {
+    const INNER: &str = "LETIBOT_CAP_WHOLE_INNER";
+    const THIS: &str =
+        "exec::host::tests::a_job_past_its_cap_is_killed_whole_while_its_neighbour_survives";
+    if std::env::var_os(INNER).is_some() {
+        return cap_whole_inner();
+    }
+    // A cap needs the daemon alone in a delegated scope, and a test binary shares cargo's cgroup
+    // with its threads' siblings, so the measuring half re-runs in a scope of its own.
+    let scoped = |args: &[&str]| {
+        let mut cmd = std::process::Command::new("systemd-run");
+        cmd.args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--expand-environment=no",
+            "-p",
+            "Delegate=yes",
+        ])
+        .args(args);
+        cmd
+    };
+    if !scoped(&["true"]).status().is_ok_and(|s| s.success()) {
+        let Some(_) = letibot_tokencore::apparatus::applies(
+            "a delegated systemd scope to cap a job in",
+            cfg!(target_os = "linux"),
+        ) else {
+            return;
+        };
+        return letibot_tokencore::apparatus::absent(
+            "a systemd user manager, whose delegated scope is what a memory cap needs",
+        );
+    }
+    let exe = std::env::current_exe().expect("the test binary");
+    let exe = exe.to_str().expect("a UTF-8 path");
+    let out = scoped(&[exe, "--exact", THIS, "--nocapture", "--test-threads=1"])
+        .env(INNER, "1")
+        .output()
+        .expect("systemd-run");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The inner half's own skip is this run's skip, said again so a gate counts it.
+    if out.status.success() && !text.contains("INNER MEASURED") && text.contains("NOT A PASS") {
+        return letibot_tokencore::apparatus::absent(
+            "a cgroup v2 memory controller this test may cap",
+        );
+    }
+    assert!(
+        out.status.success() && text.contains("INNER MEASURED"),
+        "the inner run, in its own delegated scope, failed:\n{text}"
+    );
+}
+
+fn cap_whole_inner() {
     let root = std::env::temp_dir().join(format!("letibot-cap-whole-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     // The jobs run with the root as their cwd, and a spawn into a missing cwd is ENOENT.
@@ -2282,4 +2339,5 @@ fn a_job_past_its_cap_is_killed_whole_while_its_neighbour_survives() {
     );
     let _ = h.kill_job(&neighbour);
     let _ = std::fs::remove_dir_all(&root);
+    println!("INNER MEASURED");
 }
