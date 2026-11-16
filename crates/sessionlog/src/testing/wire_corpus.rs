@@ -132,6 +132,8 @@ pub fn server_frames(head: u32) -> io::Result<Vec<String>> {
         identity: "corpus".into(),
         caps: Caps {
             queue: 1 << 12,
+            // Asked for, so the corpus carries the daemon's echo as well as the frames it gates.
+            features: vec![crate::protocol::FEATURE_QUEUE_PROMPT.to_string()],
             ..Caps::default()
         },
     })

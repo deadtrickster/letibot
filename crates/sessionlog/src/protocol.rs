@@ -12,11 +12,20 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. The daemon accepts a differing head and says so,
 /// translates for an older one (`compat::SINCE`), and refuses by name only below `OLDEST_HEAD`.
-pub const PROTOCOL_VERSION: u32 = 78;
+pub const PROTOCOL_VERSION: u32 = 79;
 
 /// The first version whose heads read [`crate::SessionEvent::TurnEnded`]. An older head is sent
 /// none, and gets the prompt's end as a `TurnFinished` with `ends_turn` instead.
 pub const TURN_ENDED_SINCE: u32 = 76;
+
+/// The first version whose daemons read [`ClientFrame::Prompt`]'s `from`. It arrived under 74
+/// without a bump, so a 74 daemon may still store a peer's line as the operator's.
+pub const PROMPT_FROM_SINCE: u32 = 74;
+
+/// The first version whose daemons read `Prompt.delivery`: before it, a queued prompt steers. It
+/// arrived under 76 without a bump, so a head asks for [`FEATURE_QUEUE_PROMPT`] and queues only
+/// when the daemon echoed it in [`ServerFrame::Features`].
+pub const QUEUE_PROMPT_SINCE: u32 = 79;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -309,6 +318,26 @@ pub struct SettingRow {
 /// person attach a note to a choice, and let them type their own.
 pub const FEATURE_QUESTION_ANSWERS: &str = "question_answers_v1";
 
+/// A `Caps.features` string: this head can send a prompt on the queue lane. A daemon that did not
+/// echo it in [`ServerFrame::Features`] steers every prompt, so the head must not promise a queue.
+pub const FEATURE_QUEUE_PROMPT: &str = "queue_prompt_v1";
+
+/// The features this build's daemon understands, and therefore the only ones it echoes. A feature
+/// is a name two builds agree on, which is why the list is here and not read from a head.
+pub const DAEMON_FEATURES: [&str; 1] = [FEATURE_QUEUE_PROMPT];
+
+/// The subset of a head's declared features this daemon accepted.
+pub fn accepted_features(asked: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = asked
+        .iter()
+        .filter(|f| DAEMON_FEATURES.contains(&f.as_str()))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// What a head can do and what it wants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Caps {
@@ -331,10 +360,13 @@ pub struct Caps {
 }
 
 impl Caps {
-    /// The caps of a head that draws rows: the defaults, plus reading a body off its announcement.
+    /// The caps of a head that draws rows: the defaults, plus reading a body off its announcement
+    /// and the queue lane, which a daemon accepts only if it echoes it back in
+    /// [`ServerFrame::Features`].
     pub fn drawing_rows() -> Caps {
         Caps {
             row_bodies: true,
+            features: vec![FEATURE_QUEUE_PROMPT.to_string()],
             ..Caps::default()
         }
     }
@@ -1166,6 +1198,11 @@ pub enum ServerFrame {
         /// itself and not by a second round trip. Includes the one just joined.
         sessions: Vec<SessionBrief>,
     },
+    /// The daemon's answer to the head's `Caps.features`: what it accepted, sent once per attach
+    /// right after the `Hello`. A head that asked for a feature and does not find it here must not
+    /// use it - the field it would fill was added under a number the daemon may predate, and a
+    /// daemon drops such a field in silence. Sent only to a head at [`QUEUE_PROMPT_SINCE`] or later.
+    Features { accepted: Vec<String> },
     /// The password for the `Askpass` this connection sent, or `None`, and when it is `None` which of
     /// the three facts that was: nobody asked, the ask failed, or a person refused.
     Secret {
@@ -1414,6 +1451,8 @@ pub const REJECT_NOT_IN_STORE: &str = "no such session in the store";
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wire_since;
 
 #[cfg(test)]
 mod skew_tests {

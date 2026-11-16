@@ -162,6 +162,8 @@ fn frame_kind(f: &ServerFrame) -> String {
                 .join(", ")
         ),
         ServerFrame::Resync { .. } => "Resync".into(),
+        // The daemon's half of the feature negotiation: what it read off the head's caps.
+        ServerFrame::Features { accepted } => format!("Features({})", accepted.join(",")),
         // The two of a mode confirmation, named by their ids: a diagnostic that saw one
         // without the other is exactly what this function exists to show.
         ServerFrame::ModeConfirm { req_id, name, .. } => {

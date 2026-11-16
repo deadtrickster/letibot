@@ -2291,6 +2291,14 @@ fn seat_in(
                         break;
                     }
                 }
+                // What the head asked for and this daemon read, said once per attachment: a head
+                // that does not find its feature here must not use it. Below the frame's own
+                // version the head cannot decode it, so it is not sent.
+                if out.is_ok() && head_protocol >= crate::protocol::QUEUE_PROMPT_SINCE {
+                    out = w.write(&ServerFrame::Features {
+                        accepted: crate::protocol::accepted_features(&caps.features),
+                    });
+                }
                 out
             });
         if let Err(e) = wrote {

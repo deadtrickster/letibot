@@ -216,7 +216,16 @@ impl App {
         // Held here, visibly, until the transcript takes the words over: idle, this is a one-frame acknowledgement,
         // and mid-turn it is the whole fix, since the hub queues the words and appends them at a later boundary.
         // A queued prompt is its own turn, so it is never merged with a steer either side of it.
-        let queue = std::mem::take(&mut self.queue_lane) && self.turn_busy();
+        let wanted = std::mem::take(&mut self.queue_lane) && self.turn_busy();
+        // A `delivery: Queue` sent to a daemon that did not echo the lane is a field it drops: the
+        // line would JOIN the running turn, the opposite of what Tab promised. Steer, and say why.
+        let queue = wanted && self.accepts(letibot_sessionlog::FEATURE_QUEUE_PROMPT);
+        if wanted && !queue {
+            self.say(
+                "this daemon is from an older build and has no queue lane, so the line steers the \
+                 running turn instead - nothing is lost, it just joins now rather than after",
+            );
+        }
         let last_queued = self
             .pending_prompts
             .last()

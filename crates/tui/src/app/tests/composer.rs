@@ -205,6 +205,7 @@ fn tab_mid_turn_queues_the_prompt_for_after_the_turn() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
+    echoes(&mut a, letibot_sessionlog::FEATURE_QUEUE_PROMPT);
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     typed(&mut a, "then write the changelog");
     let Some(Action::Prompt(p)) = a.key(Key::Tab) else {
@@ -229,6 +230,45 @@ fn tab_mid_turn_queues_the_prompt_for_after_the_turn() {
     assert!(
         a.after_turn.is_empty(),
         "the take-back cancels the queued one too"
+    );
+}
+
+/// The daemon's half of the negotiation, as it arrives right after the `Hello`.
+fn echoes(a: &mut App, feature: &str) {
+    a.apply(ServerFrame::Features {
+        accepted: vec![feature.to_string()],
+    });
+}
+
+/// A daemon that never echoed the queue lane gets a steer, not a `delivery: Queue` it would drop:
+/// the two are different promises to the person who pressed Tab.
+#[test]
+fn a_queue_prompt_is_not_sent_to_a_daemon_that_did_not_echo_the_feature() {
+    use letibot_sessionlog::PromptDelivery;
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    typed(&mut a, "then write the changelog");
+    let Some(Action::Prompt(p)) = a.key(Key::Tab) else {
+        panic!("tab mid-turn still sends something");
+    };
+    assert_eq!(
+        p.delivery,
+        PromptDelivery::Steer,
+        "a daemon that did not echo the lane steers"
+    );
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("older build") && said.contains("steers"),
+        "the head says why: {said}"
+    );
+    assert!(
+        a.after_turn.is_empty(),
+        "nothing was queued for a turn that will not come"
     );
 }
 
