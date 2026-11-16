@@ -4374,13 +4374,17 @@ impl Server {
                         return;
                     }
                     ReadFrame::End => return,
-                    // Not JSON, so not a frame: there is no name to answer and no request to
-                    // refuse, and the line is said on the log so it can be found afterwards.
-                    ReadFrame::Bad(why) => {
-                        eprintln!(
-                            "room: a connection sent a line that is not a frame ({why}); it is \
-                             closed"
+                    // A frame this coordinator cannot decode is answered before the close: the
+                    // client would otherwise see a dead socket where a refusal belongs.
+                    ReadFrame::Bad { word, why } => {
+                        let mut w = writer;
+                        let _ = write_frame(
+                            &mut w,
+                            &Response::Bye {
+                                why: unreadable_sentence(&word, &why),
+                            },
                         );
+                        let _ = w.shutdown(std::net::Shutdown::Both);
                         return;
                     }
                 };
@@ -4518,14 +4522,12 @@ impl Server {
                             break;
                         }
                         ReadFrame::End => break,
-                        // Not JSON, so not a frame: the room cannot answer it, and the log is the
-                        // only place a person could find out what the peer tried to send.
-                        ReadFrame::Bad(why) => {
-                            eprintln!(
-                                "room: `{}` sent a line that is not a frame ({why}); its \
-                                 connection is closed",
-                                speaker.session
-                            );
+                        // Same as the door's: a line that is not a frame still gets a sentence
+                        // naming it, because a client reads a bare close as a dead coordinator.
+                        ReadFrame::Bad { word, why } => {
+                            conn.send(Response::Bye {
+                                why: unreadable_sentence(&word, &why),
+                            });
                             break;
                         }
                     };
@@ -4985,7 +4987,12 @@ enum ReadFrame {
     Frame(Box<Request>),
     End,
     OverLong(usize),
-    Bad(String),
+    /// A line that is not a frame: the `type` word when the line was JSON with one, and what the
+    /// decoder said.
+    Bad {
+        word: String,
+        why: String,
+    },
 }
 
 fn read_frame(reader: &mut BufReader<UnixStream>) -> ReadFrame {
@@ -4996,7 +5003,12 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> ReadFrame {
     let window = (MAX_FRAME_BYTES + 1) as u64;
     let n = match (&mut *reader).take(window).read_until(b'\n', &mut line) {
         Ok(n) => n,
-        Err(e) => return ReadFrame::Bad(e.to_string()),
+        Err(e) => {
+            return ReadFrame::Bad {
+                word: String::new(),
+                why: e.to_string(),
+            };
+        }
     };
     if n == 0 {
         return ReadFrame::End;
@@ -5011,8 +5023,33 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> ReadFrame {
     }
     match serde_json::from_str(text) {
         Ok(request) => ReadFrame::Frame(Box::new(request)),
-        Err(e) => ReadFrame::Bad(e.to_string()),
+        Err(e) => {
+            // The word is what lets the refusal say *which* frame was unreadable; a line that is
+            // not JSON at all has none, and the decoder's own words are all there is.
+            let word = serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .and_then(|v| v["type"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            ReadFrame::Bad {
+                word,
+                why: e.to_string(),
+            }
+        }
     }
+}
+
+/// The sentence a line this coordinator cannot decode is refused with. A client that only saw its
+/// connection close cannot tell a dead coordinator from a frame it was too old to read.
+fn unreadable_sentence(word: &str, why: &str) -> String {
+    let named = match word.is_empty() {
+        true => "a line that is not a frame".to_string(),
+        false => format!("a `{word}` frame"),
+    };
+    format!(
+        "this room speaks protocol {ROOM_PROTOCOL_VERSION} and could not read {named} ({why}): \
+         nothing was done and the connection is closed. A frame this build does not know belongs \
+         to a newer client, so the two halves are different builds"
+    )
 }
 
 /// The sentence an over-long line is refused with: what arrived, what the room accepts, and that
@@ -5420,8 +5457,8 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_twelve() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 12);
+    fn the_room_speaks_protocol_thirteen() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 13);
         // And the refusal names which side is older, in both directions.
         assert_eq!(
             crate::wire::protocol_refusal(11),
@@ -5430,9 +5467,9 @@ mod tests {
         );
         let old = crate::wire::protocol_refusal(10).expect("10 is too old");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(13).expect("13 is not 12");
+        let new = crate::wire::protocol_refusal(14).expect("14 is not 13");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(12), None);
+        assert_eq!(crate::wire::protocol_refusal(12), None, "12 is served too");
         assert!(
             new.contains("letibot --room --stop && letibot --room"),
             "{new}"

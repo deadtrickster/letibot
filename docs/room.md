@@ -889,13 +889,17 @@ chatted. `message` is the room `Message` as JSON. A head merges it as though a `
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 12, the room's own number, and the coordinator serves clients from
-`OLDEST_CLIENT` (11) up to it; anything else gets `Bye` with `protocol_refusal`'s sentence. 12 added
-the room archive (`archive_room`, `unarchive_room`, `archived`, `archived_ms` on `rooms` rows), 11 the
-ask by scope (`path`, `topic`, `why`), 10 the ask itself (`ask`, `reply`, `decline`, `withdraw`,
-`retire`, `asks`), 9 the blob store and `attachments` on a `say`. The number moves at release points:
-a frame added mid-series rides the current number (`wire.rs`), so an older coordinator of the same
-number does not know it. `MayPrompt` and Hello's `share` and `family` arrived that way under 12.
+`ROOM_PROTOCOL_VERSION` is 13, the room's own number, and the coordinator serves clients from
+`OLDEST_CLIENT` (11) up to it; anything else gets `Bye` with `protocol_refusal`'s sentence. 13 is 12
+with the frames that rode 12 mid-series counted, so a coordinator at 13 is known to read them. 12
+added the room archive (`archive_room`, `unarchive_room`, `archived`, `archived_ms` on `rooms`
+rows), 11 the ask by scope (`path`, `topic`, `why`), 10 the ask itself (`ask`, `reply`, `decline`,
+`withdraw`, `retire`, `asks`), 9 the blob store and `attachments` on a `say`. The number moves at
+release points: a frame added mid-series rides the current number (`wire.rs`), so an older
+coordinator of the same number does not know it. `MayPrompt` and Hello's `share` and `family`
+arrived that way under 12: a client asks `wire::frame_refusal` before it sends one, and a
+coordinator that cannot read a line answers `Bye` naming it (`unreadable_sentence`) instead of
+closing the socket in silence.
 `PROTOCOL_VERSION` (head to daemon) is the session protocol's own number, in
 `crates/sessionlog/src/protocol.rs`; `ServerFrame::RoomChatPushed` is one of its frames.
 
