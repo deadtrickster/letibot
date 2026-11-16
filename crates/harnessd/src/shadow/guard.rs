@@ -129,20 +129,6 @@ fn inside(p: &Path, workspace: &Path) -> bool {
     p.starts_with(workspace)
 }
 
-/// Paths a read the shadow grants must not reach, beyond the secret stores: the daemon's own keys,
-/// configuration and store, and the other agents' credentials and transcripts.
-const OWN_CONFIG: [&str; 6] = [
-    ".config/letibot",
-    ".local/share/letibot",
-    ".claude",
-    ".codex",
-    ".config/claude",
-    "bin/fleet",
-];
-
-/// `Region::Device`: kernel and process state, never a file a review reads.
-const DEVICE: [&str; 3] = ["/proc", "/sys", "/dev"];
-
 /// `Ok` when the shadow may grant a read of `path`: absolute, not a secret store, credential
 /// file, agent store or device, and no such place below it. Judged at the lexical path and at its
 /// canonical key, since the grant binds the key and a symlink would carry the read elsewhere.
@@ -165,9 +151,6 @@ pub fn read_passes(path: &str, home: &Path) -> Result<(), String> {
 }
 
 fn passes_at(path: &str, p: &Path, home: &Path) -> Result<(), String> {
-    if let Some(d) = DEVICE.iter().find(|d| p.starts_with(d)) {
-        return Err(format!("`{path}` is under `{d}`, kernel and process state"));
-    }
     if let Some(store) =
         letibot_tools::intent::Surroundings::secret_store_of(&p.to_string_lossy(), home.to_str())
     {
@@ -182,14 +165,12 @@ fn passes_at(path: &str, p: &Path, home: &Path) -> Result<(), String> {
             return Err(format!("`{path}` names a credentials file"));
         }
     }
-    // A directory above a secret would put it in the view too: home itself, `/`, `/etc`.
-    let mut below: Vec<PathBuf> = OWN_CONFIG.iter().map(|d| home.join(d)).collect();
-    for d in letibot_tools::intent::secret_dirs() {
-        match d.strip_prefix('/') {
-            Some(_) => below.push(PathBuf::from(d)),
-            None => below.push(home.join(d)),
-        }
-    }
+    // A directory above a secret would put it in the view too: home itself, `/`, `/etc`. The
+    // table's review entries add the daemon's own files, agent homes and kernel state.
+    let below: Vec<PathBuf> = letibot_tools::secrets::review_denied()
+        .into_iter()
+        .map(|d| home.join(d))
+        .collect();
     if let Some(d) = below.iter().find(|d| d.starts_with(p) || p.starts_with(d)) {
         return Err(format!("`{path}` reaches `{}`", d.display()));
     }

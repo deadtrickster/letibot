@@ -1,13 +1,21 @@
-//! The operator's credential stores, in one list. Three rules read it and none keeps a copy: the
-//! gate's never-write list, the flow rule's disclosure check, and the seat's fence, which the macOS
-//! profile denies and the Linux view masks. A second copy is how one falls behind the others.
+//! The operator's secrets, in one table. Every rule reads it and none keeps a copy: the gate's
+//! never-write list, the flow rule's disclosure check, the seat's view mask, the file tools' fence
+//! and the shadow's read guard. A second copy is how one falls behind the others.
 
-/// Where the macOS seat's fence puts a store. The operator's ruling is that a top-level session
-/// needs `gh`, so its config is denied only in a child's view; everything else is denied in both.
+/// Who refuses an entry. A narrower scope is refused by every reader of a wider one too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seat {
+    /// Masked in every seat's view and never written.
     Both,
+    /// The operator's ruling: a top-level session needs `gh`, so this is masked in a child's view
+    /// only. A read is still a disclosure to the flow rule and the file tools.
     TightOnly,
+    /// Masked in no view, because a tool the operator runs needs it: a command reading it asks,
+    /// and a file tool, which has no card to show, refuses.
+    Unmasked,
+    /// Refused only to a read the shadow grants with no person asked: the daemon's own files,
+    /// other agents' homes and kernel state. The seat handles these by other means.
+    Review,
 }
 
 /// A store relative to the operator's home, and what the seat does with it.
@@ -31,7 +39,21 @@ const fn tight(path: &'static str) -> Store {
     }
 }
 
-/// Every store, home-relative. A browser profile is a credential store that happens to be shaped
+const fn unmasked(path: &'static str) -> Store {
+    Store {
+        path,
+        seat: Seat::Unmasked,
+    }
+}
+
+const fn review(path: &'static str) -> Store {
+    Store {
+        path,
+        seat: Seat::Review,
+    }
+}
+
+/// Every store, home-relative unless absolute. A browser profile is a credential store that happens to be shaped
 /// like a directory: a live session cookie is a login. The credential files are named
 /// individually because their directory is otherwise the operator's own work.
 pub const STORES: &[Store] = &[
@@ -71,21 +93,81 @@ pub const STORES: &[Store] = &[
     both(".pypirc"),
     both(".cargo/credentials"),
     both(".cargo/credentials.toml"),
+    both(".pgpass"),
+    both(".my.cnf"),
+    both(".s3cfg"),
+    both(".vault-token"),
+    both(".config/rclone"),
+    both(".config/sops"),
+    tight(".config/hub"),
+    both(".claude/.credentials.json"),
+    both(".codex/auth.json"),
+    // `.docker` and not only its config file: a directory of registries is a read-side secret.
+    unmasked(".docker"),
+    unmasked(".config/flowy"),
+    unmasked("/etc/shadow"),
+    unmasked("/etc/sudoers"),
+    unmasked("/etc/ssl/private"),
+    unmasked("/private/etc/ssl/private"),
+    review(".config/letibot"),
+    review(".local/share/letibot"),
+    review(".claude"),
+    review(".codex"),
+    review(".config/claude"),
+    review("bin/fleet"),
+    review("/proc"),
+    review("/sys"),
+    review("/dev"),
 ];
 
-/// Every store, for the gate's never-write list and the flow rule's read check.
+/// Files that are secret wherever they sit, matched on the final path segment. Exact names and
+/// extensions only, because a substring test puts every path with "key" in it in the store.
+pub const SECRET_FILE_NAMES: &[&str] = &[
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    "credentials",
+    ".credentials.json",
+    "shadow",
+];
+
+pub const SECRET_EXTENSIONS: &[&str] = &[".pem", ".p12", ".pfx", ".jks", ".keystore"];
+
+/// The stores a view masks in some seat: the gate's never-write list.
 pub fn stores() -> Vec<&'static str> {
+    scoped(&[Seat::Both, Seat::TightOnly])
+}
+
+/// Every place whose bytes are a disclosure: the flow rule's read check and the file tools' fence.
+pub fn read_secrets() -> Vec<&'static str> {
+    scoped(&[Seat::Both, Seat::TightOnly, Seat::Unmasked])
+}
+
+/// Every entry: what a read the shadow grants must not reach or contain.
+pub fn review_denied() -> Vec<&'static str> {
     STORES.iter().map(|s| s.path).collect()
+}
+
+fn scoped(seats: &[Seat]) -> Vec<&'static str> {
+    STORES
+        .iter()
+        .filter(|s| seats.contains(&s.seat))
+        .map(|s| s.path)
+        .collect()
 }
 
 /// What the seat's profile denies after every allow: everything in both seats, and `gh`'s config
 /// in a child's only.
 pub fn seat_denied(wide: bool) -> Vec<&'static str> {
-    STORES
-        .iter()
-        .filter(|s| !wide || s.seat == Seat::Both)
-        .map(|s| s.path)
-        .collect()
+    match wide {
+        true => scoped(&[Seat::Both]),
+        false => scoped(&[Seat::Both, Seat::TightOnly]),
+    }
 }
 
 /// Home-relative files the top-level seat reads and may not write: a commit needs the identity,
@@ -102,34 +184,34 @@ pub const SEAT_READ_ONLY: &[&str] = &[
 mod tests {
     use super::*;
 
-    /// The three readers of this list, held against each other. A copy that drifts is the defect
-    /// this module exists for: the seat's fence was missing stores the gate already knew.
+    /// The readers of this table, held against each scope. A copy that drifts is the defect this
+    /// module exists for: the seat's fence was missing stores the gate already knew.
     #[test]
     fn every_store_is_denied_by_the_gate_the_flow_rule_and_the_seat() {
         let gate = crate::adjudicate::never_write();
-        let flow = crate::intent::secret_dirs();
+        let flow = read_secrets();
         let wide = crate::exec::seatbelt::deny_under_home(true);
         let tight = crate::exec::seatbelt::deny_under_home(false);
+        let review = review_denied();
         for s in STORES {
-            assert!(
-                gate.contains(&s.path),
-                "{} is not in the gate's list",
-                s.path
-            );
-            assert!(flow.contains(&s.path), "{} is not in the flow rule", s.path);
+            let p = &s.path;
+            assert!(review.contains(p), "{p} is not refused to the shadow");
             match s.seat {
                 Seat::Both => assert!(
-                    wide.contains(&s.path),
-                    "{} is missing from the top-level seat's fence",
-                    s.path
+                    gate.contains(p) && flow.contains(p) && wide.contains(p) && tight.contains(p),
+                    "{p} is in every list"
                 ),
                 // The operator's ruling: a top-level session needs gh, and a child has no token
                 // to spend.
                 Seat::TightOnly => assert!(
-                    !wide.contains(&s.path) && tight.contains(&s.path),
-                    "{} is a child's alone",
-                    s.path
+                    gate.contains(p) && flow.contains(p) && !wide.contains(p) && tight.contains(p),
+                    "{p} is a child's alone"
                 ),
+                Seat::Unmasked => assert!(
+                    flow.contains(p) && !gate.contains(p) && !tight.contains(p),
+                    "{p} is a read-side secret only"
+                ),
+                Seat::Review => assert!(!flow.contains(p), "{p} is the shadow's alone"),
             }
         }
     }
