@@ -915,10 +915,9 @@ impl Harness {
         self.narrow_to_parent();
     }
 
-    /// A parent that narrowed narrows its live children: each moves, at its next call, to the
-    /// nearest point its seat can carry that is no wider than the parent's, and says so. A child
-    /// that cannot be moved there may not stay where it is, so it is held at `read-only` and every
-    /// write and command is refused as an access that point does not seat.
+    /// A parent that narrowed narrows its live children: each moves at its next call to the nearest
+    /// point its seat carries no wider than the parent's. A child that cannot move there is held at
+    /// `read-only`.
     pub(crate) fn narrow_to_parent(&mut self) {
         let Some(parent) = self.parent_mode() else {
             return;

@@ -48,15 +48,9 @@
 //! timeout_seconds = 3600          # the row's own deadline, default the queue's hour
 //! ```
 //!
-//! The first three are per project because projects differ: one may land on a feature branch far
-//! ahead of its `main`.
-//!
-//! `gate_carry` exists because the landing tree is a git worktree, and a worktree has nothing
-//! gitignored (`mergequeue::carry`). Each entry is a path relative to the repository's root and must stay
-//! inside it - absolute, `..`, `.git` and the root itself are refused by name here; a symlink
-//! out, a missing path or a TRACKED path is refused when the gate runs. Each is copied (`rsync -a
-//! --delete` when rsync is there, else a fresh recursive copy), never symlinked, so a gate cannot
-//! write into the operator's checkout.
+//! `gate_carry` exists because the landing tree is a worktree with nothing gitignored. Entries stay
+//! inside the repository: absolute, `..`, `.git` and the root are refused here, a symlink out, a
+//! missing or a tracked path at gate time. Copied, never symlinked, so a gate cannot write back.
 
 use std::path::{Path, PathBuf};
 
@@ -288,12 +282,11 @@ struct FileWithQueue {
     queue: Option<toml::Value>,
 }
 
-/// The settings for the repository at `repo` - the nearest `leticode.toml` at or above it.
-/// No file, or a file with no `[queue]`, is the defaults. A `[queue]` that does not parse, or
-/// names a key this build does not know, is an `Err` naming the file - never a silent default.
 /// A queue grant's life when `[queue] grant_ttl_hours` is not set.
 pub const GRANT_TTL_HOURS: u64 = 24;
 
+/// The settings from the nearest `leticode.toml` at or above `repo`. No file or no `[queue]` is
+/// the defaults. A `[queue]` that does not parse or names an unknown key is an `Err`, never a default.
 pub fn for_repository(repo: &Path) -> Result<QueueSettings, String> {
     let Some(path) = LeticodeConfig::discover(repo) else {
         return Ok(QueueSettings::default());

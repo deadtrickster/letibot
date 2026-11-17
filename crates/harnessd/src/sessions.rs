@@ -1137,10 +1137,9 @@ impl<'a> Sessions<'a> {
         Some((c.workspace.clone(), c.box_dirs.config.clone()))
     }
 
-    /// A `/verb` no daemon verb answers, from a head: a `command_<verb>` layer first, as the head
-    /// asks one, then a command file. The typed line is `voice`'s row and the file's body is a
-    /// context row before it, since a checkout's file is not the operator's consent. `None` leaves
-    /// the line to the unknown-verb sentence, which names where a file would have been.
+    /// A `/verb` no daemon verb answers: a `command_<verb>` layer first, then a command file whose
+    /// body is a context row, since a checkout's file is not the operator's consent. `None` leaves
+    /// the line to the unknown-verb sentence.
     fn command_file(
         &mut self,
         session_id: &str,
@@ -2494,10 +2493,9 @@ impl<'a> Sessions<'a> {
         }
     }
 
-    /// Submit one prompt to a session and wait for the answer - the scripted path (`--prompt …`)
-    /// which has no head and no socket traffic. It goes through the same `harness` as the worker, so
-    /// a scripted run and a driven one open a session the same way. The steps are the operator's
-    /// own command line, so they are the operator's words.
+    /// Submit one prompt and wait for the answer: the scripted `--prompt` path, with no head. It
+    /// goes through the same `harness` as the worker, and its text is the operator's words since
+    /// it is their own command line.
     pub fn submit_operator(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
         // A session on its own thread answers there - `cli.rs`'s scripted steps are the caller
         // and they run before the worker loop starts, so this waits on a thread that is idle.

@@ -1,7 +1,6 @@
-//! Markdown command files: `.letibot/commands/NAME.md`, `.claude/commands/NAME.md` and
-//! `<config dir>/commands/NAME.md` become `/NAME ARGS`, expanded with opencode's placeholders. The
-//! typed line is the operator's row and the body a harness context row under a header naming the
-//! file. A file in a subdirectory is `/DIR/NAME`. The nearest scope wins on a name clash.
+//! Markdown command files (`.letibot/commands`, `.claude/commands`, `<config dir>/commands`) become
+//! `/NAME ARGS` with opencode's placeholders, `/DIR/NAME` from a subdirectory, nearest scope first.
+//! The typed line is the operator's row, the body a harness context row naming the file.
 
 use std::path::{Path, PathBuf};
 

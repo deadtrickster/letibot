@@ -1,9 +1,6 @@
-//! What an editor's context becomes in the transcript: ONE context row of the harness's, before the
-//! operator's words. Captured text is never stored as the words of whoever sent it.
-//!
-//! The head sends what the operator pointed at and the DAEMON writes the block, so two heads cannot
-//! spell the same selection two ways and a stored session replays what the model actually read. Every
-//! captured block is quarantined: a selection is file content, and file content can contain anything.
+//! An editor's context as one harness context row before the operator's words, never as the
+//! sender's words. The daemon writes the block, so two heads cannot spell one selection two ways.
+//! Every captured block is quarantined, since a selection is file content.
 
 use letibot_sessionlog::protocol::{ContextRef, EditorContext};
 use letibot_tools::result::Envelope;

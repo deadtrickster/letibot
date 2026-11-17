@@ -1,5 +1,5 @@
 //! The permission job as layer B: an `AuthorisationOracle` behind `ModelAdjudicator`, so a shadow
-//! answer has the gate's brief, its trail, its scope and its corpus row. Stage 1 of R316: reads
+//! answer has the gate's brief, its trail, its scope and its corpus row. It answers reads
 //! only, past the shadow's read denylist, while `answer_reads` is on and the breaker is armed.
 
 use std::path::{Path, PathBuf};

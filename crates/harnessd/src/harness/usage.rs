@@ -331,10 +331,9 @@ fn on_door(rows: &[letibot_sessionlog::protocol::SettingRow], door: &str) -> boo
         .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The row for one reading taken at `at_ms`: the window past most thresholds, else the busiest, its
-/// reset in this box's zone, and its age once older than the poll period. `choices[1]` is how many
-/// of its thresholds it has reached, which the head colours by; `choices[2]` and `[3]` are the read
-/// time and the period, so a head draws the age as it grows. Each daemon polls on its own.
+/// The row for one reading at `at_ms`: the window past most thresholds, else the busiest, with its
+/// reset and its age past the poll period. `choices[1]` is thresholds reached (the head's colour),
+/// `choices[2]` and `[3]` the read time and the period, so a head draws the age as it grows.
 pub(crate) fn usage_setting(
     door: &str,
     windows: &[letibot_provider::usage_poll::Window],

@@ -146,11 +146,9 @@ pub fn live_hold(registry: &Registry, id: &str) -> Option<Option<String>> {
     })
 }
 
-/// Renew the lease of every owner this daemon serves that a head, a turn or a job still holds:
-/// the lease is in `shared.db`, so every reaper on the box reads it. A landed package's head
-/// does not count, so a finished package still idles out with its seat attached. The job half
-/// goes through [`lifecycle::busy`], the closer's own witness, so the lease renews on everything
-/// a close would refuse to fire on - and never less.
+/// Renew in `shared.db` the lease of every owner a head, turn or job still holds. A landed
+/// package's head does not count, so it still idles out. Jobs go through [`lifecycle::busy`], the
+/// closer's own witness, so the lease renews on exactly what a close would refuse to fire on.
 fn renew_held(store: &Store, registry: &Registry, now: i64) {
     for id in registry.ids() {
         let Some(hub) = registry.get(&id) else {
@@ -378,10 +376,9 @@ mod tests {
                     .position(|d| d.as_ref().is_some_and(DiskTurn::holds))
                     .expect("someone holds the turn");
                 daemons[holder] = None;
-                // A fork elsewhere in this binary can hold a copy of the lock's fd until its exec,
-                // for seconds under a loaded gate, and an hour of minutes here passes in
-                // microseconds. So the clock stops until a live daemon holds the lock: one that
-                // holds it keeps it, and no later copy can take it away.
+                // A fork elsewhere can hold a copy of the lock's fd until its exec, for seconds,
+                // while this test clock runs in microseconds. So the clock waits until a live
+                // daemon holds the lock.
                 let until = std::time::Instant::now() + Duration::from_secs(60);
                 while !daemons.iter_mut().flatten().any(|d| {
                     let _ = d.due(now);

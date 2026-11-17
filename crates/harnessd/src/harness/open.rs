@@ -2934,10 +2934,8 @@ impl Harness {
             if has_exec_tools && backend_confined {
                 have.push(Prereq::Confinement);
             }
-            // The guard model, by the same fact the advisor is built from: `cfg.oracle` is `Some` when an endpoint is
-            // known. Without this `automode` cannot open however the box is configured. Reachability
-            // is not tested here, since a probe at open would wait on another box.
-            // Or the shadow, as layer B for stage-1 reads, once the operator set `answer_reads`.
+            // The guard model when an endpoint is known, or the shadow once `answer_reads` is set.
+            // Reachability is not probed here, since a probe at open would wait on another box.
             if cfg.oracle.is_some() || crate::shadow::is_oracle(&cfg) {
                 have.push(Prereq::Oracle);
             }

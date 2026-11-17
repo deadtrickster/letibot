@@ -229,10 +229,9 @@ impl Harness {
         self.submit_spoken(Speaker::Operator, text)
     }
 
-    /// A prompt through a head, with the chips and the editor's context beside it, from whoever
-    /// `voice` names. The files are read HERE, since the daemon writes the transcript and the row
-    /// carries the `data:` URI. `beside` and what an editor or a page captured are context rows of
-    /// their own, so neither is ever stored as the speaker's words.
+    /// A prompt through a head from `voice`, with chips and editor context. Files are read here,
+    /// since the daemon writes the row with the `data:` URI. `beside` and captured context are
+    /// rows of their own, never stored as the speaker's words.
     pub fn submit_with_context_from(
         &mut self,
         text: &str,
@@ -1299,11 +1298,9 @@ impl Harness {
             self.restart_owed.push(job.handle.clone());
         }
 
-        // Jobs that ended untold: their ending, said now - whatever the down time, the way a
-        // settled child's result is delivered past the threshold too: a result is not work to
-        // redo, and nothing is re-run. Marked delivered when the notice's row is stored.
-        // An ending older than the last finished turn was owed to that turn and missed it. A
-        // backlog of those is one compact row, so old results do not read as fresh settlements.
+        // Jobs that ended untold are said now, whatever the down time, and nothing is re-run.
+        // Endings older than the last finished turn go in one compact row, so they do not read
+        // as fresh settlements.
         let since = self.last_finished_turn_began_ms(&store);
         let ended = |job: &JobRecord, ctx: &letibot_tokencore::store::JobContext| {
             ctx.started_ms.saturating_add(job.elapsed_ms)
@@ -1725,10 +1722,8 @@ impl Harness {
         .expect("a spoken turn always runs")
     }
 
-    /// A parent's or peer's message as a turn, bare - the words
-    /// [`Harness::submit_a_parents_message`] speaks, without the tail around them, for a caller
-    /// that runs the tail itself ([`crate::turn_tail::run_turn`]).
-    /// `beside` are harness rows that go before it, such as a child's worktree facts.
+    /// A parent's or peer's message as a bare turn, for a caller that runs the tail itself
+    /// ([`crate::turn_tail::run_turn`]). `beside` are harness rows that go before it.
     pub fn parents_message_turn(
         &mut self,
         from: &str,
