@@ -4373,6 +4373,22 @@ impl Harness {
         Ok(())
     }
 
+    /// Store the rows a stopped turn left in memory, on the daemon's idle pass. Without a pass they
+    /// wait for the next store write, and a restart before it loses them while their deliveries are
+    /// still owed. `true` when something was owed and is now stored.
+    pub(crate) fn persist_owed(&mut self) -> bool {
+        if self.persisted >= self.session.ledger.rows().len() {
+            return false;
+        }
+        match self.persist() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("  {} · owed rows not stored: {e}", self.cfg.session_id);
+                false
+            }
+        }
+    }
+
     /// A wait on the store, said on this session and on every other one this daemon holds: the
     /// worker runs one turn at a time, so the others' commands queue behind this write and their
     /// heads would show `queued` with no reason at all.

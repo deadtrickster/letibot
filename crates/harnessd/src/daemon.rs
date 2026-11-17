@@ -367,6 +367,14 @@ impl Daemon {
                         if parked > 0 {
                             eprintln!("  parked {parked} idle subagent(s) in the store");
                         }
+                        // And the rows a stopped turn left in memory, which nothing else drives:
+                        // they wait for the next store write, and a restart before it loses them.
+                        let pass = std::time::Instant::now();
+                        let owed = sessions.persist_owed();
+                        crate::instruments::worker_pass("persist", pass, owed);
+                        if owed > 0 {
+                            eprintln!("  stored the rows {owed} session(s) still owed");
+                        }
                         // And the plugin tick: the hot-reload poll every two seconds, the panes whose `every_s`
                         // has come round, and the notices a layer owes its session's model. Never inside a turn
                         // so `plugin_tick` starts the gate (which runs `cargo`) on a thread and returns

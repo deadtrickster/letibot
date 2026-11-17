@@ -590,6 +590,11 @@ fn court_main(
                 let pass = Instant::now();
                 let parked = s.park_idle_children();
                 crate::instruments::worker_pass("park", pass, parked);
+                // And the rows a stopped turn left in memory: this thread is the only clock a
+                // session has, so nothing else drives them.
+                let pass = Instant::now();
+                let owed = s.persist_owed();
+                crate::instruments::worker_pass("persist", pass, owed);
                 s.plugin_tick();
             }
         }
@@ -837,6 +842,18 @@ impl<'a> Sessions<'a> {
         if let Some(reply) = &self.reply {
             reply(session_id, said);
         }
+    }
+
+    /// Every session's rows a stopped turn left in memory, on the idle arm. They wait for the next
+    /// store write otherwise, and a restart before it loses them while their deliveries are owed.
+    pub fn persist_owed(&mut self) -> usize {
+        let mut stored = self.ask_courts(|s| s.persist_owed());
+        for h in self.open.values_mut() {
+            if h.persist_owed() {
+                stored += 1;
+            }
+        }
+        stored
     }
 
     /// Every parked session whose reset has come, and every switch back a limit owes, on the worker's

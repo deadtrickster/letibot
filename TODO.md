@@ -432,7 +432,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 **Residue.**
 - At-least-once, not exactly-once: a kill after a row is stored and before the journal's release lands replays that prompt. Transcript rows carry no request id, so restore cannot dedupe against them.
 - The release is per persist, not per row: a persist between the worker's take and the prompt's append (an auto-reseat fork) releases it early. A steer still inside the engine's `Pending` at a persist is assumed absent; persist runs between rounds.
-- I44: no idle pass drives the owed rows. They wait for the next persist; a restart before it loses them, while their deliveries stay owed and are said again. The batch the stopped turn carried is handed back and said a second time by the next turn.
+- I44: the owed rows are driven by an idle pass - `Sessions::persist_owed` on the daemon's idle arm and the session's own thread (`Harness::persist_owed`), fixed in `an idle pass stores what a stopped turn left`. `an_idle_pass_stores_the_rows_a_stopped_turn_left` holds it: a stopped turn's rows are on disk after the pass, and a second pass writes nothing. The batch the stopped turn carried is still handed back and said a second time by the next turn.
 - I44's test checks `watch.held_count()`, not the room `ack_through`; both run only inside `opened`.
 - I43: `Registry::close` waits ONE deadline for every hub (`Hub::close_within`, `hub::CLOSE_SAVE_WAIT`), fixed in `a daemon's close spends one grace, not one per session`: three hubs whose journal is not answering spend 2 s, not 6. The submit wait still blocks that head's connection thread for up to 1 s.
 

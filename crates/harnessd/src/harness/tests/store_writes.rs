@@ -749,6 +749,63 @@ fn esc_during_busy_store_wait_does_not_mark_batch_stored() {
     );
 }
 
+/// The rows a stopped turn left in memory are stored by the idle PASS, not by the next turn: a
+/// restart before that turn finds nothing else that would write them, and the deliveries they were
+/// never marked by stay owed.
+#[test]
+fn an_idle_pass_stores_the_rows_a_stopped_turn_left() {
+    let dir = Scratch::new("b7-owed-idle");
+    let Some((mut h, path)) = harness_on_a_store(&dir, "b7-owed-idle") else {
+        return;
+    };
+    let (release, holder) = hold_the_write_lock(&path);
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    let stopper = {
+        let hub = h.hub.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            hub.submit(
+                &head.head_id,
+                "stop-1",
+                0,
+                letibot_sessionlog::hub::CommandKind::Interrupt {
+                    reason: "esc".into(),
+                },
+            );
+        })
+    };
+    let out = h.submit_operator("carry on");
+    stopper.join().unwrap();
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(
+        out.is_err(),
+        "the turn was refused while the store was locked"
+    );
+
+    let tid = h.transcript_id.clone();
+    let reader = letibot_tokencore::store::Store::open_reader(&path).expect("a reader");
+    let stored = reader.item_count(&tid).unwrap() as usize;
+    let owed = h.session.ledger.rows().len();
+    assert!(
+        owed > stored,
+        "the stopped turn's rows are in memory only, which is the state this pass is for"
+    );
+    assert!(
+        h.persist_owed(),
+        "an idle pass with rows owed stores nothing"
+    );
+    let after = letibot_tokencore::store::Store::open_reader(&path)
+        .expect("a reader")
+        .item_count(&tid)
+        .unwrap() as usize;
+    assert_eq!(after, owed, "every row the stopped turn left is on disk");
+    assert!(
+        !h.persist_owed(),
+        "with nothing owed the pass does nothing, rather than write again"
+    );
+}
+
 /// A steer a refused round handed back is still journaled: the session can park on a limit for
 /// hours, and a restart must find the steer in the queue rather than in a buffer that died.
 #[test]
