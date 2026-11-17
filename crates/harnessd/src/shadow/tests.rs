@@ -482,7 +482,13 @@ fn a_slow_median_pauses_the_job_too() {
         Ok(r#"{"verdict":"none"}"#.into())
     });
     let rows = Arc::new(Rows::default());
-    let (r, _pos, rx) = runner(Job::TurnEnd, judge, rows.clone(), fast());
+    // Slow against the 200 ms budget, yet far inside the deadline: a 300 ms deadline left 50 ms
+    // of margin, and a loaded box turned the slow answers into missed ones.
+    let timing = Timing {
+        deadline: Duration::from_secs(3),
+        ..fast()
+    };
+    let (r, _pos, rx) = runner(Job::TurnEnd, judge, rows.clone(), timing);
     for _ in 0..5 {
         r.submit(Request::new(0, shown(TURN)));
         assert!(matches!(next(&rx), Outcome::Verdict(_)));
