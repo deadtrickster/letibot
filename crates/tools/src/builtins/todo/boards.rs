@@ -95,7 +95,9 @@ pub fn check_wait(rows: &[TodoItem], content: &str) -> Result<(), String> {
     };
     match row.status {
         TodoStatus::Completed => Err("that row is already completed there".into()),
-        TodoStatus::Cancelled => Err("that row was struck off there, so it will never finish".into()),
+        TodoStatus::Cancelled => {
+            Err("that row was struck off there, so it will never finish".into())
+        }
         _ => Ok(()),
     }
 }
@@ -129,7 +131,13 @@ pub fn handle_words(handle: &str) -> Vec<String> {
 fn clean(raw: &str) -> String {
     raw.to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '@' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '@' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches(|c| c == '-' || c == '@')
         .to_string()
@@ -180,7 +188,10 @@ fn held(store: &Store, mine: &[String]) -> String {
         said.push(format!("its seats are {}", seats.join(", ")));
     }
     if !sessions.is_empty() {
-        said.push(format!("this project's sessions are {}", sessions.join(", ")));
+        said.push(format!(
+            "this project's sessions are {}",
+            sessions.join(", ")
+        ));
     }
     match said.is_empty() {
         true => String::new(),

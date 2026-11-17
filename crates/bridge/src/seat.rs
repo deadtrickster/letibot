@@ -13,8 +13,7 @@ use letibot_tokencore::store::{Store, TodoItem, TodoNeed, TodoStatus};
 use letibot_tools::builtins::jobs::{Found, JobLookup, JobTable};
 use letibot_tools::builtins::todo::{
     Board, Boards, ChildSessions, ChildTodos, RunningChild, RunningJobs, TodoBoard, TodoNagClock,
-    TodoWriteTool, board_of, resolved_waits_note, the_plan_as_checked, unfinished_plan,
-    wait_ended,
+    TodoWriteTool, board_of, resolved_waits_note, the_plan_as_checked, unfinished_plan, wait_ended,
 };
 use letibot_tools::exec::procs;
 use letibot_tools::runtime::Invocation;

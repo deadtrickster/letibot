@@ -508,7 +508,13 @@ fn a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused() {
 
 /// A session of this seat's project, with one row on its board: the other half of a cross-board
 /// wait, written the way a daemon writes it.
-fn a_sessions_row(store: &std::path::Path, workspace: &str, title: &str, row: &str, status: TodoStatus) {
+fn a_sessions_row(
+    store: &std::path::Path,
+    workspace: &str,
+    title: &str,
+    row: &str,
+    status: TodoStatus,
+) {
     let store = Store::open(store).expect("the store");
     if store.session("s-42").expect("the index").is_none() {
         store
@@ -546,7 +552,13 @@ fn a_seats_row_can_wait_on_a_sessions_row_and_is_freed_by_its_finishing() {
     seat_handle();
     let (_dir, store, folder) = scratch("seat-waits-session");
     // `cc@seat-todo` is this seat's handle, so `seat-todo` is the word its project is known by.
-    a_sessions_row(&store, "/work/seat-todo", "db-fuzz", "ship the pane", TodoStatus::InProgress);
+    a_sessions_row(
+        &store,
+        "/work/seat-todo",
+        "db-fuzz",
+        "ship the pane",
+        TodoStatus::InProgress,
+    );
     let bridge = bridge(&store, &folder);
     let (tx, rx) = mpsc::channel();
     bridge.push_seat(tx);
@@ -574,7 +586,13 @@ fn a_seats_row_can_wait_on_a_sessions_row_and_is_freed_by_its_finishing() {
 
     // The session marks its row done, and the seat is told - one note, naming the board and the
     // row, and the row is work again.
-    a_sessions_row(&store, "/work/seat-todo", "db-fuzz", "ship the pane", TodoStatus::Completed);
+    a_sessions_row(
+        &store,
+        "/work/seat-todo",
+        "db-fuzz",
+        "ship the pane",
+        TodoStatus::Completed,
+    );
     let notes = nags(&rx, Duration::from_secs(3));
     let freeing: Vec<&Value> = notes
         .iter()
@@ -600,7 +618,13 @@ fn a_seats_row_can_wait_on_a_sessions_row_and_is_freed_by_its_finishing() {
 fn a_wait_on_another_projects_row_or_an_unknown_one_is_refused_by_name() {
     seat_handle();
     let (_dir, store, folder) = scratch("seat-waits-refuse");
-    a_sessions_row(&store, "/work/somewhere-else", "elsewhere", "ship it", TodoStatus::InProgress);
+    a_sessions_row(
+        &store,
+        "/work/somewhere-else",
+        "elsewhere",
+        "ship it",
+        TodoStatus::InProgress,
+    );
     let bridge = bridge(&store, &folder);
     let write = |seat: &str| {
         call(

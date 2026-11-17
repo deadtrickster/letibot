@@ -15,7 +15,10 @@ impl super::Boards for FakeBoards {
     fn board_of(&self, seat: &str) -> Result<Board, String> {
         match seat {
             "cc@etcd-a36" => Ok(Board::Rows(vec![
-                item("collect the package — its turn end is the wait", TodoStatus::InProgress),
+                item(
+                    "collect the package — its turn end is the wait",
+                    TodoStatus::InProgress,
+                ),
                 item("read the design", TodoStatus::Completed),
             ])),
             "db-fuzz" => Ok(Board::Rows(vec![item(
@@ -68,7 +71,7 @@ fn a_row_waiting_on_another_board_is_quiet_until_that_row_is_finished() {
         &mut sink,
     );
     assert!(
-        matches!(wrote.outcome, ToolOutcome::Ok { .. }),
+        matches!(wrote.outcome, ToolOutcome::Ok),
         "{:?} {}",
         wrote.outcome,
         wrote.payload
@@ -189,7 +192,7 @@ fn wait_on_attaches_the_wait_and_refuses_an_unknown_seat() {
         &mut sink,
     );
     assert!(
-        matches!(wrote.outcome, ToolOutcome::Ok { .. }),
+        matches!(wrote.outcome, ToolOutcome::Ok),
         "{:?} {}",
         wrote.outcome,
         wrote.payload
@@ -233,7 +236,9 @@ fn a_waits_ending_is_finished_struck_off_or_gone() {
     // A board is replaced whole, so a row that is gone is a row somebody dropped.
     assert_eq!(
         wait_ended(&Vec::new(), "cc@etcd-a36", PACKAGE).as_deref(),
-        Some("`collect the package — its turn end is the wait` is no longer on cc@etcd-a36's board")
+        Some(
+            "`collect the package — its turn end is the wait` is no longer on cc@etcd-a36's board"
+        )
     );
     assert!(
         check_wait(&Vec::new(), PACKAGE)
@@ -298,6 +303,9 @@ fn a_board_is_read_by_seat_by_session_and_only_of_this_project() {
     assert!(elsewhere.contains("etcd-a36"), "{elsewhere}");
 
     // And every session is still in the index: the read above filters the board, not the store.
-    assert_eq!(store.list_sessions_archived(Archived::Any).unwrap().len(), 2);
+    assert_eq!(
+        store.list_sessions_archived(Archived::Any).unwrap().len(),
+        2
+    );
     assert_eq!(store.session_named("db-fuzz").unwrap().unwrap().id, "s-1");
 }
