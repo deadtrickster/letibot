@@ -439,4 +439,80 @@ mod tests {
         assert!(err.contains("a project file may not grant"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The tables a spawn composes from: the user file at its own level, the project's from its
+    /// walk-up, the project's over the user's - the two reads `cli.rs` makes for `cfg.leticode`.
+    fn composed_tables(dir: &std::path::Path) -> Result<BTreeMap<String, PerimeterTable>, String> {
+        let user = crate::leticode_config::load_user()?;
+        let project = match LeticodeConfig::discover(dir) {
+            Some(p) => LeticodeConfig::load(&p)?,
+            None => LeticodeConfig::default(),
+        };
+        Ok(user.overridden_by(&project).perimeters)
+    }
+
+    /// The user file is the one that may widen: its `[perimeter.subagent] network` reaches the child
+    /// a spawn composes and opens its seat, while the same line in a project file is still refused.
+    #[test]
+    fn a_user_files_network_grant_opens_a_child_and_a_projects_is_refused() {
+        use letibot_tools::exec::confine::Egress;
+        let mut env = letibot_testenv::EnvGuard::lock();
+        let base =
+            std::env::temp_dir().join(format!("letibot-perimeter-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("user/letibot")).expect("a config dir");
+        std::fs::create_dir_all(base.join("empty")).expect("an empty config dir");
+        std::fs::write(
+            base.join("user/letibot/leticode.toml"),
+            "[perimeter.subagent]\nnetwork = [\"subagents fetch, build and push\"]\n",
+        )
+        .expect("the user file");
+        env.set("XDG_CONFIG_HOME", base.join("user"));
+
+        let dir = workspace(
+            "net-user",
+            "[perimeter.subagent]\nhide = [\"/opt/hidden\"]\n",
+        );
+        let tables = composed_tables(&dir).expect("both files parse");
+        let top = of_level(Level::Wide, &tables).expect("the top level");
+        let child = child_of(&top, None, &tables, &[], None).expect("a child of a wide seat");
+        assert!(
+            child
+                .network
+                .iter()
+                .any(|e| e.value.contains("subagents fetch") && e.from.user),
+            "the user file's grant is not the child's: {child:?}"
+        );
+        // And it is the seat's, not a word on a struct: the tight view reaches the network.
+        let home = std::path::Path::new("/h");
+        let view = child
+            .render(
+                &Mode::WRITES_ALLOWED,
+                "this machine",
+                &[] as &[&str],
+                home,
+                &Default::default(),
+            )
+            .expect("a tight seat with the operator's egress");
+        assert!(matches!(view.egress, Egress::Host { .. }), "{view:?}");
+
+        // The same line in the project file, with no user file at all, is the widening a session
+        // could edit for itself.
+        env.set("XDG_CONFIG_HOME", base.join("empty"));
+        let project = workspace(
+            "net-project",
+            "[perimeter.subagent]\nnetwork = [\"a project says so\"]\n",
+        );
+        let tables = composed_tables(&project).expect("both files parse");
+        let top = of_level(Level::Wide, &tables).expect("the top level");
+        let err = child_of(&top, None, &tables, &[], None).expect_err("a project's egress");
+        assert!(
+            err.contains("a project file may not grant the network"),
+            "{err}"
+        );
+        for d in [dir, project] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
