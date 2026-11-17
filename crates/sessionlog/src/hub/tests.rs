@@ -1118,7 +1118,7 @@ fn a_calls_decision_is_one_settled_after_the_mark() {
     assert_eq!(hub.settled_after(mark.as_deref(), "other"), None);
 }
 
-/// Lead #42: a second load of a skill still queued is collapsed into the first, and says so.
+/// A second load of a skill still queued is collapsed into the first, and says so.
 #[test]
 fn a_second_load_of_a_queued_skill_is_collapsed() {
     let hub = Hub::new("s");

@@ -1224,10 +1224,9 @@ pub enum ServerFrame {
         /// itself and not by a second round trip. Includes the one just joined.
         sessions: Vec<SessionBrief>,
     },
-    /// The daemon's answer to the head's `Caps.features`: what it accepted, sent once per attach
-    /// right after the `Hello`. A head that asked for a feature and does not find it here must not
-    /// use it - the field it would fill was added under a number the daemon may predate, and a
-    /// daemon drops such a field in silence. Sent only to a head at [`QUEUE_PROMPT_SINCE`] or later.
+    /// What the daemon accepted of the head's `Caps.features`, sent once per attach after `Hello`
+    /// to a head at [`QUEUE_PROMPT_SINCE`] or later. A head must not use a feature missing here:
+    /// a daemon that predates its field drops the field in silence.
     Features { accepted: Vec<String> },
     /// The password for the `Askpass` this connection sent, or `None`, and when it is `None` which of
     /// the three facts that was: nobody asked, the ask failed, or a person refused.

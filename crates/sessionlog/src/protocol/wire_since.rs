@@ -1,7 +1,6 @@
-//! Every variant on the head wire, and the protocol that first carried it, so a variant added
-//! without its `compat::SINCE` row is refused by name rather than only failing a peer at parse
-//! time. serde's own "expected one of" list is the live set; this table says WHEN, which serde
-//! cannot. `0` is *carried at 78, when this table was written*, and is never right for a new one.
+//! Every variant on the head wire and the protocol that first carried it, so a variant added
+//! without its `compat::SINCE` row is refused by name rather than failing a peer at parse time.
+//! `0` means carried at 78 or earlier, and is never right for a new variant.
 
 use super::*;
 

@@ -1284,8 +1284,8 @@ pub const STATUS: &[&str] = &[
     // lifetime, said where live state is said - the conversation keeps no row for it.
     "idle_closing",
     "idle_closed",
-    // A model switch on the way, and how it went. A limit's return is not here: the head's limit
-    // notice says it, and the status line saying it too drew it twice.
+    // A model switch on the way, and how it went. A limit's return is the head's limit notice's
+    // alone.
     "model_switch_pending",
     "model_switch_applied",
     "model_switch_not_applied",
