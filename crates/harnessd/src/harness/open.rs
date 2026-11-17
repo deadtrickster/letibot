@@ -3318,9 +3318,8 @@ impl Harness {
             }
             kept_jobs = taken;
             for rec in store.processes_of(&cfg.session_id).unwrap_or_default() {
-                if !rec.state.is_open()
-                    || rec.state == letibot_tokencore::store::ProcState::Detached
-                {
+                // A kept job went through `take_back` above: nothing is adopted twice.
+                if !rec.state.is_open() || rec.state.is_kept() {
                     continue;
                 }
                 let adopted = letibot_tools::exec::Adopted {
