@@ -163,7 +163,7 @@ fn bridge_answer_is_not_recorded_as_human() {
     w.server.shutdown();
 }
 
-/// Decision 1: a bridge seat answers cards only for sessions it started. On the operator's own
+/// A bridge seat answers cards only for sessions it started. On the operator's own
 /// session its answer is refused, the card stays open, and the operator's head still settles it.
 #[test]
 fn a_bridge_seat_cannot_answer_a_card_of_a_session_it_did_not_start() {
