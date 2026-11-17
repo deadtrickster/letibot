@@ -262,7 +262,7 @@ fn one_shared_word_is_not_a_subject_and_two_are() {
             "the model card filters as a line is typed",
         ),
     ];
-    // What the score alone says: this is what used to earn the line.
+    // What the score alone says, without the gate under test.
     let docs: Vec<(std::path::PathBuf, String)> = units
         .iter()
         .map(|u| (PathBuf::from(&u.unit), u.text.clone()))

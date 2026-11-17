@@ -385,9 +385,8 @@ fn a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset
     );
 }
 
-/// A1-F10: what a park adds to the provider's own instant is DRAWN. Three sessions refused at the
-/// same instant cannot come back at three identical ones unless the jitter is the fixed number it
-/// used to be, which is what put a fleet of parks back in step.
+/// What a park adds to the provider's own instant is drawn, so sessions refused at the same
+/// instant come back at different ones and a fleet of parks does not fall into step.
 #[test]
 fn sessions_refused_together_do_not_park_on_the_same_instant() {
     let _alone = alone();

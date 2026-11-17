@@ -1379,7 +1379,7 @@ fn only_a_sure_fresh_verdict_with_skill_picks_acts() {
     assert_eq!(skill_picks(&three, false).unwrap().len(), 2);
 }
 
-/// I17 (c): a stateless check's quotes carry no author, so its offers are recorded and never act.
+/// A stateless check's quotes carry no author, so its offers are recorded and never act.
 #[test]
 fn a_stateless_during_offer_never_acts() {
     use super::during::skill_picks;
