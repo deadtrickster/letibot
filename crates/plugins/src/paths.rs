@@ -2,25 +2,13 @@
 //! An empty `XDG_CONFIG_HOME` is UNSET, which is what the XDG spec says: a zero-length path is not
 //! a path, and a host that joined `""` read `letibot/` relative to its own working directory.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-
-/// The config directory's own name inside the base: one directory, beside nothing else of ours.
-const NAME: &str = "letibot";
 
 /// The trust book's file name, in the config directory.
 const TRUST: &str = "plugin-trust.json";
 
 /// The three variables a path here is derived from: the box-wide resolver's own.
 pub use letibot_paths::Env;
-
-/// A variable's value as a path, or `None` for absent AND for empty.
-fn nonempty(value: &Option<OsString>) -> Option<PathBuf> {
-    value
-        .as_deref()
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-}
 
 /// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - where the user scope and the trust book
 /// live. `None` when neither variable gives a directory.
@@ -52,9 +40,7 @@ pub fn data_dir() -> Option<PathBuf> {
 
 /// [`data_dir`] against an environment a caller names.
 pub fn data_dir_in(env: &Env) -> Option<PathBuf> {
-    let base = nonempty(&env.xdg_data_home)
-        .or_else(|| nonempty(&env.home).map(|h| h.join(".local/share")))?;
-    Some(base.join(NAME))
+    letibot_paths::data_dir_in(env)
 }
 
 /// The project scope's layers: `<root>/.letibot/plugins`. The root is the session's checkout, so
@@ -83,6 +69,7 @@ pub fn trust_book_in(env: &Env) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     fn env(xdg: Option<&str>, home: Option<&str>) -> Env {
         Env {
@@ -163,6 +150,13 @@ mod tests {
     fn an_empty_xdg_data_home_is_the_boxes_own_data_dir() {
         let mut empty = env(Some("/etc/xdg-op"), Some("/home/op"));
         empty.xdg_data_home = Some(OsString::from(""));
+        assert_eq!(
+            data_dir_in(&empty),
+            Some(PathBuf::from("/home/op/.local/share/letibot"))
+        );
+        // A relative one is unset too, as the XDG spec says: it would resolve against a cwd the
+        // workspace chooses, and the room, the landing root and this scope would disagree.
+        empty.xdg_data_home = Some(OsString::from("relative/dir"));
         assert_eq!(
             data_dir_in(&empty),
             Some(PathBuf::from("/home/op/.local/share/letibot"))

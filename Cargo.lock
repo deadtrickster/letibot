@@ -1508,6 +1508,7 @@ dependencies = [
  "letibot-builtins",
  "letibot-config-ref",
  "letibot-harnessd",
+ "letibot-paths",
  "letibot-plugin",
  "letibot-plugins",
  "letibot-plugins-rano",

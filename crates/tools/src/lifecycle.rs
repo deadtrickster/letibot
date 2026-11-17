@@ -341,13 +341,10 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`: the directory the store lives in.
+/// The rule is `letibot_paths`' - the launcher, the bridge, the room and the landing root read it
+/// there too, so a relative `XDG_DATA_HOME` cannot mean two directories.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
-        .map(|d| d.join("letibot"))
-        .unwrap_or_else(|| PathBuf::from(".letibot-data"))
+    letibot_paths::data_dir().unwrap_or_else(|| PathBuf::from(".letibot-data"))
 }
 
 /// `$XDG_RUNTIME_DIR/letibot`, else `/run/user/<uid>/letibot`, else the temp directory - the same

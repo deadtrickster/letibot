@@ -104,10 +104,12 @@ fn data_dir_of(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Result<PathBuf, String> {
-    if let Some(d) = xdg.map(PathBuf::from).filter(|p| p.is_absolute()) {
-        return Ok(d.join("letibot"));
-    }
-    home.map(|h| PathBuf::from(h).join(".local/share/letibot"))
+    let env = letibot_paths::Env {
+        xdg_config_home: None,
+        xdg_data_home: xdg,
+        home,
+    };
+    letibot_paths::data_dir_in(&env)
         .ok_or_else(|| "no $HOME: the store has no default without one".to_string())
 }
 

@@ -257,6 +257,51 @@ fn lookup(name: &str, kind: Kind) -> Option<Role> {
         .map(|(_, r, _)| *r)
 }
 
+/// Every word `letibot <word>` answers with a verb, sorted, printed by `--verbs`. A person types
+/// these and nothing invokes them by path, so they have no symlink and no row in the table above.
+pub const VERB_WORDS: &[&str] = &[
+    "attach", "boundary", "browser", "doctor", "fb", "gc", "hold", "holds", "migrate", "notes",
+    "release", "rooms", "session", "shadow", "stats", "where",
+];
+
+/// Sorted, so a reader can find a word and a diff cannot reorder it silently.
+const VERB_WORDS_ARE_SORTED: () = {
+    let mut i = 1;
+    while i < VERB_WORDS.len() {
+        if !bytes_less(VERB_WORDS[i - 1].as_bytes(), VERB_WORDS[i].as_bytes()) {
+            panic!("VERB_WORDS is not sorted and unique");
+        }
+        i += 1;
+    }
+};
+
+/// Strict byte order for two names, as a `const fn`: `PartialOrd` on slices is not const.
+const fn bytes_less(a: &[u8], b: &[u8]) -> bool {
+    let (mut i, mut j) = (0, 0);
+    loop {
+        if i == a.len() {
+            return j < b.len();
+        }
+        if j == b.len() {
+            return false;
+        }
+        if a[i] != b[j] {
+            return a[i] < b[j];
+        }
+        i += 1;
+        j += 1;
+    }
+}
+
+/// One word per line, nothing else: a launcher reads this to tell a verb from a prompt, so it is a
+/// list for a program and not a help page.
+fn print_verbs() {
+    let () = VERB_WORDS_ARE_SORTED;
+    for word in VERB_WORDS {
+        println!("{word}");
+    }
+}
+
 fn main() -> ExitCode {
     // The two const assertions are used here so they cannot be optimised away, and so
     // a reader who greps for `assert` finds the check in the flow rather than only in
@@ -291,6 +336,11 @@ fn main() -> ExitCode {
                 };
                 if word == "stats" {
                     stats::run_stats(&tail())
+                } else if word == "--verbs" || word == "verbs" {
+                    // The list a launcher reads before it treats a word as a prompt: one copy of
+                    // "what letibot answers", so a verb cannot become a billed turn by omission.
+                    print_verbs();
+                    ExitCode::SUCCESS
                 } else if word == "holds" {
                     // What every owner of this box holds, read off the store and the disk: a plan's
                     // input, and the answer to `letibot gc` being all there is yet.
@@ -410,6 +460,8 @@ VERBS
                               (FILE.bak first; nothing outside the block changes)
   doctor [--json]             what this box gives letibot, one row per check, and the
                               command that fixes each warn or FAIL; exit 0 ok, 1 warn, 2 FAIL
+  --verbs                     every verb word above, one per line: what a launcher reads to
+                              tell a verb from a prompt
   holds [OWNER]               what every owner holds on disk - its cgroup with its process
                               count and memory, its VM, its copies, its worktree and target
   gc [OWNER]                  what would be reaped, why, when; `--log` shows the journal.

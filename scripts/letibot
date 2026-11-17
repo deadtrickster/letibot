@@ -868,6 +868,7 @@ flags_table() {
 --json                 |more  |       |with `--where`: one object - socket, live, project, folder
 --config-reference     |more  |       |every option of every config file, or of one (`letibot --config-reference --help`)
 --config-header        |more  |       |write the reference block into a TOML config file's header: `--config-header FILE`
+--verbs                |more  |       |every verb word `letibot` answers, one per line: what the launcher reads
 --attach               |more  |[N/DIR] |connect only, never start: this folder's daemon, or another's by number
 --listen               |more  |[WORDS] |which repositories of this folder's sessions hear gate news
 --read-only            |more  |       |no write tools at all (the orchestrator seat)
@@ -2809,6 +2810,12 @@ SESSIONS_EOF
     # The store the daemon was handed, folding included, so a hold lands where the daemon reads.
     LETIBOT_STORE="$STORE" exec "$BIN/letibot-multi" "$@"
     ;;
+  verbs | --verbs)
+    # The multicall owns the list; this arm is what makes `letibot --verbs` the list rather than a
+    # prompt starting with a flag.
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the verb list lives there)"
+    exec "$BIN/letibot-multi" --verbs
+    ;;
   migrate)
     # `--store` is appended as the `--migrate` arm does, because the move needs the store this
     # launcher already resolved and `--help` returns before the flag is read.
@@ -3033,6 +3040,25 @@ if live && [ -n "$ENDPOINT" ]; then
     exit 1
   fi
 fi
+
+# A word this script has no arm for is a prompt - unless the multicall answers it as a verb. Then
+# the two disagree, and naming the verb is the refusal: the alternative is `letibot hold s-1`
+# becoming a billed turn, which is how `hold` reached the operator the first time.
+launcher_verb_guard() {
+  [ $# -gt 0 ] || return 0
+  case "$1" in -*) return 0 ;; esac
+  [ -x "$BIN/letibot-multi" ] || return 0
+  local verbs
+  verbs="$("$BIN/letibot-multi" --verbs 2>/dev/null)" || return 0
+  case "
+$verbs
+" in
+    *"
+$1
+"*) die "\`$1\` is a verb of $BIN/letibot-multi and this launcher has no arm for it, so it would have been sent as a prompt. Nothing was run; \`letibot --verbs\` lists the verbs" ;;
+  esac
+}
+launcher_verb_guard "$@"
 
 mkdir -p "$STORE_DIR" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
 

@@ -169,13 +169,10 @@ pub fn default_target(repo: &Path) -> Option<String> {
 }
 
 /// The letibot data directory - `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`, where
-/// `sessions.db` and `metrics.db` already live. `None` in a bare environment with neither.
+/// `sessions.db` and `metrics.db` already live. `None` in a bare environment with neither. One rule,
+/// in `letibot_paths`, because the room, the landing root and the launcher resolve the same name.
 pub fn letibot_data_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .map(|d| d.join("letibot"))
+    letibot_paths::data_dir()
 }
 
 /// The environment variable that puts the landing root somewhere else - what a test that spawns
@@ -942,15 +939,12 @@ pub fn retire_if_empty(
     branch: &str,
     worktree: Option<&str>,
     store: Option<&letibot_tokencore::store::Store>,
+    here: &letibot_tools::lifecycle::autoarchive::Here,
 ) -> Result<(), String> {
     // `--force` takes ignored files too, a running build's `target/` among them.
     if let Some(wt) = worktree
         && Path::new(wt).exists()
-        && let Some(why) = letibot_tools::lifecycle::in_use::why_kept(
-            Path::new(wt),
-            store,
-            &letibot_tools::lifecycle::autoarchive::Here::this_process(),
-        )
+        && let Some(why) = letibot_tools::lifecycle::in_use::why_kept(Path::new(wt), store, here)
     {
         return Err(format!("the worktree {wt} and `{branch}` are kept: {why}"));
     }

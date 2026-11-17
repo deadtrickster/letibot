@@ -1485,6 +1485,25 @@ for spec in "holds --json" "gc --log" "where" "hold s-123" "release s-123" "note
   refuse "  ...and $v is not sent as a prompt" "$out" "--prompt"
 done
 
+# letibot-multi_answers_the_verb_list_the_launcher_reads: the multicall owns the list of words
+# that are verbs, and the launcher refuses one it has no arm for instead of billing it as a turn.
+out="$(run "$DEFAULT_ONLY" --verbs)"
+expect "--verbs is handed to the multicall" "$out" "^letibot-multi --verbs$"
+refuse "  ...and is not a prompt" "$out" "--prompt"
+cat > "$T/bin/letibot-multi.verbs" << 'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = --verbs ]; then printf 'hold\nfrobnicate\n'; exit 0; fi
+exec "$(dirname "$0")/letibot-multi.default" "$@"
+STUB
+chmod +x "$T/bin/letibot-multi.verbs"
+cp "$T/bin/letibot-multi.verbs" "$T/bin/letibot-multi"
+out="$(run "$DEFAULT_ONLY" frobnicate)"
+rc=$?
+refusal "a verb the launcher has no arm for is refused, not billed as a prompt" "$rc" "$out" \
+  "^letibot: .frobnicate. is a verb of " "no arm for it"
+refuse "  ...and nothing was run" "$out" "--prompt"
+cp "$T/bin/letibot-multi.default" "$T/bin/letibot-multi"
+
 # The store follows XDG_DATA_HOME, as gc, hold and the bridge do: one store for the daemon and
 # the verbs that act on its owners.
 out="$(RUN_XDG_DATA_HOME="$T/xdgdata" run "$DEFAULT_ONLY" "q")"

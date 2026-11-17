@@ -45,6 +45,9 @@ letibot-tools.workspace = true
 # `scripts/letibot` derives it (`sha12`): a different hash names a socket no daemon
 # listened on and starts a second one for one folder.
 sha2 = "0.10"
+# Where this box's data directory is: the store, the room's record, the nick files. One rule for
+# the launcher, the daemon, the head and this bridge, so a relative `XDG_DATA_HOME` means nothing.
+letibot-paths.workspace = true
 # `setsid(2)`, for starting a daemon that does not die with the MCP process that spawned
 # it — the same detachment `scripts/letibot`'s `detach` gets from `setsid`/perl.
 libc = "0.2"

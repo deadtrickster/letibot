@@ -113,18 +113,9 @@ fn repo_root(cwd: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-/// The letibot data directory.
+/// The letibot data directory, by the one rule in `letibot_paths`.
 fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|h| PathBuf::from(h).join(".local/share"))
-        })
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("letibot")
+    letibot_paths::data_dir().unwrap_or_else(|| PathBuf::from(".").join("letibot"))
 }
 
 /// Where the nick for `cwd` is kept, keyed by the folder's canonical path.

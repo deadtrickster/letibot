@@ -53,6 +53,26 @@ pub fn providers_file_in(env: &Env) -> Option<PathBuf> {
     config_dir_in(env).map(|d| d.join("providers.toml"))
 }
 
+/// `$XDG_DATA_HOME`, else `~/.local/share` - where the store, the room and the landing roots live.
+pub fn data_home_in(env: &Env) -> Option<PathBuf> {
+    absolute(env.xdg_data_home.as_ref())
+        .or_else(|| absolute(env.home.as_ref()).map(|h| h.join(".local/share")))
+}
+
+pub fn data_home() -> Option<PathBuf> {
+    data_home_in(&Env::of_process())
+}
+
+/// `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot` - the one data directory: the store, the
+/// room's socket record, the landing worktrees and a session's plugin scope.
+pub fn data_dir_in(env: &Env) -> Option<PathBuf> {
+    data_home_in(env).map(|d| d.join("letibot"))
+}
+
+pub fn data_dir() -> Option<PathBuf> {
+    data_dir_in(&Env::of_process())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
