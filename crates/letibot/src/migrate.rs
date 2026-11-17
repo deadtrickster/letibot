@@ -2023,10 +2023,9 @@ fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
     })
 }
 
-/// The store a verb opens. A data DIRECTORY - or a path whose parent holds a `shared.db` - is the
-/// split set of this store's own project file: `Store::open` on a `sessions.db` that is not there
-/// would CREATE a full-schema file beside the set, which no daemon reads and which hides every
-/// session in it from `--sessions`.
+/// The store a verb opens. A data DIRECTORY, or a path whose parent holds a `shared.db`, is the
+/// split set: `Store::open` on a missing `sessions.db` would CREATE a full-schema file beside the
+/// set that no daemon reads and that hides its sessions from `--sessions`.
 fn open_store(path: &Path, session: Option<&str>) -> Result<Store, String> {
     let dir = match path.is_dir() {
         true => Some(path.to_path_buf()),
@@ -2168,10 +2167,9 @@ mod tests {
         assert_eq!(tail("\n\n"), "");
     }
 
-    /// A split box is not given a second `sessions.db`. The path a verb is handed beside a
-    /// `shared.db` is the set's, and what opens is the session's own project file - a `Store::open`
-    /// there would CREATE a full-schema file no daemon reads, and every session in the set would
-    /// vanish from `--sessions` behind it.
+    /// A split box is not given a second `sessions.db`: a path beside a `shared.db` opens the
+    /// session's own project file, never a new full-schema file that hides the set from
+    /// `--sessions`.
     #[test]
     fn a_split_box_is_not_given_a_stray_sessions_db() {
         let dir = std::env::temp_dir().join(format!(
