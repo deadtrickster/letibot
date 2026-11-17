@@ -153,10 +153,17 @@ saying whose board it is.
 The schedule is the session's, unchanged: a 60 s window (`TODO_NAG_AFTER`,
 `crates/harnessd/src/sessions.rs:52`), one notice per change of it (`nag_should_arm`, `:214`), the
 repeat ladder capped at 30 minutes (`said`, `:501`). *Idle* for a seat is the same fact one layer
-out: any tool call the bridge serves is the seat working, so the window is armed from the last call,
+out: a tool call the bridge serves is the seat working, so the window is armed from the last call,
 where a session's is armed from the end of its turn. The watcher starts beside `push_sessions` in
 `mcp.rs` (`crates/bridge/src/mcp.rs:90`), because a client that has not initialized has no channel
 to push to.
+
+**A call that only reads is not work, and never moves that window.** This seat's own panes poll
+`todos` and `leticode_status` every five seconds from `session.start`
+(`claude-plugin/hooks/register.tsx`), so counting a read as a turn meant a Claude Code seat was
+never idle for the 60 s the check needs - the field saw thirteen open rows and no notice in an
+hour. `tools::call` postpones the check for a tool that is not on `only_reads` (`crates/bridge/src/tools.rs`),
+which is why a new read has to be added there and a new writer needs nothing.
 
 ## Reuse, not fork
 
@@ -207,6 +214,16 @@ and the head has no door to it.
   after the window, nothing more until the board moves.
 - `a_packages_open_job_is_a_wait_on_that_package_and_ends_with_it`.
 - `a_row_waiting_on_the_operator_is_quiet_until_the_answer_lands`.
+
+`crates/bridge/tests/seat_nag.rs` drives the monitor with the real `letibot-mcp`:
+
+- `a_due_nag_reaches_a_waiting_seat_with_the_notices_own_text` - `todo-wait` ends 0 with the
+  `[todo check]` sentence the frame would carry, naming the row.
+- `a_seat_that_is_working_or_waiting_on_a_person_is_left_alone` - nothing while the seat calls tools
+  or a row waits on an unanswered question; the waiter ends 30, and the check is then proved alive
+  by the channel saying the plan once the answer lands and the waiter has gone.
+- `one_nag_is_one_delivery_when_the_channel_and_the_monitor_are_both_live` - the waiter holds the
+  seat, so the notice is on stdout and the channel is silent.
 
 `crates/tokencore`: `a_seat_board_survives_a_store_that_gains_its_table` (a v40 store migrates to 41
 and keeps a seat's rows). `crates/tools`: the moved nag tests, unchanged in what they assert.
