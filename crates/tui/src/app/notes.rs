@@ -63,7 +63,19 @@ impl App {
     /// second ending, and [`note_key`] cannot tell it from the first.
     pub(crate) fn file_note(&mut self, n: Note) {
         let at = self.items.len();
-        self.notes.push((Placed::Seam(at), n));
+        self.file_note_at(at, n);
+    }
+
+    /// [`App::file_note`] at a seam that is not the end of the conversation: a fork's marker belongs
+    /// where the history stops and the transcript the fork published begins, and the walk reads the
+    /// list in seam order, so the note is INSERTED in that order and not appended.
+    pub(crate) fn file_note_at(&mut self, at: usize, n: Note) {
+        let after = self
+            .notes
+            .iter()
+            .position(|(place, _)| matches!(place, Placed::Seam(there) if *there > at));
+        let at_in_list = after.unwrap_or(self.notes.len());
+        self.notes.insert(at_in_list, (Placed::Seam(at), n));
         // A note born older than what the reader has read is born hidden: the watermark's half of filing, and the
         // reason a re-said notice cannot rebuild a wall that was cleared. Through `hide_read`, so there is one writer
         // of the mark's keys and one place the cap lives.
@@ -399,6 +411,15 @@ pub(crate) enum Note {
     /// failed attempt, so a head that holds the row rewrites it - which is what makes five attempts
     /// one line rather than five, and what lets that line settle to how the call ended.
     Retrying(Retry),
+    /// Where the record was folded: the rows ABOVE this seam are the transcript the fork replaced,
+    /// kept on the screen as history because the summary carried none of them. A note and not a row:
+    /// the conversation is one record, and a line the model was never sent is not one of its rows.
+    Compacted {
+        /// The transcript those rows belong to, which is also the one a page above them is asked of.
+        parent: String,
+        /// How many of them the head is holding above the seam.
+        kept: usize,
+    },
 }
 
 /// One series of retries, as the row that draws it. The values are the daemon's: the words of the
@@ -473,7 +494,9 @@ pub(crate) fn note_kind(n: &Note) -> Option<&str> {
         // A series is a kind of its own, so `ctrl-n` retires a settled one and [`LIVE`] keeps it
         // out of a burst: its attempts are counted in its line, not in a count of rows.
         Note::Retrying(_) => Some(MODEL_RETRY),
-        Note::Decided(_) | Note::Answered { .. } | Note::Pane { .. } => None,
+        Note::Decided(_) | Note::Answered { .. } | Note::Pane { .. } | Note::Compacted { .. } => {
+            None
+        }
     }
 }
 
@@ -526,6 +549,9 @@ pub(crate) fn note_key(n: &Note) -> String {
         // By the series and not by the text: the row's whole point is that the text moves while
         // the row stays, so a key built from it would be a hidden dismissal on every attempt.
         Note::Retrying(r) => format!("r|{}", r.series),
+        // One fork is one seam, named by the transcript it left: two folds of one conversation are
+        // two markers and as many as the history has boundaries.
+        Note::Compacted { parent, .. } => format!("f|{parent}"),
     }
 }
 

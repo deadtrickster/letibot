@@ -1150,20 +1150,58 @@ impl App {
     /// nothing above, so a held key is pages and not a flood.
     pub(crate) fn ask_for_rows_above(&mut self) {
         if self.hist_floor > 0
-            || self.items_base == 0
             || self.fetch_asked.is_some()
+            || self.fetch_earlier.is_some()
             || self.no_more_above
         {
             return;
         }
-        let count = self.items_base.min(PAGE_ROWS);
-        let from = self.items_base - count;
-        self.fetch_asked = Some(from);
+        // The base's own rows first: every row this head holds of the transcript the session speaks.
+        if self.items_base > 0 {
+            let count = self.items_base.min(PAGE_ROWS);
+            let from = self.items_base - count;
+            self.fetch_asked = Some(from);
+            self.queued.push(Action::FetchRows {
+                session: self.session_id.clone(),
+                transcript: None,
+                from,
+                count,
+            });
+            return;
+        }
+        // The base starts at its transcript's first row, so what is above it is an EARLIER
+        // transcript's: the rows a fold left on the screen as history. Their ids say which transcript
+        // and where, and the store still holds them, so the page is asked for in that transcript's
+        // own ordinal space - the one place a head can name them.
+        let Some((transcript, oldest)) = self.oldest_held_row() else {
+            return;
+        };
+        if oldest == 0 {
+            // Nothing is above the oldest row this head holds: the record begins there.
+            self.no_more_above = true;
+            return;
+        }
+        let count = oldest.min(PAGE_ROWS);
+        let from = oldest - count;
+        self.fetch_earlier = Some((transcript.clone(), from));
         self.queued.push(Action::FetchRows {
             session: self.session_id.clone(),
+            transcript: Some(transcript),
             from,
             count,
         });
+    }
+
+    /// The transcript and ordinal of the oldest row this head holds, when no ordinal of the current
+    /// transcript names it: the history above a fork's base, whose id is still the id it had in the
+    /// transcript it came from (`<transcript>.<ordinal>`). `None` when the window starts at the base.
+    fn oldest_held_row(&self) -> Option<(String, usize)> {
+        if self.items_lead == 0 {
+            return None;
+        }
+        let id = &self.items.first()?.item_id;
+        let (transcript, ordinal) = id.rsplit_once('.')?;
+        Some((transcript.to_string(), ordinal.parse().ok()?))
     }
 
     /// The same ask in the other direction: the reader is at the end of what this head holds and
@@ -1178,6 +1216,7 @@ impl App {
         self.fetch_below = Some(from);
         self.queued.push(Action::FetchRows {
             session: self.session_id.clone(),
+            transcript: None,
             from,
             count,
         });
@@ -1186,7 +1225,18 @@ impl App {
     /// A page of rows the daemon answered, placed on the end of the window it asked about. Every
     /// row this head holds is one contiguous run of the session, so a page lands where it joins
     /// that run or not at all, and a page that does not join is read in the direction it names.
-    pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
+    /// `transcript` is set when the page is a page of an EARLIER transcript - the history above a
+    /// fork's base - and `None` for the one the session speaks.
+    pub(crate) fn apply_rows(
+        &mut self,
+        from: usize,
+        rows: Vec<SnapshotItem>,
+        transcript: Option<String>,
+    ) {
+        if let Some(earlier) = transcript {
+            self.apply_earlier_rows(earlier, from, rows);
+            return;
+        }
         let end = self.end_ordinal();
         // A page below the window is the tail the reader is coming back down to: it joins the
         // rows where they end, and what is above it is unchanged, so no index moves.
@@ -1269,6 +1319,74 @@ impl App {
             "the page above this window did not join it: a row in it could not be read, so the \
              transcript above stops here"
         });
+    }
+
+    /// A page of an EARLIER transcript - the rows a fork did not carry - laid onto the FRONT of the window.
+    /// Those rows are numbered by nothing the session speaks, so the page is placed by the transcript it
+    /// names and by the count it brings, and one that would leave a hole is not placed at all.
+    fn apply_earlier_rows(&mut self, earlier: String, from: usize, rows: Vec<SnapshotItem>) {
+        let asked = self.fetch_earlier.take();
+        let Some((want, asked_from)) = asked else {
+            return;
+        };
+        // An answer to another question - a daemon that predates the field answers the current
+        // transcript's rows and says nothing about it - is dropped rather than spliced, and the
+        // reader is told where the record stops instead of being shown another transcript's rows.
+        if want != earlier || asked_from != from || rows.is_empty() {
+            self.no_more_above = true;
+            self.say(if want == earlier {
+                "nothing is above the oldest row this head holds - the daemon holds no rows above \
+                 it, so the record begins there"
+            } else {
+                "the daemon cannot page the transcript this history came from, so the rows above \
+                 the oldest one this head holds cannot be reached from here"
+            });
+            return;
+        }
+        // The page must end where the oldest held row begins, with no ordinal skipped: a short page
+        // is a hole, and the history above a hole is unreachable by scrolling.
+        let joins = from.saturating_add(rows.len()) == self.history_ordinal();
+        if !joins {
+            self.no_more_above = true;
+            self.say(
+                "the page above this history did not join it: a row in it could not be read, so the \
+                 record above stops here",
+            );
+            return;
+        }
+        let n = rows.len();
+        self.stored_call_facts(&rows);
+        self.items.splice(0..0, rows);
+        // The base does not move - these rows are above it and numbered by nothing - and every index
+        // into `items` moves down by the page, because the page landed at the front.
+        self.items_lead += n;
+        let shift = |at: &mut usize| *at += n;
+        shift(&mut self.hist_floor);
+        shift(&mut self.hist_upto);
+        if let Some(end) = &mut self.hist_ceiling {
+            shift(end);
+        }
+        for s in &mut self.spans {
+            shift(&mut s.row);
+        }
+        if let Some(h) = &mut self.anchor {
+            shift(&mut h.ordinal);
+        }
+        for (place, _) in &mut self.notes {
+            if let Placed::Seam(at) = place {
+                shift(at);
+            }
+        }
+        if !self.hist_marks.is_empty() {
+            self.invalidate_history_from(0);
+            self.hist_upto = 0;
+        }
+    }
+
+    /// The ordinal of the oldest row this head holds, in the transcript that row belongs to. The id
+    /// says both, which is why a page of history can be asked for at all.
+    fn history_ordinal(&self) -> usize {
+        self.oldest_held_row().map_or(0, |(_, ordinal)| ordinal)
     }
 
     /// Move the held viewport by `delta` lines, staying on a row: the line-to-row conversion happens here and

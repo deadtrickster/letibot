@@ -922,10 +922,12 @@ impl HeadClient {
 
     /// Ask for a page of whole rows by ordinal, without leaving this session: answered with a
     /// `RowsFetched` frame on the pump. The head holds a window, so this is how a reader scrolling
-    /// above it reaches the conversation behind it.
+    /// above it reaches the conversation behind it. `transcript` names an earlier transcript - the
+    /// rows a fold left on the screen as history - and `None` is the one the session speaks.
     pub fn fetch_rows(
         &mut self,
         session_id: &str,
+        transcript: Option<&str>,
         from: usize,
         count: usize,
     ) -> Result<(), ClientError> {
@@ -933,6 +935,7 @@ impl HeadClient {
             session_id: session_id.to_string(),
             from,
             count,
+            transcript: transcript.map(str::to_string),
         })?;
         Ok(())
     }
