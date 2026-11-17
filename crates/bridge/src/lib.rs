@@ -31,6 +31,7 @@ pub mod rooms;
 pub mod rows;
 pub mod seat;
 pub mod seat_jobs;
+pub mod seat_nag;
 pub mod settings;
 pub mod store;
 pub mod tools;

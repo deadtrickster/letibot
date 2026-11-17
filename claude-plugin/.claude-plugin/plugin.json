@@ -37,6 +37,12 @@
         "command": "while :; do letibot-mcp room-wait --attention to_me --timeout 1h || sleep 10; sleep 2; done",
         "description": "leticode room messages for this seat",
         "when": "always"
+      },
+      {
+        "name": "todo-nag",
+        "command": "while :; do letibot-mcp todo-wait --timeout 1h || sleep 10; sleep 2; done",
+        "description": "this seat's todo plan check, when the bridge says it is due",
+        "when": "always"
       }
     ]
   },

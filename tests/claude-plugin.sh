@@ -116,6 +116,15 @@ has "$monitor" "--attention to_me" && note "  ...on messages for this seat" ||
 has "$(field "$MANIFEST" 'd.get("experimental", {}).get("monitors", [{}])[0].get("name", "")')" "room-waiter" &&
   note "  ...named room-waiter" || fail "  ...named room-waiter" "unnamed or renamed"
 
+# The todo nag: a channel frame is delivered only from a server named in the development flag, so
+# the plan check reaches the session as a monitor of the same notice. A manifest that lost it would
+# go silent on every seat started without the flag, and nothing else in this suite reads that.
+nag="$(field "$MANIFEST" 'd.get("experimental", {}).get("monitors", [{}, {}])[1].get("command", "")')"
+has "$nag" "letibot-mcp todo-wait" && note "the todo nag is a monitored todo-wait" ||
+  fail "the todo nag is a monitored todo-wait" "'$nag'"
+has "$(field "$MANIFEST" 'd.get("experimental", {}).get("monitors", [{}, {}])[1].get("name", "")')" "todo-nag" &&
+  note "  ...named todo-nag" || fail "  ...named todo-nag" "unnamed or renamed"
+
 # **A top-level key Claude Code does not read is stripped with a warning, not refused**, so a typo
 # would load and do nothing. The list is the manifest reference's Fields table.
 allowed="\$schema name displayName version description author homepage repository license keywords metadata icon documentationUrl supportUrl privacyPolicyUrl termsOfServiceUrl defaultEnabled dependencies settings userConfig types channels skills commands agents hooks mcpServers lspServers outputStyles workflows experimental"
