@@ -1465,6 +1465,7 @@ dependencies = [
  "letibot-tui",
  "leticode-config",
  "libc",
+ "rusqlite",
  "serde_json",
  "sha2",
  "toml",

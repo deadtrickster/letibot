@@ -1456,7 +1456,7 @@ expect "boundary is the boundary verb's" "$out" "^letibot-multi boundary --mode 
 
 # launcher_routes_hold_release_where_to_multicall: `letibot hold s-123` is what the idle-close
 # notice tells the operator to type. Every verb the help names reaches the multicall, never harnessd.
-for spec in "holds --json" "gc --log" "where" "hold s-123" "release s-123" "notes path" "doctor --json"; do
+for spec in "holds --json" "gc --log" "where" "hold s-123" "release s-123" "notes path" "doctor --json" "store forget-import s-123"; do
   v="${spec%% *}"
   # shellcheck disable=SC2086 # each spec is a word list on purpose
   out="$(run "$DEFAULT_ONLY" $spec)"

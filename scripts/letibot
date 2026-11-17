@@ -976,7 +976,7 @@ already up, then attaches the TUI head to it.
   letibot --help all          every flag this command takes: sessions, migration, the seat,
                               the model, remote hosts, the room, the VM
   letibot session list        what is on disk; also show, rename, archive, unarchive, delete
-  letibot <verb> --help       a verb's own page: session, stats, boundary, notes, browser,
+  letibot <verb> --help       a verb's own page: session, store, stats, boundary, notes, browser,
                               rooms, holds, hold, release, gc, where, migrate, fb, attach
   letibot --help removed      what this release took away, and what replaced it
 
@@ -1010,6 +1010,7 @@ EOF
 
 VERBS
   session list|show|rename|archive|unarchive|delete   the stored sessions
+  store forget-import ID                             clear a dead import's marker
   stats, boundary, notes, browser, rooms, holds, hold, release, gc, where, migrate, fb,
   attach, doctor
   `letibot <verb> --help` is that verb's own page; a verb with no page prints this list.
@@ -2314,6 +2315,17 @@ case "${1:-}" in
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the session verbs live there)"
     shift
     exec "${NOGPU[@]}" "$BIN/letibot-multi" session "$@" --store "$STORE"
+    ;;
+  # The store's own verbs: the operator's repair of a move a dead import left half-written.
+  store)
+    case "${2:-}" in
+      "" | --help | -h) ;;
+      forget-import) [ $# -ge 3 ] || need "SESSION" "store forget-import" ;;
+      *) die "store has no verb ${2}: forget-import" ;;
+    esac
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the store verbs live there)"
+    shift
+    exec "${NOGPU[@]}" "$BIN/letibot-multi" store "$@" --store "$STORE"
     ;;
   # What Claude Code has on this box (Package H): the ids `letibot --session cc-<id>`
   # takes, so a person can find a uuid without opening the JSONL. No store, no socket.

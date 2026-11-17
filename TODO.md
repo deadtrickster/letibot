@@ -943,9 +943,10 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Residue.**
 
-- A probe's error is now returned, but no test makes a probe fail: a file this build cannot ask
-  about is usually refused earlier by the version read. The change is proved by reading, not by
-  a test.
+- A probe's error is returned AND proved: `an_arm_whose_probe_cannot_be_answered_refuses_the_file`
+  (`store/tests.rs`, `mod unreadable_files`) makes a v28 file whose `job` is a view over a table
+  that is not there, and holds the refusal to the probe's own sentence and the file to its version.
+  With the error swallowed as `false` the test fails, which is the finding.
 - `migrating_from_each_recorded_version_equals_a_fresh_set` tolerates `merge_review` and the v24
   `_v23` archive tables. `merge_review` is created by the v18/v20 arms and by no fresh schema -
   a pre-existing inconsistency of the same class this row fixed, worth its own row.
@@ -957,8 +958,9 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - `open_store` derives a session's project key from its `workspace_root`. A session whose folder
   moved would open the set without its project file (shared-only) rather than the wrong file.
   Not covered by a test.
-- `Store::forget_import` has no `letibot` sub-verb: an operator's repair of a half-import is a
-  library door today. A `letibot store forget-import SESSION` belongs with the next store verb.
+- `Store::forget_import` is reachable from a shell: `letibot store forget-import SESSION`, fixed
+  in `letibot store forget-import`, with `store::tests` on the act and the absence and the
+  launcher's own case in `tests/launcher.sh`.
 
 ## R343 - liveness predicates, `closed_ms`, the lifecycle invariants
 

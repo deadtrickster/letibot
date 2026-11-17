@@ -64,6 +64,7 @@ mod roles;
 mod rooms;
 mod session;
 mod stats;
+mod store;
 mod targets;
 mod whereis;
 
@@ -327,6 +328,9 @@ fn main() -> ExitCode {
                     github::run(&tail())
                 } else if word == "session" {
                     session::run(&tail())
+                } else if word == "store" {
+                    // The operator's repair of a move a dead import left half-written.
+                    store::run(&tail())
                 } else if word == "doctor" {
                     doctor::run(&tail())
                 } else if word == "--config-reference" {
@@ -396,6 +400,7 @@ VERBS
                               `[github] post` and a token are set
   session VERB [ARGS]         the stored sessions: list, show, rename, archive, unarchive,
                               delete (`letibot session --help`)
+  store forget-import ID      clear the marker a dead import left, so the move can be retried
   where [FOLDER]              the socket this folder's daemon listens on and whether it is up:
                               `--ensure` starts it, `--json` prints socket, live, project
                               and folder in one object (`letibot --where` is the same verb)

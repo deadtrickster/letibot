@@ -2026,7 +2026,7 @@ fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
 /// The store a verb opens. A data DIRECTORY, or a path whose parent holds a `shared.db`, is the
 /// split set: `Store::open` on a missing `sessions.db` would CREATE a full-schema file beside the
 /// set that no daemon reads and that hides its sessions from `--sessions`.
-fn open_store(path: &Path, session: Option<&str>) -> Result<Store, String> {
+pub(crate) fn open_store(path: &Path, session: Option<&str>) -> Result<Store, String> {
     let dir = match path.is_dir() {
         true => Some(path.to_path_buf()),
         false => path.parent().map(Path::to_path_buf),

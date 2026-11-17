@@ -3922,6 +3922,11 @@ fn a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched()
         s.append_item(&tr, seq, &item, &row, &toks).unwrap();
     }
     s.set_provider_choice("sess-1", Some("deepseek")).unwrap();
+    s.set_limit_state(
+        "sess-1",
+        Some(r#"{"park":{"until_ms":99,"reset_ms":99,"model":"glm","said":true}}"#),
+    )
+    .unwrap();
 
     let fork = s.fork_session("sess-1", "sess-2", 3).unwrap();
     let loaded = s.load_transcript(&fork).unwrap();
@@ -3951,6 +3956,11 @@ fn a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched()
     assert_eq!(forked.parent_session_id, None);
     assert_eq!(forked.origin.as_deref(), Some("operator"));
     assert_eq!(forked.provider_choice.as_deref(), Some("deepseek"));
+    assert_eq!(
+        s.limit_state("sess-2").unwrap(),
+        s.limit_state("sess-1").unwrap(),
+        "a fork continues the conversation, so it carries the park the source was in"
+    );
     assert_eq!(s.current_transcript_id("sess-2").unwrap(), Some(fork));
 
     assert_eq!(s.item_count(&tr).unwrap(), 10, "the source keeps every row");
@@ -4184,6 +4194,83 @@ mod interrupted_arms {
                 "the arm left the table without {column}: {got:?}"
             );
         }
+    }
+}
+
+/// An arm's probe asks a question of the file and must hear the answer: a file it cannot ask about
+/// is refused, not read as "the arm has already run" and stamped as if it had.
+mod unreadable_files {
+    use super::*;
+
+    /// A store file of this build, made old and unanswerable by the caller.
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        fn seeded(tag: &str) -> Fixture {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "letibot-unreadable-{tag}-{}-{}.db",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_file(&path);
+            let fixture = Fixture(path);
+            Store::open(fixture.path()).expect("a store of this build");
+            fixture
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn unwound(&self, sql: &str) {
+            rusqlite::Connection::open(self.path())
+                .expect("a connection to the fixture")
+                .execute_batch(sql)
+                .expect("the fixture's DDL");
+        }
+
+        /// The version the FILE records, read without opening it as a `Store`.
+        fn version(&self) -> i64 {
+            rusqlite::Connection::open(self.path())
+                .expect("a connection")
+                .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+                .expect("the version row")
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// v28's arm probes `job` for its own column. A file whose `job` is a view over a table that is
+    /// not there cannot answer, and the answer is an ERROR: read as `false`, the migration would go
+    /// on and stamp a version its arms never reached.
+    #[test]
+    fn an_arm_whose_probe_cannot_be_answered_refuses_the_file() {
+        let fixture = Fixture::seeded("probe");
+        fixture.unwound(
+            "DROP TABLE job;
+             CREATE VIEW job AS SELECT * FROM nope;
+             UPDATE schema_version SET version = 27;",
+        );
+        assert_eq!(fixture.version(), 27, "the fixture is not a v27 file");
+
+        let why = Store::open(fixture.path())
+            .err()
+            .expect("a file whose tables cannot be asked about is refused")
+            .to_string();
+        assert!(
+            why.contains("no such table") || why.contains("malformed"),
+            "the refusal has to be the probe's own answer: {why}"
+        );
+        assert_eq!(
+            fixture.version(),
+            27,
+            "a refused migration leaves the file at the version it was"
+        );
     }
 }
 
