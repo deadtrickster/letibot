@@ -2305,6 +2305,31 @@ fn write_mark(path: &Path, instance: Option<u64>, seq: u64) {
 #[cfg(test)]
 mod tests {
 
+    /// A connection that has just been dialled owes its gap: until `replay_the_gap` has fetched it,
+    /// an ack would move the cursor over rows the open push never handed over. A row the stream
+    /// refused reopens it for the same reason.
+    #[test]
+    fn a_redial_owes_its_gap_before_anything_is_acked() {
+        let link = RoomLink::at(std::env::temp_dir().join("no-coordinator-here.sock"));
+        let g = &link.inner.generation;
+        let r = &link.inner.replayed;
+        let u = &link.inner.untaken;
+        g.store(2, Ordering::SeqCst);
+        r.store(1, Ordering::SeqCst);
+        u.store(false, Ordering::SeqCst);
+        assert!(
+            !link.gap_closed(),
+            "a second connection acked before its gap was replayed"
+        );
+        r.store(2, Ordering::SeqCst);
+        assert!(link.gap_closed(), "replayed, so the acks may go on");
+        u.store(true, Ordering::SeqCst);
+        assert!(
+            !link.gap_closed(),
+            "a row the stream did not take reopens the gap"
+        );
+    }
+
     /// The socket path is the room crate's function of the data directory, shared with the daemon
     /// so a seat never dials a socket nobody serves. Checked both ways: the data directory, and
     /// the override that moves both.
