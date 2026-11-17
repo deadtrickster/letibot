@@ -363,7 +363,15 @@ impl World {
                 .unwrap(),
             LeaseOutcome::Held { .. }
         ));
-        RepoQueue::new(store, self.repo.clone(), env)
+        // A process table of the test's own: a container runtime or a reviewer's `sleep` on the
+        // box must not decide whether a fixture's tree is in use.
+        RepoQueue::new(store, self.repo.clone(), env).with_proc_root(self.proc_root())
+    }
+    /// The fixture's `/proc`: empty unless a test puts a process in it.
+    fn proc_root(&self) -> PathBuf {
+        let proc = self.dir.0.join("proc");
+        let _ = std::fs::create_dir_all(&proc);
+        proc
     }
     fn enqueue(&self, name: &str, wt: &Path, base: &str, head: &str) {
         self.store()
@@ -422,6 +430,25 @@ impl World {
     fn tip(&self) -> String {
         sh(&self.repo, &["rev-parse", "main"])
     }
+}
+
+/// A process in the fixture's table, sitting in `tree`: the three files the in-use rules read. No
+/// real process exists, so the test says what a `sleep` cwd'd there would mean without one.
+fn a_process_in(world: &World, tree: &Path, comm: &str) -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(4_200);
+    let pid = NEXT.fetch_add(1, Ordering::Relaxed);
+    let entry = world.proc_root().join(pid.to_string());
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(entry.join("comm"), format!("{comm}\n")).unwrap();
+    std::fs::write(entry.join("stat"), format!("{pid} ({comm}) S 1 0 0 0\n")).unwrap();
+    std::os::unix::fs::symlink(tree, entry.join("cwd")).unwrap();
+    pid
+}
+
+/// And its exit: the entry a zombie leaves, which every rule here reads as gone.
+fn a_process_gone(world: &World, pid: u32) {
+    let _ = std::fs::remove_dir_all(world.proc_root().join(pid.to_string()));
 }
 
 fn run(q: &RepoQueue, passes: usize) {
@@ -3245,18 +3272,12 @@ fn a_superseded_fix_branch_with_a_foreign_process_in_its_tree_keeps_it() {
     let red = commit(&w.repo, "broken", "x\n", "a commit that breaks the gate");
     let (branch_name, wt) = a_fix_tree(&w, &red, "cdef0123");
     fix_branch(&w, "fixer-4", &branch_name, &wt, &red);
-    let mut sleeper = std::process::Command::new("sleep")
-        .arg("60")
-        .current_dir(&wt)
-        .spawn()
-        .expect("a process working in the tree");
+    let _pid = a_process_in(&w, &wt, "sleep");
     commit(&w.repo, "broken", "y\n", "the tip after it");
     let q = w.worker(Arc::new(LocalGate), "a");
     run(&q, 1);
     let r = w.store().review_row("fixer-4").unwrap().unwrap();
     let there = wt.exists();
-    let _ = sleeper.kill();
-    let _ = sleeper.wait();
     assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
     assert!(there, "a tree with a process in it is not removed");
     assert!(git::branch_head(&w.repo, &branch_name).is_some());
@@ -4823,11 +4844,7 @@ fn a_terminal_rows_tree_another_daemon_or_a_process_holds_is_left_alone() {
     w.enqueue("far", &wt, &base, &head);
     withdraw(&w, "far");
     // Another daemon on the box: a live process holding the writer row of a session in the tree.
-    let mut other = std::process::Command::new("sleep")
-        .arg("120")
-        .current_dir(&w.repo)
-        .spawn()
-        .expect("sleep");
+    let other = a_process_in(&w, &w.repo, "sleep");
     let s = w.store();
     s.put_session(&letibot_tokencore::store::SessionRecord {
         id: "s-far".into(),
@@ -4844,7 +4861,7 @@ fn a_terminal_rows_tree_another_daemon_or_a_process_holds_is_left_alone() {
     s.claim_session_writer(
         "s-far",
         "other/1/1",
-        other.id(),
+        other,
         &letibot_tools::lifecycle::box_id(),
         1,
         0,
@@ -4853,29 +4870,23 @@ fn a_terminal_rows_tree_another_daemon_or_a_process_holds_is_left_alone() {
     let q = w.worker(Arc::new(LocalGate), "a");
     run(&q, 2);
     let kept = wt.exists();
-    let _ = other.kill();
-    let _ = other.wait();
     assert!(kept, "another daemon's live session keeps the tree");
     let said = w.door.warnings("queue_branch_kept");
     assert!(
         said.iter()
-            .any(|w| w.contains("s-far") && w.contains(&format!("pid {}", other.id()))),
+            .any(|w| w.contains("s-far") && w.contains(&format!("pid {other}"))),
         "the kept line names the session and its daemon: {said:?}"
     );
 
     // Its daemon is gone, and a process has its cwd inside the tree.
-    let mut inside = std::process::Command::new("sleep")
-        .arg("120")
-        .current_dir(wt.join("."))
-        .spawn()
-        .expect("sleep");
+    a_process_gone(&w, other);
+    let inside = a_process_in(&w, &wt, "sleep");
     run(&q, 1);
     let kept = wt.exists();
-    let _ = inside.kill();
-    let _ = inside.wait();
     assert!(kept, "a process cwd'd inside keeps the tree");
 
     // Nothing uses it any more: it goes.
+    a_process_gone(&w, inside);
     run(&q, 1);
     assert!(!wt.exists(), "a tree nobody is in is released");
     assert_eq!(git::branch_head(&w.repo, "agent/far"), None);
@@ -6164,6 +6175,31 @@ fn a_train_whose_target_moved_lands_nothing_and_requeues_every_car() {
             back.why
         );
     }
+}
+
+/// The queue's in-use rules read the process table it was handed, never the box's live `/proc`: a
+/// container runtime or a reviewer's `sleep` sitting somewhere cannot decide a fixture's tree, and
+/// a process the fixture names does.
+#[test]
+fn the_queues_process_table_is_the_one_the_worker_was_handed() {
+    let w = World::new("proc-root");
+    let (wt, _base, _head) = branch(&w.repo, "one", "one.txt");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    assert_eq!(q.here().proc_root, w.proc_root(), "the fixture's own table");
+    assert_eq!(
+        letibot_tools::lifecycle::in_use::why_kept(&wt, None, &q.here()),
+        None,
+        "nothing sits in the tree"
+    );
+    // One process, as `/proc` describes it: a `comm` and a `cwd` link into the tree.
+    let pid = 4_242_u32;
+    let entry = w.proc_root().join(pid.to_string());
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(entry.join("comm"), "runc:[2:INIT]\n").unwrap();
+    std::os::unix::fs::symlink(&wt, entry.join("cwd")).unwrap();
+    let why = letibot_tools::lifecycle::in_use::why_kept(&wt, None, &q.here())
+        .expect("a process the fixture names keeps the tree");
+    assert!(why.contains(&pid.to_string()), "{why}");
 }
 
 /// A landing undone because the operator's checkout could not follow leaves the target's reflog as

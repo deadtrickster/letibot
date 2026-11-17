@@ -257,6 +257,9 @@ pub struct RepoQueue {
     lease_ok: Arc<AtomicBool>,
     /// When each target last fetched `origin`, so a waiting row does not fetch on every pass.
     fetched: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// The process table the in-use rules read: `/proc` in a daemon, a fixture in a test. Whether
+    /// a tree is in use must not depend on what another program on the box is doing.
+    proc_root: PathBuf,
 }
 
 /// How often a target with rows in line asks `origin` where it is. A refused push fetches at once.
@@ -465,6 +468,23 @@ impl RepoQueue {
             gate: Default::default(),
             lease_ok: Arc::new(AtomicBool::new(true)),
             fetched: Default::default(),
+            proc_root: PathBuf::from("/proc"),
+        }
+    }
+
+    /// This queue against a process table a caller names, so a test's answer about a tree does not
+    /// depend on what is running on the box.
+    pub fn with_proc_root(mut self, root: PathBuf) -> Self {
+        self.proc_root = root;
+        self
+    }
+
+    /// What the in-use rules read about this box: its name, this pid, and the process table.
+    pub(crate) fn here(&self) -> letibot_tools::lifecycle::autoarchive::Here {
+        letibot_tools::lifecycle::autoarchive::Here {
+            host: letibot_tools::lifecycle::box_id(),
+            pid: std::process::id(),
+            proc_root: self.proc_root.clone(),
         }
     }
 
@@ -1420,7 +1440,7 @@ impl RepoQueue {
     /// The debris no row names: a registration whose directory is gone and a tree whose `.git` names a missing gitdir, left by a killed, refused or elsewhere-landed child. Neither can hold a commit.
     /// The tree says so in the daemon's log; a sweep that took nothing says nothing.
     fn reap_worktree_debris(&self) {
-        let here = letibot_tools::lifecycle::autoarchive::Here::this_process();
+        let here = self.here();
         let in_use =
             |dir: &Path| letibot_tools::lifecycle::in_use::why_kept(dir, Some(&self.store), &here);
         match git::reap_worktrees(&self.repo, std::time::SystemTime::now(), &in_use) {
@@ -1577,11 +1597,8 @@ impl RepoQueue {
         // Another daemon's session, or any process with its cwd in the tree: the queue's own
         // registry above sees only this daemon's sessions.
         if there
-            && let Some(why) = letibot_tools::lifecycle::in_use::why_kept(
-                wt,
-                Some(&self.store),
-                &letibot_tools::lifecycle::autoarchive::Here::this_process(),
-            )
+            && let Some(why) =
+                letibot_tools::lifecycle::in_use::why_kept(wt, Some(&self.store), &self.here())
         {
             found.kept = Some((
                 "live",
@@ -1756,7 +1773,14 @@ impl RepoQueue {
                     r.branch, r.session_id
                 ))
             } else {
-                git::retire_if_empty(&self.repo, &tip, &r.branch, Some(wt), Some(&self.store))
+                git::retire_if_empty(
+                    &self.repo,
+                    &tip,
+                    &r.branch,
+                    Some(wt),
+                    Some(&self.store),
+                    &self.here(),
+                )
             };
             if let Err(kept) = kept {
                 // Said where a person reads it, not only in the daemon's log - and once
@@ -3621,11 +3645,7 @@ impl RepoQueue {
                 .map(Path::new)
                 .filter(|wt| wt.exists())
                 .and_then(|wt| {
-                    letibot_tools::lifecycle::in_use::why_kept(
-                        wt,
-                        Some(&self.store),
-                        &letibot_tools::lifecycle::autoarchive::Here::this_process(),
-                    )
+                    letibot_tools::lifecycle::in_use::why_kept(wt, Some(&self.store), &self.here())
                 });
             let kept = match (&live, in_use) {
                 (Some(s), _) => Err(format!(
