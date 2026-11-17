@@ -457,7 +457,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 **Residue.**
 - Hook episodes stay in the daemon's own state file (`limit_hook.rs` `STATE_FILE`), keyed by model, not in `LimitState`. They were already durable; folding them in moves a per-daemon fact onto each session row.
 - A subagent's harness does not restore its limit state: children are reopened by `children.rs`, which restores no provider choice either, and their parks are not driven by `Sessions::resume_due_limits`. A parked child across a restart is still lost.
-- A session forked by `Store::fork_session` does not carry the limit state. The fork is a new session and starts unlimited.
+- A session forked by `Store::fork_session` carries the limit state, fixed in `a fork continues the park it was forked in`: the fork's row gets the source's, so the conversation does not continue on the model the source is waiting for. `a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched` asserts it.
 - The v51 `nags_paused_by` comment lost its commas: sqlite's `DROP COLUMN` of a last column cuts at the last comma before it, and a comma inside that comment left an unparsable table.
 
 **Scope.** `harnessd/src/harness/limit.rs`, `restart.rs` `mid_turn`, `open.rs` restore. One persisted `LimitState` (C17).

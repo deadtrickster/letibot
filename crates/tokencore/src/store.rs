@@ -3007,6 +3007,10 @@ impl Store {
         }
         self.set_provider_choice(new_id, src.provider_choice.as_deref())?;
         self.set_window(new_id, src.context_window)?;
+        // A fork continues the conversation, so it continues a park too: without this it comes back
+        // unlimited on the model the source is waiting for, and re-spends the refusal.
+        let limit = self.limit_state(source)?;
+        self.set_limit_state(new_id, limit.as_deref())?;
         let tid = format!("{new_id}#t0");
         self.put_fork(&tid, new_id, &loaded.stable_prefix_id, &from, keep)?;
         self.append_items(
