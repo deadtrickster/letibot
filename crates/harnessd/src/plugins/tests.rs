@@ -5578,6 +5578,23 @@ fn an_unpinned_layers_limit_decide_answer_is_ignored() {
         unpinned.limit(&hub, &input).is_none(),
         "the fixed ladder decides"
     );
+    // And it is said once, with the pin: a silent fall-through is how a project's own limit
+    // policy comes to be ignored without anybody knowing.
+    let said: Vec<String> = hub
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning { code, detail, .. } if code == "plugin_untrusted" => {
+                Some(detail.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter()
+            .any(|d| d.contains("decider") && d.contains("pinned")),
+        "the skipped deciding answer was not said with the pin: {said:?}"
+    );
 
     let pinned = pinned_table_host(&root, &table, &dir);
     let decided = pinned

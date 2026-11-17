@@ -41,6 +41,14 @@ impl PluginHost {
                     && l.manifest.hooks.iter().any(|h| h == hook)
             });
             if !answering {
+                drop(inner);
+                // Nothing here may answer: a layer that would have decided this hook and is not
+                // pinned is said once with its pin, and the fixed ladder decides.
+                let stack = {
+                    let inner = self.lock();
+                    Arc::clone(&inner.stack)
+                };
+                say_unpinned(hub, &mut self.lock(), &stack, hook);
                 return None;
             }
             inner.rec.record(hook, input);
@@ -49,6 +57,9 @@ impl PluginHost {
         let resolved = stack.call(hook, input);
         let mut inner = self.lock();
         say_failures(hub, &mut inner, &resolved.failures);
+        if resolved.by.is_none() {
+            say_unpinned(hub, &mut inner, &stack, hook);
+        }
         // The layers changed while this answer was being made. A failure stays news - it happened -
         // but the answer belongs to a stack that is no longer in force, and is dropped the way any
         // late answer is: the caller falls back to what it does with no answer at all.
@@ -293,6 +304,12 @@ impl PluginHost {
     ) -> Option<Result<LimitDecision, String>> {
         use letibot_plugin::limit;
         if !self.answers(limit::HOOK) {
+            // The ladder decides, and the layer that could have is said once with its pin.
+            let stack = {
+                let inner = self.lock();
+                Arc::clone(&inner.stack)
+            };
+            say_unpinned(hub, &mut self.lock(), &stack, limit::HOOK);
             return None;
         }
         let mut input = input.clone();

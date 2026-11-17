@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::Capability;
 use crate::manifest::{Manifest, Scope, ToolDecl};
 use crate::trust::{Pin, Trust};
-use crate::{Loader, MANIFEST, Module, sha256_file};
+use crate::{CONTRACT, Loader, MANIFEST, Module, sha256_file};
 
 /// How many module calls one resolution may make. An ask-below nests, so a stack of ten layers
 /// could in principle ask for a great many answers to settle one hook; the budget turns that into
@@ -731,6 +731,25 @@ impl Stack {
     /// Resolve one hook through the stack, from the top: pass or unchanged falls through, mask stops
     /// everything below, `below` round trips, anything else answers. A failed layer is recorded and
     /// skipped, except a guard hook ([`FAIL_CLOSED`]), where a failure sets `refused`.
+    /// The layers that would have answered `hook` and may not, because it is one only a pinned
+    /// layer decides. The host says the pin line once per layer: a silent fall-through to the fixed
+    /// ladder is how a project's own limit policy comes to be ignored without anybody knowing.
+    pub fn unpinned_deciders(&self, hook: &str) -> Vec<&Layer> {
+        if !decides(hook) {
+            return Vec::new();
+        }
+        self.layers
+            .iter()
+            .filter(|l| {
+                !l.disabled
+                    && !l.trusted
+                    && l.scope != Scope::Session
+                    && l.manifest.contract == CONTRACT
+                    && l.manifest.hooks.iter().any(|h| h == hook)
+            })
+            .collect()
+    }
+
     pub fn call(&self, hook: &str, input: &Value) -> Resolved {
         let mut walk = Walk {
             hook,

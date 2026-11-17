@@ -607,10 +607,10 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - I65 MCP part: `bounded_line` caps stdio lines and SSE lines and events at 8 MiB, a JSON body too, and the stdio read-ahead is a 16-line `sync_channel`. Past the cap the server is Gone and restarted on backoff. Test `fake_server::an_mcp_server_endless_line_is_dropped` failed on base (waited the 10 s timeout).
 
 **Residue.**
-- Decision 8 (b): spawning MCP stdio servers through the exec backend sandbox.
-- Decision 9 (b): the pin flow offering a pin when an unpinned layer's deciding answer is skipped. Today the skip is silent beyond the existing `plugin_untrusted` load warning.
+- Decision 9 (b), built 2026-11-17: `Stack::unpinned_deciders(hook)` names the layers that would have decided a hook and may not, and `PluginHost` says each once, on the session's log (`plugin_untrusted`) with `Layer::untrusted_sentence` - the pin line. It is said at both places a deciding hook comes back unanswered: `ask`'s "nothing here answers" and `limit`'s ladder. Test `an_unpinned_layers_limit_decide_answer_is_ignored` gained the assertion; with `say_unpinned` removed the sentence list is empty.
+- Decision 8 (b): spawning MCP stdio servers through the exec backend sandbox. Not built: `crates/mcp` spawns with `std::process::Command`, and the sandbox is `letibot_tools::exec`, so this needs a spawn seam through the catalogue before it can be wired - its own change.
 - A10's GLM position also named `command_` as a deciding prefix; INTEGRATION's change does not, so it is not in `DECIDES`.
-- No `/mcp pin` verb: the operator pastes the line the warning prints. The operator's live config has no `[mcp_projects]`, so nothing stops on this box.
+- No `/mcp pin` verb: the operator pastes the line the warning prints (for a layer) or the `[mcp_projects.pinned]` line (for a `.mcp.json`, from `mcp_pin`'s warning). The operator's live config has no `[mcp_projects]`, so nothing stops on this box.
 - A `new_session` limit answer is not restricted to the candidates (only `switch` is, per A10-F15).
 
 **Proving tests.** `an_unpinned_layers_limit_decide_answer_is_ignored`, `stdio_spawn_does_not_leak_env_or_orphan`, `an_edited_mcp_json_under_a_trusted_dir_is_not_started`, `an_mcp_server_endless_line_is_dropped`. Each fails on the snapshot.

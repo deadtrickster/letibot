@@ -507,6 +507,24 @@ fn say_failures(hub: &Arc<Hub>, inner: &mut Inner, failures: &[Failure]) {
     }
 }
 
+/// Say the pin once for a layer that would have decided a hook and may not: the fall-through to the
+/// fixed ladder is right, and silent is not - the operator's own layer must not look like it answered.
+fn say_unpinned(hub: &Arc<Hub>, inner: &mut Inner, stack: &Arc<Stack>, hook: &str) {
+    for layer in stack.unpinned_deciders(hook) {
+        let said = format!(
+            "`{}` answers no `{hook}` until it is pinned, and the built-in ladder answered instead. \
+             {}",
+            layer.manifest.name,
+            layer.untrusted_sentence()
+        );
+        if !inner.said.insert(said.clone()) {
+            continue;
+        }
+        inner.notices.push(said.clone());
+        hub.warn("plugin_untrusted", said);
+    }
+}
+
 /// Where a session's own layers live: `<data dir>/sessions/<id>/plugins`. One function because
 /// three callers must agree - discovery, `plugin scaffold` and the daemon's host - and a
 /// disagreement is a plugin written where nothing discovers it. `None` when the data dir is unknown.
