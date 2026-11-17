@@ -425,7 +425,6 @@ impl App {
             .first()
             .map(|d| d.req_id.clone())
             .unwrap_or_default();
-        let question = self.open.first().is_some_and(|d| d.kind == "question");
         // The mode card is not in `open`, so it needs its own detector: a card that appears
         // over a half-typed line holds it, exactly as a question does, or the Enter that
         // meant to send the line answers the card instead.
@@ -482,15 +481,17 @@ impl App {
             if !front.is_empty() && (self.todo_draft.is_some() || self.key_ask.is_some()) {
                 self.say("a decision is waiting behind this card — enter or esc it, then answer");
             }
-            if question && !self.editor.text().is_empty() {
+            // Any decision, not only a question: a line typed before the card is the next prompt,
+            // and only words typed after it are a comment on the card's choice.
+            if !front.is_empty() && !self.editor.text().is_empty() {
                 self.hold_line();
                 self.say(
-                    "a question came up — your line is held, and comes back when the card is \
+                    "a card came up — your line is held, and comes back when the card is \
                      answered or put away",
                 );
             }
         }
-        if !question
+        if self.open.is_empty()
             && !mode_up
             && let Some(held) = self.held_line.take()
         {
