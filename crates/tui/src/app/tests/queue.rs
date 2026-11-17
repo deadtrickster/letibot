@@ -1741,7 +1741,7 @@ fn a_click_on_n_stuck_lists_only_this_sessions_stuck_rows() {
         .collect();
     assert_eq!(ids, vec!["m-mine".to_string()], "{pane}");
 
-    // `/queue stuck` is the repository's, as before.
+    // `/queue stuck` is the repository's.
     a.command("queue");
     a.command("queue stuck");
     assert!(!a.queue_own_only);
