@@ -191,10 +191,9 @@ pub(crate) fn prompt_once(
     from: &str,
     timeout: Duration,
 ) -> Result<u64, String> {
-    // The id is the prompt's own identity, recorded before anything is sent: a call that timed out
-    // may still be in flight in its thread, so a second submit of the same words is refused rather
-    // than run twice. A daemon's refusal is an answer, and forgetting the id then lets a corrected
-    // prompt through.
+    // Recorded before anything is sent: a timed-out call may still be in flight, so a second
+    // submit of the same words is refused rather than run twice. A daemon's refusal is an
+    // answer, and forgetting the id then lets a corrected prompt through.
     let id = prompt_id(session, from, text);
     remember(&id)?;
     let where_to = session.to_string();

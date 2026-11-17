@@ -2314,10 +2314,9 @@ fn write_mark(path: &Path, instance: Option<u64>, seq: u64) {
 #[cfg(test)]
 mod tests {
 
-    /// The socket is one path, and the daemon's is the room crate's function of the data directory.
-    /// The bridge had its own copy of the key and of the join; a copy agrees until one side is fixed,
-    /// and then a seat dials a socket nobody serves. Held together here, both ways round: the data
-    /// directory, and the override that moves both.
+    /// The socket path is the room crate's function of the data directory, shared with the daemon
+    /// so a seat never dials a socket nobody serves. Checked both ways: the data directory, and
+    /// the override that moves both.
     #[test]
     fn bridge_and_daemon_dial_the_same_room_socket() {
         let _held = letibot_testenv::EnvGuard::lock();
@@ -2629,10 +2628,9 @@ mod tests {
         assert!(long.ends_with("-007"));
     }
 
-    /// The twin of a long handle is the room's to place, and the room places a twin by its family:
-    /// `family_of` wants the name to be `family + "-" + alnum`. Cutting the handle from the left put
-    /// the cut inside the FOLDER, so the family stopped being a prefix and the twin lost the mail
-    /// it had a race for. The cut falls on the name now, and the family is that same cut.
+    /// The room places a long handle's twin by its family, and `family_of` wants the name to be
+    /// `family + "-" + alnum`. So the cut falls on the name, not the folder, and the family is
+    /// that same cut.
     #[test]
     fn a_long_folder_twin_keeps_its_family() {
         let folder = "letibot-remote-r348";
@@ -2653,11 +2651,11 @@ mod tests {
             assert!(!tail.is_empty(), "{twin}");
             assert!(tail.bytes().all(|b| b.is_ascii_alphanumeric()), "{twin}");
         }
-        // A handle short enough to keep whole keeps the family the old code spelled.
+        // A handle short enough to keep whole is its own family.
         assert_eq!(family_for("cc@letibot"), "cc@letibot");
     }
 
-    /// A8-F14: the room's name for this folder outlives the process that was given it. A restart
+    /// The room's name for this folder outlives the process that was given it. A restart
     /// that asked for the folder's own name again would be a new seat, and the cursor it had read
     /// is the seat's - so a restart would replay what the other seat had already read.
     #[test]
@@ -2697,7 +2695,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A8-F13: a reader outlives the connection it served, so a frame from an older connection
+    /// A reader outlives the connection it served, so a frame from an older connection
     /// must not answer a newer round trip, and an older reader's end must not end its wait.
     #[test]
     fn a_stale_readers_frame_and_its_end_leave_a_newer_wait_alone() {

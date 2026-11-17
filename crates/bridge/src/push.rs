@@ -999,10 +999,8 @@ mod rules_tests {
         }
     }
 
-    /// A note that names the seat is addressed, not passing. The bridge had its own `reach` and said
-    /// every `fyi` was `passing`, so the push rule here - *only an addressed line is pushed* -
-    /// dropped a note that named this very seat. The room crate's `Message::reach` is the one rule:
-    /// `Fyi` is passing only when it names nobody.
+    /// A note that names the seat is addressed, not passing. The room crate's `Message::reach` is
+    /// the one rule: `Fyi` is passing only when it names nobody.
     #[test]
     fn a_named_fyi_reaches_a_push_layer_as_addressed() {
         let me = crate::rooms::handle();
