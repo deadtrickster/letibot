@@ -411,3 +411,42 @@ fn placed_row_of(frame: &[String], needle: &str) -> usize {
     let title = at_row(frame, "todos — ") as usize;
     at_row(frame, needle) as usize - title
 }
+
+/// A row waiting on ANOTHER board's row says whose board it is and the row's own words - the lead's
+/// `waits on cc@etcd-a36's "<row>"` - on the row and in the detail view, and it is no link: this
+/// head holds no table for another seat's board.
+#[test]
+fn a_row_waiting_on_another_board_says_whose_row_it_is() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
+        session_id: "s1".into(),
+        todos: vec![row(
+            "collect the package",
+            None,
+            vec![TodoNeed::Todo {
+                seat: "cc@etcd-a36".into(),
+                content: "review the parity row".into(),
+            }],
+        )],
+    });
+    a.key(Key::CtrlT);
+    let lines = a.todos_lines(160);
+    assert!(
+        line_with(&lines, "collect the package")
+            .ends_with("waits on cc@etcd-a36's \"review the parity row\""),
+        "{lines:#?}"
+    );
+    assert!(
+        a.todos_wait_links.is_empty(),
+        "another board is not a table this head holds"
+    );
+
+    a.todos_open = Some(TodoStop::Theirs("collect the package".into()));
+    let v = a.todos_open_lines(160).join("\n");
+    assert!(
+        v.contains("needs cc@etcd-a36's \"review the parity row\""),
+        "{v}"
+    );
+}
