@@ -1876,6 +1876,7 @@ pub fn serve_conn_on(
                 session_id,
                 from,
                 count,
+                transcript,
             }) => {
                 let Some(hub) = registry.resolve(&session_id) else {
                     let f = ServerFrame::Rejected {
@@ -1889,16 +1890,28 @@ pub fn serve_conn_on(
                 };
                 let want = count.min(MAX_FETCH_ROWS);
                 let mut rows: Vec<(usize, crate::view::SnapshotItem)> = Vec::new();
-                let mut row = from;
-                while rows.len() < want {
-                    let Some(item) = hub.row_at(row) else {
-                        // The first ordinal the view cannot answer, so the rest of the page is
-                        // the store's: one read for the page rather than one per row.
-                        rows.extend(registry.rows_from_store(&session_id, row, want - rows.len()));
-                        break;
-                    };
-                    rows.push((row, item));
-                    row += 1;
+                // A page of an EARLIER transcript - the rows a fork did not carry, which a head keeps
+                // on the screen as history - is the store's alone: the daemon's view is the transcript
+                // the session speaks now, and its ordinals name that one. Asked by name, so no ordinal
+                // of one transcript can be read as a row of another.
+                if let Some(earlier) = &transcript {
+                    rows = registry.rows_from_store_in(earlier, from, want);
+                } else {
+                    let mut row = from;
+                    while rows.len() < want {
+                        let Some(item) = hub.row_at(row) else {
+                            // The first ordinal the view cannot answer, so the rest of the page is
+                            // the store's: one read for the page rather than one per row.
+                            rows.extend(registry.rows_from_store(
+                                &session_id,
+                                row,
+                                want - rows.len(),
+                            ));
+                            break;
+                        };
+                        rows.push((row, item));
+                        row += 1;
+                    }
                 }
                 // The page is bounded in BYTES as well as rows, and it gives up its OLDEST rows.
                 // The rows nearest the window are the ones the reader scrolling up is next to, and a
@@ -1921,6 +1934,7 @@ pub fn serve_conn_on(
                     session_id: hub.session_id(),
                     from: starts,
                     rows: rows.into_iter().map(|(_, r)| r).collect(),
+                    transcript,
                 };
                 writer.lock().unwrap().write(&f)?;
             }

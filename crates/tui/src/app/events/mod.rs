@@ -283,6 +283,7 @@ impl App {
         // the rows the head was told do not exist above may be another session's entirely.
         self.fetch_asked = None;
         self.fetch_below = None;
+        self.fetch_earlier = None;
         self.no_more_above = false;
         // Whether this session's store row holds a conversation the head has not got: asked where the rows
         // are replaced, since a snapshot can be the empty one a registered but unopened session is handed. See
@@ -647,9 +648,22 @@ impl App {
     /// The rows this head holds that are numbered in a transcript the session has left: the head's half of
     /// `TranscriptForked`, whose carried rows are all published under new ids, so not one held id is in the
     /// carry. What it keeps above the new base is history; `items_base` is where the base starts.
+    ///
+    /// Only the rows the fork actually CARRIED are dropped, each replaced by its copy under the new id. A fold
+    /// that carried none - the sliced fold, which keeps a summary and no tail - would otherwise empty the screen,
+    /// so the rows it left stay on as history above the seam. See `Note::Compacted`.
     pub(crate) fn rows_replaced(&mut self, transcript_id: &str, parent_id: &str) {
         let gone = format!("{parent_id}.");
         let here = format!("{transcript_id}.");
+        // The carry is a SUFFIX of the record, published in order under the new ids, and the new transcript's
+        // first row is the note the fork writes about itself - so its rows less that one are the old rows that
+        // already have a replacement on the screen.
+        let carried = self
+            .items
+            .iter()
+            .filter(|r| r.item_id.starts_with(here.as_str()))
+            .count()
+            .saturating_sub(1);
         // The reader's place, taken before the rows go: the live door onto a replacement and the one `load`
         // cannot answer, since a fork's rows travel as appends. The row's own words and the line are taken here,
         // while the row is still there to be asked. See [`App::repair_anchor`].
@@ -666,13 +680,42 @@ impl App {
             arriving,
         });
         // The rows before the first one that goes keep their places - a resume republishes the tail
-        // of the transcripts a compaction put behind the current one, and the reader draws them.
-        let kept = self
+        // of the transcripts a compaction put behind the current one, and the reader draws them - and so
+        // does every row of the left transcript the carry did not republish.
+        let first = self
             .items
             .iter()
             .position(|r| r.item_id.starts_with(gone.as_str()))
             .unwrap_or(self.items.len());
-        self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        let held = self
+            .items
+            .iter()
+            .filter(|r| r.item_id.starts_with(gone.as_str()))
+            .count();
+        // The carried rows are the last of the left transcript's run, so the ones that go are its tail.
+        let stay = held.saturating_sub(carried);
+        let (from, to) = (first + stay, first + held);
+        let removed = to.saturating_sub(from);
+        if removed > 0 {
+            self.items.drain(from..to);
+        }
+        // Every index into `items` past the rows that went moves down by them, and the seams this head
+        // files its notes at are row indices: a seam into a row that went joins the history, which is the
+        // rule `load` applies to a seam the new transcript no longer has.
+        for (place, _) in &mut self.notes {
+            if let Placed::Seam(at) = place {
+                if *at >= to {
+                    *at -= removed;
+                } else if *at >= from {
+                    *place = Placed::Before;
+                }
+            }
+        }
+        if let Some(h) = &mut self.anchor
+            && h.ordinal >= to
+        {
+            h.ordinal -= removed;
+        }
         // But the ordinal space is the new base's. It is numbered from zero, so the rows held
         // above it are rows no ordinal names: `items_lead` says where the base starts, and a page
         // above the window belongs there and not at the front.
@@ -686,26 +729,40 @@ impl App {
             .get(self.items_lead)
             .and_then(|r| letibot_sessionlog::view::ordinal_in(&r.item_id, &here))
             .unwrap_or(0);
+        // The seam the fold made, where the history stops and the transcript it published begins. Filed
+        // only when something was kept: a fork that carried everything leaves no history, and a marker with
+        // nothing above it is a line about an absence.
+        if stay > 0 {
+            self.file_note_at(
+                self.items_lead,
+                Note::Compacted {
+                    parent: parent_id.to_string(),
+                    kept: stay,
+                },
+            );
+        }
         // A page in flight was asked for by an ordinal of the transcript that just went, and the rows
         // the head was told do not exist above may be another transcript's entirely.
         self.fetch_asked = None;
         self.fetch_below = None;
-        self.no_more_above = false;
+        self.fetch_earlier = None;
+        // Unless something is held above the base: those rows are a transcript of their own, and what the
+        // last ask learned about the one being left says nothing about it.
+        self.no_more_above = stay == 0 && self.items_lead == 0;
         // A fork's rows are not the ones this head counted below the window, and they arrive as
         // appends: the gap goes with the transcript it was a gap in.
         self.items_below = 0;
-        // The one thing this head keeps by row INDEX goes with the rows: the seams its notes were filed at. A
-        // seam into the rows that went joins the history, which is the rule `load` applies to a seam the new
-        // transcript no longer has - and every row from `kept` on went, so every seam there goes with them.
-        for (place, _) in &mut self.notes {
-            if matches!(place, Placed::Seam(at) if *at >= kept) {
-                *place = Placed::Before;
-            }
-        }
         // And the offset goes with the rows it was measured against: `scroll` is lines hidden below the
-        // window, measured from the bottom of the transcript that just went. `load` has always zeroed it; the
-        // live door did not, so a `/reseat` left the reader placed by a number that means nothing here.
-        self.scroll = 0;
+        // window, and every row the reader was parked on is still here and still in the same place. A
+        // reader whose row the carry replaced keeps nothing by this number, and `repair_anchor` looks for
+        // the row by its words from a place that means nothing here.
+        let held_row_survives = self
+            .anchor
+            .as_ref()
+            .is_some_and(|h| self.items.iter().any(|r| r.item_id == h.item_id));
+        if !held_row_survives {
+            self.scroll = 0;
+        }
         // A row went, so everything derived from the rows - the `!` candidates and the model's
         // suggestions - is stale, by the same rule the live append follows.
         self.the_rows_moved();

@@ -3284,16 +3284,19 @@ fn a_fork_re_bases_the_window_on_the_transcript_it_left() {
     // transcript behind the one the session was speaking.
     a.items_base = 500;
     let ancestor: Vec<String> = (0..5).map(|i| format!("s#t0.{i}")).collect();
-    carried_appends(&mut a, 1, &ancestor, |i| format!("row {i}"));
+    carried_appends(&mut a, 1, &ancestor, |i| format!("ancestor {i}"));
     let speaking: Vec<String> = (0..15).map(|i| format!("s#t1.{i}")).collect();
     carried_appends(&mut a, 100, &speaking, |i| format!("row {i}"));
     a.walk_limit = 1;
     let _ = a.screen(100, 20);
 
-    // The compaction: the conversation carried under the new transcript's ids, then the statement.
+    // The compaction: the note the fold writes about itself and the conversation it carried, under the
+    // new transcript's ids - and then the statement. The note is the one row of the new transcript that
+    // is not a copy of a row it replaced.
     let carried: Vec<String> = (0..12).map(|i| format!("s#t2.{i}")).collect();
-    fork_live(&mut a, 1000, "s#t1", "s#t2", &carried, |i| {
-        format!("row {i}")
+    fork_live(&mut a, 1000, "s#t1", "s#t2", &carried, |i| match i {
+        0 => "This conversation was compacted.".to_string(),
+        _ => format!("row {}", i + 3),
     });
     let _ = a.screen(100, 20);
 
@@ -3302,14 +3305,24 @@ fn a_fork_re_bases_the_window_on_the_transcript_it_left() {
         "the window's base still names an ordinal of the transcript the fork replaced"
     );
     let held: Vec<&str> = a.items.iter().map(|r| r.item_id.as_str()).collect();
-    assert!(
-        !held.iter().any(|id| id.starts_with("s#t1.")),
-        "a row of the transcript the fork replaced is still held: {held:?}"
-    );
-    // And the rows the resume republished above the base are still here, above it: the reader
-    // draws them, and no ordinal names them.
+    // The eleven rows the carry republished are gone from under the ids they had, and the four it did
+    // not carry are still here - as history above the base, which is where the reader reads them.
+    for id in ["s#t1.11", "s#t1.12", "s#t1.13", "s#t1.14"] {
+        assert!(
+            !held.contains(&id),
+            "a row the carry republished is still held under the id it had: {held:?}"
+        );
+    }
+    for id in ["s#t0.0", "s#t1.0", "s#t1.3"] {
+        assert!(
+            held.contains(&id),
+            "a row the carry did not republish was dropped: {id} is not in {held:?}"
+        );
+    }
+    // And the rows above the base are still here, above it: the reader draws them, and no ordinal
+    // names them - five ancestors and the four rows of the transcript the fork left.
     assert_eq!(
-        a.items_lead, 5,
+        a.items_lead, 9,
         "the head does not know where the base begins: {held:?}"
     );
     assert_eq!(
@@ -3380,10 +3393,11 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
     );
 }
 
-/// A live fork that does not carry the row goes to the tail and says so: a compaction's shape leaves the
-/// reader's row in the part that was summarised, and the head must neither count nor move them in silence.
+/// A live fork that does not carry the row keeps it, and the reader with it: a compaction's shape leaves the
+/// reader's row in the part that was summarised, and that part is still the conversation - the head keeps it
+/// as the history above the seam rather than dropping the screen and calling the row lost.
 #[test]
-fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
+fn a_live_fork_that_does_not_carry_the_row_keeps_it_and_the_place() {
     let mut a = scrolled_up(40);
     let held = a.anchor.clone().expect("a held row");
     let was = words_at(&a, held.ordinal);
@@ -3399,71 +3413,206 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
     });
     let frame = a.screen(100, 30);
 
-    // The reader's row is not in the new transcript, and the fixture says so rather than
-    // leaving it to the code: no row here says `was`.
+    // The reader's row is not in the new transcript, and the row it IS in is still here: the part of the
+    // record the summary replaced is kept, so the row is held under the id it had.
     assert!(
-        !a.items.iter().any(|it| row_says(it, &was)),
-        "the fixture carries the reader's row, so this test is not about a lost one"
+        a.items.iter().any(|it| it.item_id == held.item_id),
+        "the row the reader was on was dropped with the transcript it belonged to: {:?}",
+        a.items.iter().map(|r| &r.item_id).collect::<Vec<_>>()
     );
-    assert!(
-        a.anchor.is_none(),
-        "a row that is not in the transcript must not be held by index: {:?}",
-        a.anchor
+    let now = a
+        .anchor
+        .clone()
+        .expect("the row is still on the screen, so the place is still held");
+    assert_eq!(
+        now.item_id, held.item_id,
+        "the reader was moved off a row that is still here"
     );
+    // And nothing is said, because nothing was lost: a row that stays on the screen is not news, and a
+    // head that announced it as lost would be telling the reader their conversation had gone.
+    assert!(a.notice.is_none(), "a kept row is not news: {:?}", a.notice);
     assert!(
-        a.following(),
-        "and the view follows the tail, which is where it went"
-    );
-
-    // And it is SAID - on the screen, where the reader is looking, and named for the row.
-    let said = a
-        .notice
-        .as_deref()
-        .expect("a reader who was moved must be told, not moved in silence");
-    assert!(
-        said.contains("not in the transcript that replaced it"),
-        "the sentence says what happened, and not that the row had no body — a live fork's \
-         rows have arrived: {said}"
-    );
-    assert!(
-        said.contains("follows the tail again"),
-        "and where the reader is now: {said}"
-    );
-    assert!(
-        said.contains(&held.item_id),
-        "and names the row that was not carried: {said}"
-    );
-    // The durable half too, so `/notes` can answer *why did my view move* afterwards.
-    let noted = a
-        .notes
-        .iter()
-        .find_map(|(_, n)| match n {
-            Note::Warned(w) if w.code == "anchor_lost" => Some(w.detail.clone()),
-            _ => None,
-        })
-        .expect("a row that is gone is filed as well as said");
-    assert!(
-        noted.contains(&held.item_id),
-        "the note names the row: {noted}"
+        !a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
+        "and it is not filed as lost either"
     );
 
-    // And the tail is what is on the screen: the last row the new transcript carries.
+    // The screen shows the row the reader was reading.
     let screen = frame.join("\n");
     assert!(
-        screen.contains("row 38 says a thing"),
-        "the view did not go to the tail: {screen}"
+        screen.contains(&was),
+        "the row the reader was reading is gone from the screen: {screen}"
+    );
+    // And the new transcript is below it, under the seam: a reader walking down reaches the tail, where
+    // the newest rows the fold carried are drawn.
+    a.hold(200);
+    let tail = a.screen(100, 30).join("\n");
+    assert!(
+        tail.contains("row 38 says a thing"),
+        "the new transcript's tail is not on the screen: {tail}"
+    );
+}
+
+/// Lead 62, the operator's half: after a sliced fold the screen must not go empty, and the rows from
+/// before it must still be reachable. A sliced fold carries NOTHING - one summary row and no tail - so a head
+/// that dropped the transcript it left has an empty conversation and nothing to scroll back to.
+#[test]
+fn a_sliced_fork_leaves_the_rows_before_it_reachable_by_scrolling() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // Forty rows on a screen that holds eleven: what the reader is not looking at is still the session's.
+    forty_rows(&mut a, 40);
+    let before = a.screen(100, 24).join("\n");
+    assert!(
+        before.contains("row 39 says a thing"),
+        "the fixture's premise: the tail is on the screen: {before}"
+    );
+
+    // The sliced fold: the note, and not one carried row under it.
+    let ids: Vec<String> = (0..1).map(|i| format!("t.{i}")).collect();
+    fork_live(&mut a, 1000, "s", "t", &ids, |_| {
+        "Earlier conversation is replaced by this summary.".to_string()
+    });
+    let after = a.screen(100, 24).join("\n");
+    // The conversation the operator was reading is still here, and the seam says where it was cut.
+    assert!(
+        after.contains("row 39 says a thing"),
+        "the fold emptied the screen: {after}"
     );
     assert!(
-        !screen.contains(&was),
-        "and it is not showing a row the new transcript does not have: {screen}"
+        after.contains("compacted here"),
+        "no seam where the record was folded: {after}"
+    );
+    // And paging back reaches the rows from before the fold - the conversation is one record, so a row the
+    // reader scrolls to is a row they get.
+    for _ in 0..40 {
+        a.key(Key::WheelUp);
+        a.screen(100, 24);
+    }
+    let top = a.screen(100, 24).join("\n");
+    assert!(
+        top.contains("row 0 says a thing"),
+        "scrolling up did not reach the conversation the fold replaced: {top}"
+    );
+}
+
+/// A page asked for above the history names the TRANSCRIPT it is a page of. The rows a fold left on the screen
+/// belong to the transcript it replaced, and the session's own ordinals cannot reach them: the ask carries the
+/// transcript's id, and the page it answers lands at the front of the history where the reader is scrolling.
+#[test]
+fn a_page_above_the_history_names_the_transcript_it_belongs_to() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // A head holding the tail of a long conversation: rows 100..140 of `s`, which is a window of a session
+    // whose older rows it does not hold.
+    a.items_base = 100;
+    for i in 100..140u64 {
+        let id = format!("s.{i}");
+        a.apply(ServerFrame::Event(env(
+            i * 2,
+            testing::appended(&id, "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::content(&id, &format!("row {i} says a thing")),
+        )));
+    }
+    a.screen(100, 24);
+
+    // The fold that carried nothing: the note only.
+    let ids: Vec<String> = (0..1).map(|i| format!("t.{i}")).collect();
+    fork_live(&mut a, 5_000, "s", "t", &ids, |_| {
+        "Earlier conversation is replaced by this summary.".to_string()
+    });
+    a.screen(100, 24);
+    assert_eq!(a.items_base, 0, "the base is the new transcript's");
+    assert_eq!(a.items_lead, 40, "the history is the forty rows it left");
+
+    // The reader scrolls up past the oldest row this head holds, and the ask that follows names `s`.
+    a.queued.clear();
+    for _ in 0..40 {
+        a.key(Key::WheelUp);
+        a.screen(100, 24);
+    }
+    let asked = a
+        .queued
+        .iter()
+        .find_map(|q| match q {
+            Action::FetchRows {
+                transcript,
+                from,
+                count,
+                ..
+            } => Some((transcript.clone(), *from, *count)),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no page was asked for above the history; queued: {:?}",
+                a.queued
+            )
+        });
+    assert_eq!(
+        asked.0.as_deref(),
+        Some("s"),
+        "the page does not name the transcript the history belongs to"
+    );
+    assert_eq!(
+        asked.1 + asked.2,
+        100,
+        "the page does not end where the oldest held row begins"
+    );
+
+    // And the daemon's answer lands at the FRONT of the history, where the reader is.
+    let page: Vec<SnapshotItem> = (asked.1..100)
+        .map(|i| SnapshotItem {
+            item_id: format!("s.{i}"),
+            kind: "assistant".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(TranscriptItem::Assistant {
+                text: format!("row {i} says a thing"),
+                tool_calls: Vec::new(),
+                truncated: false,
+            }),
+            citations: Vec::new(),
+        })
+        .collect();
+    let n = page.len();
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        transcript: Some("s".into()),
+        from: asked.1,
+        rows: page,
+    });
+    a.screen(100, 24);
+    assert_eq!(
+        a.items_lead,
+        40 + n,
+        "the page did not join the front of the history"
+    );
+    assert_eq!(a.items_base, 0, "a page of history moved the base");
+    assert_eq!(
+        a.items.first().map(|r| r.item_id.as_str()),
+        Some(format!("s.{}", asked.1).as_str()),
+        "the page did not land at the front"
     );
 }
 
 /// A fork stated before its rows has not lost the reader's row, and does not say it has: a head that hears
-/// the statement first has nothing to match, and saying the row is gone would be a sentence about a row that
-/// has not arrived.
+/// the statement first has nothing to pair yet, so it keeps every row it was holding - which is the reader's
+/// place - and says nothing about a carry it cannot see.
 #[test]
-fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
+fn a_fork_stated_before_its_rows_keeps_the_place_and_calls_nothing_lost() {
     let mut a = scrolled_up(40);
     let held = a.anchor.clone().expect("a held row");
     let was = words_at(&a, held.ordinal);
@@ -3472,8 +3621,8 @@ fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
     a.apply(ServerFrame::Event(env(1000, testing::forked("t", "s"))));
     a.screen(100, 30);
     assert!(
-        a.carry.as_ref().is_some_and(|c| c.arriving),
-        "a fork stated before its rows must take a carry that knows they are coming"
+        a.carry.is_none() || a.carry.as_ref().is_some_and(|c| c.arriving),
+        "a fork stated before its rows must not claim the reader's row went"
     );
     assert!(
         a.notice.is_none(),
@@ -3486,25 +3635,30 @@ fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
             .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
         "and nothing may be filed as lost either"
     );
+    // The row is still here, because the carry that would have replaced it has not been seen: a row the
+    // head cannot pair is a row it keeps.
+    assert!(
+        a.items.iter().any(|it| it.item_id == held.item_id),
+        "a fork that has stated no carry yet took the reader's row"
+    );
 
-    // The rows, and the reader is placed on the row they were on.
+    // The rows arrive. A head that heard the statement first cannot pair them with what it holds - the
+    // carry's first row and its place in the record are not on the wire - so the rows are the new
+    // transcript's from here on, and the ones already held stay as history. What must hold is the place:
+    // the reader is still on the row they were reading, and nothing was called lost.
     let ids: Vec<String> = (0..60).map(|i| format!("t.{i}")).collect();
     carried_appends(&mut a, 1001, &ids, |i| format!("row {i} says a thing"));
     a.screen(100, 30);
-    let now = a
-        .anchor
-        .clone()
-        .expect("the reader is holding the row again");
-    assert_eq!(now.item_id, "t.19", "placed under the new transcript's id");
+    let now = a.anchor.clone().expect("the reader is still holding a row");
+    assert_eq!(now.item_id, held.item_id, "the place moved off the row");
     assert_eq!(
         words_at(&a, now.ordinal),
         was,
         "and it is the row they were on"
     );
-    assert!(a.carry.is_none(), "and the carry is spent");
     assert!(
         a.notice.is_none(),
-        "the row was carried, so there is nothing to say: {:?}",
+        "the row was kept, so there is nothing to say: {:?}",
         a.notice
     );
 }
@@ -4371,6 +4525,7 @@ fn an_answered_page_lands_above_the_window() {
         .collect();
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from: 40,
         rows: page,
     });
@@ -4465,6 +4620,7 @@ fn scrolling_above_the_window_asks_for_the_rows_it_is_missing() {
         .collect();
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from,
         rows: page,
     });
@@ -4554,6 +4710,7 @@ fn a_page_that_does_not_join_the_window_is_not_asked_for_again() {
     // One row short of the window: the row the daemon could not read was left out.
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from,
         rows: page_of(from, count - 1),
     });
@@ -4588,6 +4745,7 @@ fn an_empty_page_says_the_window_holds_the_beginning() {
     );
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from,
         rows: Vec::new(),
     });
@@ -4953,6 +5111,7 @@ fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
         let rows: Vec<SnapshotItem> = (from..end).map(|i| row_at(i as u64)).collect();
         a.apply(ServerFrame::RowsFetched {
             session_id: "s".into(),
+            transcript: None,
             from,
             rows,
         });
@@ -5057,6 +5216,7 @@ fn an_empty_page_below_the_window_ends_the_asking() {
     // The daemon has nothing at that ordinal.
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from,
         rows: Vec::new(),
     });
@@ -5103,6 +5263,7 @@ fn a_page_for_a_session_the_head_has_left_lands_nowhere() {
 
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from: 900,
         rows: page_of(900, 100),
     });
@@ -5219,6 +5380,7 @@ fn the_page_below_the_window_starts_after_the_rows_the_base_numbers() {
 
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from,
         rows: page_of(from, count),
     });
@@ -5249,6 +5411,7 @@ fn a_page_below_the_window_that_does_not_join_does_not_say_the_transcript_stops(
     // The daemon could not read the first row it was asked for, so the page starts past it.
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from: from + 1,
         rows: page_of(from + 1, 10),
     });
@@ -5815,6 +5978,7 @@ fn a_window_that_let_rows_go_whole_draws_no_tail_of_the_session() {
             .collect();
         a.apply(ServerFrame::RowsFetched {
             session_id: "s".into(),
+            transcript: None,
             from,
             rows,
         });

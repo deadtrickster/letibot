@@ -1045,6 +1045,13 @@ pub enum ClientFrame {
         /// How many rows. Capped by the daemon for `len`'s reason: one request must not be able
         /// to pull a whole conversation.
         count: usize,
+        /// The transcript `from` numbers, when it is not the one the session speaks. A fork leaves
+        /// the rows it did not carry on the reader's screen as history, and a reader scrolling above
+        /// them is reaching into the transcript the fork replaced: those rows are still in the store
+        /// under their own ids, and nothing else can name them. `null` is the current transcript, so an
+        /// older daemon answers the usual question and a head that never asks this sends `null`.
+        #[serde(default)]
+        transcript: Option<String>,
     },
     /// A call the OPERATOR ran themselves: the daemon checks `name` against [`HEAD_RUN_TOOLS`] and
     /// records the admission as the operator's, so the row says a person ran it.
@@ -1369,6 +1376,12 @@ pub enum ServerFrame {
         /// The ordinal `rows[0]` occupies, echoed so a head places the page without counting.
         from: usize,
         rows: Vec<crate::view::SnapshotItem>,
+        /// The transcript the page is a page OF, echoed from the ask. `null` is the session's own,
+        /// which is what every daemon that predates the field answers: a head that asked about an
+        /// earlier transcript must read a page it cannot place as *nothing came back* rather than
+        /// splice another transcript's rows where the history goes.
+        #[serde(default)]
+        transcript: Option<String>,
     },
     /// The answer to [`ClientFrame::FetchRow`]: a window of one row's body. `total` is the whole
     /// body's length, so a head knows what it has not been sent.

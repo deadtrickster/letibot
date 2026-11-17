@@ -212,6 +212,7 @@ fn a_row_below_the_window_is_fetched_back_and_drawn_in_the_same_turn() {
     };
     a.apply(ServerFrame::RowsFetched {
         session_id: "s".into(),
+        transcript: None,
         from,
         rows: vec![SnapshotItem {
             citations: Vec::new(),
