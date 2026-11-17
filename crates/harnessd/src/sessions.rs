@@ -5123,9 +5123,6 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
         from: usize,
         count: usize,
     ) -> Vec<(usize, letibot_sessionlog::view::SnapshotItem)> {
-        let (Ok(from), Ok(count)) = (u32::try_from(from), u32::try_from(count)) else {
-            return Vec::new();
-        };
         let Ok(store) = self.store.lock() else {
             return Vec::new();
         };
@@ -5134,30 +5131,60 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
         let Some(transcript_id) = store.current_transcript_id(session_id).ok().flatten() else {
             return Vec::new();
         };
-        let rows = store
-            .rows_json_from(&transcript_id, from, count)
-            .unwrap_or_default();
-        rows.into_iter()
-            .filter_map(|(seq, item_id, kind, json, created_at)| {
-                // A row whose JSON this build cannot read is left out rather than answered as
-                // empty: the page is short, and the row's own `seq` travels with the ones that
-                // follow it so a skipped row does not slide the page.
-                let item: letibot_transcript::TranscriptItem = serde_json::from_str(&json).ok()?;
-                Some((
-                    seq as usize,
-                    letibot_sessionlog::view::SnapshotItem {
-                        item_id,
-                        kind,
-                        // A paging head draws these rows and asks nothing about their ledger.
-                        ledger_head: String::new(),
-                        ts: created_at,
-                        item: Some(item),
-                        citations: Vec::new(),
-                    },
-                ))
-            })
-            .collect()
+        rows_of(&store, &transcript_id, from, count)
     }
+
+    /// A page of a NAMED transcript: the rows a fork did not carry, which the head keeps on the
+    /// screen as history and a reader scrolling above them pages in. The store still holds them
+    /// under their own ids, and no ordinal of the current transcript names one.
+    fn row_items_in(
+        &self,
+        transcript_id: &str,
+        from: usize,
+        count: usize,
+    ) -> Vec<(usize, letibot_sessionlog::view::SnapshotItem)> {
+        let Ok(store) = self.store.lock() else {
+            return Vec::new();
+        };
+        rows_of(&store, transcript_id, from, count)
+    }
+}
+
+/// One page of a transcript's rows, read from the store and shaped as the wire's rows. One body for
+/// the two `RowSource` doors, so a page of the current transcript and a page of an earlier one
+/// cannot come back spelled differently.
+fn rows_of(
+    store: &letibot_tokencore::Store,
+    transcript_id: &str,
+    from: usize,
+    count: usize,
+) -> Vec<(usize, letibot_sessionlog::view::SnapshotItem)> {
+    let (Ok(from), Ok(count)) = (u32::try_from(from), u32::try_from(count)) else {
+        return Vec::new();
+    };
+    let rows = store
+        .rows_json_from(transcript_id, from, count)
+        .unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|(seq, item_id, kind, json, created_at)| {
+            // A row whose JSON this build cannot read is left out rather than answered as
+            // empty: the page is short, and the row's own `seq` travels with the ones that
+            // follow it so a skipped row does not slide the page.
+            let item: letibot_transcript::TranscriptItem = serde_json::from_str(&json).ok()?;
+            Some((
+                seq as usize,
+                letibot_sessionlog::view::SnapshotItem {
+                    item_id,
+                    kind,
+                    // A paging head draws these rows and asks nothing about their ledger.
+                    ledger_head: String::new(),
+                    ts: created_at,
+                    item: Some(item),
+                    citations: Vec::new(),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Ledger tokens as the operator's screen counts them. One function for the two callers

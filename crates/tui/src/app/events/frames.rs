@@ -367,6 +367,7 @@ impl App {
                 session_id,
                 from,
                 rows,
+                transcript,
             } => {
                 // A page answers the ask of the session it names, and one for a session this head
                 // has left answers nothing here: placed by its ordinal alone it would land in
@@ -376,13 +377,17 @@ impl App {
                 }
                 // The ask is spent whatever came back. Which ask it was is the ordinal it names, the
                 // same rule `apply_rows` places by, and what a page that does not join means is
-                // settled there too, so nothing is asked again here.
-                if from >= self.end_ordinal() {
-                    self.fetch_below = None;
-                } else {
-                    self.fetch_asked = None;
+                // settled there too, so nothing is asked again here. A page of an EARLIER transcript
+                // spends its own ask inside `apply_earlier_rows`, which is the one place that decides
+                // what such a page means.
+                if transcript.is_none() {
+                    if from >= self.end_ordinal() {
+                        self.fetch_below = None;
+                    } else {
+                        self.fetch_asked = None;
+                    }
                 }
-                self.apply_rows(from, rows);
+                self.apply_rows(from, rows, transcript);
                 // A page brings the tail's rows into the window, so a call whose row arrived below it is
                 // the transcript's from here: the card must not stand under the page that draws it.
                 self.settle_rows();
@@ -490,6 +495,7 @@ impl App {
                 if client_request_id.starts_with("fetchrows:") {
                     self.fetch_asked = None;
                     self.fetch_below = None;
+                    self.fetch_earlier = None;
                     self.say(&format!("rejected: {reason}"));
                     return Disposition::Control;
                 }

@@ -683,10 +683,12 @@ impl Link {
                     // where it ends. The one door for rows.
                     Action::FetchRows {
                         session,
+                        transcript,
                         from,
                         count,
                     } => {
-                        self.client.fetch_rows(&session, from, count)?;
+                        self.client
+                            .fetch_rows(&session, transcript.as_deref(), from, count)?;
                     }
                     // The person's half of the board, on its way out: the head sends the WHOLE list, since
                     // there is no per-row frame and no delta, so a head cannot accumulate a difference between

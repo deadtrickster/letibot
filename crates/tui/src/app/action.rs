@@ -190,6 +190,10 @@ pub enum Action {
     /// inside one row's body does not carry the row's kind.
     FetchRows {
         session: String,
+        /// The transcript `from` numbers, when it is not the one the session speaks: the rows a fork
+        /// did not carry are history under their own transcript, and a reader scrolling above them is
+        /// paging into it.
+        transcript: Option<String>,
         /// The first ordinal wanted, oldest first.
         from: usize,
         /// How many: the daemon caps a page, so this is a request and not a promise.

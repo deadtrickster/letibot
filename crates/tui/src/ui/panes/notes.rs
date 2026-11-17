@@ -30,6 +30,16 @@ impl App {
 /// anywhere, so this is a disclosure decision and not a fold over a record.
 pub(crate) const PANE_LAST_LINES: usize = 4;
 
+/// What the seam a fold left says: one line, saying what the reader is looking at - the rows above
+/// it are the conversation the fold replaced, kept rather than dropped, and a page back through
+/// them reaches the rest of it.
+pub(crate) fn compacted_line(kept: usize) -> String {
+    format!(
+        "compacted here — the {kept} row(s) above are the conversation this fold replaced, kept as \
+         history; scrolling above them pages the rest of it in"
+    )
+}
+
 /// A note, in rano's words. The register a warning is drawn in is its code's class, and
 /// the class is `letibot_sessionlog::warning`'s - the log's vocabulary, not this head's
 /// - so it is decided here and handed over.
@@ -77,6 +87,11 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
         // they see in the conversation.
         Note::Retrying(r) => view::Note::NotRun {
             detail: r.line().to_string(),
+        },
+        // The seam a fold made, in the same faint register as a refusal nobody made: it is the
+        // head's own disclosure of what it is still holding, in one sentence.
+        Note::Compacted { kept, .. } => view::Note::NotRun {
+            detail: compacted_line(*kept),
         },
         Note::Decided(d) => {
             use letibot_sessionlog::event::DecisionOutcome as O;
@@ -194,6 +209,9 @@ pub(crate) fn note_card(
             Some((card, retry_popup(r), r.ts))
         }
         Note::Pane { .. } => None,
+        // A seam is a sentence on the screen and nothing to open: the rows it names are above it,
+        // and they are a scroll away rather than a click.
+        Note::Compacted { .. } => None,
     }
 }
 

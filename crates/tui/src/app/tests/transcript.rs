@@ -7045,8 +7045,10 @@ fn conversation(a: &mut App, n: u64) {
     rows_of(a, 0, "s", n);
 }
 
-/// A fork exactly as the daemon publishes one: the statement naming the transcript that was replaced and the one
-/// replacing it, then every carried row under the new ids, bodies and all. The ids are the fixture's point.
+/// A fork exactly as the daemon publishes one: every carried row under the new ids, bodies and all, and
+/// THEN the statement naming the transcript that was replaced and the one replacing it. The order is the
+/// point - a head pairs the carry with the rows it replaces when the boundary is named, so a statement that
+/// arrived first would leave it holding both conversations.
 fn fork(
     a: &mut App,
     seq: u64,
@@ -7055,7 +7057,6 @@ fn fork(
     ids: &[String],
     says: impl Fn(usize) -> String,
 ) {
-    a.apply(ServerFrame::Event(env(seq, testing::forked(new, parent))));
     for (i, id) in ids.iter().enumerate() {
         a.apply(ServerFrame::Event(env(
             seq + 1 + (i as u64) * 2,
@@ -7066,6 +7067,8 @@ fn fork(
             testing::content(id, &says(i)),
         )));
     }
+    let after = seq + 1 + (ids.len() as u64) * 2;
+    a.apply(ServerFrame::Event(env(after, testing::forked(new, parent))));
 }
 
 /// How many times the frame draws a row saying exactly this: the number `items.len()` reports can be right while
@@ -7136,9 +7139,11 @@ fn a_fork_of_a_forty_row_conversation_carrying_sixty_leaves_sixty_rows() {
 }
 
 /// A compaction fork has the same shape and is the one that shortens: every fork publishes its rows this way, and a
-/// compaction is where getting it wrong is most visible.
+/// compaction is where getting it wrong is most visible. The rows the carry did NOT republish are kept above the
+/// seam as history - the conversation is one record, and a head that threw them away emptied the screen - and every
+/// row on the screen is drawn exactly once.
 #[test]
-fn a_compaction_fork_leaves_the_summary_and_the_tail_and_nothing_it_replaced() {
+fn a_compaction_fork_leaves_the_carry_and_the_history_it_did_not_replace() {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -7156,10 +7161,11 @@ fn a_compaction_fork_leaves_the_summary_and_the_tail_and_nothing_it_replaced() {
         _ => format!("row {} says a thing", i + 19),
     });
 
+    // The twenty rows the summary replaced, the note, and the twenty it carried verbatim.
     assert_eq!(
         a.items.len(),
-        21,
-        "the fork's rows were APPENDED to the forty the summary replaced"
+        41,
+        "the rows the carry did not republish went with it"
     );
     let frame = a.screen(100, 400).join("\n");
     // The summary, and the tail it carried: drawn, once each.
@@ -7172,23 +7178,91 @@ fn a_compaction_fork_leaves_the_summary_and_the_tail_and_nothing_it_replaced() {
         let words = format!("row {i} says a thing");
         assert_eq!(drawn(&frame, &words), 1, "`{words}` is not drawn");
     }
-    // And nothing the summary replaced is drawn. This is the half a count cannot see: a
-    // head holding 21 rows with 40 of the old ones still on the screen under them would pass
-    // the assertion above and fail the reader.
+    // And the rows the summary replaced are still ON the screen, once each: kept as the history above
+    // the seam. This is the half a count cannot see - a head that dropped them left the operator with an
+    // almost empty screen after a fold.
     for i in 0..20u64 {
         let words = format!("row {i} says a thing");
         assert_eq!(
             drawn(&frame, &words),
-            0,
-            "a row the summary replaced is still drawn: `{words}`"
+            1,
+            "a row the summary replaced is not drawn as history: `{words}`"
         );
     }
+    // And the seam says where the record was folded.
+    assert_eq!(
+        drawn(&frame, "compacted here"),
+        1,
+        "no seam where the fold happened:\n{frame}"
+    );
 }
 
-/// A fork drops the replaced transcript's rows and no others: a head can hold rows of more than one transcript on
-/// purpose, since a resume republishes the tail of the ones a compaction put behind the current.
+/// A SLICED fold carries nothing at all - `summarise_overrun` returns no tail, so the new transcript is the
+/// record and not one row of the conversation. Everything the operator was reading must stay, or the screen
+/// they get back is nearly empty.
 #[test]
-fn a_fork_drops_the_rows_of_the_transcript_it_replaced_and_no_others() {
+fn a_sliced_fork_keeps_the_whole_conversation_above_the_seam() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    conversation(&mut a, 40);
+
+    let ids: Vec<String> = (0..1).map(|i| format!("s#t1.{i}")).collect();
+    fork(&mut a, 1_000, "s", "s#t1", &ids, |_| {
+        "Earlier conversation is replaced by this summary.".to_string()
+    });
+
+    assert_eq!(
+        a.items.len(),
+        41,
+        "the fold's note and the forty rows it replaced: not one row may go"
+    );
+    // The rows the fold left are history above a base that starts at zero, and the head knows where the
+    // base begins - which is what makes a page of them nameable.
+    assert_eq!(
+        a.items_lead, 40,
+        "the history is not counted above the base"
+    );
+    assert_eq!(
+        a.items_base, 0,
+        "the base is the new transcript's first row"
+    );
+    let frame = a.screen(100, 400).join("\n");
+    for i in 0..40u64 {
+        let words = format!("row {i} says a thing");
+        assert_eq!(
+            drawn(&frame, &words),
+            1,
+            "a row the sliced fold replaced is gone: `{words}`"
+        );
+    }
+    assert_eq!(
+        drawn(&frame, "Earlier conversation is replaced"),
+        1,
+        "the fold's own note is not on the screen"
+    );
+    // The seam sits BETWEEN the history and the note: above the fold's own words, below the rows it left.
+    let seam = frame
+        .find("compacted here")
+        .unwrap_or_else(|| panic!("no seam where the fold happened:\n{frame}"));
+    assert!(
+        frame.find("row 0 says a thing").unwrap() < seam,
+        "the history is not above the seam:\n{frame}"
+    );
+    assert!(
+        seam < frame.find("Earlier conversation is replaced").unwrap(),
+        "the seam is not above the transcript the fold published:\n{frame}"
+    );
+}
+
+/// A fork replaces the rows it CARRIED and no others: a head can hold rows of more than one transcript on
+/// purpose, since a resume republishes the tail of the ones a compaction put behind the current - and since
+/// a fold keeps the rows it did not carry on the screen as the history above its seam.
+#[test]
+fn a_fork_replaces_the_rows_it_carried_and_keeps_the_rest_of_what_it_left() {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -7196,8 +7270,19 @@ fn a_fork_drops_the_rows_of_the_transcript_it_replaced_and_no_others() {
         Hub::new("s").snapshot(),
     ));
     // The chain a resume leaves on the screen: an older transcript's tail, then the current
-    // transcript's rows - the shape `ancestor_tail` republishes, in order.
-    rows_of(&mut a, 0, "s#t1", 5);
+    // transcript's rows - the shape `ancestor_tail` republishes, in order. Its words are its own, so a
+    // row of it and a row of the current transcript can never be counted as one another.
+    for i in 0..5u64 {
+        let id = format!("s#t1.{i}");
+        a.apply(ServerFrame::Event(env(
+            2 * i + 1,
+            testing::appended(&id, "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2 * i + 2,
+            testing::content(&id, &format!("ancestor {i} says a thing")),
+        )));
+    }
     rows_of(&mut a, 1_000, "s#t2", 40);
     assert_eq!(
         a.items.len(),
@@ -7213,20 +7298,27 @@ fn a_fork_drops_the_rows_of_the_transcript_it_replaced_and_no_others() {
         format!("carried {i} says a thing")
     });
 
-    // 5 ancestors + 20 carried, and not one row of the transcript that was replaced.
+    // 5 ancestors, 21 rows of `s#t2` the carry did not republish (40 less the 19 it did, its own
+    // note taking the twentieth id), and 20 carried.
     assert_eq!(
         a.items.len(),
-        25,
-        "the fork took rows it did not replace, or left the ones it did"
+        46,
+        "the fork took rows it did not replace, or left rows it did: {:?}",
+        a.items.iter().map(|r| &r.item_id).collect::<Vec<_>>()
     );
     assert!(
-        !a.items.iter().any(|r| r.item_id.starts_with("s#t2.")),
-        "a row of the transcript the fork replaced is still held"
+        !a.items.iter().any(|r| r.item_id == "s#t2.39"),
+        "a row the carry republished is still held under the id it had"
     );
-    // And the older transcript's rows are still here - in the list and on the screen.
+    assert!(
+        a.items.iter().any(|r| r.item_id == "s#t2.0"),
+        "a row the carry did not republish went with it"
+    );
+    // And every row is here - in the list and on the screen - exactly once: the ancestors' own words
+    // (which the current transcript's rows do not share), and the carry.
     let frame = a.screen(100, 400).join("\n");
     for i in 0..5u64 {
-        let words = format!("row {i} says a thing");
+        let words = format!("ancestor {i} says a thing");
         assert_eq!(
             drawn(&frame, &words),
             1,
@@ -7241,6 +7333,14 @@ fn a_fork_drops_the_rows_of_the_transcript_it_replaced_and_no_others() {
             "the carry is not drawn: `{words}`"
         );
     }
+    // The rows of the left transcript the carry did not republish are history, and they are on the
+    // screen: the reader keeps reading them, and the seam says where the record was folded.
+    assert_eq!(
+        drawn(&frame, "row 3 says a thing"),
+        1,
+        "the history the carry left behind is not on the screen"
+    );
+    assert_eq!(drawn(&frame, "compacted here"), 1, "no seam: {frame}");
 }
 
 /// A parent's message is drawn as the session's own grey block and not as the person's words: messages are

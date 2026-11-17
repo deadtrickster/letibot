@@ -658,6 +658,18 @@ pub trait RowSource: Send + Sync {
     ) -> Vec<(usize, crate::view::SnapshotItem)> {
         Vec::new()
     }
+
+    /// The same page from a NAMED transcript - one the session has left, whose rows a head holds as
+    /// history after a fork. Default none: a source that knows only the session's current transcript
+    /// answers nothing, and a head reads an empty page as *the record begins here*.
+    fn row_items_in(
+        &self,
+        _transcript_id: &str,
+        _from: usize,
+        _count: usize,
+    ) -> Vec<(usize, crate::view::SnapshotItem)> {
+        Vec::new()
+    }
 }
 
 /// Where the oracle's exchange for one decision can be read. A second trait and not a method on
@@ -1610,6 +1622,21 @@ impl Registry {
         let source = self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone();
         source
             .map(|s| s.row_items(session_id, from, count))
+            .unwrap_or_default()
+    }
+
+    /// [`Registry::rows_from_store`] for a transcript the session has LEFT: the rows a fork did not
+    /// carry, which a head keeps on the screen as history. Named by transcript and not by session,
+    /// because an ordinal names a row of one transcript and the session speaks only the newest.
+    pub fn rows_from_store_in(
+        &self,
+        transcript_id: &str,
+        from: usize,
+        count: usize,
+    ) -> Vec<(usize, crate::view::SnapshotItem)> {
+        let source = self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        source
+            .map(|s| s.row_items_in(transcript_id, from, count))
             .unwrap_or_default()
     }
 

@@ -121,6 +121,7 @@ fn page(
 ) -> (usize, Vec<SnapshotItem>) {
     w.write(&ClientFrame::FetchRows {
         session_id: "s-1".into(),
+        transcript: None,
         from,
         count,
     })
@@ -323,6 +324,7 @@ fn a_session_that_is_not_held_is_refused_by_name() {
 
     w.write(&ClientFrame::FetchRows {
         session_id: "no-such-session".into(),
+        transcript: None,
         from: 0,
         count: 4,
     })

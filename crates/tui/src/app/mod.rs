@@ -417,6 +417,10 @@ pub struct App {
     /// The same for the page below the window. Its own field, because the two are independent
     /// questions and a page above that has not come back must not hold up the tail.
     pub(crate) fetch_below: Option<usize>,
+    /// The page asked for from a transcript this session has LEFT - the history above a fork's base,
+    /// named by that transcript and the ordinal it asked from. Its own field because the answer
+    /// belongs at the FRONT of the window and not where the base's pages join.
+    pub(crate) fetch_earlier: Option<(String, usize)>,
     /// The daemon answered a page and had nothing above it: the head stops asking and says the
     /// transcript begins there.
     pub(crate) no_more_above: bool,
@@ -1431,6 +1435,7 @@ impl App {
             items_below: 0,
             fetch_asked: None,
             fetch_below: None,
+            fetch_earlier: None,
             no_more_above: false,
             held_limit: HELD_LIMIT,
             model_from_settings_at: 0,
