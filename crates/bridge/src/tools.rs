@@ -303,8 +303,8 @@ impl Bridge {
         }
     }
 
-    /// A tool call is the seat working: it is not idle, and the plan check waits for its end. Never
-    /// opens the seat - a bridge that has never served a todo tool has no board to re-arm.
+    /// A call that does work is the seat working: it is not idle, and the plan check waits for its
+    /// end. Never opens the seat - a bridge that has never served a todo tool has no board to re-arm.
     pub fn touch_seat(&self) {
         let g = self.seat.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(seat) = g.as_ref() {
@@ -2125,12 +2125,39 @@ fn arg_count(args: &Value, key: &str) -> Result<Option<u64>, String> {
     }
 }
 
+/// The tools that only READ. A call to one says nothing about the seat's work, so it does not
+/// postpone the plan check: this seat's own panes poll `todos` and `leticode_status` every five
+/// seconds from `session.start`, and counting those as work meant no Claude Code seat was ever
+/// nagged. A tool that is not here is work - a new read has to be added, a new writer needs nothing.
+fn only_reads(name: &str) -> bool {
+    matches!(
+        name,
+        "leticode_status"
+            | "leticode_events"
+            | "leticode_asks"
+            | "leticode_diff"
+            | "leticode_transcript"
+            | "leticode_list"
+            | "holds"
+            | "gc_plan"
+            | "todos"
+            | "seat_jobs"
+            | "rooms"
+            | "room_read"
+            | "room_roster"
+            | "room_asks"
+            | "room_inbox"
+    )
+}
+
 /// Run one tool. `Err` is a caller's mistake (an argument, a session this bridge does
 /// not hold); a tool that ran and failed says so in its answer with `isError`.
 pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> {
-    // A tool call is the seat working: the plan check waits for its end, exactly as a session's
-    // waits for the end of a turn.
-    bridge.touch_seat();
+    // A call that does work is the seat working: the plan check waits for it, exactly as a
+    // session's waits for the end of a turn. A read is not work, and never moves that clock.
+    if !only_reads(name) {
+        bridge.touch_seat();
+    }
     match name {
         "leticode_start" => {
             let worktree = arg_str(args, "worktree")?;

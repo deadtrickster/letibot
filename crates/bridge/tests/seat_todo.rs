@@ -262,6 +262,67 @@ fn a_wait_on_a_session_this_bridge_does_not_hold_is_refused_by_name() {
     );
 }
 
+/// A pane polling the board is not the seat working. The plugin's panes call `todos` (the board)
+/// and `leticode_status` (each package) every five seconds from `session.start`, so a poll that
+/// postponed the check would mean no Claude Code seat is ever nagged - which is what the field
+/// showed: 13 open rows, an idle session, no notice in an hour.
+#[test]
+fn a_pane_polling_the_board_does_not_keep_the_check_from_coming_due() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("polled");
+    let bridge = bridge(&store, &folder);
+    let (tx, rx) = mpsc::channel();
+    bridge.push_seat(tx);
+    let plan: Vec<Value> = (1..=13)
+        .map(|n| json!({"content": format!("row {n}"), "status": "in_progress"}))
+        .collect();
+    let wrote = call(&bridge, "todo_write", json!({"todos": plan})).expect("the write is taken");
+    assert_eq!(rows(&bridge).len(), 13, "{wrote}");
+
+    // The plugin's own loop, at test speed: its 5 s poll against this window is a poll every half
+    // window, and six of them outlast the window three times over.
+    let mut heard = Vec::new();
+    for _ in 0..6 {
+        call(&bridge, "todos", json!({})).expect("the board reads");
+        heard.extend(nags(&rx, WINDOW / 2));
+    }
+    assert_eq!(heard.len(), 1, "a read is not work: {heard:?}");
+    assert!(
+        nag_text(&heard[0]).contains("row 1"),
+        "the notice names the plan: {:?}",
+        nag_text(&heard[0])
+    );
+}
+
+/// The other half of the rule: a call that DOES work still postpones the check, so a seat writing
+/// its board is not nagged in the middle of it.
+#[test]
+fn a_seat_writing_its_board_is_working_and_the_check_waits() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("working");
+    let bridge = bridge(&store, &folder);
+    let (tx, rx) = mpsc::channel();
+    bridge.push_seat(tx);
+    let plan = json!({"todos": [{"content": "ship the pane", "status": "in_progress"}]});
+    call(&bridge, "todo_write", plan.clone()).expect("the write is taken");
+
+    for _ in 0..6 {
+        call(&bridge, "todo_write", plan.clone()).expect("the same board again is still work");
+        assert!(
+            nags(&rx, WINDOW / 2).is_empty(),
+            "a seat writing its board has not stalled"
+        );
+    }
+
+    // It stops, and the check comes once.
+    let heard = nags(&rx, WINDOW + Duration::from_millis(600));
+    assert_eq!(
+        heard.len(),
+        1,
+        "one notice once the seat is quiet: {heard:?}"
+    );
+}
+
 /// Something outside letibot - a review on a forge - as a wait: nothing here can see it end, so the
 /// check is silent on the row until the seat takes the wait off, which is the row moving.
 #[test]
