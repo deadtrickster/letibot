@@ -797,9 +797,8 @@ contract = 1
         assert_eq!(m.capabilities[1].to_string(), "exec:gh");
     }
 
-    /// `http:` is refused until a look serves it. Nothing implements it, so a manifest declaring it
-    /// asks for reach the host would ignore today - and a pin recorded over it would be the grant a
-    /// future look was waiting for, with nobody asked again.
+    /// `http:` is refused until a look serves it: a manifest declaring it asks for reach the host
+    /// ignores, and a pin over it would be a grant a future look inherits with nobody asked again.
     #[test]
     fn an_http_capability_is_refused_until_a_look_serves_it() {
         let why = Capability::parse("http:api.github.com").expect_err("refused");

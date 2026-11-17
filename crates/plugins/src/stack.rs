@@ -47,10 +47,9 @@ pub struct Layer {
     /// [`Layer::trusted`] is decided against beside `sha256`.
     pub manifest_sha256: String,
     pub disabled: bool,
-    /// Whether this layer may run freely: true for a built-in, and for a layer whose module and
-    /// manifest match a recorded pin. Where a file sits proves nothing, so the fact is the hash.
-    /// An untrusted layer still answers, but every call it makes is adjudicated without a card,
-    /// and it never answers a hook that [`decides`].
+    /// Whether this layer may run freely: a built-in, or a layer whose module and manifest match a
+    /// recorded pin, since where a file sits proves nothing. An untrusted layer still answers, but
+    /// its calls are adjudicated without a card and it never answers a hook that [`decides`].
     pub trusted: bool,
     /// The pin nearest to this layer: the one its bytes match, or - with `trusted` false - the one
     /// they have broken. `None` for a layer nothing was ever pinned for, and for a built-in.
