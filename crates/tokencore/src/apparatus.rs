@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-/// The vocabulary this box tokenises with: under `$HOME` first, then the Linux box's literal
-/// path. One home for the copies that each had to decide whether to skip.
+/// The vocabulary this box tokenises with: what the run declared, else what its own home holds.
+/// One home for the copies that each had to decide whether to skip.
 pub fn gguf_path() -> PathBuf {
     gguf_path_from(
         std::env::var_os("LETIBOT_VOCAB_GGUF"),
@@ -14,18 +14,35 @@ pub fn gguf_path() -> PathBuf {
 }
 
 /// The GLM vocabulary, found the way [`gguf_path`] finds the default one: `LETIBOT_GLM_GGUF`,
-/// then `$HOME`, then the literal path.
+/// then `$HOME`.
 pub fn glm_gguf_path() -> PathBuf {
+    glm_gguf_path_from(
+        std::env::var_os("LETIBOT_GLM_GGUF"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`glm_gguf_path`] with its readings handed in, for the same reason as [`gguf_path_from`].
+fn glm_gguf_path_from(
+    over: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
     const UNDER_HOME: &str = "models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
-    const LITERAL: &str =
-        "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
-    if let Some(p) = std::env::var_os("LETIBOT_GLM_GGUF").filter(|p| !p.is_empty()) {
+    if let Some(p) = over.filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(UNDER_HOME))
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from(LITERAL))
+    under_home(home, UNDER_HOME)
+}
+
+/// The vocabulary path a run was given: the override it declared, else what its own home holds.
+/// No box's literal path is consulted, because a gate runs under a scratch home and a file found
+/// outside it is one this run was never given - the absence of a vocabulary, not its presence.
+fn under_home(home: Option<std::ffi::OsString>, relative: &str) -> PathBuf {
+    match home {
+        Some(h) => PathBuf::from(h).join(relative),
+        // Named rather than empty: the skip line says which path was looked for.
+        None => PathBuf::from(relative),
+    }
 }
 
 /// [`gguf_path`] with `LETIBOT_VOCAB_GGUF` and `HOME` handed in rather than read, so its test
@@ -34,21 +51,10 @@ pub fn glm_gguf_path() -> PathBuf {
 fn gguf_path_from(over: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> PathBuf {
     const UNDER_HOME: &str =
         "models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf";
-    const LITERAL: &str =
-        "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf";
-
     if let Some(p) = over {
         return PathBuf::from(p);
     }
-    let under_home = home.map(|h| PathBuf::from(h).join(UNDER_HOME));
-    if let Some(p) = under_home.as_ref().filter(|p| p.is_file()) {
-        return p.clone();
-    }
-    let literal = PathBuf::from(LITERAL);
-    if literal.is_file() {
-        return literal;
-    }
-    under_home.unwrap_or(literal)
+    under_home(home, UNDER_HOME)
 }
 
 /// Is a missing apparatus a failure rather than a skip? `LETIBOT_REQUIRE_APPARATUS`.
@@ -233,5 +239,30 @@ mod tests {
                 .is_empty()
         );
         assert!(!gguf_path().as_os_str().is_empty());
+    }
+
+    /// Where the vocabulary is looked for is the run's own declaration or its own home, never one
+    /// box's literal path: a path read off `/home/dead` makes a gate under a scratch `HOME` read
+    /// this box's files, and makes the absence of a vocabulary look like its presence.
+    #[test]
+    fn a_vocabulary_outside_this_home_is_named_and_not_read_from_another_boxes_path() {
+        let found = gguf_path_from(None, Some("/nonexistent-home".into()));
+        assert!(
+            found.starts_with("/nonexistent-home"),
+            "the search left the home it was given: {}",
+            found.display()
+        );
+        assert!(
+            !found.is_file(),
+            "a path that is not under this home was found anyway: {}",
+            found.display()
+        );
+        let glm = glm_gguf_path_from(None, Some("/nonexistent-home".into()));
+        assert!(
+            glm.starts_with("/nonexistent-home"),
+            "the GLM search left the home it was given: {}",
+            glm.display()
+        );
+        assert!(!glm.is_file(), "{}", glm.display());
     }
 }

@@ -19,7 +19,7 @@ macro_rules! confined {
         match confined_harness() {
             Ok(h) => h,
             Err(e) => {
-                no_boundary(&e, $name);
+                no_boundary_or_host(&e, $name);
                 return;
             }
         }
@@ -56,23 +56,92 @@ fn boundary_absent() {
 /// nothing ran, because a boundary that is silently not there is worse than none. It is
 /// asserted before the absence is announced, so a run that demands the apparatus fails.
 fn no_boundary(e: &ExecError, test: &str) {
+    no_boundary_for(e, test, &[Need::Boundary]);
+}
+
+/// The same, for a test that needs the process host too: a session that cannot be given a
+/// lifetime tree is skipped for a reason of its own, and naming the boundary would be a lie.
+fn no_boundary_or_host(e: &ExecError, test: &str) {
+    no_boundary_for(e, test, &[Need::Boundary, Need::Host]);
+}
+
+/// Which apparatus a refusal is about. The two are different promises - a namespace to hold the
+/// view, a tree to hold the process - and a test written for one must not be skipped by the
+/// other's absence: the skip line would name the wrong thing, and a run demanding the first
+/// would never notice that the second is what is gone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Need {
+    Boundary,
+    Host,
+}
+
+/// The apparatus a refusal names, read off its own words. `None` is a refusal that names none.
+fn mechanism_of(e: &ExecError) -> Option<Need> {
+    let m = format!("{e}");
+    if m.contains("cgroup") {
+        Some(Need::Host)
+    } else if m.contains("bwrap") || m.contains("namespace") || m.contains("userns") {
+        Some(Need::Boundary)
+    } else {
+        None
+    }
+}
+
+fn no_boundary_for(e: &ExecError, test: &str, wants: &[Need]) {
     eprintln!("{test}: no usable boundary on this host, asserting on the refusal instead: {e}");
     let m = format!("{e}");
     assert!(
         m.contains("was NOT run") || m.contains("nothing would reap it"),
         "a refusal must say that nothing ran: {m}"
     );
+    let need = mechanism_of(e)
+        .unwrap_or_else(|| panic!("a refusal must name the mechanism that is missing: {m}"));
     assert!(
-        m.contains("bwrap")
-            || m.contains("namespace")
-            || m.contains("cgroup")
-            || m.contains("userns"),
-        "a refusal must name the mechanism that was missing: {m}"
+        wants.contains(&need),
+        "{test} was written for {wants:?} and this box is missing {need:?}, so the skip would \
+         name the wrong apparatus: {m}"
     );
-    boundary_absent();
+    match need {
+        Need::Boundary => boundary_absent(),
+        Need::Host => host_absent(),
+    }
+}
+
+/// The process-lifetime tree's absence, announced as the apparatus it is.
+fn host_absent() {
+    let Some(_) = letibot_tokencore::apparatus::applies(CGROUP, cfg!(target_os = "linux")) else {
+        return;
+    };
+    absent(CGROUP);
 }
 
 // --------------------------------------- the require switch reaches every skip
+
+/// A refusal about the apparatus a test did not ask for is that test's FAILURE, not its skip: the
+/// line announces what is missing, so a boundary test skipped for a lifetime tree's absence says
+/// the boundary is gone when it is not, and a run that demands the boundary never sees it.
+#[test]
+fn a_refusal_about_another_mechanism_is_not_this_tests_skip() {
+    let e = ExecError::NoConfinement(
+        "this session asks for a project-scoped boundary and does not have one, so the command \
+         was NOT run. What is missing: a cgroup v2 subtree this user may write, so nothing would \
+         reap it"
+            .into(),
+    );
+    let refused = std::panic::catch_unwind(|| no_boundary(&e, "a_boundary_test"));
+    assert!(
+        refused.is_err(),
+        "a refusal about the process host skipped a test written for the boundary"
+    );
+
+    // Each message is read for the apparatus it names, which is what makes the skip line honest.
+    let bwrap = ExecError::NoConfinement(
+        "`/usr/bin/bwrap` is not on `PATH`, so the command was NOT run".into(),
+    );
+    assert_eq!(mechanism_of(&bwrap), Some(Need::Boundary));
+    assert_eq!(mechanism_of(&e), Some(Need::Host));
+    assert_eq!(mechanism_of(&ExecError::Spawn("no".into())), None);
+}
 
 /// A missing boundary is a SKIP, and a run that demands the apparatus fails instead - pinned by
 /// running this binary once more with the helper pointed at nothing and the switch set, because no
@@ -1393,7 +1462,7 @@ fn a_sessions_own_spill_is_in_its_view_and_another_sessions_is_not() {
         Ok(h) => h,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&gc);
-            no_boundary(&e, "a_sessions_own_spill_is_in_its_view");
+            no_boundary_or_host(&e, "a_sessions_own_spill_is_in_its_view");
             return;
         }
     };
@@ -1499,7 +1568,7 @@ fn a_sessions_build_dirs_from_the_gc_root_are_writable_with_no_ask() {
         Ok(h) => h,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&gc);
-            no_boundary(&e, "a_sessions_build_dirs_from_the_gc_root");
+            no_boundary_or_host(&e, "a_sessions_build_dirs_from_the_gc_root");
             return;
         }
     };

@@ -223,3 +223,57 @@ fn no_script_holds_a_copy_of_the_gate() {
         );
     }
 }
+
+/// A fixture that turns the demand off leaves every skip in its binary green, and `set_var` with a
+/// zero does that as surely as `remove_var`. The guard reads both, in every spelling a fixture uses.
+#[test]
+fn a_fixture_that_switches_the_apparatus_demand_off_is_refused() {
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-attrs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let script = root().join("scripts/check-test-attrs.sh");
+    for body in [
+        "    std::env::remove_var(\"LETIBOT_REQUIRE_APPARATUS\");\n",
+        "    std::env::set_var(\"LETIBOT_REQUIRE_APPARATUS\", \"0\");\n",
+        "    std::env::set_var(\"LETIBOT_REQUIRE_MODEL\", \"0\");\n",
+        "    unsafe { std::env::set_var(\"LETIBOT_REQUIRE_APPARATUS\", \"0\") };\n",
+        "    std::env::set_var ( \"LETIBOT_REQUIRE_APPARATUS\" , \"0\" ) ;\n",
+    ] {
+        let file = dir.join("case.rs");
+        std::fs::write(&file, format!("#[test]\nfn a_case() {{\n{body}}}\n")).expect("the file");
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .arg(&file)
+            .output()
+            .expect("the check runs");
+        assert!(
+            !out.status.success(),
+            "a fixture was allowed to take the demand off:\n{body}"
+        );
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            said.contains("LETIBOT_REQUIRE"),
+            "the refusal does not name the demand: {said}"
+        );
+    }
+    // And the ordinary case still passes, so the guard is not one that refuses everything.
+    let clean = dir.join("clean.rs");
+    std::fs::write(&clean, "#[test]\nfn a_case() {}\n").expect("the file");
+    let out = std::process::Command::new("sh")
+        .arg(&script)
+        .arg(&clean)
+        .output()
+        .expect("the check runs");
+    assert!(out.status.success(), "a clean file was refused");
+    let _ = std::fs::remove_dir_all(&dir);
+}

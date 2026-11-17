@@ -42,17 +42,17 @@ else
   exit 1
 fi
 
-# A test may not unset `LETIBOT_REQUIRE_APPARATUS` from a fixture's environment: that turns
-# every skip in the binary green again.
+# A test may not clear `LETIBOT_REQUIRE_APPARATUS` from a fixture's environment, and may not set it
+# to `0` either: both turn every skip in the binary green again.
 if awk '
-  /remove_var\("LETIBOT_REQUIRE_(APPARATUS|MODEL)"\)/ {
-    printf "%s:%d: a fixture clears the gate demand for the apparatus, so its skips stay green\n", FILENAME, FNR > "/dev/stderr"
+  /(set_var|remove_var)[[:space:]]*\([[:space:]]*"LETIBOT_REQUIRE_(APPARATUS|MODEL)"/ {
+    printf "%s:%d: a fixture turns the gate demand for the apparatus off, so its skips stay green\n", FILENAME, FNR > "/dev/stderr"
     bad = 1
   }
   END { exit bad ? 1 : 0 }
 ' "$@"; then
-  echo "check-test-attrs: $# file(s) checked, no fixture clears the gate demand"
+  echo "check-test-attrs: $# file(s) checked, no fixture turns the gate demand off"
 else
-  echo "check-test-attrs: a fixture clears LETIBOT_REQUIRE_APPARATUS or LETIBOT_REQUIRE_MODEL" >&2
+  echo "check-test-attrs: a fixture sets or clears LETIBOT_REQUIRE_APPARATUS or LETIBOT_REQUIRE_MODEL" >&2
   exit 1
 fi
