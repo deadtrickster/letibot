@@ -196,3 +196,38 @@ fn every_kept_corpus_decodes() {
     }
     assert!(seen > 0);
 }
+
+/// The live half of the skew: a head's own `HeadClient` attaches to the corpus server and reads
+/// its snapshot. `examples/wire_head.rs` is the same attach, built from another revision, which is
+/// what `scripts/wire-skew.sh` runs against this build.
+#[test]
+fn a_head_attaches_to_the_corpus_server_and_reads_the_snapshot() {
+    use letibot_sessionlog::client::HeadClient;
+    use letibot_sessionlog::protocol::Caps;
+    let dir = letibot_sessionlog::testing::scratch("wire-head-attach");
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("d.sock");
+    let serving = {
+        let sock = sock.clone();
+        std::thread::spawn(move || wire_corpus::serve_for_an_older_head(&sock, 3_000))
+    };
+    for _ in 0..50 {
+        if sock.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (_head, hello, _reader) =
+        HeadClient::attach(&sock, "s", 0, "tui", "wire-head", Caps::default())
+            .expect("the corpus server takes an attach");
+    let ServerFrame::Hello { snapshot, .. } = &hello else {
+        panic!("the answer to an attach was not a Hello: {hello:?}");
+    };
+    let snapshot = snapshot
+        .as_deref()
+        .expect("a snapshot attach is a snapshot");
+    assert_eq!(snapshot.session_id, "s");
+    assert!(!snapshot.items.is_empty(), "the exchange's rows are in it");
+    let _ = serving.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -281,3 +281,17 @@ pub fn write(dir: &Path, head: u32) -> io::Result<()> {
     std::fs::write(dir.join("server.jsonl"), join(server_frames(head)?))?;
     std::fs::write(dir.join("client.jsonl"), join(client_frames()))
 }
+
+/// Serve the corpus exchange at `sock` for `for_ms`, so a build OTHER than this one can attach its
+/// own head to it: `scripts/wire-skew.sh` runs an older release's `HeadClient` against this one.
+/// Every event is on the hub before the first attach, so the run needs no timing: the snapshot is
+/// the whole exchange, and a client that reads its Hello has read all of it.
+pub fn serve_for_an_older_head(sock: &Path, for_ms: u64) -> io::Result<()> {
+    let hub = Hub::new("s");
+    before_attach(&hub);
+    after_attach(&hub);
+    let server = crate::server::serve(hub, sock)?;
+    std::thread::sleep(Duration::from_millis(for_ms));
+    server.shutdown();
+    Ok(())
+}

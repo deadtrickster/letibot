@@ -62,8 +62,12 @@ fi
 new=$(version_at HEAD)
 capture=$(bin_crate "$ROOT" new-capture "$ROOT/crates/sessionlog/examples/wire_capture.rs")
 newdec=$(bin_crate "$ROOT" new-decode "$ROOT/crates/sessionlog/examples/wire_decode.rs")
+newserve=$(bin_crate "$ROOT" new-serve "$ROOT/crates/sessionlog/examples/wire_serve.rs")
 
 failed=0
+# Built once, before the refs loop: `cargo run` would compile it inside the socket's wait, and a
+# cold target dir outlasts any wait worth writing.
+cargo build -q --manifest-path "$newserve" --target-dir "$TD/new-serve"
 echo "== this build ($new) reads every kept corpus"
 if ! run_bin "$newdec" new-decode "$ROOT"/crates/sessionlog/tests/wire_golden/v*/*.jsonl; then
   failed=$((failed + 1))
@@ -81,6 +85,34 @@ for ref in "$@"; do
   if ! run_bin "$dec" "old-$sha" "$out/server.jsonl" "$out/client.jsonl"; then
     failed=$((failed + 1))
   fi
+  # And its own HEAD, live: the old tree's `HeadClient` attaches to this build's server. The
+  # example is this tree's source built against that tree's crate, as the decoder is; a ref too
+  # old to have the client's own API at all is a note, not a defect of the wire.
+  head=$(bin_crate "$tree" "head-$sha" "$ROOT/crates/sessionlog/examples/wire_head.rs" 2>/dev/null || true)
+  if [ -z "$head" ] || ! cargo build -q --manifest-path "$head" --target-dir "$TD/head-$sha" 2>"$WORK/head-$sha.err"; then
+    echo "   note: $ref has no \`HeadClient\`/\`wire_head\` API to build; its decode half ran"
+    continue
+  fi
+  sock=$WORK/head-$sha.sock
+  run_bin "$newserve" "new-serve" "$sock" 60000 >"$WORK/serve-$sha.log" 2>&1 &
+  serve_pid=$!
+  for _ in $(seq 1 150); do
+    [ -S "$sock" ] && break
+    sleep 0.2
+  done
+  if [ ! -S "$sock" ]; then
+    echo "   this build's corpus server did not come up: $(cat "$WORK/serve-$sha.log")" >&2
+    failed=$((failed + 1))
+    kill "$serve_pid" 2>/dev/null || true
+    continue
+  fi
+  echo "== $ref ($sha, protocol $old) attaches its own head to this build's ($new) server"
+  if ! cargo run -q --manifest-path "$head" --target-dir "$TD/head-$sha" -- "$sock" s; then
+    echo "   $ref's head did not attach or could not read the Hello (see above)" >&2
+    failed=$((failed + 1))
+  fi
+  kill "$serve_pid" 2>/dev/null || true
+  wait "$serve_pid" 2>/dev/null || true
 done
 [ "$failed" -eq 0 ] || {
   echo "wire-skew: $failed build(s) misread another build's frames" >&2
