@@ -93,6 +93,12 @@ pub const ASK_ROOM: u64 = 2_000;
 /// cannot count tokens and can count lines.
 pub const CHARS_PER_TOKEN: u64 = 4;
 
+/// How long a summary turn may go without a progress event before the next one is published
+/// whatever its stride: a stream that writes a few characters a second published every 32 deltas
+/// left a head's spinner and clock standing still for twelve seconds (lead 61), which reads as a
+/// freeze.
+pub const PROGRESS_EVERY_MS: u64 = 2_000;
+
 /// The room a summary gets, in LEDGER tokens, and which bound chose it. A struct rather than one
 /// number because the sentence the operator reads has to be able to say WHY the record was as big
 /// as it was, and "the ratio said so" and "the turn had no more room" are different answers.
@@ -874,17 +880,7 @@ pub fn run_compaction_as_progress(
     ladder: &mut letibot_http::retry::Ladder,
     ask: Option<&SummaryAsk<'_>>,
 ) -> Result<(CompactionOutcome, Option<u64>), TurnFailure> {
-    let mut progress = CompactionSink {
-        inner: sink,
-        half: 1,
-        halves: 1,
-        prompt_tokens: session.ledger.len() as u64,
-        processed: 0,
-        chars: 0,
-        tokens: None,
-        deltas: 0,
-        cost_micros: None,
-    };
+    let mut progress = CompactionSink::new(sink, 1, 1, session.ledger.len() as u64);
     progress.publish();
     let out = run_compaction(engine, session, &mut progress, answerer, ladder, ask)?;
     progress.publish();
@@ -2012,6 +2008,16 @@ pub fn summarise_overrun(
     })
 }
 
+/// The progress line's own clock, in millis since this process started: monotonic, so a box whose
+/// wall clock steps does not silence the line, and a function, so a test can drive it.
+fn monotonic_ms() -> u64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
 /// Carries a scratch summary turn's long wait out, labelled as the compaction's own: the slice is
 /// history to a head, and the wait must not look like the session's turn.
 struct CompactionSink<'a> {
@@ -2029,9 +2035,29 @@ struct CompactionSink<'a> {
     deltas: u64,
     /// What the summary turn's rounds cost, summed: dropped with their endings, and still spent.
     cost_micros: Option<u64>,
+    /// The clock, and when the line was last published on it. The stride above is a chunk count,
+    /// and a slow stream reaches it rarely: the interval is what keeps a head's clock moving.
+    now: fn() -> u64,
+    published_ms: u64,
 }
 
-impl CompactionSink<'_> {
+impl<'a> CompactionSink<'a> {
+    fn new(inner: &'a mut dyn EventSink, half: u64, halves: u64, prompt_tokens: u64) -> Self {
+        CompactionSink {
+            inner,
+            half,
+            halves,
+            prompt_tokens,
+            processed: 0,
+            chars: 0,
+            tokens: None,
+            deltas: 0,
+            cost_micros: None,
+            now: monotonic_ms,
+            published_ms: monotonic_ms(),
+        }
+    }
+
     /// What to report as `written`, and in which unit. A token count wins where there is one: it
     /// is the same unit the window is in.
     fn written(&self) -> (u64, &'static str) {
@@ -2051,6 +2077,7 @@ impl CompactionSink<'_> {
             written,
             unit,
         };
+        self.published_ms = (self.now)();
         self.inner.emit(p);
     }
 }
@@ -2076,7 +2103,10 @@ impl EventSink for CompactionSink<'_> {
                 self.deltas += 1;
                 // Strided, because a tick per chunk is a flood and the flood is what breaks the
                 // indicator: a messages transport has no token count, so characters are the unit.
-                if self.deltas == 1 || self.deltas.is_multiple_of(32) {
+                // And at least every `PROGRESS_EVERY_MS`: a slow stream reaches a stride of 32
+                // deltas in twelve seconds, which is a head drawing a frozen clock.
+                let due = (self.now)().saturating_sub(self.published_ms) >= PROGRESS_EVERY_MS;
+                if self.deltas == 1 || self.deltas.is_multiple_of(32) || due {
                     self.publish();
                 }
             }
@@ -2163,17 +2193,7 @@ fn run_half<T>(
     prompt_tokens: u64,
     body: impl FnOnce(&mut CompactionSink<'_>) -> Result<T, TurnFailure>,
 ) -> Result<T, TurnFailure> {
-    let mut progress = CompactionSink {
-        inner: sink,
-        half,
-        halves,
-        prompt_tokens,
-        processed: 0,
-        chars: 0,
-        tokens: None,
-        deltas: 0,
-        cost_micros: None,
-    };
+    let mut progress = CompactionSink::new(sink, half, halves, prompt_tokens);
     progress.publish();
     let out = body(&mut progress)?;
     // The half's last word on the line, with its final count - the strided publish
@@ -2337,17 +2357,56 @@ mod compaction_sink {
     }
 
     fn sink<'a>(inner: &'a mut Recorder, prompt_tokens: u64) -> CompactionSink<'a> {
-        CompactionSink {
-            inner,
-            half: 2,
-            halves: 2,
-            prompt_tokens,
-            processed: 0,
-            chars: 0,
-            tokens: None,
-            deltas: 0,
-            cost_micros: None,
+        CompactionSink::new(inner, 2, 2, prompt_tokens)
+    }
+
+    /// The clock a test drives: one static, because the sink takes a plain function.
+    static CLOCK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn test_clock() -> u64 {
+        CLOCK_MS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn tick(ms: u64) {
+        CLOCK_MS.fetch_add(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A summary turn that writes slowly still ticks. Measured (lead 61): a head's spinner and its
+    /// elapsed clock stood still for twelve seconds inside a summary turn, because the only publish
+    /// was every thirty-second delta - and a messages stream writes a few characters a second.
+    #[test]
+    fn a_slow_summary_turn_publishes_on_the_interval_not_only_on_the_stride() {
+        let mut rec = Recorder::default();
+        CLOCK_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+        {
+            let mut s = sink(&mut rec, 900_000);
+            s.now = test_clock;
+            s.published_ms = 0;
+            // Ten deltas, 400 ms apart, is 4 s of a turn and not one stride of 32.
+            for i in 0..10 {
+                s.emit(TurnEvent::Delta {
+                    turn_id: "scratch#1".into(),
+                    target: DeltaTarget::Text,
+                    text: format!("word{i} "),
+                });
+                tick(400);
+            }
         }
+        assert!(
+            rec.seen.len() >= 2,
+            "ten deltas over four seconds publish more than the first one: {}",
+            rec.seen.len()
+        );
+        // And never faster than the interval: the gap between two publishes is the interval's.
+        let chars: Vec<u64> = rec.seen.iter().map(|e| progress_of(e).4).collect();
+        assert!(
+            chars.windows(2).all(|w| w[0] < w[1]),
+            "each publish carries a newer count than the one before: {chars:?}"
+        );
+        assert!(
+            chars.len() <= 3,
+            "four seconds of a slow turn is at most a few frames, not one per delta: {chars:?}"
+        );
     }
 
     fn progress_of(event: &TurnEvent) -> (u64, u64, u64, u64, u64, &'static str) {
