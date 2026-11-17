@@ -7,7 +7,7 @@ use std::sync::{Once, mpsc};
 use std::time::{Duration, Instant};
 
 use letibot_bridge::tools::{self, Bridge};
-use letibot_tokencore::store::{Store, TodoItem, TodoNeed};
+use letibot_tokencore::store::{Store, TodoItem, TodoNeed, TodoStatus};
 use serde_json::{Value, json};
 
 /// The window these tests drive the check with: a minute is the production one, and no test can
@@ -442,5 +442,125 @@ fn a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused() {
             .last()
             .is_some_and(|n| nag_text(n).contains("the gate somebody ran by hand")),
         "a reused pid is not the process the row waited on: {again:?}"
+    );
+}
+
+/// A session of this seat's project, with one row on its board: the other half of a cross-board
+/// wait, written the way a daemon writes it.
+fn a_sessions_row(store: &std::path::Path, workspace: &str, title: &str, row: &str, status: TodoStatus) {
+    let store = Store::open(store).expect("the store");
+    if store.session("s-42").expect("the index").is_none() {
+        store
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: "s-42".into(),
+                title: Some(title.into()),
+                model_id: "a model".into(),
+                dialect_sha: "a dialect".into(),
+                workspace_root: workspace.into(),
+                owner: "dead".into(),
+                approvers: Vec::new(),
+                role: None,
+                parent_session_id: None,
+            })
+            .expect("the session row");
+    }
+    store
+        .put_todos(
+            "s-42",
+            &[TodoItem {
+                content: row.into(),
+                status,
+                by: letibot_tokencore::store::TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            }],
+        )
+        .expect("the session's board");
+}
+
+/// The other direction: a SEAT's row waits on a letibot session's row of the same project, is quiet
+/// while that row is open, and is freed with one note when the session finishes it.
+#[test]
+fn a_seats_row_can_wait_on_a_sessions_row_and_is_freed_by_its_finishing() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("seat-waits-session");
+    // `cc@seat-todo` is this seat's handle, so `seat-todo` is the word its project is known by.
+    a_sessions_row(&store, "/work/seat-todo", "db-fuzz", "ship the pane", TodoStatus::InProgress);
+    let bridge = bridge(&store, &folder);
+    let (tx, rx) = mpsc::channel();
+    bridge.push_seat(tx);
+    let wrote = call(
+        &bridge,
+        "todo_write",
+        json!({"todos": [{"content": "collect the package", "status": "in_progress",
+                "needs": [{"kind": "todo", "seat": "db-fuzz", "content": "ship the pane"}]}]}),
+    )
+    .expect("a session of this project is a board this seat can wait on");
+    assert_eq!(wrote["stored"], json!(true), "{wrote}");
+    assert_eq!(
+        rows(&bridge).remove(0).needs,
+        vec![TodoNeed::Todo {
+            seat: "db-fuzz".into(),
+            content: "ship the pane".into(),
+        }],
+        "the wait is on the row, in the store"
+    );
+    settle(&rx);
+    assert!(
+        nags(&rx, WINDOW * 3).is_empty(),
+        "a row waiting on another board's row is not nagged"
+    );
+
+    // The session marks its row done, and the seat is told - one note, naming the board and the
+    // row, and the row is work again.
+    a_sessions_row(&store, "/work/seat-todo", "db-fuzz", "ship the pane", TodoStatus::Completed);
+    let notes = nags(&rx, Duration::from_secs(3));
+    let freeing: Vec<&Value> = notes
+        .iter()
+        .filter(|n| nag_text(n).contains("[todo]") && nag_text(n).contains("finished"))
+        .collect();
+    assert_eq!(freeing.len(), 1, "one note for one freed wait: {notes:?}");
+    let said = nag_text(freeing[0]);
+    assert!(
+        said.contains("db-fuzz finished \"ship the pane\"")
+            && said.contains("no longer a wait of")
+            && said.contains("collect the package"),
+        "{said}"
+    );
+    assert!(
+        rows(&bridge)[0].needs.is_empty(),
+        "the wait came off the row"
+    );
+}
+
+/// A wait across projects, or on a name nothing answers to, is refused by name in the call that
+/// writes it - a seat has no daemon to fall back on, so nothing may be left to a guess.
+#[test]
+fn a_wait_on_another_projects_row_or_an_unknown_one_is_refused_by_name() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("seat-waits-refuse");
+    a_sessions_row(&store, "/work/somewhere-else", "elsewhere", "ship it", TodoStatus::InProgress);
+    let bridge = bridge(&store, &folder);
+    let write = |seat: &str| {
+        call(
+            &bridge,
+            "todo_write",
+            json!({"todos": [{"content": "collect the package", "status": "in_progress",
+                    "needs": [{"kind": "todo", "seat": seat, "content": "ship it"}]}]}),
+        )
+    };
+    let elsewhere = write("elsewhere").expect_err("a board of another project");
+    assert!(
+        elsewhere.contains("another project") && elsewhere.contains("seat-todo"),
+        "the refusal names the project it is not: {elsewhere}"
+    );
+    let unknown = write("nobody").expect_err("a name nothing answers to");
+    assert!(
+        unknown.contains("nobody") && unknown.contains("db-fuzz") || unknown.contains("nobody"),
+        "the refusal names what there is: {unknown}"
+    );
+    assert!(
+        rows(&bridge).iter().all(|r| r.needs.is_empty()),
+        "nothing was written"
     );
 }
