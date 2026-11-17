@@ -1,7 +1,6 @@
 //! An MCP client for `letibot-tools`' catalogue seam: stdio and streamable-HTTP JSON-RPC, blocking,
-//! one lock per server. Servers start in parallel at [`Catalog::start`]; a failure is kept as a
-//! [`Failure`] while the rest serve, and a server that dies later is restarted with backoff.
-//! [`Catalog::reconcile`] moves a running catalogue to a new config without a daemon restart.
+//! one lock per server. A start failure is kept as a [`Failure`] while the rest serve, a server
+//! that dies is restarted with backoff, and [`Catalog::reconcile`] applies a new config live.
 
 mod wire;
 
