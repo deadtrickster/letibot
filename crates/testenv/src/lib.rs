@@ -1,7 +1,6 @@
-//! Tests kept off the box they run on. A session puts `LETIBOT_SOCKET`, `LETIBOT_SESSION` and the
-//! rest of its doors into every command it spawns, so a `cargo test` an agent runs inherits the
-//! operator's live daemon. [`command`] spawns without them, [`isolate`] takes them off this whole
-//! test process, and [`EnvGuard`] is the one lock every test that changes the environment holds.
+//! Tests kept off the box they run on: a session's `LETIBOT_*` doors reach every command it spawns,
+//! so a `cargo test` inherits the operator's live daemon. [`command`] spawns without them,
+//! [`isolate`] clears this process, and [`EnvGuard`] is the one lock for tests that change the env.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -100,10 +99,9 @@ impl Drop for EnvGuard {
     }
 }
 
-/// Take the doors off this process and point its XDG config, data, state and cache dirs at a
-/// scratch of its own, once per test binary; answers the scratch. `HOME` is left alone, so
-/// read-only apparatus under it is still found. For a test whose spawns this crate cannot reach
-/// (a tool, a shell, a library under test), and one that reads config through the XDG dirs.
+/// Take the doors off this process and point its XDG dirs at a scratch of its own, once per test
+/// binary; answers the scratch. `HOME` stays, so read-only apparatus under it is found. For spawns
+/// this crate cannot reach (a tool, a shell, a library) and for config read through XDG.
 pub fn isolate() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
