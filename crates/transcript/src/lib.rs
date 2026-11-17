@@ -236,10 +236,9 @@ pub enum TranscriptItem {
 }
 
 impl TranscriptItem {
-    /// Whether this row is sent to the model as a conversation item. The one decision, made on
-    /// the type: an `Offer` is the operator's card and a `SegmentMark` a zero-width marker, and
-    /// neither reaches a request, so no renderer can drift from the store's own classification.
-    /// Every arm is spelled, so a new kind must answer here before it compiles anywhere.
+    /// Whether this row is sent to the model, decided on the type so no renderer can drift from
+    /// the store. `Offer` and `SegmentMark` never reach a request. Every arm is spelled, so a new
+    /// kind must answer here.
     pub fn reaches_model(&self) -> bool {
         match self {
             // The operator's record of what a round offered, drawn in place by a head.
