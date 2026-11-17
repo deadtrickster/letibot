@@ -404,45 +404,15 @@ fn a_dropped_host_takes_its_deadline_thread_with_it() {
     );
 }
 
-/// The threads a kernel name prefixes, by tid. The dead check's name is 15 bytes in `comm`,
-/// like the watchdog's, so the prefix is the whole of it that can be read back.
-fn threads_named(prefix: &str) -> std::collections::BTreeSet<String> {
-    std::fs::read_dir("/proc/self/task")
-        .map(|d| {
-            d.flatten()
-                .filter(|t| {
-                    std::fs::read_to_string(t.path().join("comm"))
-                        .is_ok_and(|c| c.trim_end().starts_with(prefix))
-                })
-                .map(|t| t.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// A dropped host takes its dead check with it. It is a tick loop holding an `Arc` of its own, so
 /// a leaked one would be a thread per `HostProcesses` for the life of the process, waking every
 /// minute to look at jobs that no longer exist.
 #[test]
 fn a_dropped_host_takes_its_dead_check_with_it() {
-    let before = threads_named("letibot-liven");
+    // The dead check's thread holds the host's liveness; once that is released the thread can
+    // no longer wake for it. Thread names are not read: parallel tests' hosts share them.
     let h = HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
     let weak = Arc::downgrade(&h.liveness);
-    let mut started: Vec<String> = Vec::new();
-    let named_by = Instant::now() + Duration::from_secs(5);
-    while started.is_empty() && Instant::now() < named_by {
-        started = threads_named("letibot-liven")
-            .difference(&before)
-            .cloned()
-            .collect();
-        if started.is_empty() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-    assert!(
-        !started.is_empty() || cfg!(not(target_os = "linux")),
-        "a host starts a dead check"
-    );
     drop(h);
     let until = Instant::now() + Duration::from_secs(10);
     while weak.upgrade().is_some() && Instant::now() < until {
@@ -452,18 +422,6 @@ fn a_dropped_host_takes_its_dead_check_with_it() {
         weak.upgrade().is_none(),
         "**the dead check outlived its host** — the thread still holds it, so it keeps waking \
              for jobs nobody has any more"
-    );
-    let until = Instant::now() + Duration::from_secs(10);
-    let alive = |started: &[String]| {
-        let now = threads_named("letibot-liven");
-        started.iter().filter(|t| now.contains(*t)).count()
-    };
-    while !started.is_empty() && alive(&started) == started.len() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        started.is_empty() || alive(&started) < started.len(),
-        "no dead-check thread ended after its host was dropped: {started:?}"
     );
 }
 
