@@ -376,7 +376,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 **Tests.** The three proving tests in `crates/tools/tests/file_fence.rs`, each run red on `bf72aa1d9` with the test alone and green on the branch; `write_cannot_reach_protected_git_paths` also red with only the source changes stashed. Equality test `the_fence_refuses_every_read_the_flow_rule_calls_secret` (`exec/fence.rs`); `every_store_is_denied_by_the_gate_the_flow_rule_and_the_seat` (`secrets.rs`) checks every scope. `cargo test -p letibot-tools` and `cargo test -p letibot-harnessd --no-fail-fast` green (135 binaries). The timing test `shadow::tests::a_slow_median_pauses_the_job_too` failed once under load 20 and passed alone 3 of 3 and in the full rerun. Each commit's `file_fence` run green at that commit.
 
 **Residue.**
-- Masking the new stores in the wide seat means `rclone`, `sops`, `psql` with `.pgpass`, `vault`, `s3cmd`, and `claude`/`codex` run from a letibot `bash` lose their credentials. The operator rules per entry; a store that must stay usable moves to `Unmasked` or `TightOnly`.
+- Masking the new stores means a tool run from a letibot `bash` (`rclone`, `sops`, `psql` with `.pgpass`, `vault`, `s3cmd`, `claude`/`codex`) loses its credentials. No per-store ruling now: decided during use, and folded into the broker (R363/R364), which makes each CLI usable by its own software. What done is done.
 - A file tool's read of a secret is refused, not asked: the file tools have no card. Reading one with `bash` is the asked route.
 - A bare `repo.git` common dir is held by the fence's protected set, not by `never_hit`, whose rule is still the `.git` segment.
 - The shadow keeps its `keys` and `credentials` component heuristics outside the table.
