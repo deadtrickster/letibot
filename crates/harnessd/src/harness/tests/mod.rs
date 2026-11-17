@@ -67,6 +67,7 @@ mod restart_notice;
 mod reviewer_mode;
 mod roles;
 mod seam_store;
+mod seat_waits;
 mod shadow_during;
 mod shadow_turn_end;
 mod steer_door;
