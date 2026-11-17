@@ -15,11 +15,9 @@ use crate::vocab::TokenId;
 /// number rather than an assumption, for the reason every version in this store is one.
 pub const TRANSFER_FORMAT: u32 = 1;
 
-/// The half-import marker. A set's two files commit one after the other - they are two databases
-/// in WAL, and no transaction spans them - so a crash between the commits leaves a session's
-/// project rows written and its index row not, or the other way round. The marker is written
-/// before the import and cleared after it, and a retry that finds one refuses rather than
-/// guessing which half it got.
+/// The half-import marker. A set's two files commit separately, so a crash between the commits
+/// leaves one half of a session written. The marker is written before the import and cleared
+/// after, and a retry that finds one refuses rather than guess which half landed.
 pub const IMPORT_PENDING_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS import_pending (
     session_id TEXT PRIMARY KEY,
@@ -1436,10 +1434,8 @@ mod tests {
         assert_eq!(report.items, 0);
     }
 
-    /// A set's two files commit one after the other - they are two databases, and no transaction
-    /// spans them - so an import can die between them. The marker is written before the import and
-    /// cleared after it, and a retry that finds one refuses rather than writing a second half over
-    /// the first.
+    /// A set's two files commit separately, so an import can die between them. The marker is
+    /// written before and cleared after, and a retry that finds one refuses a second half.
     #[test]
     fn a_crash_after_the_project_commit_is_detected_on_retry() {
         let dir = std::env::temp_dir().join(format!(

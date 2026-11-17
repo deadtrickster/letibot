@@ -1870,11 +1870,9 @@ impl Store {
     /// arm, the queue-mute repair and a single stamp.
     fn migrate(&self, file: Option<split::StoreFile>) -> Result<()> {
         busy::retry_store(|| {
-            // `IMMEDIATE` takes the write lock BEFORE the version is read, so two openers of one
-            // file cannot both decide on the same pre-migration state: the second waits here and
-            // finds the stamp. The transaction belongs to the connection, so it spans the arms
-            // that take this process's guard one at a time - and `Store::open` holds the file's
-            // slot for the whole call, so no other thread of this process is inside it.
+            // `IMMEDIATE` takes the write lock BEFORE the version is read, so a second opener
+            // of the file waits here and finds the stamp. `Store::open` holds the file's slot
+            // for the whole call, so no other thread of this process is inside it.
             self.conn().execute_batch("BEGIN IMMEDIATE")?;
             match self.migrate_under_lock(file) {
                 Ok(()) => match self.conn().execute_batch("COMMIT") {
@@ -1917,8 +1915,8 @@ impl Store {
             Some(v) if v < SCHEMA_VERSION => {
                 self.migrate_from(v, file)?;
                 self.repair_queue_mute()?;
-                // ONE statement: a DELETE and an INSERT left a reader - in this process or in
-                // another - able to see the moment between them as a store with no version.
+                // ONE statement: between a DELETE and an INSERT, a reader in any process would see
+                // a store with no version.
                 self.conn().execute(
                     "UPDATE schema_version SET version = ?1",
                     params![SCHEMA_VERSION],
@@ -1940,10 +1938,9 @@ impl Store {
                 self.repair_queue_mute()?;
                 return Ok(());
             }
-            // Tables and no version row: a schema that was written and never stamped, which is
-            // what a kill between the two leaves. Read as a fresh store, the whole DDL went into
-            // WHICHEVER file this is - which is how a split `shared.db` gained every project
-            // table - so it is refused rather than guessed at.
+            // Tables and no version row: a schema written and never stamped, which a kill between
+            // the two leaves. Read as fresh, the whole DDL would go into WHICHEVER file this is, so
+            // it is refused rather than guessed at.
             None if self.probe(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
             )? =>
@@ -1980,8 +1977,8 @@ impl Store {
         Ok(())
     }
 
-    /// A migration's probe: the answer, or the error. Read as `false` instead, a file this build
-    /// could not ask about skipped the arm and the stamp then said the arm had run.
+    /// A migration's probe: the answer, or the error. Read as `false`, a file this build could not
+    /// ask about would skip the arm and still be stamped as if it had run.
     fn probe(&self, sql: &str) -> Result<bool> {
         self.probe_with(sql, &[])
     }
@@ -2010,7 +2007,7 @@ impl Store {
 
     /// One arm's DDL, statement by statement, on the file that holds each statement's table: a
     /// set's `shared.db` must never gain a project table, and a project file must not gain the
-    /// index's. A single file holds every table and runs the batch whole, as it always has.
+    /// index's. A single file holds every table and runs the batch whole.
     fn batch_for(&self, file: Option<split::StoreFile>, ddl: &str) -> Result<()> {
         let Some(file) = file else {
             return Ok(self.conn().execute_batch(ddl)?);
@@ -2034,11 +2031,9 @@ impl Store {
     /// breaks an older READER declares itself in [`READER_ARMS`].
     fn migrate_from(&self, from: i64, file: Option<split::StoreFile>) -> Result<()> {
         if from < 2 {
-            // v2: a session records its own role. `ALTER TABLE ... ADD COLUMN` with
-            // no default writes NULL into every existing row, which is exactly the
-            // "unrecorded, use the daemon default" case the column documents. Guarded like
-            // every arm after it: an interrupted run kept the column, and a second `ADD` would
-            // refuse the whole migration.
+            // v2: a session records its own role. `ADD COLUMN` with no default writes NULL, the
+            // "unrecorded, use the daemon default" case. Guarded like every later arm: an
+            // interrupted run kept the column, and a second `ADD` would refuse the migration.
             if !self.probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'role'")? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN role TEXT")?;
@@ -2133,8 +2128,8 @@ impl Store {
         }
         if from < 8 {
             // v8: the last turn's context on the session row, so a head that attaches after a
-            // restart can say how big the prompt is without waiting for a turn. Added one column
-            // at a time, because a kill between the two left `context_cached` out for good.
+            // restart can say how big the prompt is without waiting for a turn. One column at a
+            // time, so a kill between the two cannot leave `context_cached` out for good.
             let added = self.add_missing(
                 "session",
                 &[("context_tokens", "INTEGER"), ("context_cached", "INTEGER")],
@@ -2328,10 +2323,9 @@ impl Store {
                      commands_json  TEXT NOT NULL DEFAULT '[]'
                  );",
             )?;
-            // Every existing row reads as no failed attempt: it has a decision and an answered
-            // stamp, and a verdict is not a failure. One column at a time: the arm guarded on
-            // `failure`, so a kill after `attempts` made the batch run again and the migration
-            // was refused on a column that was already there.
+            // Every existing row reads as no failed attempt: a verdict is not a failure. One
+            // column at a time, so a kill after `attempts` neither re-runs the batch nor refuses
+            // the migration on a column that is already there.
             self.add_missing(
                 "merge_review",
                 &[
@@ -2436,9 +2430,8 @@ impl Store {
             let column =
                 self.probe("SELECT 1 FROM pragma_table_info('job') WHERE name = 'delivered'")?;
             if table && !column {
-                // The default is the fresh schema's - a job this store writes tomorrow was not
-                // delivered - and the rows that already exist are stamped after: a default of 1
-                // said both, and the second one was wrong.
+                // The default is the fresh schema's - a new job is not delivered - and the rows
+                // that already exist are stamped delivered after.
                 self.conn().execute_batch(
                     "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0",
                 )?;
@@ -2612,9 +2605,8 @@ impl Store {
         }
         if from < 47 {
             // v47: the recall index - a project's past conversation as units, with the tier's
-            // vector for each. Additive: a store never searched for its own history has an empty
-            // table, which is exactly what it had before. The units are a folder's own history,
-            // so a set's shared file is never given them.
+            // vector for each. Additive: the table starts empty. The units are a folder's own
+            // history, so a set's shared file is never given them.
             self.batch_for(file, recall::RECALL_SQL)?;
         }
         if from < 48 {

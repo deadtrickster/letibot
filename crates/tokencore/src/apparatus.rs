@@ -14,7 +14,7 @@ pub fn gguf_path() -> PathBuf {
 }
 
 /// The GLM vocabulary, found the way [`gguf_path`] finds the default one: `LETIBOT_GLM_GGUF`,
-/// then `$HOME`, then the literal path, so four tests stop carrying it.
+/// then `$HOME`, then the literal path.
 pub fn glm_gguf_path() -> PathBuf {
     const UNDER_HOME: &str = "models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
     const LITERAL: &str =

@@ -574,10 +574,9 @@ fn a_project_tables_read_finds_what_its_write_put() {
     );
 }
 
-/// A file holding tables and no version row is the state a kill between a schema and its stamp
-/// leaves - not a fresh store. Read as fresh, every opener wrote the whole schema into whichever
-/// file it happened to be on, so the last one's stamp hid that `shared.db` had gained project
-/// tables it must never hold.
+/// A file holding tables and no version row is what a kill between a schema and its stamp leaves,
+/// not a fresh store. Read as fresh, every opener would write the whole schema into whichever file
+/// it is on, and `shared.db` would gain project tables it must never hold.
 #[test]
 fn two_openers_racing_migrate_create_no_stray_tables() {
     let dir = temp("half-stamped");

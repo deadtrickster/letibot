@@ -145,8 +145,8 @@ fn scanned() -> BTreeSet<String> {
                 !touch.contains(n)
                     && touch.iter().any(|h| {
                         // `tx.method(` and `conn.method(` are how a write reached through a
-                        // transaction or a held connection called the next one; only `self.` was
-                        // followed, so a read one hop away was invisible to this scan.
+                        // transaction or a held connection calls the next one, so a read one hop
+                        // away is followed too.
                         ["self.", "Self::", "store.", "tx.", "conn."]
                             .iter()
                             .any(|p| body.contains(&format!("{p}{h}(")))

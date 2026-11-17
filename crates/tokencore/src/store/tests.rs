@@ -3966,10 +3966,9 @@ fn a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched()
     );
 }
 
-/// A file nothing else can open: a raw rollback-journal connection holds `BEGIN EXCLUSIVE` on it,
-/// so a `Store::open` of it waits in the busy handler until `release` is sent. It is stamped with
-/// this build's version, because a store of tables and no version is refused before it gets that
-/// far.
+/// A file nothing else can open: a raw rollback-journal connection holds `BEGIN EXCLUSIVE`, so a
+/// `Store::open` waits in the busy handler until `release` is sent. Stamped with this build's
+/// version, because tables with no version are refused before the wait.
 fn held_file(dir: &std::path::Path) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     let path = dir.join("held.db");
     let (held, hold) = std::sync::mpsc::channel();
@@ -4050,10 +4049,9 @@ fn racing_opens_of_one_file_share_one_connection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An arm that adds several columns and is interrupted between them. Each of its guards reads the
-/// arm as done from the first column it finds, so the rest are lost for good - and an arm that
-/// guarded on its last column instead has it the other way round: the guard passes, the batch runs
-/// again, and the migration is REFUSED on a duplicate column. An arm is only ever half-applied.
+/// An arm that adds several columns and is interrupted between them. A guard on its first column
+/// reads the arm as done and the rest are lost; a guard on its last passes, the batch runs again
+/// and the migration is REFUSED on a duplicate column.
 mod interrupted_arms {
     use super::*;
 
@@ -4114,7 +4112,7 @@ mod interrupted_arms {
     }
 
     /// v19 adds the stood-down pair. A kill after the first `ALTER` leaves `auto_compact_resident`
-    /// and no `auto_compact_after`, which the snapshot read as an arm that had run.
+    /// and no `auto_compact_after`, which a guard on the first column reads as an arm that has run.
     #[test]
     fn a_kill_inside_v19_does_not_lose_a_column() {
         let fixture = Fixture::seeded("v19");
@@ -4160,11 +4158,9 @@ mod interrupted_arms {
         );
     }
 
-    /// v20 adds three columns to a table that already exists, guarded on the LAST of them: a kill
-    /// after `attempts` makes the guard pass and the batch run again, so the migration is refused
-    /// on a column that is already there. A fresh store has no `merge_review` - the arms make it -
-    /// so this fixture is the v18 shape with the v20 columns it lost. v24 archives the table the
-    /// arm touched under `_v23`, which is where the columns are asserted.
+    /// v20 adds three columns to an existing table, guarded on the LAST: a kill after `attempts`
+    /// makes the batch run again and the migration is refused. The fixture is the v18 shape minus
+    /// the v20 columns, asserted under `_v23`, where v24 archives the table.
     #[test]
     fn a_kill_inside_v20_is_finished_rather_than_refused() {
         let fixture = Fixture::seeded("v20");
@@ -4193,7 +4189,7 @@ mod interrupted_arms {
 
 /// A store migrated from an older version must hold what a fresh one holds, in the file the
 /// assignment gives it. The two lists this tree keeps - the arms of `migrate_from` and the batches
-/// of `schema_sql` - are only in step if that is true, and nothing compared them before.
+/// of `schema_sql` - are only in step if that is true.
 mod migrated_schema {
     use super::*;
     use std::collections::BTreeSet;
@@ -4455,10 +4451,9 @@ mod migrated_schema {
             || object.contains("merge_queue_v23")
     }
 
-    /// A store migrated from each version the tree records holds what a fresh one holds, in the file
-    /// the assignment gives it. A set's two files are compared as they are; a store from before the
-    /// split is one file, which holds every table - and there only a missing object is drift, because
-    /// the transition's own leftovers are not.
+    /// A store migrated from each recorded version holds what a fresh one holds, in the file the
+    /// assignment gives it. A pre-split store is one file holding every table, and there only a
+    /// missing object is drift, since the transition's own leftovers are not.
     #[test]
     fn migrating_from_each_recorded_version_equals_a_fresh_set() {
         let fresh_file = temp("fresh-one");
