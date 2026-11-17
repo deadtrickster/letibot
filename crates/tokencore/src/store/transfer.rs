@@ -56,6 +56,9 @@ const TABLES: &[(&str, &str, &str)] = &[
         "ORDER BY decided_ms, request_id",
     ),
     ("citation", "session_id = ?1", "ORDER BY text_hash"),
+    // The warnings a person can act on: a moved session still says how to recover what the
+    // daemon it left warned about.
+    ("disclosure", "session_id = ?1", "ORDER BY seq"),
 ];
 
 /// One table's rows, as the store holds them. `columns` comes from the statement, not from a
@@ -996,7 +999,9 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::ledger::hash_tokens;
-    use crate::store::{JobRecord, NewAdjudication, SessionRecord, StablePrefixRecord, TodoItem};
+    use crate::store::{
+        Disclosure, JobRecord, NewAdjudication, SessionRecord, StablePrefixRecord, TodoItem,
+    };
     use crate::store::{TodoBy, TodoStatus};
     use letibot_transcript::{ReasoningField, SystemOrigin, TranscriptItem};
 
@@ -1163,6 +1168,34 @@ mod tests {
             to.session_mode("sess-1").unwrap().map(|(m, _)| m),
             Some("writes-allowed".into())
         );
+    }
+
+    /// A kept warning is part of what a move carries, not a fact of the daemon that said it: the
+    /// session's durable disclosures arrive with its rows.
+    #[test]
+    fn a_moved_session_keeps_its_kept_warnings() {
+        let from = Store::open_in_memory().unwrap();
+        seeded(&from);
+        from.append_disclosure(
+            "sess-1",
+            &Disclosure {
+                ts_ms: 7,
+                code: "gate_setup_failed".into(),
+                detail: "run `letibot doctor` here".into(),
+            },
+        )
+        .unwrap();
+        let transfer = from.export_session("sess-1").unwrap();
+
+        let to = Store::open_in_memory().unwrap();
+        to.import_session(&transfer, &into()).unwrap();
+        let kept = to.disclosures("sess-1", 8).unwrap();
+        assert_eq!(
+            kept.len(),
+            1,
+            "the kept warning did not move with the session"
+        );
+        assert_eq!(kept[0].detail, "run `letibot doctor` here");
     }
 
     /// A file that was edited is refused, and nothing is written. Both halves matter: the digest

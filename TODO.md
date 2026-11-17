@@ -872,7 +872,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Residue.**
 - Warnings said before `restore_after_restart` attaches the journal (the open's own boot warnings) are not kept. None of them is durable today.
-- `disclosure` rows are not part of `export_session`/`import_session` (`transfer::TABLES`), the same as `queued_prompt`. A moved session loses its kept warnings.
+- A moved session's kept warnings ride `export_session`/`import_session`: `disclosure` is a row of `transfer::TABLES`, fixed in `carrying a kept warning through a move` (`a_moved_session_keeps_its_kept_warnings`). `queued_prompt` is still not carried.
 - `delete_empty_session` leaves a session's `disclosure` rows behind. Harmless (no foreign key, ids are not reused) and not swept.
 - A late head's `failed` count still starts at zero: a snapshot's warnings are listed in `/notes` and not counted. Counting replayed faults is an edge-counter policy change for every code, not only quota.
 - The rest of I51's change list is `## R341b`.
