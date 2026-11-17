@@ -28,12 +28,14 @@ impl Drop for Scratch {
     }
 }
 
-/// A child session at `at`, held under a parent cell at the same point.
+/// A child session at `at`, held under a parent cell at the same point. Built without a
+/// vocabulary: the point a session may stand at does not depend on one, and a fixture that needs
+/// a model on the box skips every test in this file wherever none is installed.
 fn child_at(
     dir: &Scratch,
     id: &str,
     at: Mode,
-) -> Option<(Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf)> {
+) -> (Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf) {
     child_with(dir, id, at, |_| {})
 }
 
@@ -43,21 +45,19 @@ fn child_with(
     id: &str,
     at: Mode,
     touch: impl FnOnce(&mut Config),
-) -> Option<(Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf)> {
-    let gguf = crate::vocab_gguf()?;
+) -> (Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf) {
     let path = dir.0.join("sessions.db");
     let mut cfg = Config::for_this_box(&dir.0);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(path.clone());
     cfg.session_id = id.into();
-    cfg.vocab_gguf = Some(gguf);
     cfg.parent_session_id = Some("s-parent".into());
     cfg.mode = at;
     // A search key on the box seats `web_search`, and a gated tool with nobody behind the gate
     // refuses the open.
     cfg.web_search = None;
     touch(&mut cfg);
-    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    let parts = Parts::load(&cfg).expect("the tokeniser loads");
     // A gate that holds a point: `Harness::open` seats `NoBoundary` when nothing can be asked, and
     // that gate has no mode to move, so a test about which point a child may stand at cannot run.
     let mut h = Harness::open_with(
@@ -70,7 +70,7 @@ fn child_with(
     .expect("the session opens");
     let parent = Arc::new(std::sync::Mutex::new(at));
     h.follow_parent(parent.clone());
-    Some((h, parent, path))
+    (h, parent, path)
 }
 
 fn warnings(hub: &Arc<Hub>, code: &str) -> Vec<String> {
@@ -88,10 +88,7 @@ fn warnings(hub: &Arc<Hub>, code: &str) -> Vec<String> {
 #[test]
 fn a_child_cannot_widen_past_its_parent_by_mode_or_by_the_bridge() {
     let dir = Scratch::new("child-mode-widen");
-    let Some((mut h, _parent, path)) = child_at(&dir, "s-parent-sub-1", Mode::WRITES_ALLOWED)
-    else {
-        return;
-    };
+    let (mut h, _parent, path) = child_at(&dir, "s-parent-sub-1", Mode::WRITES_ALLOWED);
     assert_eq!(h.parent_mode(), Some(Mode::WRITES_ALLOWED));
 
     // `/mode`, taken by the session's own turn.
@@ -147,10 +144,7 @@ fn a_child_cannot_widen_past_its_parent_by_mode_or_by_the_bridge() {
 #[test]
 fn a_parent_that_narrows_narrows_its_child() {
     let dir = Scratch::new("child-mode-narrow");
-    let Some((mut h, parent, _path)) = child_at(&dir, "s-parent-sub-2", Mode::WRITES_ALLOWED)
-    else {
-        return;
-    };
+    let (mut h, parent, _path) = child_at(&dir, "s-parent-sub-2", Mode::WRITES_ALLOWED);
     *parent.lock().unwrap() = Mode::READ_ONLY;
     h.narrow_to_parent();
     assert!(
@@ -171,13 +165,9 @@ fn a_parent_that_narrows_narrows_its_child() {
 #[test]
 fn child_cannot_move_human_to_model_decider() {
     let dir = Scratch::new("child-mode-decider");
-    let Some((mut h, _parent, _path)) =
-        child_with(&dir, "s-parent-sub-3", Mode::WRITES_ALLOWED, |cfg| {
-            cfg.oracle = Some(letibot_turn::Endpoint::parse("127.0.0.1:9").unwrap());
-        })
-    else {
-        return;
-    };
+    let (mut h, _parent, _path) = child_with(&dir, "s-parent-sub-3", Mode::WRITES_ALLOWED, |cfg| {
+        cfg.oracle = Some(letibot_turn::Endpoint::parse("127.0.0.1:9").unwrap());
+    });
     let e = h
         .set_mode_consented(Mode::AUTO_EDITS, false)
         .expect_err("a person answers the parent's asks, so the child's may not go to a model");
@@ -200,22 +190,23 @@ fn child_cannot_move_human_to_model_decider() {
 fn daemon_at(
     dir: &Scratch,
     base: Mode,
-) -> Option<(
+) -> (
     Parts,
     Config,
     Arc<letibot_sessionlog::registry::Registry>,
     std::path::PathBuf,
-)> {
-    let gguf = crate::vocab_gguf()?;
+) {
     let path = dir.0.join("sessions.db");
     let mut cfg = Config::for_this_box(&dir.0);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(path.clone());
     cfg.session_id = "s-first".into();
-    cfg.vocab_gguf = Some(gguf);
     cfg.mode = base;
-    cfg.web_search = Some("brave".into());
-    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    // A gated tool seats the point the gate holds, and no tool here needs a key from the box: a
+    // fixture that asked for `web_search` needed a Brave key, so a box without one could not run
+    // this file at all.
+    cfg.web_search = None;
+    let parts = Parts::load(&cfg).expect("the tokeniser loads");
     let registry = letibot_sessionlog::registry::Registry::new();
     for (id, parent) in [
         ("s-first", None),
@@ -236,7 +227,7 @@ fn daemon_at(
             )
             .expect("the entry a door makes");
     }
-    Some((parts, cfg, registry, path))
+    (parts, cfg, registry, path)
 }
 
 /// After a restart the parent is not open, and the child is reopened by a door that is not
@@ -244,9 +235,7 @@ fn daemon_at(
 #[test]
 fn a_reopened_child_keeps_its_narrowed_point_and_ceiling() {
     let dir = Scratch::new("child-mode-reopen");
-    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::WRITES_ALLOWED) else {
-        return;
-    };
+    let (parts, cfg, registry, path) = daemon_at(&dir, Mode::WRITES_ALLOWED);
     let rows = crate::modes::ModeStore::load(&path);
     rows.set_session("s-root", Mode::READ_ONLY, None).unwrap();
     rows.set_session("s-root-sub-1", Mode::READ_ONLY, None)
@@ -271,9 +260,7 @@ fn a_reopened_child_keeps_its_narrowed_point_and_ceiling() {
 #[test]
 fn a_reopened_child_follows_its_parent_once_the_parent_opens() {
     let dir = Scratch::new("child-mode-follow");
-    let Some((parts, cfg, registry, _path)) = daemon_at(&dir, Mode::WRITES_ALLOWED) else {
-        return;
-    };
+    let (parts, cfg, registry, _path) = daemon_at(&dir, Mode::WRITES_ALLOWED);
     let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
         .expect("the first session opens");
     sessions.open("s-root-sub-1").expect("the child reopens");
@@ -302,9 +289,7 @@ fn a_reopened_child_follows_its_parent_once_the_parent_opens() {
 #[test]
 fn a_failed_narrowing_refuses_the_next_call() {
     let dir = Scratch::new("child-mode-floor");
-    let Some((mut h, _, _)) = child_at(&dir, "s-parent-sub-2", Mode::WRITES_ALLOWED) else {
-        return;
-    };
+    let (mut h, _, _) = child_at(&dir, "s-parent-sub-2", Mode::WRITES_ALLOWED);
     assert_eq!(h.config().mode, Mode::WRITES_ALLOWED);
 
     h.hold_at_floor(
@@ -334,10 +319,7 @@ fn a_failed_narrowing_refuses_the_next_call() {
 #[test]
 fn a_fork_of_a_child_keeps_its_parent_and_ceiling() {
     let dir = Scratch::new("child-mode-fork");
-    let Some((mut h, _parent, path)) = child_at(&dir, "s-parent-sub-9", Mode::WRITES_ALLOWED)
-    else {
-        return;
-    };
+    let (mut h, _parent, path) = child_at(&dir, "s-parent-sub-9", Mode::WRITES_ALLOWED);
     let (id, _transcript) = h
         .fork_into_new_session(0)
         .expect("the fork is written to the store");
@@ -381,9 +363,7 @@ fn mode_command(name: &str, consented: bool) -> letibot_sessionlog::hub::QueuedC
 #[test]
 fn mode_refused_move_writes_no_project_row_and_next_open_succeeds() {
     let dir = Scratch::new("mode-refused-row");
-    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::ALWAYS_ASK) else {
-        return;
-    };
+    let (parts, cfg, registry, path) = daemon_at(&dir, Mode::ALWAYS_ASK);
     let ws = cfg.workspace.clone();
     let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
         .expect("the first session opens");
@@ -426,9 +406,7 @@ fn session_row(path: &std::path::Path, id: &str) -> Option<&'static str> {
 #[test]
 fn ask_mode_confirm_persists_session_row() {
     let dir = Scratch::new("mode-ask-row");
-    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::WRITES_ALLOWED) else {
-        return;
-    };
+    let (parts, cfg, registry, path) = daemon_at(&dir, Mode::WRITES_ALLOWED);
     let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
         .expect("the first session opens");
     let h = sessions.held("s-first").unwrap();
@@ -442,9 +420,7 @@ fn ask_mode_confirm_persists_session_row() {
 #[test]
 fn every_mode_door_writes_the_session_row() {
     let dir = Scratch::new("mode-every-door");
-    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::ALWAYS_ASK) else {
-        return;
-    };
+    let (parts, cfg, registry, path) = daemon_at(&dir, Mode::ALWAYS_ASK);
     let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
         .expect("the first session opens");
 
@@ -495,7 +471,7 @@ fn every_mode_door_writes_the_session_row() {
     assert!(when.is_some(), "with the answer beside it");
 
     // A parent's narrowing, on a child.
-    let (mut child, parent, path) = child_at(&dir, "s-parent-sub-9", Mode::WRITES_ALLOWED).unwrap();
+    let (mut child, parent, path) = child_at(&dir, "s-parent-sub-9", Mode::WRITES_ALLOWED);
     *parent.lock().unwrap() = Mode::READ_ONLY;
     child.narrow_to_parent();
     assert_eq!(
