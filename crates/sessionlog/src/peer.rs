@@ -155,9 +155,8 @@ pub fn request_of(frame: &ClientFrame) -> (String, u64) {
 }
 
 /// What a connection is, fixed when it attaches and never read off a frame: a peer that says it is
-/// the operator is still a peer. A person's own seat is the terminal's head and the bridge's remote
-/// head; every other kind - the askpass helper, an editor's ACP seat, an unknown one - is a
-/// program's.
+/// the operator is still a peer. A person's seat is the terminal's head or the bridge's remote
+/// head, and every other kind is a program's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Operator,
