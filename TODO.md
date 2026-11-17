@@ -1152,7 +1152,18 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 ## R349 - extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I101, I102, I103, I105. Lead 47 (a provider whose account cannot serve is refused at start) is closed on `r349-leftovers` and recorded in `LEADS-2026-11-16.md`. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** part built 2026-11-17 (I102, I103's money words); the rest is open below. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I101, I102, I103, I105, and I97's plugin deadline. Lead 47 (a provider whose account cannot serve is refused at start) is closed on `r349-leftovers` and recorded in `LEADS-2026-11-16.md`. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**Built.**
+- I102: `flowy::creds` refuses a node that is not this machine (`is_loopback`: `localhost`, the loopback addresses by IP), because the client has no TLS and the bearer token would go out in the clear; `FLOWY_ALLOW_LAN=1` - in the environment or the seat's `env-<seat>` file - is the operator's word for a LAN node. The operator naming the node on `--flowy-addr` or in `/flowy login` is that word too, and `/flowy login` writes it into the env file it makes. Test `a_non_loopback_flowy_addr_is_refused_without_opt_in` (a LAN address was accepted on the base); `docs/flowy-monitor.md` §2 carries the fourth refusal.
+- I103, the money words: `Policy::class`/`trouble`/`what`/`brief` read a body's money phrases only on the statuses that carry money (`400`, `402`, `429`), so a 5xx naming its own billing service is a server fault worth retrying rather than a `Quota` that ends the turn. Test `a_500_that_names_money_is_retried_and_is_not_a_quota` (red with the gate removed).
+
+**Residue.**
+- I103 not taken: Retry-After is still capped at `LONGEST_WAIT` (60 s) in the ladder - a provider's own long instant is the park's business (`reset::LONGEST`), so the two readers have to be reconciled rather than the constant raised; the two Retry-After readers still disagree on an HTTP-date; the Again arm's offline budget, `carried_scale` in `pre_emptive_compact`, and the episode file's per-session key are open.
+- I97's plugin wall-clock deadline is not reachable from this tree: rano builds its own `Engine` (`Plugin::from_bytes_hooks`) and offers no way to hand it one, so an epoch deadline needs a rano change through `cc@rano` (R175 item 5's finding). The MCP timeout/cancel half and the bridge's `prompt_once` half are open.
+- I101 waits on decision 21: the recommended default is a `brief` kind the queue seat files as data, which is a room protocol change and not built here.
+- I105 is policy-skill text (R293) with no test; the rano policy skill is not in this repository.
+
 
 **Scope.** Decision 21 (I101): a `brief` kind the queue seat files as data, recommended, not yet taken.
 

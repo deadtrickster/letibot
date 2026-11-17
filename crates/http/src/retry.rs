@@ -56,6 +56,13 @@ impl Class {
     }
 }
 
+/// The statuses a provider puts money on: `429` (the OpenAI-shaped `insufficient_quota`), `402`
+/// (Anthropic's `billing_error`) and `400` (Anthropic's "credit balance is too low"). On any other
+/// status - a 5xx above all - money words are the server talking about itself, not a verdict.
+fn code_names_money(code: u16) -> bool {
+    matches!(code, 400 | 402 | 429)
+}
+
 /// The four ways a model's provider is in trouble, and the whole of the vocabulary an
 /// automation branches on: a caller waits out a rate limit, gives up on a quota, retries a
 /// timeout, and replaces a provider that keeps stalling.
@@ -164,10 +171,11 @@ impl Policy {
                     } else {
                         Class::TryAgain
                     }
-                } else if Self::states_a_refusal(body) {
-                    // A 429 (or a 400) whose body says the account cannot pay. The status is not
-                    // the instrument here: the same 429 means both *not yet* and *not ever until
-                    // somebody tops up*, and only the body knows which.
+                } else if code_names_money(*code) && Self::states_a_refusal(body) {
+                    // A money status whose body says the account cannot pay: the same 429 means
+                    // both *not yet* and *not ever until somebody tops up*, and only the body
+                    // knows which. Another status's money words are its prose, not a verdict - a
+                    // 500 naming a billing service is a server fault worth retrying.
                     Class::Refused
                 } else if TRY_AGAIN.contains(code) {
                     Class::TryAgain
@@ -213,9 +221,9 @@ impl Policy {
                         crate::zai::Limit::Refused => Some(Trouble::Quota),
                         _ => Some(Trouble::RateLimit),
                     }
-                } else if Self::states_a_refusal(body) {
-                    // Money, whatever the status says: the provider's own words are the instrument,
-                    // and a 400 naming an unpaid balance is the same fact as a 429 that does.
+                } else if code_names_money(*code) && Self::states_a_refusal(body) {
+                    // Money, on the two statuses that carry it: `402` (Anthropic's
+                    // `billing_error`) and `429`. Elsewhere the words are prose.
                     Some(Trouble::Quota)
                 } else if *code == 429 || *code == 408 || *code == 529 {
                     // A 529 is Anthropic's `overloaded_error`: not now, and it lifts on its own,
@@ -290,9 +298,10 @@ impl Policy {
         }
     }
 
-    /// A refusal no retry can lift: the account behind the key cannot pay. Only
-    /// phrases naming MONEY, because a bare `quota` is the transient thing the ladder
-    /// exists for, and swallowing it would stop retrying the case it was written around.
+    /// A refusal no retry can lift: the account behind the key cannot pay. Only phrases naming
+    /// MONEY, because a bare `quota` is the transient thing the ladder exists for, and swallowing
+    /// it would stop retrying the case it was written around. A body is asked this only on
+    /// [`code_names_money`]'s two statuses - see `class` and `trouble`.
     pub fn states_a_refusal(body: &str) -> bool {
         const FILLED: &[&str] = &[
             "insufficient balance",
@@ -352,7 +361,7 @@ impl Policy {
                     "the plan or account behind the key cannot serve the call"
                 } else if crate::zai::limit(body).is_some() {
                     "the provider said to try again"
-                } else if Self::states_a_refusal(body) {
+                } else if code_names_money(*code) && Self::states_a_refusal(body) {
                     "the account behind the key cannot pay for the call"
                 } else if TRY_AGAIN.contains(code) {
                     "the provider said to try again"
@@ -370,7 +379,7 @@ impl Policy {
             HttpError::Status { code, body, .. } => {
                 let glm = crate::zai::limit(body);
                 if glm == Some(crate::zai::Limit::Refused)
-                    || (glm.is_none() && Self::states_a_refusal(body))
+                    || (glm.is_none() && code_names_money(*code) && Self::states_a_refusal(body))
                 {
                     "the account cannot pay".to_string()
                 } else if *code == 429 || *code == 408 {
@@ -613,6 +622,44 @@ mod tests {
             std::io::ErrorKind::ConnectionRefused,
             "no",
         ))
+    }
+
+    /// A server fault that happens to name money is a server fault: the words are the 500's own
+    /// prose, and only a status that carries money makes them a verdict.
+    #[test]
+    fn a_500_that_names_money_is_retried_and_is_not_a_quota() {
+        for body in [
+            "{\"error\":{\"message\":\"internal error: the billing service is unavailable\"}}",
+            "{\"error\":{\"message\":\"insufficient_quota was reported by a downstream check\"}}",
+        ] {
+            let e = said(500, body);
+            assert_eq!(
+                Policy::standard().class(&e),
+                Class::TryAgain,
+                "a 500 naming money was refused: {body}"
+            );
+            assert_eq!(
+                Policy::trouble(&e),
+                None,
+                "a 500 naming money was a quota: {body}"
+            );
+            assert!(
+                Policy::brief(&e) != "the account cannot pay",
+                "the one line says the account cannot pay for a server fault: {body}"
+            );
+        }
+        // And the statuses that do carry money still decide by the body.
+        assert_eq!(
+            Policy::standard().class(&said(429, "you have insufficient credits")),
+            Class::Refused
+        );
+        assert_eq!(
+            Policy::trouble(&said(
+                402,
+                "{\"error\":{\"message\":\"insufficient funds\"}}"
+            )),
+            Some(Trouble::Quota)
+        );
     }
 
     /// The four troubles, and the failures that are none of them. A 500 is an outage the ladder

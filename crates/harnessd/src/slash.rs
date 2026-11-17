@@ -809,8 +809,25 @@ pub fn flowy_login_credentials(
         let env = cfg_dir.join(format!("env-{name}"));
         if !env.is_file() {
             let node = addr.unwrap_or(letibot_flowy::creds::DEFAULT_ADDR);
+            // The operator typed the node here, so a LAN one is their own word for it - and the
+            // file keeps that word for the daemon starts after this one.
+            let host = node
+                .split("://")
+                .nth(1)
+                .unwrap_or(node)
+                .trim_end_matches('/');
+            let host = if let Some(rest) = host.strip_prefix('[') {
+                rest.split(']').next().unwrap_or(rest)
+            } else {
+                host.split(':').next().unwrap_or(host)
+            };
+            let lan = if letibot_flowy::creds::is_loopback(host) {
+                String::new()
+            } else {
+                "export FLOWY_ALLOW_LAN=1\n".to_string()
+            };
             let body = format!(
-                "export FLOWY_ADDR={node}\nexport FLOWY_AGENT={name}\nexport FLOWY_TOKEN=$(cat ~/.config/flowy/agents/{name})\n"
+                "export FLOWY_ADDR={node}\nexport FLOWY_AGENT={name}\n{lan}export FLOWY_TOKEN=$(cat ~/.config/flowy/agents/{name})\n"
             );
             std::fs::write(&env, body).map_err(|e| vec![format!("{}: {e}", env.display())])?;
             notes.push(format!("wrote {} (node {node})", env.display()));
@@ -823,6 +840,9 @@ pub fn flowy_login_credentials(
         token_file: token_file.cloned(),
         config_dir: None,
         read_env: true,
+        // The node on this login's own command line is the operator's word for a node off this
+        // machine; the daemon starts after it read the env file this wrote.
+        allow_lan: true,
     };
     match discover(&onboarding) {
         Ok(c) => Ok((c, notes)),

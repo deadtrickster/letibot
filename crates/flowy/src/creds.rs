@@ -52,6 +52,9 @@ pub struct Onboarding {
     /// Read the process environment. Off in tests, so a developer's own
     /// `$FLOWY_TOKEN` cannot leak into an assertion.
     pub read_env: bool,
+    /// The operator's own word that a node on the LAN is theirs (`FLOWY_ALLOW_LAN=1`). Off, the
+    /// client refuses a non-loopback node: it has no TLS, so the bearer token would be in the clear.
+    pub allow_lan: bool,
 }
 
 impl Onboarding {
@@ -225,7 +228,14 @@ pub fn discover(o: &Onboarding) -> Result<Credentials, CredError> {
     } else {
         (DEFAULT_ADDR.to_string(), Source::Default)
     };
-    let endpoint = parse_addr(&addr)?;
+    // The client has no TLS, so a token leaves this box in the clear. That is acceptable only to a
+    // node on this machine unless the operator says the LAN is theirs too - `FLOWY_ALLOW_LAN=1`,
+    // in the same two places the address comes from.
+    let allow_lan = o.allow_lan
+        || o.env("FLOWY_ALLOW_LAN")
+            .or_else(|| from_env_file("FLOWY_ALLOW_LAN").map(|(v, _)| v))
+            .is_some_and(|v| v.trim() == "1");
+    let endpoint = parse_addr_with(&addr, allow_lan)?;
 
     // --- the token -------------------------------------------------------
     let mut looked = Vec::new();
@@ -376,10 +386,16 @@ pub fn read_token(p: &Path, config_dir: Option<&Path>) -> Result<String, CredErr
     Ok(t)
 }
 
-/// `http://host:port` (a trailing slash tolerated) → an [`Endpoint`]. `https` is
-/// refused by name: the client has no TLS, and a silent downgrade would send a
-/// bearer token in the clear to a node that expected otherwise.
+/// `http://host:port` → an [`Endpoint`], for a node on this machine. [`parse_addr_with`] adds the
+/// operator's opt-in for a node on the LAN.
 pub fn parse_addr(addr: &str) -> Result<Endpoint, CredError> {
+    parse_addr_with(addr, false)
+}
+
+/// [`parse_addr`], with whether the operator has said a non-loopback node is theirs
+/// (`FLOWY_ALLOW_LAN=1`). `https` is refused by name either way: the client has no TLS, and the
+/// bearer token would go out in the clear to a node that expected otherwise.
+pub fn parse_addr_with(addr: &str, allow_lan: bool) -> Result<Endpoint, CredError> {
     let bad = |why: &str| CredError::BadAddr {
         addr: addr.to_string(),
         why: why.to_string(),
@@ -409,12 +425,31 @@ pub fn parse_addr(addr: &str) -> Result<Endpoint, CredError> {
     if host.is_empty() {
         return Err(bad("empty host"));
     }
+    if !allow_lan && !is_loopback(host) {
+        return Err(bad(
+            "the client has no TLS, so its bearer token travels in the clear: a node on this \
+             machine only, unless `FLOWY_ALLOW_LAN=1` says the LAN is the operator's own",
+        ));
+    }
     let mut ep = Endpoint::new(host, port);
     // The node's long poll blocks for at most 25 s and heartbeats a stream every
     // 5 s; a gap longer than a minute is a dead node, not a slow one.
     ep.read_timeout = std::time::Duration::from_secs(60);
     ep.connect_timeout = std::time::Duration::from_secs(5);
     Ok(ep)
+}
+
+/// Is this the machine the token is minted on? `localhost` and the loopback range by name: a
+/// hostname is not resolved here, because a name that answers 127.0.0.1 today may not tomorrow.
+/// Whether this is the machine the token was minted on - the only node a token may go to
+/// without the operator saying otherwise.
+pub fn is_loopback(host: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    bare.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(test)]
@@ -453,6 +488,7 @@ mod tests {
         std::fs::write(
             d.join("env-lubuntu3-glm"),
             "export FLOWY_ADDR=http://192.168.1.55:8787\nexport FLOWY_AGENT=lubuntu3-glm\n\
+             export FLOWY_ALLOW_LAN=1\n\
              export FLOWY_TOKEN=$(cat ~/.config/flowy/agents/lubuntu3-glm)\n",
         )
         .unwrap();
@@ -507,6 +543,7 @@ mod tests {
             token: Some("given".into()),
             config_dir: Some(d.clone()),
             read_env: false,
+            allow_lan: true,
             token_file: None,
         };
         let c = discover(&o).unwrap();
@@ -514,6 +551,33 @@ mod tests {
         assert_eq!(c.token_from, Source::Explicit);
         assert_eq!(c.endpoint.port, 9000);
         assert!(c.token_file.is_none());
+    }
+
+    /// The client has no TLS: a bearer token to a node that is not this machine goes out in the
+    /// clear, so it is refused until the operator says the LAN is theirs.
+    #[test]
+    fn a_non_loopback_flowy_addr_is_refused_without_opt_in() {
+        for addr in [
+            "http://192.168.1.55:8787",
+            "http://10.0.0.1:9000",
+            "http://flowy.example:8787",
+        ] {
+            let why = parse_addr(addr).unwrap_err().to_string();
+            assert!(
+                why.contains("FLOWY_ALLOW_LAN"),
+                "{addr} was accepted, or refused without saying how to allow it: {why}"
+            );
+        }
+        // This machine's own node needs no opt-in, by address or by name.
+        for addr in [
+            "http://127.0.0.1:8787",
+            "http://localhost:8787",
+            "http://[::1]:8787",
+        ] {
+            assert!(parse_addr(addr).is_ok(), "{addr}");
+        }
+        // And the opt-in is exactly what it says.
+        assert!(parse_addr_with("http://192.168.1.55:8787", true).is_ok());
     }
 
     #[test]

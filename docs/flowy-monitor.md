@@ -40,12 +40,14 @@ default. The env file's `FLOWY_TOKEN=$(cat …)` line is read as the path it nam
 
     harnessd --role leticode --bash --flowy                   # the usual path
     harnessd --role leticode --bash --flowy-seat lubuntu3-glm # which seat, when several
-    harnessd … --flowy-addr http://192.168.1.55:8787 --flowy-token-file /path   # manual
+    harnessd … --flowy-addr http://127.0.0.1:8787 --flowy-token-file /path   # manual
     harnessd … --flowy --flowy-new-reader                     # a seat that has never listened
 
-Three refusals: no seat named and two on the box (*"A seat is an identity, so it is not guessed"*);
-`~/.config/flowy/token`, never read, because it is the operator's own credential; and `https://`,
-because the client has no TLS.
+Four refusals: no seat named and two on the box (*"A seat is an identity, so it is not guessed"*);
+`~/.config/flowy/token`, never read, because it is the operator's own credential; `https://`,
+because the client has no TLS; and a node that is not this machine, because the token would go out
+in the clear - `FLOWY_ALLOW_LAN=1`, in the environment or the seat's env file, is the operator's
+word that the LAN's node is theirs.
 
 `--flowy` that cannot be honoured is a startup error; a node merely away is not - the seat opens
 (claim + spool), the loop starts stalled, and the banner says so.

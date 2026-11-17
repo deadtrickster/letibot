@@ -106,6 +106,9 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
         token_file: f.token_file.clone(),
         config_dir: None,
         read_env: true,
+        // The node on the command line is the operator's own; the env file's `FLOWY_ALLOW_LAN`
+        // covers the other door.
+        allow_lan: f.addr.is_some(),
     };
     let creds = letibot_flowy::creds::discover(&onboarding).map_err(|e| e.to_string())?;
     let seat = letibot_flowy::Seat::open(creds, None, None).map_err(|e| e.to_string())?;
