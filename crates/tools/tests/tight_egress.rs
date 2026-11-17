@@ -1,4 +1,4 @@
-//! Decision C10: a tight seat reaches no network at all until the operator grants it, so the
+//! A tight seat reaches no network at all until the operator grants it, so the
 //! boundary's free admit is a rule production reaches rather than a fixture's. A wide seat is the
 //! operator's own session and keeps the host's network by ruling.
 
@@ -36,9 +36,8 @@ fn tight_seat() -> letibot_tools::exec::seat::SeatView {
     )
 }
 
-/// The whole finding: `writes-allowed` seats network calls for the wide seat's sake, and the tight
-/// view is the one that must not inherit it. Both built-in modes that execute are tried, because a
-/// rule that held for one and not the other would be a rule about the mode.
+/// `writes-allowed` seats network calls for the wide seat's sake, and the tight view must not
+/// inherit it. Both built-in modes that execute are tried, so the rule is not one about the mode.
 #[test]
 fn a_tight_seat_denies_the_network_whatever_the_mode_seats() {
     for mode in [Mode::READ_ONLY, Mode::WRITES_ALLOWED] {
@@ -172,7 +171,7 @@ fn measured_boundary() -> letibot_tools::exec::Boundary {
     }
 }
 
-/// The e2e the finding names. It cannot run on a box with no user namespace, and it says so
+/// End to end. It cannot run on a box with no user namespace, and it says so
 /// rather than passing quietly.
 #[test]
 fn a_tight_seat_command_cannot_reach_loopback() {

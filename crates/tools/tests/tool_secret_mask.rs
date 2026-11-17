@@ -1,7 +1,6 @@
-//! A secret the session holds must not come back out of a tool. The payload of a result is the
-//! bytes the model is sent and the bytes the transcript keeps, so a command that puts a token in a
-//! file - `env > x`, then `read x` - is the shape this refuses. It is not a boundary: the file on
-//! disk still holds the token, and an encoding walks past an exact match.
+//! A secret the session holds must not come back out of a tool's result, which the model and
+//! the transcript both get: `env > x`, then `read x`. A redaction, not a boundary - the file
+//! still holds the token, and an encoding walks past an exact match.
 
 use std::sync::Arc;
 

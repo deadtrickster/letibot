@@ -4223,10 +4223,8 @@ impl Home {
         said
     }
 
-    /// The commits the placement made on a branch that is NOT the one it was collected from, named
-    /// and brought home as `<back branch>/<branch>`. A package commits where it thinks the work
-    /// belongs - a fix on `main`, a side experiment - and a collect that fetched only its own branch
-    /// left that work on the far machine with nothing said about it.
+    /// The commits the placement made on branches other than the collected one, named and brought
+    /// home as `<back branch>/<branch>`, so work a package committed elsewhere is not left behind.
     fn strays(&self, ssh: &Ssh) -> String {
         let listing = format!(
             "cd {} && for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do \

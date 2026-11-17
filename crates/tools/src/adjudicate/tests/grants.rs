@@ -431,7 +431,7 @@ fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
         scripts: &[],
         preview: &[],
     };
-    // A point whose grants are `Once` records nothing (decision 2), so the second move is to one
+    // A point whose grants are `Once` records nothing, so the second move is to one
     // that grants for the session: what stands afterwards is that point's answer, and not the
     // answer taken at the point the gate has left.
     let mut session = Mode::ALWAYS_ASK;

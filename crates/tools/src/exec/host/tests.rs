@@ -409,8 +409,8 @@ fn a_dropped_host_takes_its_deadline_thread_with_it() {
 /// minute to look at jobs that no longer exist.
 #[test]
 fn a_dropped_host_takes_its_dead_check_with_it() {
-    // The dead check's thread holds the host's liveness; once that is released the thread can
-    // no longer wake for it. Thread names are not read: parallel tests' hosts share them.
+    // The dead check's thread holds the host's liveness, so its release proves the thread gone.
+    // Thread names are not read: parallel tests' hosts share them.
     let h = HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
     let weak = Arc::downgrade(&h.liveness);
     drop(h);
@@ -645,9 +645,8 @@ impl ScopeTree for PlainTree {
 }
 
 /// A job whose scope refused a fork at its process cap is ended, and the job beside it is not.
-/// `pids.max` only REFUSES the fork, so the ending is the host's own watcher ([`watch_task_cap`]),
-/// and this is measured on a tree of directories with the cap and the kernel's counter written
-/// where a kernel keeps them.
+/// `pids.max` only refuses the fork, so the ending is [`watch_task_cap`]'s, run on a directory
+/// tree with the cap and the counter where a kernel keeps them.
 #[test]
 fn a_job_that_forks_past_its_process_cap_is_ended_while_its_neighbour_survives() {
     let root = std::env::temp_dir().join(format!("letibot-tasks-{}", std::process::id()));

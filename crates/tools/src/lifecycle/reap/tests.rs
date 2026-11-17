@@ -198,7 +198,7 @@ fn a_reopened_package_older_than_hard_ttl_is_not_closed() {
 }
 
 /// A close that follows a reopen waits its work grace again: the grace runs from the LAST close,
-/// not the first one the row still records (I63).
+/// not the first one the row still records.
 #[test]
 fn a_second_close_restarts_work_grace() {
     let b = Box_::new("second-close");
@@ -247,7 +247,7 @@ fn a_second_close_restarts_work_grace() {
     }
 }
 
-/// `busy` is the one witness both the close and the lease renewer read (I62): an open job row of
+/// `busy` is the one witness both the close and the lease renewer read: an open job row of
 /// the owner's makes it true, and nothing else in the store does.
 #[test]
 fn busy_reads_the_owners_open_job_rows() {
@@ -284,8 +284,7 @@ fn busy_reads_the_owners_open_job_rows() {
 }
 
 /// The daemon-gone trigger reads the owner row's own daemon (pid and start time), not any daemon
-/// that happens to serve the same repository: two owners of one repo are not one daemon (A7-F12,
-/// R329's residue).
+/// that happens to serve the same repository: two owners of one repo are not one daemon.
 #[test]
 fn a_recorded_daemon_decides_the_daemon_gone_trigger() {
     let b = Box_::new("daemon-row");

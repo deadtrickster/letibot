@@ -67,7 +67,7 @@ impl HostGrant {
     }
 }
 
-/// The keys of both levels, unioned. Empty is today's behaviour.
+/// The keys of both levels, unioned. Empty grants nothing beyond the seat's own view.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryConfig {
     pub grants_ro: Vec<Entry<String>>,

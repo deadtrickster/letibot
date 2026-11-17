@@ -2488,10 +2488,8 @@ impl ToolRuntime {
         // bounds the tool's output; the envelope and the `[note]` lines are the harness's own
         // bytes, bounded by construction, and are added after.
         //
-        // Masked before the spill, because the spill writes these bytes to a file: a secret the
-        // session holds must not reach the model, the store or a spill through a tool's output.
-        // It is not a boundary - the file a tool read still holds the token, and an encoding
-        // walks past an exact match - so it is a redaction and says so.
+        // Masked before the spill, which writes these bytes to a file. A redaction, not a
+        // boundary: the file a tool read still holds the token, and an encoding walks past it.
         if !self.secret.0.is_empty() {
             invocation.payload = self.secret.mask_str(&invocation.payload);
         }

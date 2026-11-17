@@ -769,10 +769,8 @@ fn a_refused_fetch_is_retried_and_the_branch_still_comes_back() {
     git(&repo, &["rev-parse", "--verify", b.back_branch()]);
 }
 
-/// A package commits where it thinks the work belongs - a fix on `main`, a branch of its own - and a
-/// collect that brought home only the session's branch left that work on the far machine with
-/// nothing said about it. Every local branch in the placement's checkout is asked once, and what is
-/// not reachable from the collected branch is named AND brought home under the collect's own name.
+/// Every local branch in the placement's checkout is asked once, and what is not reachable from
+/// the collected branch is named and brought home under the collect's own name.
 #[test]
 fn work_on_another_branch_of_the_placement_is_named_and_brought_home() {
     let fake = Fake::new("side-branch", "");

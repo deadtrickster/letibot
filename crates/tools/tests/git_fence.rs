@@ -1,8 +1,6 @@
-//! A child's git fence is its env, and this file measures the env rather than a boundary: the
-//! tight seat hands a child `GIT_CONFIG_*` pairs that reset the credential helper list, so a
-//! helper written in the operator's gitconfig, in the repository the child commits to, or in the
-//! box's system config cannot answer for it. No `bwrap` is needed, because nothing here reads a
-//! file the fence does not already hand over.
+//! A child's git fence is its env: the tight seat hands a child `GIT_CONFIG_*` pairs that reset
+//! the credential helper list, so no helper in the operator's, the repository's or the system
+//! gitconfig answers for it. This measures the env, so no `bwrap` is needed.
 
 use std::path::{Path, PathBuf};
 
@@ -154,7 +152,7 @@ fn the_fixture_helper_answers_without_the_seats_reset() {
     );
 }
 
-/// The finding's own case: the helper the seat's grant carries in has to be dead in the child.
+/// The helper the seat's grant carries in has to be dead in the child.
 #[test]
 fn a_credential_helper_in_the_operators_gitconfig_is_not_honoured_in_a_child() {
     let root = std::env::temp_dir().join(format!("letibot-gitfence-global-{}", std::process::id()));

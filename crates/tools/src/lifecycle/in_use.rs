@@ -143,10 +143,9 @@ fn open_processes_of(store: &Store, id: &str) -> Vec<ProcessRecord> {
     out
 }
 
-/// The first process whose cwd is `real` or inside it. A `/proc` that cannot be listed is a
-/// reason to keep; one that does not exist is a box without the check. A process whose cwd cannot
-/// be read is kept only when it is ours - by uid, or a pid the store itself names - since a
-/// blanket keep would keep every tree.
+/// The first process whose cwd is `real` or inside it. An unlistable `/proc` keeps, and a missing
+/// one is a box without the check. An unreadable cwd keeps only when the process is ours, by uid
+/// or a pid the store names, since a blanket keep would keep every tree.
 fn cwd_inside(real: &Path, proc_root: &Path, known: &[u32]) -> Option<String> {
     let entries = match std::fs::read_dir(proc_root) {
         Ok(entries) => entries,
@@ -164,13 +163,9 @@ fn cwd_inside(real: &Path, proc_root: &Path, known: &[u32]) -> Option<String> {
         };
         let cwd = match std::fs::read_link(entry.path().join("cwd")) {
             Ok(cwd) => cwd,
-            // Another user's process is not one of ours, and a zombie of ours is dead - its cwd
-            // is gone with it. Ours and alive may be sitting in the tree, and a blanket keep
-            // would keep every tree. A process on its way out (its fs released, not yet a
-            // zombie) also has no cwd link: re-read it once, and only a process still there and
-            // still alive is believed.
-            // A non-dumpable process of ours (systemd --user, ssh-agent) that started before the
-            // tree existed is not a keep: every box has them, and they would keep every tree.
+            // Only ours and alive may be sitting in the tree. One on its way out has no cwd link
+            // either, so it is re-read once. A non-dumpable one of ours (systemd --user) that
+            // predates the tree is not a keep: every box has them.
             Err(_)
                 if !is_zombie(&entry.path())
                     && (known.contains(&pid)
@@ -342,7 +337,7 @@ mod tests {
     }
 
     /// A /proc that cannot be listed (hidepid, or a view with no read on it) is a reason to keep
-    /// the tree, not a silent "nothing is using it" (I62).
+    /// the tree, not a silent "nothing is using it".
     #[test]
     fn why_kept_keeps_when_proc_is_unreadable() {
         use std::os::unix::fs::PermissionsExt;
@@ -416,7 +411,7 @@ mod tests {
     }
 
     /// A running job of a session whose workspace is the tree keeps it, on the store's own
-    /// record: the writer row can be gone with the daemon while the job still runs (I62).
+    /// record: the writer row can be gone with the daemon while the job still runs.
     #[test]
     fn a_running_job_of_a_session_in_the_tree_keeps_it() {
         let dir = crate::backend::tempdir::TempDir::new();

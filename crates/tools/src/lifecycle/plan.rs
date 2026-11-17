@@ -768,7 +768,7 @@ impl InUse<'_> {
 
 /// Whether one holding would be reaped, and why. Pure in its owner-state half, so every case is
 /// asserted without a disk; the `in_use` witness, when one is handed in, is the executor's own
-/// keep, checked first so the two can never disagree (I62).
+/// keep, checked first so the two can never disagree.
 pub fn judge(
     owner: &OwnerRow,
     h: &HoldingView,
@@ -1112,7 +1112,7 @@ mod tests {
     }
 
     /// The plan and the executor answer the same question about a tree a session still uses:
-    /// `letibot gc --plan` says `keep — in use`, not `reap now`, for work the settle step keeps (I62).
+    /// `letibot gc --plan` says `keep — in use`, not `reap now`, for work the settle step keeps.
     #[test]
     fn plan_and_executor_agree_on_a_tree_in_use() {
         let dir = crate::backend::tempdir::TempDir::new();
