@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use letibot_tokencore::store::{Store, TodoItem, TodoNeed, TodoStatus};
 use letibot_tools::builtins::jobs::{Found, JobLookup, JobTable};
 use letibot_tools::builtins::todo::{
-    ChildSessions, ChildTodos, RunningChild, RunningJobs, TodoBoard, TodoNagClock, TodoWriteTool,
-    the_plan_as_checked, unfinished_plan,
+    Board, Boards, ChildSessions, ChildTodos, RunningChild, RunningJobs, TodoBoard, TodoNagClock,
+    TodoWriteTool, board_of, resolved_waits_note, the_plan_as_checked, unfinished_plan,
+    wait_ended,
 };
 use letibot_tools::exec::procs;
 use letibot_tools::runtime::Invocation;
@@ -30,6 +31,10 @@ pub const NAG_AFTER: Duration = Duration::from_secs(60);
 /// How often the watcher reads the board and the packages. Not the window: the nag is still once
 /// per change, and this is only how long a change or a deadline may sit unseen.
 const PASS: Duration = Duration::from_millis(250);
+
+/// How often the watcher reads ANOTHER board for the waits that name one. Not the pass: a store read
+/// per 250 ms is a connection per second for a note that can wait one.
+const SWEEP: Duration = Duration::from_secs(1);
 
 /// A package's turn as this seat has watched it: when it went to work, and the last thing it said.
 struct Working {
@@ -55,6 +60,9 @@ pub struct Seat {
     store: PathBuf,
     /// The bridge's packages, shared and not copied: a head held later is a package here at once.
     heads: Arc<Mutex<HashMap<String, Arc<Head>>>>,
+    /// The folder this seat's project is, for the one wait that names ANOTHER board: a bridge names
+    /// a project by the folder in its own handle, and the store's project file is keyed by the path.
+    folder: Option<PathBuf>,
     /// This seat's OWN jobs (`seat_job_start`), which no daemon runs: the bridge does, and the
     /// store keeps their rows under the seat's handle.
     jobs: Arc<SeatJobs>,
@@ -99,6 +107,7 @@ impl Seat {
             working: Mutex::new(HashMap::new()),
             store,
             heads,
+            folder: None,
             jobs,
             outbox: Mutex::new(None),
             nag,
@@ -117,6 +126,24 @@ impl Seat {
     pub fn with_window(mut self, window: Duration) -> Seat {
         self.clock = Mutex::new(TodoNagClock::with_window(window).keyed_by_plan());
         self
+    }
+
+    /// The folder this seat's project is, for a `todo` wait on another board and for the store's
+    /// project file. Without it a wait on a session's board is refused by name rather than guessed.
+    pub fn with_folder(mut self, folder: impl Into<PathBuf>) -> Seat {
+        self.folder = Some(folder.into());
+        self
+    }
+
+    /// Another board as this seat reads it, opened per call and read-only: the store is the daemon's
+    /// file, and a bridge that made one would be a second writer. The words this seat's own handle
+    /// is built from are what makes two boards the same project.
+    fn boards(&self) -> SeatBoards {
+        SeatBoards {
+            path: self.store.clone(),
+            folder: self.folder.clone(),
+            words: crate::rooms::letibot_room_words(&self.handle),
+        }
     }
 
     pub fn handle(&self) -> &str {
@@ -153,10 +180,44 @@ impl Seat {
             Arc::new(Packages {
                 heads: self.heads.clone(),
             }),
-        );
+        )
+        // The store's half: a row that waits on another board - a session's of this project - is
+        // read in the call that writes it, so an unknown name is refused rather than stored.
+        .with_boards(Arc::new(self.boards()));
         let jobs = self.open_jobs();
         let invocation = tool.write(args, Some(&jobs));
         self.settled(invocation)
+    }
+
+    /// Take every `todo` wait off this board whose row on ANOTHER board is finished, struck off or
+    /// gone, and say how each ended. The seat's half of the daemon's wait sweep: a seat has no
+    /// daemon and no idle turn of its own, so its watcher is where a freed wait is noticed.
+    fn free_waits(&self) -> Option<String> {
+        let held = |row: &TodoItem| {
+            !matches!(row.status, TodoStatus::Completed | TodoStatus::Cancelled)
+                && row.needs.iter().any(|n| matches!(n, TodoNeed::Todo { .. }))
+        };
+        if !self.board.snapshot().iter().any(held) {
+            return None;
+        }
+        let boards = self.boards();
+        let mut read: std::collections::BTreeMap<String, Result<Board, String>> =
+            std::collections::BTreeMap::new();
+        let resolved = self.board.resolve_waits(|need| match need {
+            TodoNeed::Todo { seat, content } => {
+                let board = read
+                    .entry(seat.clone())
+                    .or_insert_with(|| boards.board_of(seat));
+                match board {
+                    // A board that cannot be read is NO answer: an absence is not an ending.
+                    Ok(Board::Rows(rows)) => wait_ended(rows, seat, content),
+                    Ok(Board::Unknown(_)) => Some(format!("{seat}'s board is gone")),
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        });
+        (!resolved.is_empty()).then(|| resolved_waits_note(&resolved))
     }
 
     /// The operator's reply to a row's question, recorded on the row as the words they used. A seat
@@ -305,8 +366,21 @@ impl Seat {
 /// before the push, so a slow delivery does not fire twice.
 fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
     let mut armed_for = String::new();
+    // Another board is read on a slow tick, not on every pass: a pass is 250 ms, and the note a
+    // freed wait earns is news within the second rather than at it.
+    let mut swept = Instant::now();
     loop {
         let now = Instant::now();
+        // Before the reading below, so a row the sweep just freed is askable on this same pass and
+        // the note and the nag travel together.
+        if now.saturating_duration_since(swept) >= SWEEP {
+            swept = now;
+            if let Some(text) = seat.free_waits() {
+                let n = seat.notes.fetch_add(1, Ordering::SeqCst);
+                outbox.record(format!("wait:{n}"), nag(seat.handle(), &text));
+                seat.dirty.store(true, Ordering::SeqCst);
+            }
+        }
         let rows = seat.board.snapshot();
         let (children, jobs, signature) = seat.packages(&rows);
         let dirty = seat.dirty.swap(false, Ordering::SeqCst);
@@ -470,6 +544,35 @@ pub fn nag(seat: &str, text: &str) -> Value {
             "meta": { "source": "seat", "event": "todo", "seat": seat },
         },
     })
+}
+
+/// The other boards a `todo` wait may name, as this seat reads them: the daemon's store, opened
+/// read-only per call, and the words this seat's own handle is built from. A seat has no daemon of
+/// its own, so a read of the store is the whole of what it can see of another board.
+struct SeatBoards {
+    path: PathBuf,
+    folder: Option<PathBuf>,
+    words: Vec<String>,
+}
+
+impl Boards for SeatBoards {
+    fn board_of(&self, seat: &str) -> Result<Board, String> {
+        if !crate::store::exists(&self.path) {
+            return Err(format!(
+                "there is no store at {} yet - it is the daemon's file, so `leticode_start` is \
+                 what opens one",
+                self.path.display()
+            ));
+        }
+        // `todo` is kept per project, so the folder names the file a session's board is in; a seat
+        // with no folder still reads another SEAT's board, which is in the shared file.
+        let table = match self.folder.is_some() {
+            true => "todo",
+            false => "seat_todo",
+        };
+        let store = crate::store::open_read(&self.path, table, self.folder.as_deref())?;
+        board_of(&store, &self.words, seat)
+    }
 }
 
 /// The seat's packages as the tool's child resolver: the sessions this bridge holds. A seat writes

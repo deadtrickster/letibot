@@ -280,16 +280,18 @@ impl Bridge {
         if let Some(seat) = g.as_ref() {
             return Ok(seat.clone());
         }
-        let store = match &self.names_from {
-            Some((store, _)) => store.clone(),
+        let (store, folder) = match &self.names_from {
+            Some((store, folder)) => (store.clone(), folder.clone()),
             None => {
                 let here = std::env::current_dir().map_err(|e| e.to_string())?;
-                daemon::resolve(&here)?.store
+                let daemon = daemon::resolve(&here)?;
+                (daemon.store, daemon.workspace)
             }
         };
         let seat = Arc::new(
             crate::seat::Seat::new(crate::rooms::handle(), store, self.heads.clone())
-                .with_window(self.seat_window),
+                .with_window(self.seat_window)
+                .with_folder(folder),
         );
         *g = Some(seat.clone());
         Ok(seat)

@@ -152,6 +152,7 @@ pub fn with_session_tools(
     board: std::sync::Arc<builtins::todo::TodoBoard>,
     children: Option<std::sync::Arc<dyn builtins::todo::ChildTodos>>,
     asks: Option<std::sync::Arc<dyn builtins::todo::AskLink>>,
+    boards: Option<std::sync::Arc<dyn builtins::todo::Boards>>,
     task_runner: std::sync::Arc<dyn builtins::task::TaskRunner>,
     skills: std::sync::Arc<builtins::skill::SkillRegistry>,
     // The cell this session's tool names arrive in, filled by the daemon once its prefix is
@@ -168,6 +169,12 @@ pub fn with_session_tools(
     // answer. Additive, so a runtime with no room keeps asking the operator and nothing else.
     let todo = match asks {
         Some(asks) => todo.with_asks(asks),
+        None => todo,
+    };
+    // And the store, for the one wait that is a row on ANOTHER board: a seat's or a peer session's.
+    // Additive the same way - without it the wait is refused by name rather than written.
+    let todo = match boards {
+        Some(boards) => todo.with_boards(boards),
         None => todo,
     };
     reg.register(Box::new(todo))?;
@@ -358,6 +365,7 @@ mod tests {
         let reg = with_session_tools(
             reg,
             std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
+            None,
             None,
             None,
             std::sync::Arc::new(builtins::task::NoTaskRunner),

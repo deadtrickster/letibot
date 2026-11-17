@@ -4310,6 +4310,11 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::External { what, since_ms } => {
                         letibot_sessionlog::event::TodoNeed::External { what, since_ms }
                     }
+                    // Another board's row: the seat and the row's words cross verbatim, because
+                    // they are what the head draws and what the sweep frees the wait by.
+                    letibot_tokencore::store::TodoNeed::Todo { seat, content } => {
+                        letibot_sessionlog::event::TodoNeed::Todo { seat, content }
+                    }
                     letibot_tokencore::store::TodoNeed::Unknown => {
                         letibot_sessionlog::event::TodoNeed::Unknown
                     }

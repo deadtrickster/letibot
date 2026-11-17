@@ -222,6 +222,13 @@ fn letibot_room_parts(handle: &str) -> Option<(&str, &str)> {
     Some(rest.split_once(':').unwrap_or((rest, rest)))
 }
 
+/// The words a seat's own handle carries, which is how a bridge names the project it is in: one for
+/// `cc@<folder>`, two for `cc@<folder>:<name>`. The same cleaning a `todo` wait's own comparison uses,
+/// so the two spellings meet.
+pub fn letibot_room_words(handle: &str) -> Vec<String> {
+    letibot_tools::builtins::todo::handle_words(handle)
+}
+
 /// Where a suffix goes: the folder is kept whole and the cut falls on the name, because the folder is
 /// what makes the handle a bridge's at all and the name is the part a twin may lose.
 fn suffix_parts(name: &str) -> (String, String) {

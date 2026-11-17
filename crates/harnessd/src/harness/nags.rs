@@ -217,6 +217,7 @@ impl Harness {
     /// ended. A delivered settlement freed its job rows already; this is the backstop for the rest.
     pub(crate) fn resolve_ended_waits(&mut self) -> FreedWaits {
         use letibot_tokencore::store::TodoNeed;
+        use letibot_tools::builtins::todo::Boards as _;
         let board = self.todos.clone();
         let graced = |handle: &str| {
             self.job_watch.as_ref().is_some_and(|w| {
@@ -229,6 +230,13 @@ impl Harness {
             })
         };
         let children = self.tasks.snapshot();
+        // The other boards this plan waits on, read at most once per name per sweep: a `todo` wait is
+        // freed by that board's own row being finished, struck off or gone.
+        let boards = crate::seat_boards::SeatBoards::new(self.cfg.store_at(), self.cfg.workspace.to_string_lossy());
+        let mut read: std::collections::BTreeMap<
+            String,
+            Result<letibot_tools::builtins::todo::Board, String>,
+        > = std::collections::BTreeMap::new();
         let resolved = board.resolve_waits(|need| match need {
             TodoNeed::Job { handle } => {
                 let state = match self.job_fate(handle) {
@@ -262,6 +270,21 @@ impl Harness {
             TodoNeed::Monitor { name } => (!self.monitor_watching(name)).then(|| {
                 format!("monitor {name} is no longer watching (it fired, expired or was retired)")
             }),
+            // Another board's row: read from the store, and freed by that board's answer. A board
+            // that cannot be read at all is NO answer - an absence is not an ending, so the wait
+            // stands until it can be.
+            TodoNeed::Todo { seat, content } => {
+                let board = read.entry(seat.clone()).or_insert_with(|| boards.board_of(seat));
+                match board {
+                    Ok(letibot_tools::builtins::todo::Board::Rows(rows)) => {
+                        letibot_tools::builtins::todo::wait_ended(rows, seat, content)
+                    }
+                    Ok(letibot_tools::builtins::todo::Board::Unknown(_)) => {
+                        Some(format!("{seat}'s board is gone"))
+                    }
+                    Err(_) => None,
+                }
+            }
             _ => None,
         });
         if resolved.is_empty() {

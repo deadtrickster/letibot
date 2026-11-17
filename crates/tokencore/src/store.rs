@@ -1168,6 +1168,11 @@ pub enum TodoNeed {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since_ms: Option<u64>,
     },
+    /// Another BOARD's row: an external seat's (`cc@<folder>`) or another session's of this project,
+    /// by that board's name and the row's exact words. The wait sweep frees it the moment the row is
+    /// completed, and also when it is struck off or no longer on that board - a board is replaced
+    /// whole, so a row that is gone is a row somebody dropped.
+    Todo { seat: String, content: String },
     /// An [`TodoNeed::Operator`] edge that was answered: always met, the reply kept on the row.
     /// `ask` is the room's id when a peer replied, which a settle matches on; `default` so edges
     /// written before asks existed still read back.
@@ -3994,6 +3999,25 @@ impl Store {
             .map(|j| serde_json::from_str(&j))
             .transpose()?
             .unwrap_or_default())
+    }
+
+    /// A session by its id, or by the TITLE exactly one session has: the name a `todo` wait on
+    /// another session's board carries. `None` when nothing or two sessions answer to it, because a
+    /// name that fits two of them is not a board and must not be read as one.
+    pub fn session_named(&self, name: &str) -> Result<Option<StoredSession>> {
+        let name = name.trim();
+        if self.session(name)?.is_some() {
+            return self.session(name);
+        }
+        let mut hits: Vec<StoredSession> = self
+            .list_sessions_archived(Archived::Any)?
+            .into_iter()
+            .filter(|s| s.title.as_deref().is_some_and(|t| t.trim() == name))
+            .collect();
+        match hits.len() {
+            1 => Ok(hits.pop()),
+            _ => Ok(None),
+        }
     }
 
     /// Every session with a row waiting on the operator, and how many questions are open: the
