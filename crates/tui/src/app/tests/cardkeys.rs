@@ -160,6 +160,40 @@ fn a_digit_on_a_permission_marks_its_numbered_row_and_enter_answers() {
     assert_eq!(b.key(Key::Enter), answer("r1", "deny"));
 }
 
+/// A line typed before a permission card is the next prompt: the card holds it aside and Enter
+/// answers with no note. Words typed after the card is up are a comment on the choice and go with
+/// the answer as its note. The held line comes back once the card is answered.
+#[test]
+fn a_permission_holds_an_earlier_line_and_takes_later_words_as_its_note() {
+    let mut b = app();
+    typed(&mut b, "the next prompt");
+    ask(&mut b, 1, testing::requested("r1", "rm"));
+    assert_eq!(b.input(), "", "the card's field starts empty");
+    assert_eq!(b.key(Key::Down), None, "the arrow marks a row");
+    assert_eq!(
+        b.key(Key::Enter),
+        answer("r1", "deny"),
+        "no note from a line typed before"
+    );
+    ask(&mut b, 2, testing::answered("r1", "deny"));
+    assert_eq!(b.input(), "the next prompt", "the line is back");
+
+    let mut c = app();
+    ask(&mut c, 1, testing::requested("r2", "rm"));
+    typed(&mut c, "not in prod");
+    assert_eq!(c.key(Key::Down), None);
+    assert_eq!(
+        c.key(Key::Enter),
+        Some(Action::Answer {
+            req_id: "r2".into(),
+            option_id: "deny".into(),
+            pattern: None,
+            note: Some("not in prod".into()),
+        }),
+        "words typed over the card are its note"
+    );
+}
+
 /// A question with no choices has no ladder to walk; an empty choice is not a blank row.
 #[test]
 fn a_question_without_choices_offers_no_arrows_and_an_empty_choice_is_named() {
@@ -1265,8 +1299,8 @@ fn a_panes_body_has_no_hints_and_the_help_screen_keeps_its_own() {
     );
 }
 
-/// Words held in the composer do not take the arrows off a permission card: the ladder is the
-/// question on screen, and the words wait for it.
+/// Words typed before a permission card do not take the arrows off it: the ladder is the question on
+/// screen, and the words are held aside, then come back when the card is answered.
 #[test]
 fn the_arrows_move_a_permission_ladder_with_words_in_the_composer() {
     let mut a = app();
@@ -1278,8 +1312,14 @@ fn the_arrows_move_a_permission_ladder_with_words_in_the_composer() {
     assert_eq!(a.sel, 0);
     assert_eq!(
         a.editor.text(),
+        "",
+        "the words are held aside while the card is up"
+    );
+    ask(&mut a, 2, testing::answered("r1", "allow_once"));
+    assert_eq!(
+        a.input(),
         "half a thought",
-        "the words are still there"
+        "and are back once it is answered"
     );
 }
 
