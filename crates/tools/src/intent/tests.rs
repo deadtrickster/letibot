@@ -1888,6 +1888,9 @@ fn the_live_checkouts_destructive_git_verbs_ask_and_a_worktrees_do_not() {
         "git clean -fdx",
         "git -C . stash",
         "cd /tmp && git reset --hard",
+        // A ref or a directory spelled `git` is an operand, not the program.
+        "git rebase git",
+        "git -C git rebase main",
     ] {
         let Some((rule, why)) = asks(cmd, &live) else {
             panic!("`{cmd}` in the live checkout did not ask")
