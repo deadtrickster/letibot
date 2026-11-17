@@ -1,26 +1,14 @@
 #!/usr/bin/env bash
-# **The launcher's model-to-endpoint lookup, run for real against stub binaries** — and the
-# proof that it no longer GATES on a model: nothing serving and no provider starts, and the
-# head runs (the operator, 2026-10-18: *"idk why i even have to do --provider. horrible ux -
-# we already have models chooser and keys asker"*; the head asks now, see `app::reach`).
-#
-# `scripts/letibot` decides where a run's turns go before any Rust runs, so nothing in
-# `cargo test` reaches it. This runs it one-shot (`letibot "q"` execs harnessd) with a
-# stub harnessd that prints its argv, a throwaway HOME and runtime dir, and a
-# providers.toml written per case, and reads back what was started or refused.
-# Nothing listens anywhere, so a case that needed the local model server sees none.
-#
+# The launcher's model-to-endpoint lookup, run against stub binaries: `letibot "q"` execs a
+# harnessd stub that prints its argv, with a throwaway HOME and a providers.toml per case.
+# Nothing listens, and the launcher must still start rather than gate on a model.
 #   tests/launcher.sh            # from the repo root; exits non-zero on a failure
 set -u
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 LAUNCHER="$ROOT/scripts/letibot"
 T="$(mktemp -d)"
-# **And the daemon stubs this script started go with it.** They are `$T/bin/harnessd` — a python
-# stub that binds a socket under `$T` and sleeps for ever — so the temp dir IS their identity:
-# nothing else on the box has a command line naming it. A case that fails before its own `kill`
-# is exactly how a test suite leaves daemons behind, which is the defect this file is otherwise
-# about (the operator's 2026-10-26 third report), so the cleanup does not depend on a case
-# reaching its last line.
+# The daemon stubs are named by `$T` and nothing else on the box is, so cleanup kills by it and
+# does not depend on a case reaching its own `kill`.
 cleanup() {
   ps -eo pid=,args= 2> /dev/null | awk -v d="$T/bin/harnessd" 'index($0, d) { print $1 }' \
     | while read -r _stub; do kill "$_stub" 2> /dev/null || true; done
@@ -32,15 +20,9 @@ trap cleanup EXIT
 export LBT_OWNER=$$
 
 mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/run" "$T/ws"
-# **A coordinator stub, and it really binds.** `docs/room.md` § *Still owed* item 4: the launcher
-# now starts a coordinator for the box whenever one is not serving, so every case below meets that
-# path. This one binds `$LETIBOT_ROOM_SOCKET`, writes the lease the real coordinator writes, and
-# stays until the harness's cleanup — which is what makes `room_up` answer yes for every later case
-# and keeps the suite from starting a room per run.
-#
-# `exec -a harnessd` is load-bearing twice: `--stop --all` decides a record is live by the FIRST
-# WORD of the process's argv (a python script's is `python3`), and `room_up` reads the argv for
-# `--room`.
+# A coordinator stub that binds `$LETIBOT_ROOM_SOCKET` and writes the lease, so every later
+# case's `room_up` answers yes. `exec -a harnessd`: `--stop --all` judges liveness by argv's
+# first word, and `room_up` reads the argv for `--room`.
 cat > "$T/bin/harnessd-room.py" << 'STUB'
 import os, socket, sys, time
 p = os.environ["LETIBOT_ROOM_SOCKET"]
@@ -81,7 +63,7 @@ printf 'openfiles-hard %s\n' "$(ulimit -Hn)"
 STUB
 cp "$T/bin/harnessd" "$T/bin/letibot-tui"
 chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
-# **The resolver's answer, as `bridge::daemon::resolve` gives it**: the launcher asks
+# The resolver's answer, as `bridge::daemon::resolve` gives it: the launcher asks
 # `letibot-multi where DIR --json` for a folder's key and socket. This is the stub's copy of the
 # rule; `where.rs` holds the launcher to the real binary.
 cat > "$T/bin/where-json" << 'STUB'
@@ -106,16 +88,11 @@ chmod +x "$T/bin/where-json" "$T/bin/letibot-multi.default"
 cp "$T/bin/letibot-multi.default" "$T/bin/letibot-multi"
 
 fails=0
-# **The launcher's liveness reader has to be on the PATH this harness gives it.** It is
-# `ss` on Linux (`/usr/bin`) and `lsof` on macOS (`/usr/sbin`, and nowhere else) — so a
-# harness PATH of `/usr/bin:/bin` leaves a Mac's launcher unable to see ANY socket: `live`
-# is false, every case takes the start-a-daemon branch, and nothing that depends on a
-# listening daemon can be tested at all. MEASURED by CI's own macos job, 2026-10-09, on the
-# protocol-skew cases below: four failures that were the harness's PATH and not the
-# launcher.
+# The liveness reader must be on this PATH: `ss` on Linux (`/usr/bin`), `lsof` on macOS
+# (`/usr/sbin`). Without it a Mac's launcher sees no socket and every case takes the start branch.
 RUN_PATH="/usr/bin:/bin"
 for d in /usr/sbin /sbin; do [ -d "$d" ] && RUN_PATH="$RUN_PATH:$d"; done
-# **The box's room goes somewhere this harness owns.** `harnessd`'s `room::socket_path` and the
+# The box's room goes somewhere this harness owns. `harnessd`'s `room::socket_path` and the
 # launcher's `room_paths` both honour `LETIBOT_ROOM_SOCKET`, so every case here shares one room —
 # which is also what a real box has — and nothing touches the operator's data directory.
 ROOM_SOCK="$T/room/room.sock"
@@ -166,46 +143,17 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 }
 
 # ---------------------------------------------------------------------------------------
-# **The shell scripts, under the bash the Mac actually has.**
-#
-# `scripts/letibot` and `scripts/leticode` run under `/usr/bin/env bash`, which on a stock Mac
-# is **3.2.57 (2007)**, and CI's macOS job parses them with `/bin/bash -n` for that reason;
-# the launcher's own `EXTRA_ARGS` note (`scripts/letibot`, "every expansion of an array that
-# may be empty") is the first bug of this class. **A parse is not enough**: `declare -A` is a
-# *runtime* error, so a script carrying one parses cleanly and dies only on the Mac.
-#
-# MEASURED 2026-10-29, two of them in one night:
-#   * `scripts/etalon-snapshot` died at its own redaction table — `openssh_key_body: unbound
-#     variable`, because bash 3.2 reads the `[name]=` subscripts of a `declare -A` it
-#     rejected as arithmetic, and `set -u` makes that fatal. No check ran at all.
-#   * the operator's `! cp …` in the head came back `bash: declare: -A: invalid option` — the
-#     `~/.bashrc` chain read by the `/bin/bash -ic` the daemon hands a `!` line, written for
-#     bash 4. (That half is fixed in the daemon, not here: `crates/tools/src/console_bash.rs`.)
-#
-# Two lists, because two different promises:
-#
-#   BASH32    run under the Mac's `/bin/bash`: parsed with `/bin/bash -n` AND grepped for the
-#             bash-4 spellings. **A new bash script under `scripts/` belongs here.**
-#   POSIX_SH  `#!/bin/sh`, so POSIX: grepped only. bash-4 syntax is not `sh` syntax either.
-#
-# Named as out of scope, so nobody has to guess: `tests/acceptance/*.sh` (CI runs them under
-# Linux's bash 5), `tests/fidelity/serve_oracle.sh`, and `firecode.layer`
-# (a VM recipe, not a shell on this box).
-#
-# **`+=` on an array is NOT in the spelling list**: that is bash 3.1, not 4, and
-# `scripts/letibot`/`leticode` use it deliberately. The 3.2 hazard beside it is *expanding*
-# an empty array under `set -u` — `EXTRA_ARGS[@]: unbound variable`, which killed the first
-# macOS start — and no grep can see that, so the `--help` run at the end is what covers it.
+# The shell scripts under a stock Mac's bash 3.2. A parse is not enough: `declare -A` is a
+# runtime error. BASH32 files are parsed with `/bin/bash -n` and grepped for bash-4 spellings;
+# POSIX_SH (`#!/bin/sh`) files are grepped only. A new bash script under `scripts/` goes in BASH32.
+# Out of scope: `tests/acceptance/*.sh` (Linux bash 5), `tests/fidelity/serve_oracle.sh`,
+# `firecode.layer`. `+=` on an array is bash 3.1 and allowed; an empty-array expansion under
+# `set -u` no grep can see, so the `--help` run below covers it.
 BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/migrate-notes.sh scripts/rrun scripts/wire-skew.sh tests/launcher.sh tests/rrun.sh tests/claude-plugin.sh"
 POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/gate-at.sh scripts/gate-env.sh scripts/gate-steps.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
-# The bash-4 spellings as one extended regex: associative arrays (`declare`/`local`/`typeset`
-# `-A`), namerefs (`-n`), `declare -g`, `mapfile`/`readarray`, `coproc`, `wait -n`, `[[ -v ]]`,
-# case fallthrough (`;;&`, `;&`), `&>>`, `|&`, and the case-modifying expansions
-# (`${x,,}`, `${x^^}`).
-#
-# **Each literal that would match its own line is written with a character class** — `map[f]ile`,
-# `[|]&`, `[&]>>`, `;;[&]` — because this file is in BASH32 and greps itself, and a guard that
-# flags its own pattern would fail on every run.
+# The bash-4 spellings as one ERE: `-A`/`-n`/`-g` declarations, `mapfile`, `readarray`,
+# `coproc`, `wait -n`, `[[ -v ]]`, `;;&`, `;&`, `&>>`, `|&`, `${x,,}`, `${x^^}`. Literals are
+# written with a character class (`map[f]ile`) because this file greps itself.
 BASH4_SPELLINGS='declare +-[[:alpha:]]*[An]|local +-[[:alpha:]]*[An]|typeset +-[[:alpha:]]*[An]|declare +-[gn]|local +-[gn]|map[f]ile|readarra[y]|copro[c]|wai[t] -n|\[\[ +-v |\$\{[[:alpha:]_][[:alnum:]_]*(\[[^]]*\])?(,,|\^\^|,|\^)\}|[&]>>|[|]&|;;[&]|;[&][[:space:]]*$'
 
 for f in $BASH32; do
@@ -229,10 +177,8 @@ for f in $BASH32 $POSIX_SH; do
     echo "ok   bash-3.2: $f has no bash-4 spelling"
   fi
 done
-# **A new script under `scripts/` is in scope by existing**, so the lists cannot drift from
-# the directory: a file whose first line names bash and is not in `BASH32` — or a `/bin/sh`
-# one that is not in `POSIX_SH` — fails here, by name, instead of going unchecked because
-# nobody remembered a list in a test file. Add the file to the list and it is covered.
+# A script under `scripts/` is in scope by existing: a bash one not in BASH32, or an sh one not
+# in POSIX_SH, fails by name, so the lists cannot drift from the directory.
 for f in "$ROOT"/scripts/*; do
   [ -f "$f" ] || continue
   rel="scripts/${f##*/}"
@@ -259,7 +205,7 @@ for f in "$ROOT"/scripts/*; do
            ;;
   esac
 done
-# **A script nobody can run is not a check.** The lists above are each file's documented
+# A script nobody can run is not a check. The lists above are each file's documented
 # invocation, and a mode that drifts to 644 makes `tests/launcher.sh` fail with Permission
 # denied before a case runs - which is exactly how this file's own bit went missing.
 for f in $BASH32 $POSIX_SH; do
@@ -270,10 +216,8 @@ for f in $BASH32 $POSIX_SH; do
     fails=$((fails + 1))
   fi
 done
-# **And a run, not only a parse.** `--help` reaches the launcher's argument handling and its
-# array expansions without starting a daemon — the one path that would have caught
-# `EXTRA_ARGS[@]: unbound variable` under 3.2 — and it is run with the same scrubbed
-# environment the cases above use, so it can touch nothing of the operator's.
+# A run, not only a parse: `--help` reaches argument handling and the array expansions without
+# a daemon, in the same scrubbed environment as the cases above.
 help_out="$( (cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
   LETIBOT_BIN="$T/bin" /bin/bash "$LAUNCHER" --help) 2>&1 )"
 if printf '%s' "$help_out" | grep -q "one command to start chatting"; then
@@ -299,7 +243,7 @@ expect "  ...and the daemon is started" "$out" "^harnessd "
 refuse "  ...with no local endpoint invented for it" "$out" "--endpoint"
 
 # a_one_shot_with_model_runs_that_model_or_refuses: harnessd reads a bare `--model` as the
-# local binding, so a provider's model used to be dropped for the file's default provider.
+# local binding, so a provider's model must be passed as the provider's, not dropped.
 ONESHOT_MODELS='[deepseek]
 
 [glm]
@@ -354,13 +298,9 @@ model = "qwen-3.8-flash-next"
 expect "a block split in two is one block" "$out" "--endpoint 127.0.0.1:59996( |$)"
 
 # ---------------------------------------------------------------------------------------
-# **HELP AND MISTAKES, WHICH NEED NO DAEMON.**
-#
-# `--help` after a verb answered with the whole list of twenty commands, so a person asking about
-# `--delete` read everything and found their verb in the middle of it; and a verb left without its
-# argument answered with a usage line that never said what was missing. Both are asserted as shape
-# rather than as wording where they can be: non-zero exit, the mistake named, that verb's own page
-# named, and no wall printed after either.
+# HELP AND MISTAKES, WHICH NEED NO DAEMON.
+# `--help` after a verb is that verb's page, and a missing argument is named. Asserted as shape:
+# non-zero exit, the mistake named, the verb's page named, no wall of text.
 refusal() { # refusal NAME RC OUTPUT FIRST SECOND -- a mistake, in two lines and no wall
   local name="$1" rc="$2" out="$3" first="$4" second="$5" why=""
   if [ "$rc" -eq 0 ]; then
@@ -442,7 +382,7 @@ out="$(run "$DEFAULT_ONLY" --halp)"
 refusal "an unknown flag is named, not run as a prompt" "$rc" "$out" \
   "^letibot: unknown flag: --halp" "letibot --help"
 
-# **A REMOVED FLAG FAILS NAMING ITS REPLACEMENT** (item 1.26): the four this release deleted.
+# A REMOVED FLAG FAILS NAMING ITS REPLACEMENT: the four this release deleted.
 # Dying here rather than falling through to the one-shot is the difference between a script
 # learning where the flag went and a billed turn answering a sentence nobody asked.
 for spec in "--daemons|--ls" "--flash|\[default\] model" "--writes|writes-allowed" "--bash|--no-bash"; do
@@ -454,7 +394,7 @@ for spec in "--daemons|--ls" "--flash|\[default\] model" "--writes|writes-allowe
     "^letibot: $flag is not a flag any more" "$want"
 done
 
-# **A SETTING WITH A CONFIG KEY SAYS WHICH KEY** — one line on stderr, and the flag still works
+# A SETTING WITH A CONFIG KEY SAYS WHICH KEY — one line on stderr, and the flag still works
 # for this release. `--provider` with no value is the cheapest way to read the notice.
 out="$(run "$DEFAULT_ONLY" --provider)"
 expect "--provider names the key it now lives at" "$out" \
@@ -502,7 +442,7 @@ for spec in "--delete|letibot session delete ID" "--session|letibot --session ID
 done
 
 # --- and the wall itself lists every verb it answers for ----------------------------------
-# **`--help` IS THE DAILY SET; `--help all` IS THE REST** (item 1.26), so both pages are walked:
+# `--help` IS THE DAILY SET; `--help all` IS THE REST, so both pages are walked:
 # a flag this parser reads and no page names is the same disagreement from the other side.
 out="$(run "$DEFAULT_ONLY" --help all)"
 for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
@@ -518,7 +458,7 @@ for verb in --continue --session --sessions --new --rename --delete --migrate --
   fi
 done
 
-# **No provider, no local model block, nothing serving: started, not refused.** The daemon
+# No provider, no local model block, nothing serving: started, not refused. The daemon
 # keeps its own default endpoint, and is handed no vocabulary to send ids from — a daemon with
 # no model chosen refuses a TURN by name, and the head's chooser is the way on.
 out="$(run '' "one question")"
@@ -532,32 +472,16 @@ out="$(run '' --status)"
 refuse "--status with no provider and no home reports rather than refusing" "$out" "no endpoint for this run"
 expect "  ...and says a model is asked for" "$out" "^local +none.*asks for a model on first use"
 
-# **A model asked for by name with no home is SAID, and still started** — the flag meant
+# A model asked for by name with no home is SAID, and still started — the flag meant
 # something the file does not carry, which is worth a sentence and not a refusal.
 out="$(run '' --dense "one question")"
 expect "a flag's model with no home is named" "$out" "no endpoint for this run: --dense asked"
 expect "  ...and the daemon is started anyway" "$out" "^harnessd "
 
-# **THE LAUNCHER RAISES THE OPEN-FILE LIMIT, AND ITS CHILD IS WHAT SHOWS IT.**
-#
-# Darwin's soft limit is 256 (`launchctl limit maxfiles`: `256 unlimited`) and this daemon is
-# not a 256-descriptor process. MEASURED 2026-10-30 on the operator's Mac: a daemon up one
-# hour held 253 descriptors with the highest numbered 254 — two to spare — and the `git
-# checkout` it forked for a reviewer died of `Too many open files (os error 24)`.
-#
-# It is raised in the LAUNCHER because a soft limit can only be raised to the HARD limit a
-# process was born with, so a daemon cannot give itself room it was not started with. Every
-# child inherits what the launcher sets, which is what the stub above prints.
-#
-# Three things, and none of them needs root:
-#   1. a child of the launcher sees at least the number the launcher asks for — OR the
-#      launcher SAID what it got instead, naming both numbers (a hard limit below the request
-#      is a fact about the box, not a failure);
-#   2. the HARD limit is untouched — `ulimit -n N` would have moved both, and then a daemon
-#      that later needed more could never get it;
-#   3. a soft limit already ABOVE the request is left alone, not clamped down to it.
-#
-# The request is read out of the launcher rather than repeated here, so the two cannot drift.
+# THE LAUNCHER RAISES THE OPEN-FILE LIMIT, AND ITS CHILD IS WHAT SHOWS IT.
+# Darwin's soft 256 is too few for the daemon, and only the parent can raise it. A child sees at
+# least the request, or the launcher names both numbers. The hard limit is untouched, and a soft
+# limit already above the request is left alone. The request is read from the launcher.
 asked="$(sed -n 's/^OPEN_FILES_WANTED=\([0-9][0-9]*\).*/\1/p' "$LAUNCHER" | head -1)"
 # limit_case NAME SOFT OUTPUT — rule 1, once, for the one-shot path and the daemon path.
 limit_case() { # limit_case NAME SOFT OUTPUT
@@ -585,7 +509,7 @@ else
   out="$(run "$DEFAULT_ONLY" "one question")"
   limit_case "the launcher raises the open-file limit for the daemon it starts" \
     "$(printf '%s\n' "$out" | sed -n 's/^openfiles //p' | head -1)" "$out"
-  # **The HARD limit must be exactly what this shell has**, because the launcher runs as this
+  # The HARD limit must be exactly what this shell has, because the launcher runs as this
   # shell's child (`env -i` carries no rlimits): anything else means the raise moved it too.
   own_hard="$(ulimit -Hn 2> /dev/null || true)"
   child_hard="$(printf '%s\n' "$out" | sed -n 's/^openfiles-hard //p' | head -1)"
@@ -595,7 +519,7 @@ else
     echo "FAIL the launcher moved the HARD open-file limit: $own_hard -> ${child_hard:-nothing}"
     fails=$((fails + 1))
   fi
-  # **Never lower one.** A shell already above the request keeps its own number.
+  # Never lower one. A shell already above the request keeps its own number.
   higher=$((asked + 1000))
   if ( ulimit -Sn "$higher" ) > /dev/null 2>&1; then
     out="$( ulimit -Sn "$higher" && run "$DEFAULT_ONLY" "one question" )"
@@ -612,11 +536,8 @@ else
   fi
 fi
 
-# **`--host NAME` is forwarded to the daemon, value and all** — the session's tools run on
-# that machine (`docs/remote-hosts.md`). The launcher does not resolve the name: the daemon
-# reads the operator's `hosts.toml` and refuses an unknown one by naming the ones it knows,
-# so the shell's whole job here is to pass the pair through intact (and to consume the value
-# so the name is not mistaken for the prompt).
+# `--host NAME` is forwarded to the daemon, which resolves the name against `hosts.toml`. The
+# launcher passes the pair through intact and consumes the value so it is not the prompt.
 out="$(run '' --host lab2x1 "one question")"
 expect "--host is passed to the daemon with its name" "$out" "^harnessd .*--host lab2x1"
 refuse "  ...and the name is not taken for the prompt" "$out" "--prompt lab2x1"
@@ -631,7 +552,7 @@ provider = "deepseek"
 out="$(run "$LOCAL" "one question")"
 expect "a local model with a home passes its endpoint on" "$out" "--endpoint 127.0.0.1:59999"
 
-# **The health gate is gone too**: a home whose server is not answering, and no provider —
+# The health gate is gone too: a home whose server is not answering, and no provider —
 # what died on *"nothing serving on …"* (or asked *"1) deepseek 2) glm 3) grok"* at a
 # terminal). Nothing listens on 59999 here.
 LOCAL_ONLY='[model."local.flash"]
@@ -643,23 +564,9 @@ refuse "a home with nothing serving and no provider is not refused" "$out" "noth
 expect "  ...and the daemon is started on that home" "$out" "^harnessd .*--endpoint 127.0.0.1:59999"
 
 # ---------------------------------------------------------------------------
-# **A daemon that is LISTENING but does not speak this build's protocol is refused
-# with the sentence that names the way out** — not handed a head that dies on the
-# daemon's bare refusal line.
-#
-# MEASURED 2026-10-09, in the operator's own terminal: `leticode --continue` against a
-# daemon up since 09-21 printed
-#
-#     letibot: attached to harnessd for … (pid 2076966), up since 2026-09-21T07:16:16
-#     letibot-tui: the daemon refused the attach: protocol version 36, this daemon speaks 22
-#
-# and stopped there: no `--stop`, no socket, nothing about the warm session that had just
-# become unreachable. `version_skew_or_continue` already held the right sentence and ran
-# only in the branch that STARTS a daemon, so a daemon already listening never met it.
-#
-# This needs two things the other cases do not: a socket something is really LISTENING on
-# (`live` is `ss`, not a file test, because a daemon's shutdown unlinks the file while the
-# process keeps serving), and a head that refuses the way an older daemon's would.
+# A daemon that is LISTENING but speaks another protocol is refused with the sentence naming the
+# way out, not handed a head that dies on the bare refusal. Needs a socket really listening
+# (`live` is `ss`, since a stopping daemon unlinks the file) and a head that refuses as an older one.
 key12() { if command -v sha256sum > /dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12; }
 if command -v python3 > /dev/null 2>&1; then
   cat > "$T/bin/letibot-tui" << 'STUB'
@@ -674,10 +581,7 @@ echo "letibot-tui: THE HEAD RAN"
 STUB
   chmod +x "$T/bin/letibot-tui"
   WS_P="$(cd "$T/ws" && pwd -P)"
-  # **`$T/run/letibot`, not `$T/run`**: the launcher's RUNDIR is
-  # `$XDG_RUNTIME_DIR/letibot`, so a socket one level up is a socket nobody looks at —
-  # which is exactly what the first draft of this case did, and the launcher went on to
-  # start a daemon over a socket it could not see.
+  # `$T/run/letibot`, not `$T/run`: the launcher's RUNDIR is `$XDG_RUNTIME_DIR/letibot`.
   mkdir -p "$T/run/letibot"
   SOCK_P="$T/run/letibot/$(printf '%s' "$WS_P" | key12).sock"
   python3 -c 'import socket, sys, time
@@ -688,10 +592,8 @@ time.sleep(120)' "$SOCK_P" &
   _listener=$!
   sleep 0.3
 
-  # **Can this box show the launcher a listening socket at all?** The same reader the
-  # launcher uses, asked here first, so that a harness which cannot answer that question
-  # SKIPS LOUDLY rather than reporting four failures about the launcher. A check that did
-  # not run must not look like one that did — the same rule the GGUF-gated tests keep.
+  # Can this box show the launcher a listening socket at all? Asked with the launcher's own
+  # reader first, so a harness that cannot answer skips loudly instead of reporting failures.
   listens() { # listens SOCKET-PATH
     if [ "$(uname -s)" = Darwin ]; then
       lsof -nP -U 2> /dev/null | grep -qF "$1"
@@ -725,20 +627,9 @@ else
   echo "skip the protocol-skew cases: no python3 to listen on a unix socket"
 fi
 
-# **And the reader that feeds the stale line.** `pid_started` read
-# `stat -c %Y "/proc/<pid>"` — a procfs DIRECTORY's mtime, which is not a process's start
-# time and is not even per-process. MEASURED 2026-10-09: three daemons up 17, 9 and 4 days
-# reported the SAME value (10-08 21:20), while `ps -o lstart=` and `/proc/<pid>/stat`'s own
-# starttime agreed with each other on all three, to the second.
-#
-# The reading is asserted AT THE SOURCE because that is where the mistake lives and because
-# a young process cannot expose it: a freshly started process's directory mtime DOES equal
-# its start time, which is how the wrong reader passed every check it was ever given.
-# `/proc/<pid>/stat`'s field 22 is the reader; see `pid_started`.
-#
-# **Comments are stripped before the grep**, because the reader's own comment QUOTES the
-# wrong line to say what it replaced — a guard that cannot tell the two apart is red on
-# the fix itself, which is how this guard first ran.
+# `pid_started` must read `/proc/<pid>/stat` field 22, not the procfs directory's mtime, which
+# is not per-process and equals the start time only for a young process, so only the source can
+# show it. Comments are stripped before the grep, since the reader's own comment may quote it.
 if grep -v '^[[:space:]]*#' "$LAUNCHER" | grep -q 'stat -c %Y "/proc/'; then
   echo "FAIL a process start time is read from a /proc DIRECTORY's mtime:"
   grep -v '^[[:space:]]*#' "$LAUNCHER" | grep -n 'stat -c %Y "/proc/' | sed 's/^/     /'
@@ -747,17 +638,9 @@ else
   echo "ok   no reader takes a /proc directory's mtime for a process start time"
 fi
 
-# **A daemon that is still going is WAITED FOR, not started over.**
-#
-# The operator's ten `--continue` refusals, constructed: a daemon asked to stop unlinks its
-# socket file and drops its listener within a poll of the signal while it finishes the turn
-# it was holding — so in that window every liveness test this box has says *no daemon here*,
-# the launcher starts one, and the FOLDER LOCK refuses it (`already served by a live daemon
-# (pid N) ... stop the one named here`). The record beside the socket is the fact that
-# survives that window, and this is what the launcher does with it.
-#
-# Constructed rather than raced: the *daemon* is a stub that listens (so the start path runs
-# its real `live` poll), and it goes when this test lets it go.
+# A daemon that is still going is WAITED FOR, not started over. A stopping daemon drops its
+# socket while finishing its turn, and only the record survives that window. Constructed, not
+# raced: the stub listens, so the start path runs its real `live` poll, and goes when let go.
 if command -v python3 > /dev/null 2>&1; then
   cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
@@ -787,15 +670,13 @@ while owner_alive():
 STUB
   chmod +x "$T/bin/harnessd"
 
-  # **The folder as the launcher names it — resolved.** macOS's `mktemp -d` is under `/var`,
-  # a symlink to `/private/var`, and the launcher keys its record by `pwd -P`; keyed by
-  # `$T/ws` the record sat where the launcher never looked, so it started a daemon instead of
-  # waiting (CI run 39127760909, macOS: "starting one ... /private/var/folders/.../ws").
+  # The folder as the launcher names it, resolved: macOS `mktemp -d` is under the `/var` symlink
+  # and the launcher keys its record by `pwd -P`.
   ws_p="$(cd "$T/ws" && pwd -P)"
   key="$(printf '%s' "$ws_p" | key12)"
   mkdir -p "$T/run/letibot"
   sock="$T/run/letibot/$key.sock"
-  # **A daemon of THIS folder, on its way out**: its argv names our socket, which is how the
+  # A daemon of THIS folder, on its way out: its argv names our socket, which is how the
   # launcher tells it from a recycled pid that is somebody else's harnessd, and it lives
   # until this test lets it go.
   bash -c 'while [ ! -e "$1" ]; do sleep 0.05; done' _ "$T/let-go" bash --socket "$sock" &
@@ -819,10 +700,8 @@ STUB
   refuse "  ...and nothing is started over it" "$out" "already served by a live daemon"
   expect "  ...and the session opens once it is gone" "$out" "THE HEAD RAN"
 
-  # **The launcher's endpoint gate is gone: nothing serving and no provider, and the head
-  # runs.** The case the operator met: `leticode` on a box with no local model and no
-  # `--provider`, refused with *"nothing serving on 127.0.0.1:8080 ... --provider
-  # deepseek|glm|grok"*. A folder of its own, so the waiting case's record is not this one's.
+  # No endpoint gate: nothing serving and no provider, and the head runs. A folder of its own,
+  # so the waiting case's record is not this one's.
   mkdir -p "$T/bare"
   bare_out="$(RUN_WS="$T/bare" run '')"
   refuse "a bare box is not refused for nothing serving" "$bare_out" "nothing serving"
@@ -843,8 +722,8 @@ else
   echo "skip the going-daemon case: no python3 to listen on a unix socket"
 fi
 
-# **`--stop --force N` stops daemon N, not this folder's** (TODO R92.23): only `$2` was read
-# as the target, so `--force` in front of the number dropped it. One record, for another
+# `--stop --force N` stops daemon N, not this folder's: `--force` before the number must not
+# drop it. One record, for another
 # folder, numbered 1 by `--ls`; nothing listens anywhere, so the stop finds no daemon THERE.
 mkdir -p "$T/other" "$T/run/letibot"
 OTHER_P="$(cd "$T/other" && pwd -P)"
@@ -861,20 +740,10 @@ expect "  ...and two targets are refused" "$out" "takes one daemon"
 rm -f "$T/run/letibot/"*.json
 
 # ---------------------------------------------------------------------------
-# **WHAT A START OPENS, AND WHAT A HEAD'S EXIT MAY NOT DO** — the operator's 2026-10-26 reports,
-# at the launcher's own level.
-#
-# 1. *"if i just start leticode in stroppy-io, without --continue it still attaches to the latest
-#    session, like with --continue"* — so a start must pass NO `--session` (the daemon mints a
-#    fresh id) and only `--continue`/`--session` may name one. Pinned on the daemon's ARGV,
-#    because that is the whole of what decides it: the launcher does not, and must not, look for
-#    the newest.
-# 2. *"and when i exited it took the other stroppy-io harnessd with it"* — the head that exits is
-#    a stub here; the daemon it was attached to must still be alive and listening afterwards, and
-#    `--new` against a live folder must not start a second one.
-# 3. And `--new` with NO daemon up must not ask the head for a session of its own: the start
-#    already opened the fresh one, and a second leaves the folder's daemon holding an empty
-#    first session that every later plain attach lands on.
+# WHAT A START OPENS, AND WHAT A HEAD'S EXIT MAY NOT DO.
+# 1. A plain start passes no `--session`: only `--continue`/`--session` name one. Pinned on argv.
+# 2. A head's exit leaves its daemon listening, and `--new` on a live folder starts no second one.
+# 3. `--new` with no daemon up asks the head for no second session.
 if command -v python3 > /dev/null 2>&1; then
   # A daemon stub that LISTENS (so the launcher's start poll succeeds), writes every invocation's
   # argv down, and stays until this test kills it.
@@ -941,10 +810,8 @@ STUB
   # A `--resolve-session` call is the launcher's store query, not a daemon start.
   daemon_argv() { grep '^harnessd ' "$T/argv.log" 2> /dev/null | grep -v -e '--find-session' || true; }
   head_argv() { grep '^tui ' "$T/argv.log" 2> /dev/null || true; }
-  # **`printf '%s'`, with no newline**: the launcher hashes the workspace path with nothing
-  # appended (`launcher.rs`'s `key`, and the `printf '%s' | sha256sum` the shell has always
-  # used). A `$(pwd -P)` piped straight in carries a trailing newline and hashes a DIFFERENT
-  # path — this case's first draft looked for a record under a key nobody writes.
+  # `printf '%s'`, no newline: the launcher hashes the bare workspace path, and a piped
+  # `$(pwd -P)` would hash a different one.
   key_of() { printf '%s' "$(cd "$1" && pwd -P)" | key12; }
   pid_of() { # pid_of DIR -- the pid in that folder's record
     sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
@@ -993,7 +860,7 @@ PYTTY
     [ -n "$p" ] && kill "$p" 2> /dev/null || true
   }
 
-  # **1. A plain start opens a FRESH session.** No `--session` on the daemon's command line is
+  # 1. A plain start opens a FRESH session. No `--session` on the daemon's command line is
   # what makes `harnessd` mint an id; a launcher that "helpfully" passed the newest would be the
   # operator's report, and nothing else in the start would look wrong.
   mkdir -p "$T/plain"
@@ -1003,13 +870,13 @@ PYTTY
     "$(daemon_argv)" "--session"
   expect "  ...and the head runs" "$out" "THE HEAD RAN"
   refuse "  ...and the head is given no --resume of its own" "$(head_argv)" "--resume"
-  # **And the limit survives `detach`** — the one-shot case above proves the launcher raised
+  # And the limit survives `detach` — the one-shot case above proves the launcher raised
   # its own limit; this proves the daemon it detached still has it (perl's `setsid`+`exec` on a
   # Mac, `systemd-run --scope setsid` on Linux, neither of which touches rlimits).
   limit_case "the daemon the launcher detaches gets the raised limit too" \
     "$(sed -n 's/^openfiles //p' "$T/argv.log" 2> /dev/null | head -1)" "$out"
 
-  # **2. `--continue` is the verb that names one** — and it names it on the daemon's command line,
+  # 2. `--continue` is the verb that names one — and it names it on the daemon's command line,
   # where the resume (and its hash-chain check) happens at startup.
   mkdir -p "$T/cont"
   fresh
@@ -1018,7 +885,7 @@ PYTTY
     "--session s-latest"
   expect "  ...and the head runs" "$out" "THE HEAD RAN"
 
-  # **3. `--new` with no daemon opens ONE session, not two.** The start's first session IS the
+  # 3. `--new` with no daemon opens ONE session, not two. The start's first session IS the
   # fresh one, so the head must not also ask for one.
   mkdir -p "$T/new"
   fresh
@@ -1028,10 +895,8 @@ PYTTY
     "--new-session"
   expect "  ...and the head runs" "$out" "THE HEAD RAN"
 
-  # **4. `--new` against a LIVE folder starts nothing and leaves the daemon alone** — and the head
-  # exits at once, which is the operator's "when i exited it took the other harnessd with it".
-  # The argv log is emptied; the RECORD is not, because it is how this case finds the pid that
-  # must still be there (and the launcher's own `--stop` path would have kept it too).
+  # 4. `--new` against a LIVE folder starts nothing and leaves the daemon alone. The argv log is
+  # emptied; the record is kept, since it names the pid that must survive.
   : > "$T/argv.log"
   out="$(RUN_WS="$T/new" run "$DEFAULT_ONLY" --new)"
   expect "--new against a live daemon attaches" "$out" "attached to harnessd"
@@ -1053,16 +918,9 @@ PYTTY
     fails=$((fails + 1))
   fi
 
-  # **5. `--continue ID` is `--session ID`, and anything else after `--continue` is refused.**
-  #
-  # MEASURED 2026-10-26: `leticode --continue s-1791394076177451000` ran a ONE-SHOT whose prompt
-  # WAS the id, into the newest session — the operator's live conversation, which then acted on
-  # the string. `--continue` takes no argument, so the id fell through to the one-shot branch.
-  #
-  # A session id is unambiguous and means the verb it names, so it is read as one — pinned here on
-  # the daemon's ARGV (`--session s-…`, and never `--prompt`), because that is what decides which
-  # session opens and whether a turn is run. The id forms are the store's own: `s-<digits>`, with
-  # an optional transcript suffix `#tN`.
+  # 5. `--continue ID` is `--session ID`, and anything else after `--continue` is refused. An id
+  # falling through would run a one-shot into the newest session. Pinned on argv (`--session`,
+  # never `--prompt`); the id forms are the store's, `s-<digits>` with an optional `#tN`.
   for pair in "contid:s-1791394076177451000" "contid-t:s-1791394076177451000#t17"; do
     d="$T/${pair%%:*}"
                         want="${pair#*:}"
@@ -1109,7 +967,7 @@ PYTTY
     fails=$((fails + 1))
   fi
 
-  # **A NAME FROM ANOTHER FOLDER IS OFFERED, NEVER TAKEN** (`--continue NAME` anywhere). The stub
+  # A NAME FROM ANOTHER FOLDER IS OFFERED, NEVER TAKEN (`--continue NAME` anywhere). The stub
   # answers `far-name` with one session in $T/farws, and `twin` with two there.
   mkdir -p "$T/hereg"
   for verb in --continue --session; do
@@ -1169,19 +1027,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# **A DAEMON THAT IS SHUTTING DOWN IS NOT A DAEMON IGNORING SIGTERM** — the operator's
-# 2026-10-26 report, at the launcher's own level. `letibot --stop` waited five seconds, printed
-# *"NOT stopped: … (pid N) is ignoring SIGTERM after 5s"* about a daemon that was working through
-# its orderly stop, and left the next `leticode` refused by the folder lock the still-exiting
-# daemon held. The daemon's stop is bounded but not quick (the merge queues joined, five seconds
-# of subagent threads), it prints one `  stopping: …` line per step, and the launcher now waits
-# thirty seconds relaying those lines.
+# A DAEMON THAT IS SHUTTING DOWN IS NOT A DAEMON IGNORING SIGTERM. Its orderly stop takes
+# seconds and prints a `  stopping: ...` line per step; `--stop` waits thirty seconds relaying them.
 if command -v python3 > /dev/null 2>&1; then
   mkdir -p "$T/home/logs" "$T/run/letibot" "$T/slow" "$T/stuck"
-  # A daemon on its way out: it says what it is waiting for on its own log — the path the
-  # launcher reads (`$HOME/logs/harnessd-<key>.log`, keyed by the workspace it was told) — and
-  # it takes SEVEN seconds to go, two more than the bound that used to call it stuck. It also
-  # LISTENS, because the start case below needs a daemon that comes up.
+  # A daemon on its way out: it logs what it waits for where the launcher reads, takes seven
+  # seconds, past the old five-second bound, and listens, since the start case needs one up.
   cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
 import hashlib, os, signal, socket, sys, time
@@ -1261,7 +1112,7 @@ STUB
     "stopping: waiting up to 5s for subagent threads to leave"
   refuse "  ...and it is never called 'ignoring SIGTERM'" "$out" "ignoring SIGTERM"
 
-  # **AND THE TIMEOUT STILL COMES, with the advice only after it.** A daemon wedged INSIDE a step
+  # AND THE TIMEOUT STILL COMES, with the advice only after it. A daemon wedged INSIDE a step
   # is exactly the case `--force` exists for; thirty seconds of patience is the difference
   # between a slow stop and a stuck one, so this case spends them.
   slow_daemon "$T/stuck" --stuck > /dev/null
@@ -1276,10 +1127,8 @@ STUB
   kill -9 "$stuck_pid" 2> /dev/null || true
   rm -f "$T/run/letibot/"*.json
 
-  # **A daemon that is on its way out, for TWELVE seconds** — the ten-second wait the start used to
-  # keep turned this into *"still holds this folder"* and a refusal to start. `bash -c 'sleep 12; :'`
-  # and not `bash -c 'sleep 12'`: bash EXECs a single-command string, and the argv that names the
-  # socket would be gone with it (measured here: the launcher found the pid and no socket in it).
+  # A daemon on its way out for twelve seconds. `sleep 12; :`, not `sleep 12`: bash execs a
+  # single-command string, and the argv naming the socket would go with it.
   mkdir -p "$T/after"
   ws_p="$(cd "$T/after" && pwd -P)"
   key="$(printf '%s' "$ws_p" | key12)"
@@ -1298,8 +1147,7 @@ STUB
     "$T/run/letibot/$key.json" 2> /dev/null | head -1)" 2> /dev/null || true
   rm -f "$T/run/letibot/"*.json
 
-  # **A restart says each step as it happens** (R312): it looked hung for 40s with nothing on
-  # screen. One line per step, in order, and a slow interrupt and a slow exit each say what they
+  # A restart says each step as it happens, one line per step, in order, and a slow interrupt and a slow exit each say what they
   # wait for. Off a terminal, so no live redraws.
   cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
@@ -1340,9 +1188,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# **install_and_launcher_name_the_same_binary**: the install loop writes `~/.local/bin`, and
-# `~/.local/bin/letibot` links into a checkout that has its own target/release. The binaries
-# beside the command typed are the ones run.
+# install_and_launcher_name_the_same_binary: `~/.local/bin/letibot` links into a checkout with
+# its own target/release, and the binaries beside the command typed are the ones run.
 mkdir -p "$T/co/scripts" "$T/co/target/release" "$T/inst"
 cp "$LAUNCHER" "$T/co/scripts/letibot"
 for d in co/target/release inst; do
@@ -1360,17 +1207,11 @@ out="$(cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/
   LETIBOT_ROOM_SOCKET="$ROOM_SOCK" "$(command -v bash)" "$T/co/scripts/letibot" "q" 2>&1 < /dev/null)"
 expect "  ...and the checkout's own script runs its target/release" "$out" "^harnessd from co/target/release$"
 
-# **A SESSION THAT LIVES ON A HOST** (`docs/remote-hosts.md` RH4): the verb passes through,
-# and an attach goes to the forwarded socket instead of to this folder's daemon.
-#
-# The launcher never migrated anything itself — that is `letibot migrate` — but it is the thing
-# that decides WHERE a head attaches, and the record in the rundir is the whole of what it
-# reads. Both halves are pinned here.
+# A SESSION THAT LIVES ON A HOST (`docs/remote-hosts.md` RH4): the verb passes through, and an
+# attach goes to the forwarded socket the rundir record names, not to this folder's daemon.
 
-# **Which socket this folder's daemon listens on** — what a program that drives letibot (rano's
-# editor panel) asks instead of re-deriving `<rundir>/<sha12>.sock`. The launcher does not answer
-# it from a hash of its own: it hands the folder to the binary's resolver, which IS
-# `bridge::daemon::resolve` (`crates/letibot/tests/where.rs` holds that equality).
+# Which socket this folder's daemon listens on, for programs that drive letibot. The launcher
+# hands the folder to the binary's resolver (`crates/letibot/tests/where.rs` holds the equality).
 out="$(run "$DEFAULT_ONLY" --where --ensure --json)"
 expect "--where is the resolver verb's, with this folder and both modifiers" "$out" \
   "^letibot-multi where .*/ws --ensure --json$"
@@ -1404,12 +1245,10 @@ out="$(run "$DEFAULT_ONLY" attach gitlab stroppy-io)"
 expect "  ...and a source that is not github is refused by name" "$out" \
   "attach knows one source and it is .github"
 
-# The record a move writes, beside this folder's own daemon records. Its socket does not
-# exist here (nothing forwards in a test), so the launcher re-establishes first and THEN
-# hands the head the forwarded socket — which is the order that makes a dropped forward
-# invisible to the person attaching.
+# The record a move writes. Its socket does not exist here, so the launcher re-establishes the
+# forward first and then hands the head the forwarded socket.
 mkdir -p "$T/run/letibot"
-# **A head stub that says what it was handed** — the last case above leaves one that only says
+# A head stub that says what it was handed — the last case above leaves one that only says
 # it ran, and what this case is about is the ARGUMENTS.
 cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
@@ -1428,25 +1267,13 @@ refuse "  ...and no daemon is started for this folder" "$out" "^harnessd "
 rm -f "$T/run/letibot/migrated-s-4242.json"
 
 # ---------------------------------------------------------------------------
-# **THE LAUNCHER STARTS THE BOX'S ROOM** — `docs/room.md` § *Still owed* item 4: *"`--room` exists;
-# `scripts/letibot` does not yet start a coordinator when a session's `room` tool finds no socket"*.
-#
-# A session's `room` tool is seated at `Harness::open` from the socket that exists THEN, so the only
-# door is before a session opens — which is why every run path calls `room_ensure` and nothing else
-# does. Four things are pinned here, and each is a sentence from the brief:
-#
-#   1. a run starts one, and a second run finds it and starts nothing (one per box);
-#   2. `--daemons`/`--ls` see it, so it is not a daemon the launcher's own tools are blind to;
-#   3. a start that FAILS is said — the coordinator's own words, naming the holder — and the run
-#      goes on, because a session with no room is a session that works;
-#   4. `--room --stop` and `--stop --all` both stop it.
-#
-# The one-per-box guarantee itself is `letibot_room::lease`'s and is measured in
-# `crates/room/src/lease.rs` (`a_race_for_the_lease_gives_one_coordinator_and_names_the_holder`) —
-# the launcher does not carry a second lock, it carries the loser's sentence to the terminal.
+# THE LAUNCHER STARTS THE BOX'S ROOM, before a session opens, since `room` is seated at open.
+# A run starts one and a second finds it; `--daemons`/`--ls` see it; a failed start prints the
+# coordinator's words and the run goes on; `--room --stop` and `--stop --all` stop it.
+# One per box is the lease's guarantee, measured in `crates/room/src/lease.rs`.
 if command -v python3 > /dev/null 2>&1; then
   room_argv() { grep '^room ' "$T/room-argv.log" 2> /dev/null || true; }
-  # **The room-capable daemon stub, restored** — the sections above replace `$T/bin/harnessd`
+  # The room-capable daemon stub, restored — the sections above replace `$T/bin/harnessd`
   # (one of them with a daemon that LISTENS and never exits, which would hang a one-shot here).
   room_stub() {
     cat > "$T/bin/harnessd" << 'STUB'
@@ -1458,7 +1285,7 @@ printf 'harnessd'; printf ' %q' "$@"; printf '\n'
 STUB
     chmod +x "$T/bin/harnessd"
   }
-  # **A room of this case's own.** The suite's shared one has been up since its first case, and
+  # A room of this case's own. The suite's shared one has been up since its first case, and
   # "the launcher starts one" cannot be seen against a socket that is already serving — the old
   # binder holds it even after its file is removed, which is exactly the property `live` documents.
   room_kill() {
@@ -1482,7 +1309,7 @@ STUB
   expect "  ...and says which socket it serves" "$out" "socket +$ROOM_SOCK"
   expect "  ...and names the lease the coordinator holds" "$out" "lease  *$T/room/room.lease"
   expect "  ...and is handed --room and nothing else" "$(room_argv)" "^room --room$"
-  # **The record, in the launcher's own shape** — `role: room` is what tells it from a folder's.
+  # The record, in the launcher's own shape — `role: room` is what tells it from a folder's.
   if grep -q '"role": "room"' "$T/run/letibot/room.json" 2> /dev/null; then
     echo "ok   ...and writes the record \`--daemons\` reads, marked role room"
   else
@@ -1490,7 +1317,7 @@ STUB
     sed 's/^/     /' "$T/run/letibot/room.json" 2> /dev/null || echo "     (no record at all)"
     fails=$((fails + 1))
   fi
-  # **And it outlives the run that asked.** The launcher has exited by the time this reads the
+  # And it outlives the run that asked. The launcher has exited by the time this reads the
   # pid — that is the whole of "a coordinator that dies with its asker is worse than none".
   room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2> /dev/null | head -1)"
   if [ -n "$room_pid" ] && kill -0 "$room_pid" 2> /dev/null; then
@@ -1500,7 +1327,7 @@ STUB
     fails=$((fails + 1))
   fi
 
-  # **A second run starts NOTHING** — one per box, and the check is the coordinator's own argv log.
+  # A second run starts NOTHING — one per box, and the check is the coordinator's own argv log.
   : > "$T/room-argv.log"
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room)"
   refuse "a second run does not start a second coordinator" "$out" "no room on this box"
@@ -1517,16 +1344,13 @@ STUB
     fails=$((fails + 1))
   fi
 
-  # **The launcher's own tools see it** — R102's complaint, one daemon over: a daemon the
-  # operator's tools cannot see is a daemon they cannot stop. `--ls` is where that shows: one
+  # The launcher's own tools see it: a daemon the operator's tools cannot see is a daemon they cannot stop. `--ls` is where that shows: one
   # numbered row for the box's room, as for any folder's daemon.
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls)"
   expect "--ls numbers it as the box's room" "$out" "the box's room +up"
 
-  # **A START THAT FAILS IS SAID, NOT SWALLOWED.** The coordinator that loses the lease exits in
-  # milliseconds with the holder's name; the launcher prints that sentence and the run goes on, so
-  # the session's `room` tool still refuses by name — which is true — instead of the failure being
-  # the launcher's silence.
+  # A START THAT FAILS IS SAID, NOT SWALLOWED: the loser of the lease exits with the holder's
+  # name, the launcher prints it and the run goes on.
   room_kill
   cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env bash
@@ -1545,7 +1369,7 @@ STUB
   expect "  ...and the run goes on regardless" "$out" "^harnessd .*--prompt one"
   refuse "  ...and the tool's refusal is not replaced by silence" "$out" "the room is up"
 
-  # **And `--room --stop` stops it** — the record goes with the process it names.
+  # And `--room --stop` stops it — the record goes with the process it names.
   room_stub
   RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room > /dev/null 2>&1
   room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2> /dev/null | head -1)"
@@ -1562,7 +1386,7 @@ STUB
     echo "ok   ...and the process is gone"
   fi
 
-  # **`--stop --all` sees it too** — a stop that leaves a daemon running is the R102 complaint.
+  # `--stop --all` sees it too - a stop must not leave a daemon running.
   RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room > /dev/null 2>&1
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --stop --all)"
   expect "--stop --all stops the box's room" "$out" "stopped .*room-workspace"
@@ -1571,13 +1395,8 @@ STUB
                                                 fails=$((fails + 1))
   fi
 
-  # **And `--stop N` stops it by the number `--ls` just printed** — the handle the list gives you,
-  # which is how every other daemon is stopped. **The room's record is not named by a workspace
-  # key** (`room-<host key>.json`), so a `retarget` that kept `RECORD` on the key-named file read a
-  # record that does not exist: MEASURED 2026-10-31, the room was stopped and the operator was told
-  # *"the interrupt did not go through"* (the session protocol's frame, refused by a socket that
-  # speaks another one), and `room.json` was left behind so `--ls` went on listing a room that was
-  # gone. Both halves are what reading the record the number printed fixes.
+  # `--stop N` stops it by the number `--ls` printed. The room's record is `room-<host key>.json`,
+  # not workspace-keyed, so `retarget` must read the record the number names.
   RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room > /dev/null 2>&1
   n="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | grep -F "the box's room" | awk '{ print $1; exit }')"
   if [ -n "$n" ]; then echo "ok   ...and --ls gives it a number ($n)"; else
@@ -1585,7 +1404,7 @@ STUB
     RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | sed 's/^/     /'
                                                                     fails=$((fails + 1))
   fi
-  # **A `letibot-tui` that refuses, because the real one does**: a coordinator's socket speaks the
+  # A `letibot-tui` that refuses, because the real one does: a coordinator's socket speaks the
   # room's protocol, so the session protocol's interrupt comes back a refusal. That is what makes
   # the check below a measurement rather than a sentence the suite cannot falsify.
   cat > "$T/bin/letibot-tui" << 'STUB'
@@ -1603,10 +1422,8 @@ STUB
   fi
   cp "$T/bin/harnessd" "$T/bin/letibot-tui"
 
-  # **The host key, against the table `letibot_room::lease` pins.** The launcher derives the
-  # socket's name in bash before it starts anything, so a key that disagrees with the Rust's would
-  # look for a socket no coordinator ever binds: a second coordinator on every run, refused by the
-  # lease for ever. Both sides carry the same four names.
+  # The host key against the table `letibot_room::lease` pins: a disagreeing key would look for
+  # a socket no coordinator binds and start one every run.
   mkdir -p "$T/unamebin"
   cat > "$T/unamebin/uname" << 'STUB'
 #!/usr/bin/env bash
@@ -1624,10 +1441,8 @@ else
   echo "skip the room cases: no python3 to bind a unix socket"
 fi
 
-# **A VERB OF THE BINARY IS A VERB, NOT A PROMPT.** `stats`, `fb`, `boundary` and `migrate` are
-# commands of `$BIN/letibot-multi`; with no arm for them the first word fell through to the one-shot,
-# so `letibot stats --since 1d` started a session and handed the model the sentence it was
-# meant to answer — a billed turn for a lookup.
+# A VERB OF THE BINARY IS A VERB, NOT A PROMPT: `stats`, `fb`, `boundary` and `migrate` belong
+# to `letibot-multi`; without an arm they would become a billed one-shot.
 out="$(run "$DEFAULT_ONLY" stats --since 1d)"
 expect "stats is handed to the metrics verb" "$out" "^letibot-multi stats --since 1d$"
 refuse "  ...and no daemon is started for it" "$out" "^harnessd "
@@ -1669,14 +1484,14 @@ out="$(run "$DEFAULT_ONLY" migrate --help)"
 expect "migrate reaches its own help, with this box's store" "$out" \
   "^letibot-multi migrate --help --store "
 
-# **`--tsv` IS THE LISTING'S OTHER FORM, NOT A FLAG TO DROP.** The arm took no arguments, so
+# `--tsv` IS THE LISTING'S OTHER FORM, NOT A FLAG TO DROP. The arm took no arguments, so
 # `--sessions --tsv` answered the grouped view and said nothing about the flag.
 out="$(run "$DEFAULT_ONLY" session list --tsv)"
 expect "session list --tsv hands --tsv on to the listing" "$out" \
   "^letibot-multi session list --tsv --store \S+$"
 refuse "  ...and starts no daemon for it" "$out" "^harnessd "
 
-# **EACH SESSION VERB, AND EACH OLD FLAG RUNS THE SAME LINE** (plan 1.27): the alias adds one
+# EACH SESSION VERB, AND EACH OLD FLAG RUNS THE SAME LINE: the alias adds one
 # note on stderr and nothing else.
 for spec in "session list|--sessions" "session list|--list" "session list --archived|--sessions --archived" \
   "session rename s-1 t|--rename s-1 t" "session archive s-1 why|--archive s-1 why" \
@@ -1701,13 +1516,8 @@ done
 out="$(run "$DEFAULT_ONLY" session bogus)"
 expect "session with an unknown verb is refused by name" "$out" "^letibot: session has no verb bogus"
 
-# **`--help` FITS ON A SCREEN, AND EVERY FLAG IT NAMES PARSES.** The two are the item's own bar:
-# a person asking for help reads seven lines, and neither page may offer a flag the parser
-# refuses. The walk covers both pages (`--help` and `--help all`), so a flag that only reaches
-# one of them is still asked for.
-#
-# It runs LAST: several flags here start and stop a daemon, and a record left behind would be
-# read by the cases above.
+# `--help` FITS ON A SCREEN, AND EVERY FLAG IT NAMES PARSES, on both pages.
+# Runs last: several flags start and stop a daemon, and a leftover record would reach the cases above.
 lines=$(run "$DEFAULT_ONLY" --help | wc -l | tr -d ' ')
 if [ "$lines" -le 25 ]; then
   echo "ok   --help fits in 25 lines ($lines)"
@@ -1740,10 +1550,9 @@ else
   fails=$((fails + bad))
 fi
 
-# **A SCOPE THAT CANNOT BE MADE IS THE MANAGER'S OWN SENTENCE, NOT A FALSE ABSENCE** (TODO.md
-# R192). A manager at its unit limit answers `systemd-run` with `Argument list too long`, and one
-# pegged at 100% CPU answers nothing at all - so the launcher says the first and bounds the second.
-# The stubs sit ahead of any real `systemd-run` on the PATH, and the run is the ONE-SHOT.
+# A SCOPE THAT CANNOT BE MADE IS THE MANAGER'S OWN SENTENCE, NOT A FALSE ABSENCE. A manager at
+# its unit limit says `Argument list too long`, a pegged one says nothing, so the launcher says
+# the first and bounds the second. Stubs shadow `systemd-run`, and the run is the one-shot.
 if [ "$(uname -s)" = Linux ]; then
   mkdir -p "$T/noscope"
   cat > "$T/noscope/systemd-run" << 'STUB'
@@ -1779,12 +1588,9 @@ STUB
   expect "  ...and the run goes on there too" "$out" "^harnessd .*--prompt one"
 fi
 
-# **THE SCOPE CARRIES THE SLICE, AND THE BOUND WHEN ONE IS ASKED FOR** (`docs/lifecycle.md` d.7):
-# every daemon goes under `letibot.slice`, and a package daemon's caller exports
-# `LETIBOT_SCOPE_RUNTIME_MAX` so the user manager enforces a wall clock even with every letibot
-# process wedged. The stub sits ahead of the real `systemd-run` and writes down the words it was
-# given, which is the only reading of a unit this box can do - the second half (`systemctl --user
-# show`) needs a user manager, and is skipped with that said rather than pretended.
+# THE SCOPE CARRIES THE SLICE, AND THE BOUND WHEN ONE IS ASKED FOR (`docs/lifecycle.md` d.7).
+# The stub records the words it was given; reading the unit back needs a user manager, and is
+# skipped with that said.
 if [ "$(uname -s)" = Linux ]; then
   mkdir -p "$T/scope"
   cat > "$T/scope/systemd-run" << STUB
