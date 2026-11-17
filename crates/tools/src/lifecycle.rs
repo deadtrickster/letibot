@@ -975,8 +975,13 @@ fn cgroup_bases(owner: &OwnerRow, places: &Places) -> Vec<PathBuf> {
     out
 }
 
-/// The pids this owner's daemons are recorded at, from the rundir records.
+/// The pids this owner's daemon is at: the pid its own row records, because a repo's records name
+/// every daemon of that repo and two owners of one repo are not one daemon. A row from before that
+/// pair existed falls back to the records, which is all it has.
 fn daemon_pids(owner: &OwnerRow, places: &Places) -> Vec<u32> {
+    if let Some(pid) = owner.daemon_pid {
+        return vec![pid];
+    }
     daemons_of(owner, places)
         .into_iter()
         .filter_map(|r| r.pid)

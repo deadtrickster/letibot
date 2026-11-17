@@ -328,6 +328,63 @@ fn a_recorded_daemon_decides_the_daemon_gone_trigger() {
     );
 }
 
+/// The daemon serving an owner is the one its row records, not every daemon the repo's runtime
+/// records name: two owners of one repo are not one daemon, and answering the other one's pid
+/// would have the close wait on, or stop, somebody else's daemon.
+#[test]
+fn an_owner_is_served_by_the_daemon_its_row_records() {
+    let b = Box_::new("served");
+    let mut owner = package("s-1", 0, 60_000);
+    owner.repo = Some("/w".into());
+    let mut other = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    b.daemon_record("k1", Path::new("/w"), other.id());
+    let places = b.places();
+    assert_eq!(
+        served_elsewhere(&owner, &places),
+        Some(other.id()),
+        "a row with no pair of its own reads the repo's record, as it always did"
+    );
+
+    let mut mine = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    owner.daemon_pid = Some(mine.id());
+    owner.daemon_start = crate::exec::procs::read(mine.id()).map(|p| p.start);
+    assert_eq!(
+        served_elsewhere(&owner, &places),
+        Some(mine.id()),
+        "the owner's own daemon, not the repo's other one"
+    );
+    let _ = mine.kill();
+    let _ = mine.wait();
+    let _ = other.kill();
+    let _ = other.wait();
+}
+
+/// A stop aims at the pid the owner's row records, so a daemon with no runtime record at all is
+/// still named by its own pid - and the sentence says which pid, not "no record".
+#[test]
+fn a_stop_aims_at_the_pid_the_row_records() {
+    let b = Box_::new("end-daemon");
+    let mut owner = package("s-1", 0, 60_000);
+    owner.repo = Some("/w".into());
+    // A pid above any `kernel.pid_max`: no process can be at it, so this test signals nobody.
+    owner.daemon_pid = Some(4_000_000_000);
+    owner.daemon_start = Some(1);
+    let places = b.places();
+    match end_daemon(&places, &quick("reap"), &owner, "pid:4000000000", true) {
+        Ended::Gone(why) => assert!(
+            why.contains("4000000000"),
+            "the stop must aim at the row's own pid: {why}"
+        ),
+        other => panic!("expected the row's daemon to be found and gone: {other:?}"),
+    }
+}
+
 /// The operator's hold stops every automatic trigger; an expired one does not.
 #[test]
 fn a_hold_stops_the_close_and_an_expired_one_does_not() {

@@ -383,8 +383,13 @@ pub fn activity(store: &Store, o: &OwnerRow, places: &Places) -> Activity {
     }
 }
 
-/// A live daemon for this owner other than this process, by its runtime record.
+/// A live daemon for this owner other than this process: the pid its own row records, or - for a
+/// row written before that pair existed - a record the repo's rundir entries name.
 fn served_elsewhere(o: &OwnerRow, places: &Places) -> Option<u32> {
+    if let (Some(pid), Some(start)) = (o.daemon_pid, o.daemon_start) {
+        let mine = pid == std::process::id();
+        return (!mine && crate::exec::procs::alive(pid, start)).then_some(pid);
+    }
     daemons_of(o, places)
         .iter()
         .filter_map(|r| r.pid)
@@ -1161,6 +1166,49 @@ pub(super) fn owns_open_job(store: &Store, owner: &OwnerRow) -> bool {
         || open_job_elsewhere(store, owner)
 }
 
+/// The daemon a stop is aimed at: the pid, and the record that names it when one does. The owner
+/// row's own pair decides, because a repo's records name every daemon of that repo - the record is
+/// then read only for its socket, which is what a keep-jobs stop needs. A row written before the
+/// pair existed is resolved from the records alone, as it was.
+struct DaemonTarget {
+    pid: u32,
+    socket: Option<String>,
+    /// The runtime record this daemon is read from, when one names it: it is what every reader
+    /// answers "a daemon is there" from, so a stop removes it.
+    record: Option<PathBuf>,
+}
+
+fn daemon_target(owner: &OwnerRow, places: &Places, handle: &str) -> Result<DaemonTarget, Ended> {
+    let recs = daemons_of(owner, places);
+    if let Some(pid) = owner.daemon_pid {
+        let rec = recs.iter().find(|r| r.pid == Some(pid));
+        return Ok(DaemonTarget {
+            pid,
+            socket: rec.map(|r| r.socket.clone()).filter(|s| !s.is_empty()),
+            record: rec.map(|r| r.path.clone()),
+        });
+    }
+    let rec = recs
+        .iter()
+        .find(|r| match r.pid {
+            Some(p) => handle == format!("pid:{p}"),
+            None => handle == r.path.display().to_string(),
+        })
+        .or_else(|| recs.first())
+        .ok_or_else(|| Ended::Gone("no runtime record names a daemon for this owner".into()))?;
+    let pid = rec.pid.ok_or_else(|| {
+        Ended::Gone(format!(
+            "{} names no pid, so there is no daemon to stop",
+            rec.path.display()
+        ))
+    })?;
+    Ok(DaemonTarget {
+        pid,
+        socket: (!rec.socket.is_empty()).then(|| rec.socket.clone()),
+        record: Some(rec.path.clone()),
+    })
+}
+
 /// Stop one daemon by its runtime record: the restart marker, SIGTERM, a grace, then SIGKILL by
 /// `(pid, start)`. Never this process, and never a daemon whose record names another workspace
 /// (d.4 rule 6).
@@ -1171,22 +1219,14 @@ fn end_daemon(
     handle: &str,
     keep_jobs: bool,
 ) -> Ended {
-    let recs = daemons_of(owner, places);
-    let rec = recs
-        .iter()
-        .find(|r| match r.pid {
-            Some(p) => handle == format!("pid:{p}"),
-            None => handle == r.path.display().to_string(),
-        })
-        .or_else(|| recs.first());
-    let Some(rec) = rec else {
-        return Ended::Gone("no runtime record names a daemon for this owner".into());
+    let target = match daemon_target(owner, places, handle) {
+        Ok(t) => t,
+        Err(gone) => return gone,
     };
-    let Some(pid) = rec.pid else {
-        return Ended::Gone(format!(
-            "{} names no pid, so there is no daemon to stop",
-            rec.path.display()
-        ));
+    let pid = target.pid;
+    let said = match &target.record {
+        Some(p) => p.display().to_string(),
+        None => "the owner row".to_string(),
     };
     if pid == std::process::id() || pid <= 1 {
         return Ended::Kept(format!(
@@ -1195,8 +1235,7 @@ fn end_daemon(
     }
     let Some(info) = procs::read(pid) else {
         return Ended::Gone(format!(
-            "no process is at {pid}, so the daemon {} named is gone",
-            rec.path.display()
+            "no process is at {pid}, so the daemon {said} names is gone"
         ));
     };
     if !procs::alive(pid, info.start) {
@@ -1204,9 +1243,12 @@ fn end_daemon(
     }
     // The stop keeps the host jobs, as `letibot --restart` does, and the next daemon adopts them.
     // Not when the closing owner has a job of its own: only a hard close gets here then, and it
-    // ends that job.
-    let marker = (keep_jobs && !rec.socket.is_empty())
-        .then(|| super::restart_marker(Path::new(&rec.socket)));
+    // ends that job. Without a record there is no socket, so there is nowhere to leave the marker.
+    let marker = target
+        .socket
+        .as_deref()
+        .filter(|_| keep_jobs)
+        .map(|s| super::restart_marker(Path::new(s)));
     if let Some(m) = &marker {
         let _ = std::fs::write(m, b"");
     }
@@ -1227,17 +1269,20 @@ fn end_daemon(
         let _ = std::fs::remove_file(m);
     }
     if procs::alive(pid, info.start) {
-        let _ = std::fs::remove_file(&rec.path);
+        if let Some(path) = &target.record {
+            let _ = std::fs::remove_file(path);
+        }
         return Ended::Refused(format!(
             "the daemon at pid {pid} is still there after SIGTERM and SIGKILL"
         ));
     }
     // The record goes with it: it is what every reader uses to say a daemon is there, and a record
     // with no process behind it is the stale handle this whole package exists to stop believing.
-    let _ = std::fs::remove_file(&rec.path);
+    if let Some(path) = &target.record {
+        let _ = std::fs::remove_file(path);
+    }
     Ended::Gone(format!(
-        "the daemon at pid {pid} was stopped and its record {} removed",
-        rec.path.display()
+        "the daemon at pid {pid} was stopped and {said} removed"
     ))
 }
 

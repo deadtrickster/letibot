@@ -283,6 +283,28 @@ fn a_holding_deleted_by_hand_comes_back_on_the_next_pass() {
     assert_eq!(after.len(), rows.len());
 }
 
+/// The daemon cgroups an owner's compute is reported against are its OWN daemon's: a repo's
+/// runtime records name every daemon of that repo, and two owners of one repo are not one daemon.
+#[test]
+fn the_daemons_cgroups_are_the_owners_own_daemon() {
+    let stub = Stub::new("daemon-pids");
+    let mut owner = stub.owner();
+    assert_eq!(
+        daemon_pids(&owner, &stub.places),
+        vec![stub.daemon_pid],
+        "a row with no pair of its own reads the repo's record, as it always did"
+    );
+    // Another daemon of the same repo, recorded on the owner's own row.
+    let mine = stub.daemon_pid + 1;
+    owner.daemon_pid = Some(mine);
+    owner.daemon_start = Some(1);
+    assert_eq!(
+        daemon_pids(&owner, &stub.places),
+        vec![mine],
+        "the owner's own daemon, not the repo's other one"
+    );
+}
+
 /// A row whose resource is gone is marked `gone` rather than deleted, and the plan says so instead
 /// of counting it as something to reap.
 #[test]

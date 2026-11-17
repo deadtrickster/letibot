@@ -973,7 +973,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 **Residue.**
 - The backbone `/data/review-prep/invariants.md` is outside this checkout, so its I22/I23 rows were not rewritten in place; the d.3 paragraph is the quotable statement they should copy.
 - `busy`'s cgroup witness (a populated scope) needs cgroup v2, which this seat's boundary has not: `busy_reads_the_owners_open_job_rows` proves the process-row half, and the scope half runs where the gate runs.
-- `served_elsewhere`, `daemon_pids` and `end_daemon` still link by repo path: they need the record's socket to stop a daemon, which the owner row does not carry. Said safe by the record's own pid liveness check.
+- `served_elsewhere`, `daemon_pids` and `end_daemon` read the daemon off the owner row's `daemon_pid`/`daemon_start` rather than linking by repo path, fixed in `an owner's daemon is the one its row records` (`an_owner_is_served_by_the_daemon_its_row_records`, `the_daemons_cgroups_are_the_owners_own_daemon`, `a_stop_aims_at_the_pid_the_row_records`). A row from before that pair existed still falls back to the records, and a stop with no record at all leaves no restart marker, since the socket is the record's.
 
 **Scope.** `why_kept` inside every destructive primitive.
 
