@@ -50,6 +50,23 @@ v41 gains the table at its next open, empty.
   (`crates/tools/src/builtins/todo.rs:2302`) runs unchanged. It is not what the check SUGGESTS: a
   package's job is named as that package's (`K1 is running j83509`) and what a row whose package is
   busy is offered is that package's TURN, which is a `child` wait (R156).
+- **`todo`** - a row on ANOTHER board: a letibot session's of this project, or another external
+  seat's (`cc@<folder>[:name]`). `{"kind": "todo", "seat": "cc@etcd-a36", "content": "<that
+  row's exact words>"}`, or `wait_on`'s `{"content": "<your row>", "todo": {…}}`. Rows have no
+  stable id, so `content` is the whole of the name. Both boards are in the one store - `seat_todo`
+  for a seat, `todo` for a session - and one reader
+  (`letibot_tools::builtins::todo::boards`) answers for the tool, the daemon's sweep and the
+  bridge's, so a name means one thing on all three. A board this project has not got, a row that
+  is not on it, and a board of ANOTHER project are all refused in the call that writes the wait:
+  the same project is the folder, compared on the words each side carries (a bridge's handle names
+  the folder around the repository and the repository itself; a session names its workspace). The
+  edge is quiet for the plan check - the edge IS the fact, as a `room` edge's is - and it is freed
+  by `Harness::resolve_ended_waits` at open and at every nag tick, with the ordinary note:
+  `[todo] cc@etcd-a36 finished "<row>" - no longer a wait of <yours>`. A row struck off reads
+  `struck … off`, one dropped from a replaced board `is no longer on … board`, and a board of this
+  project that is gone `…'s board is gone`; a board that cannot be READ is not an ending. The seat's
+  half of the same sweep is its watcher, which reads another board once a second while a row holds
+  such a wait (`crates/bridge/src/seat.rs`). Lead 65.
 - **`external`** - something outside letibot, in the seat's own words: a review on a forge, a
   deploy, a person's other tool. `wait_on`'s `"external": "…"` or a `needs` entry of that kind.
   Nothing here can see it end, so the check is silent on that row for `EXTERNAL_QUIET` (2h) from
