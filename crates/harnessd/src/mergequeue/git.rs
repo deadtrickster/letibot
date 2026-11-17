@@ -14,9 +14,10 @@ pub use letibot_tools::git::{
     uncommitted_work, words,
 };
 
-/// The change a head carries over `onto`, as one stable patch id - what tells *the branch was
-/// rebased* from *the branch moved*. The diff runs from the merge base to `head`, so two heads
-/// carrying one change over different bases answer the same id.
+/// The change a head carries over `onto`, as one patch id - what tells *the branch was rebased*
+/// from *the branch moved*. The diff runs from the merge base to `head`, so two heads carrying one
+/// change over different bases answer the same id. Whitespace is part of the change: `--verbatim`,
+/// because `--stable` alone reads `rm -rf "$D"/tmp` and `rm -rf "$D"/ tmp` as one patch.
 pub fn change_id(dir: &Path, onto: &str, head: &str) -> Option<String> {
     let base = git(dir, &["merge-base", onto, head]).ok()?;
     let diff = git(dir, &["diff", "--binary", base.trim(), head]).ok()?;
@@ -26,7 +27,7 @@ pub fn change_id(dir: &Path, onto: &str, head: &str) -> Option<String> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["patch-id", "--stable"])
+        .args(["patch-id", "--verbatim"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

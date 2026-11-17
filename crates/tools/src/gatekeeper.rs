@@ -691,7 +691,9 @@ pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
         }
     };
     let mut steps = Vec::new();
-    let mut fence: Option<&str> = None;
+    // Which fence is open, and whether its info string says the block is a shell: a gate tagged
+    // ```toml is a sample of something else and is skipped, not read as commands.
+    let mut fence: Option<(&str, bool)> = None;
     for line in lines {
         let t = line.trim();
         match fence {
@@ -701,23 +703,35 @@ pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
                 {
                     return None;
                 }
-                if t.starts_with("```") {
-                    fence = Some("```");
-                } else if t.starts_with("~~~") {
-                    fence = Some("~~~");
+                if let Some(f) = ["```", "~~~"].into_iter().find(|f| t.starts_with(f)) {
+                    fence = Some((f, is_a_shell(t.trim_start_matches(f).trim())));
                 }
             }
-            Some(f) => {
+            Some((f, shell)) => {
                 if t.starts_with(f) {
                     break;
                 }
-                if !t.is_empty() && !t.starts_with('#') {
+                if shell && !t.is_empty() && !t.starts_with('#') {
                     steps.push(t.to_string());
                 }
             }
         }
     }
     (!steps.is_empty()).then_some(steps)
+}
+
+/// Does a fence's info string name a shell, or name nothing? An untagged block is the common
+/// spelling and stays readable; `toml`, `text`, `json` and the rest are not the gate's language.
+fn is_a_shell(info: &str) -> bool {
+    let word = info
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        word.as_str(),
+        "" | "sh" | "shell" | "bash" | "zsh" | "console" | "shell-session"
+    )
 }
 
 /// The section, written, for what [`parse_merge_gate`] reads back, for an agent to put into
@@ -748,6 +762,31 @@ mod merge_gate_section {
         // Written and read back.
         let steps = vec!["cargo test --workspace".to_string()];
         assert_eq!(parse_merge_gate(&merge_gate_section(&steps)), Some(steps));
+    }
+
+    /// The block's info string says what it is: a section whose first block is a `toml` or `text`
+    /// sample declares no gate, and an untagged or `sh`-tagged one does.
+    #[test]
+    fn a_gate_block_in_another_language_is_not_the_gate() {
+        assert_eq!(
+            parse_merge_gate("## Merge gate\n\n```toml\n[queue]\ngate_host = \"m1\"\n```\n"),
+            None,
+            "a toml sample is not a command"
+        );
+        assert_eq!(
+            parse_merge_gate("## Merge gate\n\n```\nmake test\n```\n"),
+            Some(vec!["make test".into()]),
+            "an untagged block is a shell block"
+        );
+        assert_eq!(
+            parse_merge_gate("## Merge gate\n\n```bash\nmake test\n```\n"),
+            Some(vec!["make test".into()])
+        );
+        assert_eq!(
+            parse_merge_gate("## Merge gate\n\n```sh title=\"the gate\"\nmake test\n```\n"),
+            Some(vec!["make test".into()]),
+            "a fence may carry a title after its language"
+        );
     }
 
     #[test]

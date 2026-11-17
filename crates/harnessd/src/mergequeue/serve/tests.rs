@@ -1224,6 +1224,42 @@ fn a_stopping_daemon_kills_the_gate_and_the_row_goes_back_in_line() {
     assert_eq!(row.owner, "", "nobody's");
 }
 
+/// A repository with no `origin` pushes nowhere, so the install step is skipped: a build installed
+/// on this box while the landing was never sent is the one thing the install gate exists to stop.
+#[test]
+fn a_landing_with_no_origin_installs_nothing() {
+    let w = World::new("no-origin");
+    let marker = w.dir.0.join("installed");
+    std::fs::write(
+        w.repo.join("AGENTS.md"),
+        format!(
+            "## Merge gate\n\n```sh\ntest ! -f broken\ntouch {} # install-gate-build\n```\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    sh(&w.repo, &["commit", "-q", "-am", "an install step"]);
+    let (wt, base, head) = branch(&w.repo, "p", "p.txt");
+    w.enqueue("p", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("p", "test/a");
+    run(&q, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert_eq!(row.pushed, "no `origin` to push to");
+    assert!(!marker.exists(), "nothing installed that was not pushed");
+    assert!(
+        row.evidence.contains("Not installed") && row.evidence.contains("no `origin`"),
+        "the row says why: {}",
+        row.evidence
+    );
+    assert!(
+        w.door.warnings("queue_push_failed").is_empty(),
+        "a repository with no origin did not fail a push"
+    );
+}
+
 /// Push after the gate, install only after the push.
 #[test]
 fn the_landing_pushes_then_installs_and_a_failed_push_installs_nothing() {
@@ -5630,6 +5666,18 @@ fn a_landing_the_target_was_rewritten_past_keeps_the_branch() {
     }
 
     let w = World::new("landed-rewritten");
+    // An origin to push to: the install step runs only after a push, and the window this test is
+    // about is the install.
+    let origin = w.dir.0.join("origin.git");
+    sh(
+        &w.dir.0,
+        &["init", "-q", "--bare", &origin.to_string_lossy()],
+    );
+    sh(
+        &w.repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    sh(&w.repo, &["push", "-q", "origin", "main"]);
     // An install step, so the landing reaches `landed` through a second gate: that is the window.
     std::fs::write(
         w.repo.join("AGENTS.md"),

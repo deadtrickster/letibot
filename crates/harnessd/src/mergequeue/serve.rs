@@ -3171,11 +3171,13 @@ impl RepoQueue {
                 ),
             );
         }
-        // Push, then install.
+        // Push, then install. Nothing is installed that was not pushed: a repository with no
+        // `origin` has no built tree to install from, and an install step that ran anyway would
+        // put a binary in place on this box while saying the landing went out.
         let pushed = git::push(&repo, &target, &rebased);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
-            git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
+            git::Pushed::NoRemote => ("no `origin` to push to".to_string(), false),
             git::Pushed::Failed(e) => (format!("{PUSH_FAILED}: {e}"), false),
         };
         if !may_install
@@ -3201,12 +3203,18 @@ impl RepoQueue {
                 );
                 return Ok(());
             } else {
-                install_note = " Not installed: the push failed, and nothing is installed that is \
-                                not where it was pushed (decision 7)."
-                    .into();
+                let why = if pushed == git::Pushed::NoRemote {
+                    "there is no `origin` to push to"
+                } else {
+                    "the push failed"
+                };
+                install_note = format!(
+                    " Not installed: {why}, and nothing is installed that is not where it was \
+                     pushed (decision 7)."
+                );
             }
         }
-        if !may_install {
+        if matches!(pushed, git::Pushed::Failed(_)) {
             // : a failed push is said whether or not the project has an install step.
             self.raise(
                 "queue_push_failed",
@@ -3372,7 +3380,7 @@ impl RepoQueue {
         let pushed = git::push(&self.repo, &target, &prev);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
-            git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
+            git::Pushed::NoRemote => ("no `origin` to push to".to_string(), false),
             git::Pushed::Failed(e) => (format!("{PUSH_FAILED}: {e}"), false),
         };
         let cars: Vec<&MergeRow> = (0..n).map(|i| &train.cars[i].row).collect();
@@ -3399,11 +3407,19 @@ impl RepoQueue {
             return Ok(());
         }
         let mut install_note = String::new();
-        if !may_install {
-            // : a failed push is said whether or not the project has an install step.
-            install_note = " Not installed: the push failed, and nothing is installed that is not \
-                            where it was pushed (decision 7)."
-                .into();
+        if train.install.is_empty() && !may_install {
+            let why = if pushed == git::Pushed::NoRemote {
+                "there is no `origin` to push to"
+            } else {
+                "the push failed"
+            };
+            install_note = format!(
+                " Not installed: {why}, and nothing is installed that is not where it was pushed \
+                 (decision 7)."
+            );
+        }
+        if matches!(pushed, git::Pushed::Failed(_)) {
+            // A failed push is said whether or not the project has an install step.
             self.raise(
                 "queue_push_failed",
                 format!(

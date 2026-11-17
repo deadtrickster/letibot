@@ -195,6 +195,8 @@ fn gate_steps_sh_reads_what_the_queue_reads() {
         "## Merge gate\n```sh\nunclosed\n",
         "#Merge gate\n```\nx\n```\n",
         "## Merge gate\r\n```sh\r\nwin\r\n```\r\n",
+        "## Merge gate\n\n```toml\ngate_host = \"m1\"\n```\n",
+        "## Merge gate\n\n```sh title=\"the gate\"\nmake test\n```\n",
     ];
     for md in cases {
         assert_eq!(gate_steps_sh(md), parse_merge_gate(md), "for {md:?}");

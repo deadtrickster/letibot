@@ -1057,3 +1057,55 @@ fn home_adopts_no_child_repository() {
     assert_eq!(repo_of_workspace(&other), None);
     assert!(repos_of_workspace(&other).is_empty());
 }
+
+/// The id binds the change a reviewer approved, and whitespace is part of the change: two branches
+/// whose one commit differs only by a space inside a command are two changes, not one rebased.
+#[test]
+fn a_whitespace_change_after_approval_is_not_the_approved_patch() {
+    let dir = TempDir::new("patch-id");
+    let repo = repo(&dir.0);
+    let tip = sh(&repo, &["rev-parse", "main"]);
+    // The same file, one space apart, on two branches of their own.
+    let (wt, _, head) = branch(&repo, "script", "s.sh");
+    std::fs::write(wt.join("s.sh"), "rm -rf \"$D\"/tmp\n").unwrap();
+    sh(&wt, &["add", "-A"]);
+    sh(&wt, &["commit", "-q", "-m", "the script"]);
+    let tight = sh(&wt, &["rev-parse", "HEAD"]);
+
+    let loose_wt = dir.0.join("wt-loose");
+    sh(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent/loose",
+            &loose_wt.to_string_lossy(),
+            &tip,
+        ],
+    );
+    std::fs::write(loose_wt.join("s.sh"), "rm -rf \"$D\"/ tmp\n").unwrap();
+    sh(&loose_wt, &["add", "-A"]);
+    sh(&loose_wt, &["commit", "-q", "-m", "the script"]);
+    let loose = sh(&loose_wt, &["rev-parse", "HEAD"]);
+
+    let a = change_id(&repo, &tip, &tight).unwrap();
+    let b = change_id(&repo, &tip, &loose).unwrap();
+    assert_ne!(
+        a, b,
+        "a space inside the command is not the change that was judged"
+    );
+
+    // And the same commit on a moved base is still the same change: that is what a rebase is.
+    commit(&repo, "moved.txt", "x\n", "main moves");
+    let moved = sh(&repo, &["rev-parse", "main"]);
+    sh(&wt, &["rebase", "-q", &moved]);
+    let rebased = sh(&wt, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        change_id(&repo, &moved, &rebased).unwrap(),
+        a,
+        "the rebased commit carries the change the reviewer read"
+    );
+    let _ = head;
+}

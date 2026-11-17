@@ -21,6 +21,14 @@ function level(line, t) {
   if (substr(t, RLENGTH + 1, 1) != " ") return 0
   return RLENGTH
 }
+function shellinfo(info, w) {
+  info = tolower(trim(info))
+  sub(/[ \t,].*$/, "", info)
+  w = info
+  if (w == "" || w == "sh" || w == "shell" || w == "bash" || w == "zsh" ||
+      w == "console" || w == "shell-session") return 1
+  return 0
+}
 function title(line, t, n) {
   t = line
   sub(/^[ \t]+/, "", t)
@@ -29,7 +37,7 @@ function title(line, t, n) {
   sub(/#+$/, "", t)
   return tolower(trim(t))
 }
-BEGIN { at = 0; fence = ""; n = 0 }
+BEGIN { at = 0; fence = ""; take = 1; n = 0 }
 at == 0 {
   l = level($0)
   if (l > 0 && title($0) == "merge gate") at = l
@@ -39,14 +47,14 @@ fence == "" {
   l = level($0)
   if (l > 0 && l <= at) exit
   t = trim($0)
-  if (substr(t, 1, 3) == "```") fence = "```"
-  else if (substr(t, 1, 3) == "~~~") fence = "~~~"
+  if (substr(t, 1, 3) == "```") { fence = "```"; take = shellinfo(substr(t, 4)) }
+  else if (substr(t, 1, 3) == "~~~") { fence = "~~~"; take = shellinfo(substr(t, 4)) }
   next
 }
 {
   t = trim($0)
   if (substr(t, 1, 3) == fence) exit
-  if (t != "" && substr(t, 1, 1) != "#") { steps[n++] = t }
+  if (take && t != "" && substr(t, 1, 1) != "#") { steps[n++] = t }
 }
 END {
   if (n == 0) exit 1
