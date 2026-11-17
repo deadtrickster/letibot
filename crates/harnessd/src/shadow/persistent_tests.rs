@@ -829,7 +829,7 @@ fn a_restart_on_different_rows_starts_over() {
     );
 }
 
-/// I17 (d): resume checks the last kept turn's hash chain, which covers every row an earlier turn
+/// Resume checks the last kept turn's hash chain, which covers every row an earlier turn
 /// was sent, so an earlier turn's changed rows start the conversation over.
 #[test]
 fn a_restart_on_an_earlier_turns_changed_rows_starts_over() {

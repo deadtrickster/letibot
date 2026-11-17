@@ -1233,10 +1233,8 @@ fn the_card_carries_the_diff_the_gate_was_handed() {
     assert_eq!(edits, req.preview);
 }
 
-/// Every option kind and every timeout reaches the head as its own word. The card is drawn from the
-/// wire, so a kind that lands on another's word is a button that does something else, and a head
-/// that reads `Ask` for `Deny` waits for somebody nobody asked. Spelled out for every variant, so a
-/// kind added later cannot slip past on a wildcard.
+/// Every option kind and every timeout reaches the head as its own word, since the card is drawn
+/// from the wire. Spelled out per variant, so a kind added later cannot slip past on a wildcard.
 #[test]
 fn every_option_kind_and_timeout_has_its_own_wire_twin() {
     use letibot_tools::adjudicate::{DecisionOption, OptionKind as ToolKind};

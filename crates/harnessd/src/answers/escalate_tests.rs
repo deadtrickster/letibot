@@ -1530,7 +1530,7 @@ impl crate::shadow::judge::Judge for Counted {
     }
 }
 
-/// I17 (e): a relayed read the shadow timed out on is not asked a second time beside the card.
+/// A relayed read the shadow timed out on is not asked a second time beside the card.
 #[test]
 fn a_shadow_timeout_is_not_asked_again_beside_the_card() {
     let w = world();
@@ -1573,7 +1573,7 @@ fn a_shadow_timeout_is_not_asked_again_beside_the_card() {
     );
 }
 
-/// I17 (a): a path carrying a newline is no view read, and the asker's fields are the asker's
+/// A path carrying a newline is no view read, and the asker's fields are the asker's
 /// words in what the judge is shown, never the operator's.
 #[test]
 fn a_relayed_path_with_a_control_character_is_no_view_read() {
@@ -1618,7 +1618,7 @@ fn a_relayed_path_with_a_control_character_is_no_view_read() {
             s.spans
         );
     }
-    // I17 (b): the operator's task is what the judge reads as the stated task.
+    // The operator's task is what the judge reads as the stated task.
     assert!(
         s.data.contains("stated task:\nreview the branch"),
         "{}",
@@ -1626,7 +1626,7 @@ fn a_relayed_path_with_a_control_character_is_no_view_read() {
     );
 }
 
-/// I17 (h): a queue seat is known by its session id, never by the role string it was given.
+/// A queue seat is known by its session id, never by the role string it was given.
 #[test]
 fn queue_membership_is_read_from_the_session_id() {
     let call = |asker: &str, role: Option<&str>| letibot_sessionlog::pending_asks::RelayedCall {

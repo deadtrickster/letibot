@@ -239,7 +239,7 @@ fn daemon_at(
     Some((parts, cfg, registry, path))
 }
 
-/// R306: after a restart the parent is not open, and the child is reopened by a door that is not
+/// After a restart the parent is not open, and the child is reopened by a door that is not
 /// the spawn. It comes back at its own narrowed row, held under its parent's stored point.
 #[test]
 fn a_reopened_child_keeps_its_narrowed_point_and_ceiling() {
