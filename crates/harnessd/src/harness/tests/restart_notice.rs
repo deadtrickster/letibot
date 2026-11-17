@@ -1051,6 +1051,10 @@ fn a_sessions_wait_on_a_live_process_reads_the_process_table() {
     let board = h.todos.snapshot();
     let jobs = h.running_jobs(&board);
     assert!(jobs.is_running_pid(me, start), "the live process is read");
+    assert!(
+        letibot_tools::exec::procs::alive_edge(me, 0),
+        "an edge with no start time is matched on the pid, as this row's reading is"
+    );
     assert!(!crate::sessions::the_check_may_ask_about(
         &board[0],
         &h.child_sessions(),

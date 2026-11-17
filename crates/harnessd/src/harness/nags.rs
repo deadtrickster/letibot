@@ -2,6 +2,7 @@
 //! and the nudge it delivers as a turn of its own.
 use super::*;
 use letibot_plugin::notice::Facts;
+use letibot_tools::exec::procs;
 use std::time::Duration;
 
 /// One plan-check as it stands: the sentence, the rows it names, and the interval a `nag_` layer
@@ -160,7 +161,7 @@ impl Harness {
                 }
                 // A process named by pid is read off this host's process table, as the seat does.
                 if let letibot_tokencore::store::TodoNeed::Pid { pid, start } = need {
-                    if pid_alive(*pid, *start) {
+                    if procs::alive_edge(*pid, *start) {
                         jobs = jobs.pid(*pid, *start);
                     }
                     continue;
@@ -256,9 +257,8 @@ impl Harness {
                 }
                 Some(format!("child {id} ended ({})", entry.state))
             }
-            TodoNeed::Pid { pid, start } => {
-                (!pid_alive(*pid, *start)).then(|| format!("pid {pid} is no longer running"))
-            }
+            TodoNeed::Pid { pid, start } => (!procs::alive_edge(*pid, *start))
+                .then(|| format!("pid {pid} is no longer running")),
             TodoNeed::Monitor { name } => (!self.monitor_watching(name)).then(|| {
                 format!("monitor {name} is no longer watching (it fired, expired or was retired)")
             }),
@@ -711,15 +711,5 @@ impl Harness {
             detail.push_str(&format!(". {why}"));
         }
         self.hub.warn("nags_resumed", detail);
-    }
-}
-
-/// Whether the process a `pid` wait names is still there. A start of zero is matched on the pid
-/// alone, as `RunningJobs::is_running_pid` reads it.
-fn pid_alive(pid: u32, start: u64) -> bool {
-    use letibot_tools::exec::procs;
-    match start {
-        0 => procs::read(pid).is_some_and(|p| p.state != 'Z'),
-        start => procs::alive(pid, start),
     }
 }

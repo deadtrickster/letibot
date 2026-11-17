@@ -256,6 +256,15 @@ pub fn alive(pid: u32, start: u64) -> bool {
     read(pid).is_some_and(|p| p.start == start && p.state != 'Z')
 }
 
+/// Whether the process a wait's edge names is still there. An edge with no start time (0) can only
+/// be matched on the pid: nobody kept the clock, so requiring it would read every such wait as ended.
+pub fn alive_edge(pid: u32, start: u64) -> bool {
+    match start {
+        0 => read(pid).is_some_and(|p| p.state != 'Z'),
+        start => alive(pid, start),
+    }
+}
+
 /// The signals a caller may send, by name. No numbers: a number is how `-9`
 /// gets typed at the wrong thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

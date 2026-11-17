@@ -241,8 +241,7 @@ impl Seat {
         // And the processes the board names by pid: the only fact about them is the process table,
         // so it is read here and the pair travels to the narrowing - and into the signature, because
         // an exit is what makes the row askable again.
-        for (pid, start) in pid_waits(rows) {
-            let up = procs::alive(pid, start);
+        for ((pid, start), up) in pid_readings(rows) {
             signature.push_str(&format!("|pid:{pid}:{up}"));
             if up {
                 jobs = jobs.pid(pid, start);
@@ -395,7 +394,7 @@ fn read_packages(
 }
 
 /// The processes the board waits on, by pid and start time - the pair an edge on a process
-/// carries. Deduplicated, because two rows may wait on one gate.
+/// carries, read off the table. Deduplicated, because two rows may wait on one gate.
 fn pid_waits(rows: &[TodoItem]) -> Vec<(u32, u64)> {
     let mut out: Vec<(u32, u64)> = rows
         .iter()
@@ -408,6 +407,15 @@ fn pid_waits(rows: &[TodoItem]) -> Vec<(u32, u64)> {
     out.sort_unstable();
     out.dedup();
     out
+}
+
+/// The pid edges the board waits on and whether each is still up, deduplicated. An edge with no
+/// start time is matched on its pid alone, or every such wait would read as already ended.
+fn pid_readings(rows: &[TodoItem]) -> Vec<((u32, u64), bool)> {
+    pid_waits(rows)
+        .into_iter()
+        .map(|(pid, start)| ((pid, start), procs::alive_edge(pid, start)))
+        .collect()
 }
 
 /// One pass of the watcher, as a value: `None` when the check is not due, else what it said - the
@@ -892,6 +900,53 @@ mod tests {
         assert!(
             said.is_none(),
             "a package still at work is not a wait that ended: {said:?}"
+        );
+    }
+
+    /// A pid edge a head wrote without a start time is a wait on the process's number alone: it
+    /// must read as still up, not as an ending, or the first pass frees a row nobody saw finish.
+    #[test]
+    fn a_pid_edge_with_no_start_time_is_not_read_as_ended() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30; :")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let info = procs::read(child.id()).expect("the sleeper is in the table");
+        let edge = |start| {
+            let mut r = row("the soak", TodoStatus::InProgress);
+            r.needs = vec![TodoNeed::Pid {
+                pid: info.pid,
+                start,
+            }];
+            pid_readings(&[r])
+        };
+        assert_eq!(
+            edge(0),
+            vec![((info.pid, 0), true)],
+            "no start time, still up"
+        );
+        assert_eq!(
+            edge(info.start),
+            vec![((info.pid, info.start), true)],
+            "the pair says the same"
+        );
+        assert_eq!(
+            edge(info.start + 1),
+            vec![((info.pid, info.start + 1), false)],
+            "another process at that number is not this one"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            edge(0),
+            vec![((info.pid, 0), false)],
+            "an exit is the ending"
         );
     }
 }

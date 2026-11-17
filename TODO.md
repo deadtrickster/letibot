@@ -1138,8 +1138,9 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Residue.**
 - A landing that succeeds wakes nobody, and a session cannot attach a wait to a queue row: filed as `wait-on-landing`, since it needs a new `TodoNeed` kind.
-- A pid edge written with `start = 0` matches by pid in `RunningJobs`, but `procs::alive` needs the exact start, so such an edge reads as ended in a session and in a seat alike.
 - A red target is told once per tip and fix stop. A daemon that never held the waiting session cannot resume it if the store has no resumable brief (`ring_project`'s own refusal, logged).
+
+**Built, 2026-11-17 (residue).** A pid edge written with `start = 0` read as ended in a seat: `bridge::seat`'s pid reading asked `procs::alive`, which needs the exact start time, while a session's own reading matched on the pid alone. The rule is one function now, `procs::alive_edge`, called by `bridge::seat`'s `pid_readings` and by `Harness::running_jobs` and the wait sweep in `harness/nags.rs`. Test: `a_pid_edge_with_no_start_time_is_not_read_as_ended` (`bridge/src/seat.rs`), which fails on the old predicate (`left: [((293, 0), false)]`), plus the start-0 arm of `a_sessions_wait_on_a_live_process_reads_the_process_table`.
 
 ## wait-on-landing - a landing that succeeds wakes nobody
 
