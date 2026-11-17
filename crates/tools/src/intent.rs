@@ -1481,6 +1481,15 @@ pub fn vcs_verbs(command: &str) -> Vec<(&'static str, String)> {
     out
 }
 
+/// Each git stage's subcommand and what follows it, in source order. `argv` holds no program, so
+/// `git -C DIR stash` reads `stash` here too.
+fn git_stages(n: &Normalised) -> impl Iterator<Item = (&str, Vec<&str>)> {
+    n.stages
+        .iter()
+        .filter(|s| s.program_name() == Some("git"))
+        .map(|s| git_subcommand(&s.argv))
+}
+
 /// git's subcommand, past its global options, and whatever follows it. An unrecognised leading
 /// `-` is skipped as a flag rather than taken for the verb.
 fn git_subcommand(argv: &[Word]) -> (&str, Vec<&str>) {
@@ -1531,19 +1540,7 @@ fn in_the_live_checkout(env: &Surroundings) -> bool {
 fn live_checkout_verb(n: &Normalised) -> Option<&'static str> {
     const CREATES: &[&str] = &["-b", "-B", "-c", "-C", "--orphan"];
     let mut found = None;
-    for stage in &n.stages {
-        let program = stage.program_name().unwrap_or_default();
-        if program != "git" {
-            continue;
-        }
-        // `git -C DIR stash`: the program is argv[0] only when no global option came first.
-        let at = stage
-            .argv
-            .iter()
-            .position(|w| w.text() == Some("git"))
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let (sub, rest) = git_subcommand(&stage.argv[at.min(stage.argv.len())..]);
+    for (sub, rest) in git_stages(n) {
         let word = |i: usize| rest.get(i).copied().unwrap_or("");
         let verb = match sub {
             // The reads: what is stashed, and the diff in it.
