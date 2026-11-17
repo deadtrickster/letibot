@@ -990,6 +990,20 @@ impl Harness {
             for (path, writable, _) in &cfg.kept_views {
                 record.record(path, *writable);
             }
+            // And the other way round: what the tree's record holds and no row this config read
+            // does. A grant answered on a sibling's card a moment ago is in the record the whole
+            // tree shares, and a child opened now would otherwise come up with a view that lacked
+            // it - the gate would call the path covered while the mount never bound it.
+            for (path, writable) in record.entries() {
+                if cfg.kept_views.iter().any(|(had, _, _)| *had == path) {
+                    continue;
+                }
+                cfg.kept_views.push((
+                    path,
+                    writable,
+                    "granted into this session's tree, from a card".to_string(),
+                ));
+            }
         }
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
@@ -2104,7 +2118,15 @@ impl Harness {
             ));
         }
 
-        // What the operator granted this session, or its review queue, before a restart.
+        // What the operator granted this session's TREE, or its review queue, before a restart. A
+        // view grant is kept at the tree's root, so this reads a sibling's or the parent's answer
+        // as well as its own.
+        let tree_root = match &store {
+            Some(s) => {
+                crate::grants::tree_root(s, &cfg.session_id, cfg.parent_session_id.as_deref())
+            }
+            None => cfg.session_id.clone(),
+        };
         cfg.kept_views = match &store {
             Some(s) => crate::grants::kept_views(s, &cfg),
             None => Vec::new(),
@@ -3157,6 +3179,7 @@ impl Harness {
                     )))
                     // What this tree was already granted into its view, so a second ask for a
                     // path a grant covers is not a question at all.
+                    .with_tree_root(tree_root.clone())
                     .with_view_grants(match &cfg.view_grants {
                         Some(g) => Arc::clone(g),
                         None => Arc::new(letibot_tools::view::ViewGrants::new()),
@@ -5744,6 +5767,257 @@ mod no_boundary_tests {
         );
         hub.close();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One card, answered: every view card is granted read-only, and the count says how many were
+    /// raised - a second card is the defect, so the count is half the assertion.
+    struct Card {
+        count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl letibot_tools::adjudicate::Adjudicator for Card {
+        fn decide(
+            &self,
+            req: &letibot_tools::adjudicate::AdjudicationRequest,
+        ) -> letibot_tools::adjudicate::AdjudicationDecision {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            letibot_tools::adjudicate::AdjudicationDecision::selected(
+                req,
+                "grant_ro",
+                "human:dead",
+                "because",
+            )
+        }
+
+        fn describe(&self) -> String {
+            "asked at the head: a test".into()
+        }
+    }
+
+    /// A `leticode` session's config, seated as the daemon seats one: no shell, so no boundary is
+    /// built and this test is about grants rather than about bubblewrap.
+    fn tree_base(dir: &std::path::Path, id: &str) -> Config {
+        let mut cfg = Config::for_this_box(dir);
+        cfg.seat = Seat::Leticode;
+        cfg.unconfined = true;
+        cfg.allow_bash = false;
+        cfg.session_id = id.to_string();
+        cfg
+    }
+
+    /// A session of `base`'s tree, opened as `Harness::open_with_registry` opens one: its stored
+    /// grants read first, then its tools placed.
+    fn open_a_session(
+        base: &Config,
+        id: &str,
+        parent: Option<&str>,
+        store: &letibot_tokencore::store::Store,
+        hub: &Arc<Hub>,
+        registry: &Arc<letibot_sessionlog::registry::Registry>,
+    ) -> Config {
+        let mut cfg = Config {
+            session_id: id.to_string(),
+            parent_session_id: parent.map(str::to_string),
+            ..base.clone()
+        };
+        cfg.kept_views = crate::grants::kept_views(store, &cfg);
+        Harness::place_the_tools(&mut cfg, hub, registry).expect("the tools are placed");
+        cfg
+    }
+
+    /// Whether the MOUNT this config builds binds `path`: the view `ls` and a command read, which
+    /// is a different fact from what the gate believes.
+    fn binds(cfg: &Config, path: &std::path::Path) -> bool {
+        let key = letibot_tools::view::key(path);
+        confined_grants(cfg, None)
+            .iter()
+            .any(|g| g.path() == key.as_path())
+    }
+
+    /// Lead 60, the live path: a grant answered on ONE child's card is in the view of a sibling
+    /// opened afterwards - in the record, and in the mount, which is what `ls` reads. The record
+    /// was already the tree's; the mount was built from the session's own stored rows, so a path
+    /// the gate called covered was never bound and read as absent.
+    #[test]
+    fn a_child_sees_a_view_grant_answered_on_its_siblings_card() {
+        use letibot_tools::Gate as _;
+        use letibot_tools::runtime::ViewGrant;
+        use letibot_tools::view::ViewAccess;
+        let dir = std::env::temp_dir().join(format!("letibot-treegrant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pg-fuzz")).expect("the folder a card granted");
+        let at = crate::config::StoreAt::File(dir.join("store.db"));
+        let store = at.open().expect("a store");
+        let hub = Hub::new("s-tree");
+        let registry = Arc::new(letibot_sessionlog::registry::Registry::new());
+        let parent = open_a_session(
+            &tree_base(&dir, "s-tree"),
+            "s-tree",
+            None,
+            &store,
+            &hub,
+            &registry,
+        );
+        let record = parent
+            .view_grants
+            .clone()
+            .expect("a record at the parent's open");
+
+        // Child A, and the operator's answer on its card.
+        let a = open_a_session(&parent, "s-tree-a", Some("s-tree"), &store, &hub, &registry);
+        assert!(
+            std::sync::Arc::ptr_eq(&record, a.view_grants.as_ref().expect("a record")),
+            "a child is built with its parent's record"
+        );
+        let cards = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut gate = letibot_tools::AdjudicatedGate::new(Box::new(Card {
+            count: cards.clone(),
+        }))
+        .with_identity("s-tree-a", "agent")
+        .with_tree_root("s-tree")
+        .with_view_grants(record.clone())
+        .with_grant_ledger(
+            std::sync::Arc::new(crate::grants::StoreLedger::new(at.clone())),
+            None,
+        );
+        let granted = dir.join("pg-fuzz");
+        assert_eq!(
+            gate.grant_view(&granted, "bash", ViewAccess::Read),
+            ViewGrant::Granted { writable: false }
+        );
+        assert_eq!(cards.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop((a, gate));
+
+        // Child B, opened after: the tree's record covers the path, and so does its mount.
+        let b = open_a_session(&parent, "s-tree-b", Some("s-tree"), &store, &hub, &registry);
+        let theirs = b
+            .view_grants
+            .clone()
+            .expect("a record at the sibling's open");
+        assert_eq!(
+            theirs.covers(&granted.join("run.rs"), ViewAccess::Read),
+            Some(false),
+            "one record per tree, or five siblings ask one question five times"
+        );
+        assert!(
+            binds(&b, &granted),
+            "the gate calls this covered and the mount does not bind it, so `ls` shows the sibling \
+             nothing: that is the regression, and `{}` is not in the view",
+            granted.display()
+        );
+        // And the sibling is not asked about it again.
+        let mut theirs_gate = letibot_tools::AdjudicatedGate::new(Box::new(Card {
+            count: cards.clone(),
+        }))
+        .with_identity("s-tree-b", "agent")
+        .with_tree_root("s-tree")
+        .with_view_grants(theirs)
+        .with_grant_ledger(
+            std::sync::Arc::new(crate::grants::StoreLedger::new(at.clone())),
+            None,
+        );
+        assert_eq!(
+            theirs_gate.grant_view(&granted, "bash", ViewAccess::Read),
+            ViewGrant::Covered { writable: false }
+        );
+        assert_eq!(
+            cards.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no card"
+        );
+        drop(theirs_gate);
+        hub.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Lead 60, the restart path: a child opened in a new daemon reads its TREE's stored grants,
+    /// not only the rows under its own id. Nothing is in memory here: the store is the whole of it.
+    #[test]
+    fn a_child_reopened_after_a_restart_binds_its_trees_kept_views() {
+        use letibot_tools::grant_ledger::{GrantLedger as _, Kept, Scope};
+        let dir = std::env::temp_dir().join(format!("letibot-treerestart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dbtest")).expect("the folder a card granted");
+        let at = crate::config::StoreAt::File(dir.join("store.db"));
+        // The row another session of the tree left, kept where the gate keeps one.
+        crate::grants::StoreLedger::new(at.clone())
+            .keep(
+                &Scope::Session("s-restart".into()),
+                &Kept::View {
+                    path: letibot_tools::view::key(&dir.join("dbtest")),
+                    writable: false,
+                },
+                "granted into the view by an answer to a card",
+                "human:dead",
+            )
+            .expect("the grant is kept");
+        let store = at.open().expect("a store");
+        let hub = Hub::new("s-restart-b");
+        let registry = Arc::new(letibot_sessionlog::registry::Registry::new());
+        let b = open_a_session(
+            &tree_base(&dir, "s-restart-b"),
+            "s-restart-b",
+            Some("s-restart"),
+            &store,
+            &hub,
+            &registry,
+        );
+        assert!(
+            binds(&b, &dir.join("dbtest")),
+            "a child reopened after a restart is in the view its parent's tree was granted"
+        );
+        assert!(
+            b.view_grants
+                .as_ref()
+                .and_then(|r| r.covers(
+                    &dir.join("dbtest/x.sql"),
+                    letibot_tools::view::ViewAccess::Read
+                ))
+                .is_some(),
+            "and the gate reads the same grant, so it is not asked about again"
+        );
+        hub.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half: a card answered INSIDE a child keeps its row at the tree's root, which is
+    /// what every session of the tree reads. The asker's own id is not where that row belongs.
+    #[test]
+    fn a_view_grant_answered_inside_a_child_is_kept_at_the_trees_root() {
+        use letibot_tools::Gate as _;
+        use letibot_tools::grant_ledger::Scope;
+        use letibot_tools::view::ViewAccess;
+        let dir = std::env::temp_dir().join(format!("letibot-treewriter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pg-fuzz")).expect("the folder a card granted");
+        let at = crate::config::StoreAt::File(dir.join("store.db"));
+        let store = at.open().expect("a store");
+        let cards = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut gate = letibot_tools::AdjudicatedGate::new(Box::new(Card {
+            count: cards.clone(),
+        }))
+        .with_identity("s-writer-child", "agent")
+        .with_tree_root("s-writer")
+        .with_view_grants(std::sync::Arc::new(letibot_tools::view::ViewGrants::new()))
+        .with_grant_ledger(
+            std::sync::Arc::new(crate::grants::StoreLedger::new(at.clone())),
+            None,
+        );
+        gate.grant_view(&dir.join("pg-fuzz"), "bash", ViewAccess::Read);
+        drop(gate);
+        assert_eq!(
+            crate::grants::load(&store, &Scope::Session("s-writer".into()))
+                .expect("the tree's rows")
+                .len(),
+            1,
+            "kept where every session of the tree reads it"
+        );
+        assert!(
+            crate::grants::load(&store, &Scope::Session("s-writer-child".into()))
+                .expect("the asker's rows")
+                .is_empty(),
+            "and not under the asker's own id, where its siblings never look"
+        );
     }
 }
 

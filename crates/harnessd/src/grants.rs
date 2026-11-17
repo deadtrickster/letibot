@@ -232,33 +232,70 @@ pub fn queue_for(cfg: &Config) -> Option<String> {
     letibot_tools::grant_ledger::queue_of(&cfg.session_id).map(str::to_string)
 }
 
-/// The scopes `cfg`'s session reads its grants from.
-pub fn scopes_for(cfg: &Config) -> Vec<Scope> {
+/// The scopes `cfg`'s session reads its grants from: its own, its tree's, and its queue's. A view
+/// grant is kept at the tree's root, so a session that never answered a card still finds the one a
+/// sibling or the parent answered - that is the whole of *a grant answered by any session of a
+/// tree is in the view of every session of that tree opened afterwards*.
+pub fn scopes_for(cfg: &Config, root: &str) -> Vec<Scope> {
     let mut out = vec![Scope::Session(cfg.session_id.clone())];
+    if root != cfg.session_id {
+        out.push(Scope::Session(root.to_string()));
+    }
     if let Some(q) = queue_for(cfg) {
         out.push(Scope::Queue(q));
     }
     out
 }
 
-/// The view grants kept for `cfg`'s session, as `(path, writable, why)`, to bind at open.
+/// The session at the root of `id`'s tree: the id a view grant of the tree is kept under. `parent`
+/// is `id`'s own parent for a session with no store row yet, which is the state a session is in at
+/// its own open - it is minted and opened before anything writes it down.
+pub fn tree_root(
+    store: &letibot_tokencore::store::Store,
+    id: &str,
+    parent: Option<&str>,
+) -> String {
+    let mut cur = match (store.session_parent(id), parent) {
+        (Ok(Some(_)), _) => id.to_string(),
+        (_, Some(p)) if !p.is_empty() => p.to_string(),
+        _ => return id.to_string(),
+    };
+    // The same cap the other chain walks take: a corrupt row must not hang an open.
+    for _ in 0..32 {
+        match store.session_parent(&cur).ok().flatten().flatten() {
+            Some(p) if !p.is_empty() => cur = p,
+            _ => break,
+        }
+    }
+    cur
+}
+
+/// The view grants kept for `cfg`'s session tree, as `(path, writable, why)`, to bind at open.
 pub fn kept_views(
     store: &letibot_tokencore::store::Store,
     cfg: &Config,
 ) -> Vec<(PathBuf, bool, String)> {
-    let mut out = Vec::new();
+    let mut out: Vec<(PathBuf, bool, String)> = Vec::new();
     let ttl = queue_ttl(cfg);
-    for scope in scopes_for(cfg) {
+    let root = tree_root(store, &cfg.session_id, cfg.parent_session_id.as_deref());
+    for scope in scopes_for(cfg, &root) {
         let _ = expire_queue(store, &scope, ttl);
         for s in load(store, &scope).unwrap_or_default() {
             if let Kept::View { path, writable } = s.kept {
                 let why = match &s.scope {
-                    Scope::Session(_) => "granted earlier in this session, from a card".to_string(),
+                    Scope::Session(_) => {
+                        "granted earlier in this session's tree, from a card".to_string()
+                    }
                     Scope::Queue(_) => {
                         "granted to this project's review queue, from a card".to_string()
                     }
                 };
-                out.push((path, writable, why));
+                // A session's own row and the tree's can name one path: that is one grant, and
+                // the wider of the two is the one the mount binds.
+                match out.iter_mut().find(|(had, _, _)| *had == path) {
+                    Some((_, writable_at, _)) => *writable_at |= writable,
+                    None => out.push((path, writable, why)),
+                }
             }
         }
     }
@@ -275,6 +312,12 @@ pub fn permissions(
     asks: Option<&PendingAsks>,
 ) -> crate::slash::SlashReply {
     let mut scopes = vec![Scope::Session(session.to_string())];
+    // The tree's own: a view grant a sibling or the parent answered is this session's too, and a
+    // revoke has to reach it from here.
+    let root = tree_root(store, session, None);
+    if root != session {
+        scopes.push(Scope::Session(root));
+    }
     if let Some(g) = gatekeeper.filter(|g| *g != session) {
         scopes.push(Scope::Queue(g.to_string()));
     }
