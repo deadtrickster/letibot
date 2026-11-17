@@ -436,7 +436,9 @@ impl Supervisor {
             .processes_of(session)
             .unwrap_or_default()
             .into_iter()
-            .filter(|r| r.state.is_open())
+            // A restart's kept job is `detached` and open on purpose: it belongs to the daemon
+            // that opens the session next, and this stop signalling it is what broke that promise.
+            .filter(|r| r.state.is_open() && !r.state.is_kept())
             .collect();
         let at = (self.now_ms)();
         for rec in &open {

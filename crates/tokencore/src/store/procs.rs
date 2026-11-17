@@ -115,6 +115,12 @@ impl ProcState {
     pub fn is_ended(self) -> bool {
         !self.is_open()
     }
+
+    /// Kept running by a restart, for the daemon that opens the session next: no stop of THIS
+    /// daemon may signal one, or the promise the restart made is what killed the job.
+    pub fn is_kept(self) -> bool {
+        self == ProcState::Detached
+    }
 }
 
 /// One supervised process, as the store holds it. See the module header.

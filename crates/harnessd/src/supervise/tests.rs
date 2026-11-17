@@ -318,6 +318,36 @@ fn an_unreachable_host_leaves_the_job_lost_and_the_next_tick_retries() {
     assert_eq!(probe.calls().len(), 2, "retried");
 }
 
+/// A restart's kept job is `detached` and open on purpose: it is the next daemon's, so neither the
+/// daemon's own stop nor a session's close may signal it or rewrite its row.
+#[test]
+fn a_teardown_leaves_a_job_a_restart_kept() {
+    let mut kept = rec("s-a", "j1", None, 12);
+    kept.state = ProcState::Detached;
+    let s = store_with(&[kept, rec("s-a", "j2", None, 13)]);
+    let probe = Fake::new(vec![]);
+    let sup = Supervisor::new(s.clone(), probe.clone());
+
+    let torn = sup.teardown_session("s-a", "the daemon stopping");
+    let handles: Vec<&str> = torn.iter().map(|r| r.handle.as_str()).collect();
+    assert_eq!(handles, vec!["j2"], "only what no restart kept");
+    assert_eq!(
+        probe.kills(),
+        vec![(None, 13)],
+        "one kill, and not the kept job's"
+    );
+    assert_eq!(
+        s.lock()
+            .unwrap()
+            .process("s-a", "j1")
+            .unwrap()
+            .unwrap()
+            .state,
+        ProcState::Detached,
+        "a kept job's row is the next daemon's to settle"
+    );
+}
+
 /// A session's close ends what that session owns, on every host - and an interrupt or a turn
 /// ending does not, which is why the only door to this is here and not on a turn's clock.
 #[test]

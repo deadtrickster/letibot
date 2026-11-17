@@ -416,6 +416,81 @@ fn a_restart_keeps_the_job_and_a_plain_stop_kills_it() {
     }
 }
 
+/// A restart is not one step: the run enders keep the job, and then the daemon closes every session
+/// and ends what it thinks it still owns. A kept job is no later step's to signal, and the daemon
+/// that opens the session next takes it back as running.
+#[test]
+fn a_restart_keeps_the_job_through_every_stop_step_and_the_next_daemon_takes_it_back() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
+    let dir = Scratch::new("kept-steps");
+    let sid = "s-kept-steps";
+    let h = opened(&dir, sid);
+    let host = h.runtime.backend.processes_arc().expect("a process host");
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "i=0; while :; do echo tick $i; i=$((i+1)); sleep 0.05; done".into(),
+            slug: Some("fuzz".into()),
+            cwd: ".".into(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: vec![],
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("the job starts");
+    let view = host.job(&id).expect("the job");
+    let stamp = letibot_tools::exec::procs::read(view.pid)
+        .map(|p| format!("start:{}", p.start))
+        .expect("a stamp");
+    // The marker's own close: every run ender keeps what can outlive this daemon.
+    h.session_registry.close_for_restart();
+    let db = dir.0.join("sessions.db");
+    let store = Store::open(&db).unwrap();
+    let kept = store
+        .process(sid, &id.0)
+        .unwrap()
+        .expect("the kept job's row");
+    assert_eq!(kept.state, ProcState::Detached, "{kept:?}");
+    // Every step after it ends what a session owns through the supervisor: `close_backends` says
+    // `the daemon stopping`, and a session's own close says `the session closing`.
+    let sup = crate::supervise::Supervisor::new(
+        std::sync::Arc::new(std::sync::Mutex::new(Store::open(&db).unwrap())),
+        std::sync::Arc::new(crate::supervise::HostProbe::new()),
+    );
+    for by in ["the daemon stopping", "the session closing"] {
+        let torn = sup.teardown_session(sid, by);
+        assert!(torn.is_empty(), "`{by}` ended a kept job: {torn:?}");
+        assert!(
+            letibot_tools::exec::detach::stamp_matches(view.pid, &stamp),
+            "`{by}` signalled the kept job"
+        );
+        let rec = store.process(sid, &id.0).unwrap().expect("the row");
+        assert_eq!(rec.state, ProcState::Detached, "`{by}` rewrote its row");
+    }
+    drop(h);
+    drop(host);
+    // And the daemon that opens this session next finds it by its own proof, not by the row.
+    let mut next = opened(&dir, sid);
+    assert_eq!(job_state(&store, sid, &id.0), "running");
+    assert_eq!(
+        store.process(sid, &id.0).unwrap().expect("the row").state,
+        ProcState::Running
+    );
+    let text = next.restore_after_restart().expect("the restart is said");
+    assert!(text.contains("still running, reattached"), "{text}");
+    let _ = std::fs::write(
+        std::path::Path::new(&kept.cgroup.expect("a cgroup")).join("cgroup.kill"),
+        "1",
+    );
+}
+
 /// The marker the launcher leaves is the one the daemon takes: two spellings of one path.
 #[test]
 fn the_restart_marker_is_where_the_launcher_leaves_it() {
