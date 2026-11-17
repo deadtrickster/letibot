@@ -614,8 +614,9 @@ restart"): it leaves the restart marker beside the daemon's socket before its SI
 daemon to open the session adopts them. An owner closed with a job of its own open gets a plain
 stop, and that job ends: an idle close drains, so only a hard TTL or a closed parent gets there.
 The daemon's idle exit drains instead: a running job holds it, as a head or a turn does. A plain
-`letibot --stop` ends every job. Nothing is lost by a close: `leticode_attach` or `leticode_send`
-on the id starts the folder's daemon and reopens it.
+`letibot --stop` ends every job its own rows say it owns - and not one a restart kept `detached`,
+which is the next daemon's to adopt whenever the session is opened again. Nothing is lost by a
+close: `leticode_attach` or `leticode_send` on the id starts the folder's daemon and reopens it.
 
 Where an owner's rows are: `owner`, `holding` and the journal in `shared.db`; `process` and `job`
 in the project file of the daemon that ran them, `projects/<key>.db`. The key is the hash of the
@@ -793,6 +794,9 @@ reaper's stop of a daemon leaves the same marker and removes one the daemon did 
   `detached` with the job's cgroup directory (`cgroup`, schema 49), the stamp (wrapper pid and
   `start:<n>`) and `log_read`, the raw bytes already in `job-<id>.out`. The `job` row reads
   `detached`. The host's drop does not end its session scope while it holds a detached job.
+  No later step of the same stop signals it: every step that ends what a session owns goes
+  through the supervisor's teardown (`close_backends`, a session's own close), and a `detached`
+  row is the next daemon's - the stop leaving it alone is what the marker promised.
 - **Adopt.** The daemon that opens the session next proves each `detached` row:
   - cgroup populated and stamp matching: re-attached. The row goes back to `running`, the
     reader continues the raw file from `log_read` and appends to the same `job-<id>.out`, a
