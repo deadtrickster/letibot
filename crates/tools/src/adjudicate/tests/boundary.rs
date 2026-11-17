@@ -364,10 +364,8 @@ fn a_boundary_with_egress_to_the_host_still_asks() {
     assert_eq!(asked.count(), 1);
 }
 
-/// The free admit is a PRODUCTION rule, not a fixture's. `encloses()` needs `Egress::Denied`, so
-/// while a tight seat carried the host's network the only boundary that could ever enclose was one
-/// a test built by hand. Reading the egress out of the seat builder makes a regression turn this
-/// red rather than make it pass the way the fixtures do.
+/// The free admit is a production rule, not a fixture's: `encloses()` needs `Egress::Denied`, and
+/// the egress is read out of the seat builder, so a regression turns this red.
 #[test]
 fn the_free_admit_fires_on_a_production_tight_boundary() {
     let seat = crate::exec::seat::seat_view(

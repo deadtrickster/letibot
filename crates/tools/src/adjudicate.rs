@@ -510,10 +510,9 @@ fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
     })
 }
 
-/// The session rung, when the point grants for the session AND a grant taken now could cover a
-/// later call: `Grant::covers` refuses an unresolved action before it looks at coverage, so a
-/// session grant over an unreadable command would cover nothing. The condition is
-/// [`Offer::session`] at a point whose grants are [`crate::mode::GrantScope::Session`].
+/// The session rung: [`Offer::session`] at a [`crate::mode::GrantScope::Session`] point, when a
+/// grant taken now could cover a later call. `Grant::covers` refuses an unresolved action, so a
+/// session grant over an unreadable command would cover nothing.
 fn session_rung(
     offer: &Offer,
     scope: crate::mode::GrantScope,
@@ -540,12 +539,9 @@ fn session_label(offer: &Offer) -> String {
     }
 }
 
-/// The ladder for one call, out of one builder: the point's `scope` decides whether the session
-/// rung is on it, [`Offer`] what that rung names and what the durable rule would write. One
-/// builder because the card and the recording site must not disagree about what an answer buys.
-///
-/// A point whose grants are [`crate::mode::GrantScope::Once`] has no session rung: the answer
-/// settles the one call it was given for, and the gate refuses `allow_session` selected there.
+/// The ladder for one call, out of one builder so the card and the recording site agree on what
+/// an answer buys. A [`crate::mode::GrantScope::Once`] point has no session rung, and the gate
+/// refuses `allow_session` selected there.
 pub fn options(offer: &Offer, scope: crate::mode::GrantScope) -> Vec<DecisionOption> {
     let mut out = vec![DecisionOption {
         id: "allow_once".into(),
@@ -1526,10 +1522,9 @@ pub fn a_command_that_crosses_nothing(
         && !baseline.regions.iter().any(|r| r.is_outside())
 }
 
-/// A reviewer's exec the mode may admit: a point that admits exec, a call off the always-ask list,
-/// intents that only look, write or run - all of them read, never `Unknown` - and every place it
-/// names inside the clone, its scratch, or a temp directory it only reads. Pushes, network,
-/// package and permission changes, a write into the shared `/tmp` and unplaced paths still ask.
+/// A reviewer's exec the mode may admit: off the always-ask list at a point that admits exec,
+/// intents that only look, write or run (never `Unknown`), and every place inside the clone, its
+/// scratch, or a temp directory it only reads. A write into the shared `/tmp` still asks.
 pub fn a_reviewers_probe(
     mode: crate::mode::Mode,
     access: Access,
@@ -2926,10 +2921,8 @@ impl AdjudicatedGate {
 impl Gate for AdjudicatedGate {
     /// The ladder, stopped where a card would be raised. The same body as [`Gate::admit`] with
     /// the adjudicator, the guard model and the circuit breaker switched off, so a look a plugin
-    /// declared can never block on a head or close the session's gate to its own model. What is
-    /// left of the ladder is the operator's own rules and a read: a point's grant, a shape, a
-    /// session grant and a reviewer's probe are answers taken for calls that ask, and none of them
-    /// reaches a call that may not.
+    /// declared can never block on a head or close the session's gate to its own model. Standing
+    /// answers are for calls that ask, and none of them reaches a call that may not.
     fn admit_unasked(&mut self, call: &GateCall<'_>) -> GateDecision {
         let breaker = std::mem::take(&mut self.breaker);
         self.unasked = true;
@@ -3692,15 +3685,12 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 8. An approved shape, then 9. a session grant: standing answers from an earlier
-        //    `allow_session`, keyed on `(program, ActionClass, intents)` and checked per call
-        //    against the normalisation, never against text, so a vehicle flag falls out of a
-        //    grant taken over `git status`.
+        // 8. An approved shape, then 9. a session grant, keyed on `(program, ActionClass,
+        //    intents)` and checked against the normalisation, never the text, so a vehicle flag
+        //    falls out of a grant taken over `git status`.
         let program = grant_program(&baseline);
-        // A shape the operator approved for the session, here or under this workspace before. The
-        // key holes literals, so a call that runs a holed body never matches, and only a point
-        // whose grants are per session honours it. A look that may not ask is admitted by neither
-        // standing answer: both are the ladder's, and a look reaches the ladder's rules only.
+        // The key holes literals, so a call that runs a holed body never matches. Only a
+        // per-session point honours it, and a look that may not ask is admitted by neither.
         if let Tier::MayApprove = req.tier
             && self.mode.grants == crate::mode::GrantScope::Session
             && !self.unasked
@@ -3804,7 +3794,7 @@ impl Gate for AdjudicatedGate {
                 match kind {
                     Some(k) if k.admits() => {
                         // The shape, remembered only from a person's "for the session" at a point
-                        // whose grants are per session: "once" means once (decision 2), and an
+                        // whose grants are per session: "once" means once, and an
                         // always-ask shape would be the standing grant the tier exists to refuse.
                         if k == OptionKind::AllowSession
                             && self.mode.grants == crate::mode::GrantScope::Session
@@ -3881,11 +3871,9 @@ impl Gate for AdjudicatedGate {
                                     );
                                 }
                                 Err(not) => {
-                                    // Unreachable from a card this build drew - the same call
-                                    // decides whether the rung is offered - and reachable from an
-                                    // answer replayed against a request built elsewhere, so the
-                                    // row reports a rung that stands for nothing rather than a
-                                    // grant nobody got.
+                                    // Reachable only from an answer replayed against a request
+                                    // built elsewhere: the row reports a rung that stands for
+                                    // nothing rather than a grant nobody got.
                                     decision.basis = format!(
                                         "{}; no session grant was kept: {}",
                                         decision.basis,

@@ -2591,10 +2591,8 @@ mod tests {
         );
     }
 
-    /// A scope's process count is the kernel's three files, and `max` in `pids.max` is an uncapped
-    /// scope rather than a missing one: a reader that turned it into `0` would show every job as
-    /// capped at nothing, and a reader that called a missing directory a zero would call a dead
-    /// scope a quiet one.
+    /// A scope's process count is the kernel's three files. `max` in `pids.max` is uncapped, not
+    /// `0`, and a missing directory is a dead scope, not a quiet one.
     #[test]
     fn a_scopes_process_count_is_read_from_the_kernels_own_files() {
         let dir = std::env::temp_dir().join(format!("letibot-pids-{}", std::process::id()));

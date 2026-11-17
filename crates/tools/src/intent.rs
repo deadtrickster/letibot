@@ -1532,11 +1532,9 @@ fn in_the_live_checkout(env: &Surroundings) -> bool {
         .is_some_and(|ws| std::path::Path::new(ws).join(".git").is_dir())
 }
 
-/// The git verb in `n` that would throw away or move what the operator has not committed, and
-/// `None` for every other command: `stash` (but not `stash list`/`show`), a `checkout`/`switch` to
-/// another REF (not `-b`, which creates one, and not `--`, which names paths), `reset --hard`,
-/// `rebase` and `clean`. Read off the shell parse, so `git -C x stash` and `cd y && git clean -fd`
-/// are found the same way a bare one is.
+/// The git verb in `n` that would throw away or move uncommitted work: `stash` (not `list`/`show`),
+/// `checkout`/`switch` to another ref (not `-b` or `--`), `reset --hard`, `rebase`, `clean`. Read
+/// off the shell parse, so `git -C x stash` and `cd y && git clean -fd` are found too.
 fn live_checkout_verb(n: &Normalised) -> Option<&'static str> {
     const CREATES: &[&str] = &["-b", "-B", "-c", "-C", "--orphan"];
     let mut found = None;

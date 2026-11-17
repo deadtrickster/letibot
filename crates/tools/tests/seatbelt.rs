@@ -1223,10 +1223,8 @@ fn a_wide_seat_writes_its_cache_tmp_finds_the_user_temp_dir_and_runs_top_and_log
     assert!(!out.contains("Cannot run while sandboxed"), "{out}");
 }
 
-/// The toolchain compiles inside the top-level seat through its `/usr/bin` shims: inside a sandbox
-/// they point the compiler's `TMPDIR` at the per-user temp dir, the `xcrun` cache is written as
-/// `xcrun_db-XXXXXXXX` first, and swift builds modules into the per-user cache. letibot's own
-/// runtime directory inside that temp dir stays unwritable.
+/// The toolchain compiles in the top-level seat through its `/usr/bin` shims, which write the
+/// per-user temp dir and caches, while letibot's own runtime directory there stays unwritable.
 #[test]
 fn a_wide_seat_compiles_swift_and_c_through_the_shims_and_cannot_write_the_rundir() {
     let Some(_) = letibot_tokencore::apparatus::present(
