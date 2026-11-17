@@ -4353,9 +4353,22 @@ impl Store {
 
     /// Shapes this operator approved for the session, under this workspace: the warm start for
     /// the shape cache. Bounded to the newest [`WARM_SHAPES_MAX`] within [`WARM_SHAPES_DAYS`], so
-    /// an approval does not stand forever.
+    /// an approval does not stand forever, and to what was approved since the project's point
+    /// last moved, so the narrowing that revoked a shape revokes it across a restart too.
     pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
-        let since = now_ms().saturating_sub(WARM_SHAPES_DAYS * 24 * 3600 * 1000);
+        let mut since = now_ms().saturating_sub(WARM_SHAPES_DAYS * 24 * 3600 * 1000);
+        // The point's own row is where a move is written, so its instant is the last time the
+        // operator said what this project is: what stood before it was approved under another
+        // point. A project nobody has moved has no row and nothing to forget.
+        let moved: Option<i64> = self
+            .at("project_mode")
+            .query_row(
+                "SELECT set_at FROM project_mode WHERE root = ?1",
+                [workspace_root],
+                |r| r.get(0),
+            )
+            .optional()?;
+        since = since.max(moved.unwrap_or(0));
         // The rows are the corpus's file and the workspace they belong to is the index's, so a
         // split set needs two reads instead of a JOIN: the sessions first, the rows after.
         let mine: std::collections::HashSet<String> = {
@@ -5034,6 +5047,45 @@ mod corpus_tests {
         )
         .expect("age the row");
         assert!(s.approved_shapes("/tmp").expect("read").is_empty());
+    }
+
+    /// A point that has moved has forgotten the shapes approved before it. The narrowing that
+    /// revoked them wrote the project's own row, so a restart does not seed them again.
+    #[test]
+    fn a_shape_approved_before_the_point_moved_is_not_warm_started() {
+        let s = store();
+        let here = a_session(&s);
+        let approve = |id: &str| {
+            s.record_adjudication(&NewAdjudication {
+                tier: "may_approve".into(),
+                effect: "admit".into(),
+                verdict_by: Some("human:op".into()),
+                baseline: "ask — intents [inspect]".into(),
+                shape: Some("grep -n <arg> <arg>".into()),
+                shape_class: Some("read,host_project,reversible,free".into()),
+                ..a_decision(id, &here)
+            })
+            .expect("write");
+        };
+        approve("a-before");
+        // A second before the move, so this is order and not the clock's own resolution.
+        s.exec(
+            "UPDATE adjudication SET decided_ms = decided_ms - 1000 WHERE request_id = 'a-before'",
+            [],
+        )
+        .expect("age the row");
+        assert_eq!(s.approved_shapes("/tmp").expect("read").len(), 1);
+
+        s.set_project_mode("/tmp", "always ask", None)
+            .expect("move the point");
+        assert!(
+            s.approved_shapes("/tmp").expect("read").is_empty(),
+            "a shape approved before the point moved was seeded again"
+        );
+
+        // A shape approved after the move stands: this is a revoke, not a blanket forget.
+        approve("a-after");
+        assert_eq!(s.approved_shapes("/tmp").expect("read").len(), 1);
     }
 
     /// A row written before the class column existed is not a usable approval: the

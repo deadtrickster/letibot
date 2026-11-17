@@ -790,6 +790,10 @@ impl Harness {
                 .into());
         }
         self.within_parent(mode)?;
+        // The boundary's network was decided when the seat was rendered, and the argv built then.
+        // Probing again BEFORE the move lands is what keeps the two together: a point that keeps
+        // the host's network after a narrowing is a boundary that outlived its decision.
+        let reseated = self.reseat_network(mode)?;
         let dropped = self.gate().set_mode(mode)?;
         let mut said = format!("this session is at `{}` from the next call", mode.name);
         if vouched {
@@ -804,6 +808,12 @@ impl Harness {
             said.push_str(&format!(
                 " — {dropped} standing grant(s) taken under `{}` no longer apply",
                 self.cfg.mode.name
+            ));
+        }
+        if let Some(what) = reseated {
+            said.push_str(&format!(
+                "; the command boundary was measured again, because what a point seats is what a \
+                 command gets: {what}"
             ));
         }
         if mode.decider == letibot_tools::mode::Decider::Model && !self.gate().supervising() {
@@ -865,6 +875,40 @@ impl Harness {
     /// The parent's point as it stands now, for a child; `None` for a root session.
     pub fn parent_mode(&self) -> Option<letibot_tools::mode::Mode> {
         self.parent_point.as_ref().map(trees::Ceiling::mode)
+    }
+
+    /// What this point makes a confirmed command's network, and the probe that makes it the one
+    /// that runs. `None` when the boundary already holds it, or nothing here is a view.
+    fn reseat_network(&self, mode: letibot_tools::mode::Mode) -> Result<Option<String>, String> {
+        use letibot_tools::exec::{boundary, seat};
+        // A backend with no view of its own has no network of ours to decide, and the config read
+        // below is this box's: a checkout on another machine must not be refused a move over it.
+        if self.runtime.backend.boundary().is_none() {
+            return Ok(None);
+        }
+        let Some(p) = self.cfg.perimeter.clone() else {
+            return Ok(None);
+        };
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let r = crate::perimeter::resolved(&self.cfg.workspace, &home)?;
+        let view = p.render(
+            &mode,
+            "this machine",
+            &seat::present_under(&home),
+            &home,
+            &letibot_tools::exec::seat::SecretEnv::default(),
+        )?;
+        self.runtime
+            .backend
+            .reseat_egress(boundary::egress_for(view.egress, &r))
+            .map_err(|e| {
+                format!(
+                    "the command boundary was not measured again ({e}), so the point this session \
+                     opens at is the one it keeps"
+                )
+            })
     }
 
     /// Refuse a point wider than the parent's: a child's point only narrows, and it is refused by

@@ -127,6 +127,17 @@ pub trait ExecBackend: Send + Sync {
         ))
     }
 
+    /// Re-decide the network a command gets, after the point moved. The argv was built at probe
+    /// time, so a session that widened keeps the empty namespace it opened with and one that
+    /// narrowed keeps the host's network. `Ok(None)` where this backend's network is not the
+    /// session's to move - a VM, another machine, a host with no view.
+    fn reseat_egress(
+        &self,
+        _egress: crate::exec::confine::Egress,
+    ) -> Result<Option<String>, BackendError> {
+        Ok(None)
+    }
+
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError>;
 
     /// The same answers as [`Self::read`], for a whole page of paths, in one call: the seam a
@@ -760,6 +771,29 @@ impl HostBackend {
 }
 
 impl ExecBackend for HostBackend {
+    /// The same view, probed again for a network decision that moved with the point. Nothing is
+    /// spent when the boundary already holds it, and a host with no view has no network of ours
+    /// to decide.
+    fn reseat_egress(
+        &self,
+        egress: crate::exec::confine::Egress,
+    ) -> Result<Option<String>, BackendError> {
+        let Some(host) = self.processes.as_ref() else {
+            return Ok(None);
+        };
+        let Some(view) = host.current_view() else {
+            return Ok(None);
+        };
+        if host.boundary().is_some_and(|b| b.egress == egress) {
+            return Ok(None);
+        }
+        let confine = crate::exec::confine::probe(view, egress)
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        let described = crate::exec::Confinement::describe(&*confine);
+        host.replace_confinement(confine);
+        Ok(Some(described))
+    }
+
     /// The boundary this backend's commands run inside, read off the process host rather
     /// than off the constructor that was called: a grant replaces the confinement, so the
     /// measured one is the one that answers.

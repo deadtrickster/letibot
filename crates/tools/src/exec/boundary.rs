@@ -470,17 +470,25 @@ pub fn host_grants(cfg: &BoundaryConfig, home: &Path) -> Result<Vec<HostGrant>, 
     Ok(out)
 }
 
+/// The network a seat's commands get: the operator's `network` grant when the config carries one,
+/// else what the level and the point in force say. One function, because the open and a later
+/// move ask one question, and a second answer would be a boundary that drifted from its decision.
+pub fn egress_for(egress: Egress, r: &Resolved) -> Egress {
+    match r.network.first() {
+        Some((why, from)) => Egress::Host {
+            why: format!("`{} network` at {from}: {why}", r.label()),
+        },
+        // The operator's grant of egress is the only way a tight seat reaches the machine's
+        // network: the mode answers for the wide seat, and a child reaches nothing until then.
+        None => egress,
+    }
+}
+
 /// Thread a resolved config into a seat. Grants join a child's view and a wide view's writes
 /// (a wide view already reads everything). `hide` masks at both levels and beats any grant.
 pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
     let wide = seat.home.is_some();
-    // The operator's grant of egress, and the only way a tight seat reaches the machine's network:
-    // the mode answers for the wide seat, and a child reaches nothing until this says so.
-    if let Some((why, from)) = r.network.first() {
-        seat.egress = Egress::Host {
-            why: format!("`{} network` at {from}: {why}", r.label()),
-        };
-    }
+    seat.egress = egress_for(seat.egress, r);
     if !wide {
         for (p, from) in &r.grants_ro {
             if p.exists() && !seat.grants.iter().any(|g| g.path() == p) {

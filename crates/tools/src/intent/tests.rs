@@ -1925,3 +1925,53 @@ fn the_live_checkouts_destructive_git_verbs_ask_and_a_worktrees_do_not() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A name that reads as a read stays one only until the flag that writes or runs. The intents are
+/// what a session grant is checked against, so `sort -o` must not read as the `sort` it covers.
+#[test]
+fn a_read_only_name_writes_through_its_flag() {
+    let write = b("sort -u -o /w/out /etc/hosts");
+    assert!(
+        write.intents.contains(&Intent::WriteFile),
+        "`sort -o` writes a file: {:?}",
+        write.intents
+    );
+    assert!(
+        write.intents.contains(&Intent::ReadFile),
+        "{:?}",
+        write.intents
+    );
+    let runs = b("rg --pre ./x.sh pat .");
+    assert!(
+        runs.intents.contains(&Intent::ExecuteCode),
+        "`rg --pre` runs a script: {:?}",
+        runs.intents
+    );
+
+    // The plain spellings stay reads: the narrowing is the flag, not the program.
+    for cmd in [
+        "sort -u /etc/hosts",
+        "sort -k2 -t , notes.csv",
+        "uniq -c in",
+        "xxd in",
+        "xxd -c8 -l 16 in",
+        "less -N src/main.rs",
+        "file -b x",
+        "rg -n pat src",
+        "ugrep -n pat src",
+        "tree -L 2",
+        "date -Iseconds",
+    ] {
+        let base = b(cmd);
+        assert!(
+            !base.intents.contains(&Intent::WriteFile),
+            "{cmd} read as a write: {:?}",
+            base.intents
+        );
+        assert!(
+            !base.intents.contains(&Intent::ExecuteCode),
+            "{cmd} read as running code: {:?}",
+            base.intents
+        );
+    }
+}

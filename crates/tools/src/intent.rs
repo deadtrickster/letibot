@@ -767,10 +767,29 @@ pub fn vehicle_counts() -> VehicleCounts {
 /// program known.
 fn intents_of(program: &str, argv: &[Word]) -> Vec<Intent> {
     let mut v = program_intents(program, argv);
+    // A name that reads as a read holds only until the flag that writes or runs one. These intents
+    // are what a standing grant is checked against, so `sort -o` must not read as the `sort` an
+    // operator granted for its reads.
+    if let Some(extra) = read_until_a_flag(program, argv)
+        && !v.contains(&extra)
+    {
+        v.push(extra);
+    }
     if execution_vehicle(program, argv).is_some() && !v.contains(&Intent::ExecuteCode) {
         v.push(Intent::ExecuteCode);
     }
     v
+}
+
+/// The intent a read-only-named program's flag or second operand adds. It asks permission's own
+/// matcher, so the table layer A narrows with is the table the seed's fixture test checks. A word
+/// the grammar could not read is no answer here and the call asks for its own reasons.
+fn read_until_a_flag(program: &str, argv: &[Word]) -> Option<Intent> {
+    let args: Vec<&str> = argv.iter().map(Word::text).collect::<Option<Vec<_>>>()?;
+    match crate::permission::write_under_a_read_name(program, &args)? {
+        crate::permission::Writes::File => Some(Intent::WriteFile),
+        crate::permission::Writes::Runs => Some(Intent::ExecuteCode),
+    }
 }
 
 /// One row of the destructive-flag table: data, not control flow, so a flag that changes what a

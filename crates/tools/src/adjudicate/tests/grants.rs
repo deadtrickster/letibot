@@ -264,6 +264,63 @@ fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
     );
 }
 
+/// A standing grant is checked against the intents layer A read, so the flag that turns a read
+/// into a write is another call: `sort` for the session is not `sort -o`.
+#[test]
+fn a_session_grant_over_a_read_does_not_cover_its_write_flag() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let asked = std::sync::Arc::new(AtomicUsize::new(0));
+    let a = asked.clone();
+    let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        move |req: &AdjudicationRequest| {
+            a.fetch_add(1, Ordering::Relaxed);
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_session",
+                "human:test",
+                "yes",
+            ))
+        },
+    )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+    .with_surroundings(pinned());
+
+    // Outside the workspace, so the read asks rather than being settled by clause 4.
+    let read = json!({"command": "sort -u /etc/hosts"});
+    assert!(matches!(
+        g.admit(&bash_at(&read, "s#1")),
+        GateDecision::Admit
+    ));
+    assert_eq!(asked.load(Ordering::Relaxed), 1);
+
+    // The same read of another file: the grant was taken for this.
+    let again = json!({"command": "sort -u /etc/hostname"});
+    assert!(matches!(
+        g.admit(&bash_at(&again, "s#2")),
+        GateDecision::Admit
+    ));
+    assert_eq!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:session-grant")
+    );
+    assert_eq!(asked.load(Ordering::Relaxed), 1, "a read of `sort` asked");
+
+    // `-o` writes the sorted text to a file, which is not what the grant was taken for.
+    let write = json!({"command": "sort -u -o /w/out /etc/hosts"});
+    let _ = g.admit(&bash_at(&write, "s#3"));
+    assert_ne!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:session-grant"),
+        "a standing grant over `sort`'s read admitted `sort -o`"
+    );
+    assert_eq!(
+        asked.load(Ordering::Relaxed),
+        2,
+        "the write was not put to the operator"
+    );
+}
+
 /// The class is the half of the pair that says what was approved, so equality on it is what stops
 /// a read's approval admitting a write.
 #[test]

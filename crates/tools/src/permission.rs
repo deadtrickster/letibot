@@ -437,7 +437,7 @@ fn wildcard_admits_a_write(seg: &str, pattern: &str) -> bool {
     let Some(literal) = pattern.find(['*', '?']) else {
         return false;
     };
-    write_or_exec_flag(seg).is_some_and(|w| w.end > literal)
+    write_or_exec_flag(seg).is_some_and(|(w, _)| w.end > literal)
 }
 
 /// One shell word: its span in the segment, and its text with the quotes taken off.
@@ -500,18 +500,63 @@ fn words_at(seg: &str) -> Vec<ShellWord> {
     out
 }
 
+/// What a spelling does where the program's name said read: `sort -o` writes a file, `rg --pre`
+/// runs a script. The seed only needs to know that it asks; layer A needs which, because a
+/// session grant over `sort` must not stand in for `rg --pre`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writes {
+    File,
+    Runs,
+}
+
+/// Programs whose name reads as a read, but which write a file or run a command through a flag or
+/// a second operand. One list, because two readers must agree: the seed's fixture test walks it,
+/// and layer A adds the intent its matcher finds, so the narrowing is the same on both sides.
+/// `date -s` moves the clock, which is neither, so it is in the fixtures and not here; `sed` and
+/// `git` are matched below and left out because sed is `ExecuteCode` by name and git is read per
+/// verb.
+pub const READS_UNTIL_A_FLAG: &[&str] =
+    &["file", "less", "rg", "sort", "tree", "ugrep", "uniq", "xxd"];
+
+/// What `program`'s arguments spell, when the program is one whose read-only name does not cover
+/// them. The arguments are the ones the grammar resolved, so a word it could not read is no
+/// answer here and the call asks for its own reasons.
+pub fn write_under_a_read_name(program: &str, args: &[&str]) -> Option<Writes> {
+    if !READS_UNTIL_A_FLAG.contains(&program) {
+        return None;
+    }
+    let words: Vec<ShellWord> = std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(|text| ShellWord {
+            at: 0,
+            end: 0,
+            text: text.to_string(),
+        })
+        .collect();
+    write_or_exec_in(&words).map(|(_, what)| what)
+}
+
 /// The first flag or script in `seg` that writes a file or runs a command, for the readers the
 /// seed admits by prefix. `sed` is judged by an allow-list, since its script is a language with
 /// `w` and `e`: only the printing options and a print-only script are reads.
-pub fn write_or_exec_flag(seg: &str) -> Option<ShellWord> {
-    let words = words_at(seg);
+pub fn write_or_exec_flag(seg: &str) -> Option<(ShellWord, Writes)> {
+    write_or_exec_in(&words_at(seg))
+}
+
+fn write_or_exec_in(words: &[ShellWord]) -> Option<(ShellWord, Writes)> {
     let (program, args) = words.split_first()?;
     let found = match program.text.as_str() {
-        "sed" => sed_write(args),
-        "sort" => short_or_long(args, "o", "ktST", &[("output", 1), ("compress-program", 2)]),
+        "sed" => sed_write(args).map(|w| (w, Writes::File)),
+        // Two spellings of two kinds: `-o`/`--output` writes the sorted text out and
+        // `--compress-program` runs a command for each run it sorts.
+        "sort" => short_or_long(args, "o", "ktST", &[("output", 1)])
+            .map(|w| (w, Writes::File))
+            .or_else(|| {
+                short_or_long(args, "", "", &[("compress-program", 2)]).map(|w| (w, Writes::Runs))
+            }),
         "git" => {
             let (verb, rest) = args.split_first()?;
-            match verb.text.as_str() {
+            let found = match verb.text.as_str() {
                 "grep" => short_or_long(rest, "O", "efABCm", &[("open-files-in-pager", 2)]),
                 "branch" => git_branch_write(rest),
                 // `git remote -v add` is `git remote add`.
@@ -522,41 +567,47 @@ pub fn write_or_exec_flag(seg: &str) -> Option<ShellWord> {
                 // Every verb that parses revision or diff options takes `--output`: `log`,
                 // `show`, `shortlog`, `rev-list`, `blame`, `stash show`, `reflog show`.
                 _ => short_or_long(rest, "", "", &[("output", 3)]),
-            }
+            };
+            found.map(|w| (w, Writes::File))
         }
         // `-R` re-runs tree with `-o 00Tree.html` in every directory.
-        "tree" => args.iter().take_while(|w| w.text != "--").find(|w| {
-            w.text.starts_with("-o")
-                || w.text.starts_with("--o")
-                || (w.text.starts_with('-') && !w.text.starts_with("--") && w.text.contains('R'))
-        }),
-        "date" => short_or_long(args, "s", "dfrI", &[("set", 2)]),
+        "tree" => args
+            .iter()
+            .take_while(|w| w.text != "--")
+            .find(|w| {
+                w.text.starts_with("-o")
+                    || w.text.starts_with("--o")
+                    || (w.text.starts_with('-')
+                        && !w.text.starts_with("--")
+                        && w.text.contains('R'))
+            })
+            .map(|w| (w, Writes::File)),
+        "date" => short_or_long(args, "s", "dfrI", &[("set", 2)]).map(|w| (w, Writes::File)),
         "xxd" => args
             .iter()
             .find(|w| w.text.starts_with('-') && w.text.trim_start_matches('-').starts_with('r'))
-            .or_else(|| xxd_outfile(args)),
+            .or_else(|| xxd_outfile(args))
+            .map(|w| (w, Writes::File)),
+        // Each of these names a program to run.
         "rg" => short_or_long(
             args,
             "",
             "",
             &[("pre", 3), ("pre-glob", 8), ("hostname-bin", 12)],
-        ),
-        "ugrep" => short_or_long(
-            args,
-            "",
-            "",
-            &[
-                ("filter", 6),
-                ("save-config", 11),
-                ("pager", 5),
-                ("view", 4),
-            ],
-        ),
+        )
+        .map(|w| (w, Writes::Runs)),
+        // `--filter`, `--pager` and `--view` run a program; `--save-config` writes one.
+        "ugrep" => short_or_long(args, "", "", &[("filter", 6), ("pager", 5), ("view", 4)])
+            .map(|w| (w, Writes::Runs))
+            .or_else(|| {
+                short_or_long(args, "", "", &[("save-config", 11)]).map(|w| (w, Writes::File))
+            }),
         // A lesskey file can set LESSOPEN, which runs a command, and `+` is an initial command.
         "less" => args
             .iter()
             .take_while(|w| w.text != "--")
             .find(|w| w.text.starts_with('+'))
+            .map(|w| (w, Writes::Runs))
             .or_else(|| {
                 short_or_long(
                     args,
@@ -570,16 +621,18 @@ pub fn write_or_exec_flag(seg: &str) -> Option<ShellWord> {
                         ("lesskey-content", 9),
                     ],
                 )
+                .map(|w| (w, Writes::File))
             }),
-        "file" => short_or_long(args, "C", "efFmP", &[("compile", 3)]),
+        "file" => short_or_long(args, "C", "efFmP", &[("compile", 3)]).map(|w| (w, Writes::File)),
         "uniq" => second_operand(
             args,
             "fsw",
             &[("skip-fields", 6), ("skip-chars", 6), ("check-chars", 2)],
-        ),
+        )
+        .map(|w| (w, Writes::File)),
         _ => None,
     };
-    found.cloned()
+    found.map(|(w, what)| (w.clone(), what))
 }
 
 /// `git branch` creates, deletes, moves, copies and retracks; only listing is a read. A name
@@ -1452,6 +1505,19 @@ mod tests {
                 let longer = format!("{program}zz x");
                 assert_eq!(evaluate_bash(&longer, rs), Action::Ask, "{row}: {longer}");
             }
+        }
+        // The list layer A narrows with is this test's list: a program in one and not the other
+        // is a spelling that reads as a read on one side and as a write on the other.
+        for program in READS_UNTIL_A_FLAG {
+            let row = format!("{program} *");
+            let (_, asks) = fixtures
+                .iter()
+                .find(|(r, _)| *r == row)
+                .unwrap_or_else(|| panic!("`{program}` is read by layer A and has no fixture"));
+            assert!(
+                !asks.is_empty(),
+                "`{program}` is in layer A's list with no asking spelling here"
+            );
         }
         // The operator's own literal text is honoured: the flag is spelled out in the rule.
         let mine = vec![Rule::new("bash", "sort -o*", Action::Allow)];
