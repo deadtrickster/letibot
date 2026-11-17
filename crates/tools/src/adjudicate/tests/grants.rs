@@ -300,9 +300,11 @@ fn a_session_grant_over_a_read_does_not_cover_its_write_flag() {
         g.admit(&bash_at(&again, "s#2")),
         GateDecision::Admit
     ));
+    // `allow_session` seeds a shape as well as a grant, and a shape is checked first, so the
+    // same read returns as the approved shape. Either way it is not asked again.
     assert_eq!(
         g.log.last().map(|r| r.decision.by.as_str()),
-        Some("gate:session-grant")
+        Some("gate:shape")
     );
     assert_eq!(asked.load(Ordering::Relaxed), 1, "a read of `sort` asked");
 
