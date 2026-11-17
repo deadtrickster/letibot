@@ -599,6 +599,91 @@ fn the_ladder_rungs_carry_less_verbatim_and_the_sliced_one_ignores_size() {
     }
 }
 
+/// A fold's own tail is not free, and it is counted BEFORE the summary turn rather than after it.
+/// Lead 61 measured one: 3874 items kept verbatim and a 6935-character record took 984574 to 983066
+/// of 1048576 - 1.5k freed for a full summary turn, against the 65536 the next turn needed, and the
+/// fold that helped came only afterwards. The fixture is that shape: enough small rows that the
+/// split lands before one huge tool result and keeps it.
+#[test]
+fn a_fold_whose_tail_sits_at_the_wall_is_passed_over_before_its_summary_turn() {
+    let (window, headroom, prefix) = (1_048_576u64, 65_536u64, 15_000u64);
+    let mut per_item = vec![3u64; 3_874];
+    per_item.push(960_000);
+
+    let split = letibot_turn::plan_fold(&per_item, prefix, window, headroom)
+        .expect("the size calls for a fold");
+    assert_eq!(
+        split, 3_874,
+        "halfway by tokens lands before the one big row"
+    );
+    let tail: u64 = per_item[split..].iter().sum();
+    assert!(
+        !super::fold_leaves_room(prefix, tail, window, headroom),
+        "the fixture is the defect: {prefix} + {tail} verbatim is still at the {window} wall \
+         once the record and the next turn's {headroom} are counted"
+    );
+
+    let chosen = super::fold_split_with_room(split, &per_item, prefix, window, headroom)
+        .expect("a fold can make room");
+    assert_eq!(
+        chosen.split,
+        per_item.len(),
+        "one record over the whole history, and not one item carried verbatim"
+    );
+    assert_eq!(
+        chosen.passed_over,
+        Some(tail),
+        "the line says what the size's own fold would have kept"
+    );
+    assert!(
+        super::fold_leaves_room(prefix, 0, window, headroom),
+        "and what runs leaves the next turn its room"
+    );
+    let said = chosen.said(per_item.len());
+    assert!(
+        said.contains("nothing is carried verbatim") && said.contains(&tail.to_string()),
+        "the wall's own sentence says which fold ran and what was passed over: {said}"
+    );
+}
+
+/// The fix presses no harder than it must: a fold whose tail does leave room runs as the size asked,
+/// and one whose tail does not is halved before the verbatim part is given up altogether.
+#[test]
+fn a_fold_is_raised_only_when_its_tail_would_leave_the_wall_in_place() {
+    let (window, headroom, prefix) = (1_048_576u64, 65_536u64, 15_000u64);
+    // Forty-five equal items: the ordinary fold keeps half, which is room enough.
+    let even = vec![23_000u64; 45];
+    let split = letibot_turn::plan_fold(&even, prefix, window, headroom).expect("it folds");
+    let chosen = super::fold_split_with_room(split, &even, prefix, window, headroom)
+        .expect("the size's own fold");
+    assert_eq!(chosen.split, split);
+    assert_eq!(
+        chosen.passed_over, None,
+        "nothing is said about a fold that runs as asked"
+    );
+
+    // Two big rows after ten small ones: the ordinary fold keeps 960k verbatim, and halving that
+    // is enough - not the whole-history record.
+    let mut skewed = vec![3_000u64; 10];
+    skewed.extend([480_000u64; 2]);
+    let split = letibot_turn::plan_fold(&skewed, prefix, window, headroom).expect("it folds");
+    assert!(!super::fold_leaves_room(
+        prefix,
+        skewed[split..].iter().sum::<u64>(),
+        window,
+        headroom
+    ));
+    let chosen = super::fold_split_with_room(split, &skewed, prefix, window, headroom)
+        .expect("the smaller-tail rung makes room");
+    assert!(
+        chosen.split > split && chosen.split < skewed.len(),
+        "one rung down: {} of {}",
+        chosen.split,
+        skewed.len()
+    );
+    assert_eq!(chosen.passed_over, Some(960_000));
+}
+
 /// A verbatim reseat is refused only when the conversation cannot be sent at all: the conversation was already that
 /// size on the old prompt and a reseat changes it by the schema's difference, so keeping a turn's room is the
 /// compaction's job before the next turn, reseated or not.
