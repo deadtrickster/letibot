@@ -157,10 +157,9 @@ pub(crate) struct DiffRows<'a> {
     pub(crate) under_a_panel: bool,
 }
 
-/// The rows a change detected after a command draws: rano draws an [`EditDiff`] only for an edit
-/// verb. Folded, each file is one line naming what `/t` opens; open, each is drawn whole.
-/// `under_a_panel` is the edit verb's case, where rano drew the first file. How the change was
-/// obtained is the row's own text to say: a command's first note, a job's notice.
+/// The rows a change detected after a command draws; rano draws an [`EditDiff`] only for an edit
+/// verb, the `under_a_panel` case. Folded, each file is one line naming what `/t` opens; open,
+/// each is drawn whole. The row's own text says how the change was obtained.
 pub(crate) fn detected_diff_rows(
     edits: &[letibot_transcript::ToolEditExcerpt],
     d: DiffRows<'_>,

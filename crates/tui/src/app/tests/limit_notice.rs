@@ -153,7 +153,7 @@ fn parked_turn(a: &mut App) {
     );
 }
 
-/// rano showed one park three times, in two zones. The parked turn's line is the one.
+/// A park is said once, in one zone: on the parked turn's own line.
 #[test]
 fn one_park_is_said_once_in_local_time() {
     let (mut a, _hub) = attached();

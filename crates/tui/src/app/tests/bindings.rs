@@ -134,7 +134,7 @@ fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
 }
 
 /// Every pane draws its key map on the screen, not only in the bar a test asks for: each binding's
-/// words, the typed path, and the way out. `/skills` listed its rows and none of its three doors.
+/// words, the typed path, and the way out.
 #[test]
 fn every_pane_draws_its_key_map() {
     for s in Surface::ALL {

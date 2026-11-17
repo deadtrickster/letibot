@@ -249,8 +249,8 @@ fn the_frames_edges_say_which_side_has_the_keys() {
     );
 }
 
-/// An open pane says how to reach it, close it and zoom it while the composer has the keys: rano's
-/// operator opened a skill by accident and found no way out of the split.
+/// An open pane says how to reach it, close it and zoom it while the composer has the keys, so a
+/// pane opened by accident has a way out of the split.
 #[test]
 fn an_open_pane_says_how_to_focus_close_and_zoom_it() {
     const PANE_KEYS: &str = "alt-i focus · ctrl-x close · alt-m zoom";
