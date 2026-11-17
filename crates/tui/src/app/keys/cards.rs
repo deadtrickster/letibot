@@ -381,7 +381,9 @@ impl App {
                     self.sel = (self.sel + 1) % n;
                     return ControlFlow::Break(None);
                 }
-                Key::Enter if n > 0 && !typing => {
+                // A permission's Enter answers its marked row even over a draft, which stays unsent;
+                // a question's typed words are its answer, so there Enter belongs to the editor.
+                Key::Enter if n > 0 && (!typing || numbered) => {
                     return ControlFlow::Break(self.answer_marked());
                 }
                 // A card with no ladder: ↑↓ have nothing to walk and must not pull
