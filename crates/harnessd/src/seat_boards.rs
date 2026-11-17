@@ -36,7 +36,7 @@ impl SeatBoards {
     }
 
     /// The words this project is known by, for the one rule that keeps a wait inside a project.
-    pub fn words(&self) -> Vec<String> {
+    fn words(&self) -> Vec<String> {
         folder_words(Path::new(&self.workspace))
     }
 }

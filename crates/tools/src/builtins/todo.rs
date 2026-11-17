@@ -3831,7 +3831,8 @@ impl TodoWriteTool {
                 "A row waiting on ANOTHER board's row is not asked about until that board finishes \
                  it: the sweep reads that board, and when the row is completed — or struck off, or \
                  gone from it — you are told which, and woken with it. Nothing here has to wait on \
-                 it, and a restatement of your row keeps the wait.\n",
+                 it. Restating the row WITHOUT the need takes the wait off, as a job's or a \
+                 child's goes: `needs` is restated whole.\n",
             );
         }
         Invocation::ok(out)
