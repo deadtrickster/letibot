@@ -152,6 +152,20 @@ fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom
     LINKS.get_or_init(Default::default)
 }
 
+/// One room message whole, read in `session`'s own name: a head's popup asks for the record a chat
+/// row points at, and the row's text is a pointer because the room files long posts. Only the two
+/// ends of a dm may read it, and the operator's seat is neither of them, so the read is the
+/// session's link's.
+pub fn record(session: &str, room: &str, seq: u64) -> Result<Option<String>, String> {
+    let link = links()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session)
+        .and_then(Weak::upgrade)
+        .ok_or_else(|| format!("`{session}` holds no connection to the room"))?;
+    link.record(room, seq)
+}
+
 /// Put a project's room out of sight, on `session`'s own connection - the daemon's act, reported
 /// through the link of the session it is archiving. The caller has checked that no session of the
 /// room is still listed. Off the caller's thread, from a link it may be about to close.
@@ -737,6 +751,30 @@ impl SessionRoom {
         let mut slot = self.beat.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(beat) = slot.take() {
             beat.stop();
+        }
+    }
+
+    /// One room message, whole, read as this session - what a head's popup asks for when the row
+    /// it opened is a record: the room filed the text and carried the first line and a pointer.
+    ///
+    /// `since`/`before` bound the read to exactly `seq`, because a read answers the NEWEST rows it
+    /// was asked for: `since = seq - 1` alone would bring the message after it.
+    pub fn record(&self, room: &str, seq: u64) -> Result<Option<String>, String> {
+        let answer = self
+            .client
+            .request(&Request::Read {
+                room: room.to_string(),
+                since: seq.saturating_sub(1),
+                last: Some(1),
+                thread: None,
+                before: Some(seq.saturating_add(1)),
+            })
+            .map_err(|e| format!("the room did not answer: {e}"))?;
+        match answer {
+            // A read substitutes a record's whole text for its first line: this IS the message.
+            Response::History(h) => Ok(h.rows.into_iter().find(|m| m.seq == seq).map(|m| m.text)),
+            Response::Refused { why, .. } => Err(format!("the room refused the read: {why}")),
+            _ => Err("the room answered a read with something else".to_string()),
         }
     }
 

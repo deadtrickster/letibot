@@ -1185,9 +1185,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         registry.set_source(src);
     }
     // The operator's seat on the host coordinator, opened on a head's first chat request. The
-    // coordinator may start later than the daemon, so nothing connects here.
+    // coordinator may start later than the daemon, so nothing connects here. It reads a record's
+    // whole text through the SESSION's own link: a dm is its two ends' to read, not the seat's.
     if let Some(socket) = crate::room::socket_path() {
-        registry.set_room_chat(crate::room::operator::OperatorSeat::new(socket).seat());
+        let seat = crate::room::operator::OperatorSeat::new(socket);
+        seat.reading_records(std::sync::Arc::new(crate::room::link::record));
+        registry.set_room_chat(seat.seat());
     }
     // The smart `!`'s model half, attached whenever there is a local model to ask. The
     // endpoint is `cfg.oracle` - the `[gatekeeper]` endpoint read at startup, the LOCAL model

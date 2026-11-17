@@ -23,11 +23,19 @@ pub struct OperatorSeat {
     /// How far the operator has read each channel, by channel key. It lives with the daemon, so a
     /// head that attaches later does not count what was read as unread.
     marks: Mutex<BTreeMap<String, u64>>,
+    /// The daemon's way of reading one room message in a session's own name. `None` on a daemon
+    /// with no room links, whose answer is then that it cannot ask.
+    record: Mutex<Option<RecordReader>>,
     /// The daemon's fan-out to the heads that have chatted, handed over by
     /// [`letibot_sessionlog::registry::Registry::set_room_chat`] when it takes this seat. A seat no
     /// daemon installed has none, and then a pushed message goes nowhere.
     fanout: Mutex<Option<RoomChatFanout>>,
 }
+
+/// One room message read in `session`'s own name: the room, the seq, and the text or the reason
+/// there is none. A closure rather than the room's link, so this seat compiles without a daemon.
+pub type RecordReader =
+    Arc<dyn Fn(&str, &str, u64) -> Result<Option<String>, String> + Send + Sync>;
 
 impl OperatorSeat {
     pub fn new(socket: PathBuf) -> Arc<OperatorSeat> {
@@ -36,8 +44,14 @@ impl OperatorSeat {
             client: Mutex::new(None),
             read: Mutex::new(BTreeMap::new()),
             marks: Mutex::new(BTreeMap::new()),
+            record: Mutex::new(None),
             fanout: Mutex::new(None),
         })
+    }
+
+    /// The daemon's way of reading a record in a session's own name, installed where the seat is.
+    pub fn reading_records(self: &Arc<Self>, reader: RecordReader) {
+        *self.record.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader);
     }
 
     /// The seat a registry takes for `RoomChat`: one ask per head's request, one gone per
@@ -82,6 +96,34 @@ impl OperatorSeat {
         }
     }
 
+    /// One room message whole, read in the name of the session the op names. The answer is the
+    /// room's text, or one sentence saying why there is none - no coordinator, no connection for
+    /// that session, a message the room has let go.
+    fn record(self: &Arc<Self>, op: &Value) -> Value {
+        let session = op
+            .get("session")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let room = op.get("room").and_then(Value::as_str).unwrap_or_default();
+        let seq = op.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        let why = match self
+            .record
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            None => "this daemon holds no room to read with".to_string(),
+            Some(read) => match read(session, room, seq) {
+                Ok(Some(text)) => {
+                    return json!({"type": "record", "room": room, "seq": seq, "text": text});
+                }
+                Ok(None) => format!("the room no longer holds #{seq}"),
+                Err(why) => why,
+            },
+        };
+        json!({"type": "record", "room": room, "seq": seq, "error": why})
+    }
+
     /// A head's connection ended: its cursor stops holding the shared one back.
     fn head_gone(&self, head: &str) {
         self.read
@@ -91,7 +133,8 @@ impl OperatorSeat {
     }
 
     /// One chat request from one head. `op` is a room `Request`; anything outside the chat set
-    /// is refused, so the queue's verbs and `notify` stay out of a head's reach.
+    /// is refused, so the queue's verbs and `notify` stay out of a head's reach. The `marks` and
+    /// `record` ops are this seat's own: they name no room verb.
     pub fn ask(self: &Arc<Self>, head: &str, op: Value) -> Value {
         // The marks are this seat's own state, not the coordinator's.
         let mut marks = self.marks.lock().unwrap_or_else(|e| e.into_inner());
@@ -110,6 +153,12 @@ impl OperatorSeat {
             _ => {}
         }
         drop(marks);
+        // The record a chat row points at, read in the name of the session that was sent it: a
+        // long post's row carries its first line and a pointer, and a head's popup is how a person
+        // reads the rest. The operator's own seat could not - a dm is its two ends' to read.
+        if op.get("type").and_then(Value::as_str) == Some("record") {
+            return self.record(&op);
+        }
         let request: Request = match serde_json::from_value(op) {
             Ok(r) => r,
             Err(e) => return json!({"error": format!("not a room request: {e}")}),
@@ -447,6 +496,23 @@ mod tests {
         let r = seat.ask("h1", json!({"type": "rooms"}));
         assert!(
             r["error"].as_str().unwrap().contains("not reachable"),
+            "{r}"
+        );
+    }
+
+    /// A daemon with no room links answers a record with a sentence: a popup that asks for a
+    /// message this daemon cannot read is told so rather than left waiting.
+    #[test]
+    fn a_record_with_no_reader_installed_is_a_sentence() {
+        let seat = OperatorSeat::new(PathBuf::from("/nonexistent/room.sock"));
+        let r = seat.ask(
+            "h1",
+            json!({"type": "record", "session": "s-x", "room": "dm", "seq": 3}),
+        );
+        assert_eq!(r["seq"], 3, "{r}");
+        assert!(r["text"].is_null(), "{r}");
+        assert!(
+            r["error"].as_str().unwrap().contains("no room to read"),
             "{r}"
         );
     }

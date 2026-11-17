@@ -553,6 +553,20 @@ pub fn is_room_line(text: &str) -> bool {
     room_head(text).is_some()
 }
 
+/// The message a room line's RECORD pointer names: `#221 [dm] from cc@etcd-a36 (external)`, whose
+/// text ends `… [record #221, 1645 bytes: room read #221]`. `None` for a line the room carried
+/// whole, so a popup goes to the room only for a text that is a pointer and nothing else.
+pub fn record_of(text: &str) -> Option<(u64, &str)> {
+    let (seq, room, _) = room_head(text)?;
+    let facts = text.split_once("[record #")?.1.split_once(']')?.0;
+    // Both halves of the pointer name the header's seq: one that does not is a message quoting
+    // somebody else's record, and that text is not this row's to fetch.
+    if !facts.starts_with(&format!("{seq},")) || !facts.contains(&format!("room read #{seq}")) {
+        return None;
+    }
+    Some((seq.parse().ok()?, room))
+}
+
 /// `#41 [project] from dead (say) to all` with the text quoted under it - a room message, drawn as
 /// chat rather than as one more notice: a person talking is the one shape a reader should know
 /// without reading a label.
@@ -706,6 +720,20 @@ mod tests {
                 .join(" · "),
             "monitor · a shape no reader knows · click for details"
         );
+    }
+
+    /// A record's pointer is read only when both halves of it name the header's seq: a message
+    /// quoting a record must not send a popup to the room for a text it already carries.
+    #[test]
+    fn a_record_pointer_names_the_header_seq_or_nothing() {
+        let row = "#221 [dm] from cc@etcd-a36 (external) to dm\n> Tranche, in order of value: … \
+                   [record #221, 1645 bytes: room read #221]";
+        assert_eq!(record_of(row), Some((221, "dm")));
+        let whole = "#41 [project] from dead (say) to all\n> the gate is green, landing it now";
+        assert_eq!(record_of(whole), None);
+        let quoted = "#7 [project] from dead (say) to all\n> see [record #221, 1645 bytes: room \
+                      read #221] for the rest";
+        assert_eq!(record_of(quoted), None);
     }
 
     /// A watch's news drawn from the bullets and from the one line per watch is one card: the

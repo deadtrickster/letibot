@@ -24,6 +24,10 @@ pub(crate) const OLDER: &str = "older:";
 /// Request id prefix of a `/search`, so the room's own hits are told from a poll's.
 pub(crate) const SEARCH: &str = "search:";
 
+/// Request id prefix of the details popup's read of one room record (`record:<room>:<seq>`), so
+/// its answer fills that popup and is never merged into a channel's ring.
+pub(crate) const RECORD: &str = "record:";
+
 /// Messages asked for per page back, the most one read returns.
 const PAGE: u32 = 200;
 
@@ -778,6 +782,12 @@ impl App {
         // The pictures' answers - a blob's parts, and the id an upload became - are told by their
         // own reply type and belong to the cache, not to the channel a poll was about.
         if self.on_room_blob(&reply) {
+            return;
+        }
+        // A record the details popup asked for, in this session's own name: the whole text of a
+        // message the conversation holds only as its first line and a pointer.
+        if let Some(key) = id.strip_prefix(RECORD) {
+            self.record_filled(key, &reply);
             return;
         }
         // An invite's or a leave's outcome is said where it was typed, the pane open or not.
