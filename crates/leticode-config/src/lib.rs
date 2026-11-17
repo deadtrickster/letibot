@@ -76,8 +76,9 @@
 //! * the user's `~/.config/letibot/leticode.toml`, at a fixed path beside `providers.toml`,
 //!   `prompts.toml` and `head.toml`.
 //!
-//! [`LeticodeConfig::load`] serves both ([`load_user`] is the same call at the fixed path), so
-//! the two files cannot disagree about what a key means: same keys, same refusals.
+//! [`LeticodeConfig::load_as`] serves both ([`load_user`] is that call at the fixed path, with
+//! [`Level::User`]), so the two files cannot disagree about what a key means: same keys, same
+//! refusals, and each entry carries the level that wrote it.
 //!
 //! # Why the user level is not `[default]` in `providers.toml`
 //!
@@ -215,11 +216,11 @@ pub fn user_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(FILE_NAME))
 }
 
-/// Load the user level at `user_path`. The same call as `load`, because it is the
-/// same file shape - one parser, two levels. A missing file is `Ok` with no models,
-/// so a box where nobody wrote one runs on the daemon's own answer and says so.
+/// Load the user level at `user_path`. One parser, two levels: the level is what every entry's
+/// origin carries, and a grant is only honoured from the file that says `user`. A missing file is
+/// `Ok` with no models, so a box where nobody wrote one runs on the daemon's own answer.
 pub fn load_user() -> Result<LeticodeConfig, String> {
-    LeticodeConfig::load(&user_path())
+    LeticodeConfig::load_as(&user_path(), Level::User)
 }
 
 /// Which level named the model that answers - the word the disclosure puts on
