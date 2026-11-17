@@ -355,6 +355,18 @@ fn fresh_salt(tried: u32) -> u32 {
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL_EVERY: Duration = Duration::from_secs(2);
+/// The longest a gone coordinator is waited for. A socket with no coordinator is a fact that
+/// changes the moment one starts, and a minute is quick enough for that and cheap enough that a
+/// bridge left running for days costs one redial a minute instead of thirty.
+const REDIAL_MOST: Duration = Duration::from_secs(60);
+
+/// Where the one sentence about a room channel that is off for good goes. stderr by default: the
+/// MCP client's stdout is JSON lines, and a channel that has stopped speaking must say why once.
+type Note = Arc<dyn Fn(&str) + Send + Sync>;
+
+fn note_on_stderr() -> Note {
+    Arc::new(|said: &str| eprintln!("letibot-mcp: {said}"))
+}
 
 /// What the stream hands a message to: the bridge's sink, with the coordinator's `names_you` for the
 /// push rule. `false` means not taken, so the next replay offers it again; a line the rule silenced
@@ -751,6 +763,12 @@ struct Inner {
     /// name it offers ends the attempt instead of recursing forever.
     twins: std::sync::atomic::AtomicU8,
     share: AtomicBool,
+    /// Why the room channel is off for good: a coordinator whose welcome named a protocol this
+    /// build cannot speak. Set once, refused by every door that would dial, so a coordinator that
+    /// is gone for days costs nothing - and the bridge's other tools go on working without it.
+    off: Mutex<Option<String>>,
+    /// Where the sentence saying so goes, once.
+    note: Mutex<Note>,
 }
 
 impl Drop for Inner {
@@ -798,6 +816,8 @@ impl RoomLink {
                 protocol: Mutex::new(None),
                 twins: std::sync::atomic::AtomicU8::new(0),
                 share: AtomicBool::new(false),
+                off: Mutex::new(None),
+                note: Mutex::new(note_on_stderr()),
             }),
         }
     }
@@ -855,7 +875,39 @@ impl RoomLink {
         Ok(true)
     }
 
+    /// Why the room channel is off, when a coordinator said something this build cannot speak.
+    /// The sentence is the one every room tool answers with while it holds.
+    fn off(&self) -> Option<String> {
+        self.inner
+            .off
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Turn the room channel off for good, saying so once. Nothing redials after this: the MCP
+    /// server's own tools go on answering, and only the room goes quiet.
+    fn go_dark(&self, said: String) -> String {
+        let mut off = self.inner.off.lock().unwrap_or_else(|e| e.into_inner());
+        if off.is_none() {
+            let note = self
+                .inner
+                .note
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            note(&said);
+            *off = Some(said.clone());
+        }
+        said
+    }
+
     fn open(&self) -> Result<(), String> {
+        // A coordinator this build cannot speak to is not going to change its mind: nothing dials
+        // again, and a tool call is told why in one sentence instead of waiting on a redial.
+        if let Some(why) = self.off() {
+            return Err(why);
+        }
         let path = &self.inner.path;
         let stream = UnixStream::connect(path).map_err(|e| {
             format!(
@@ -916,13 +968,23 @@ impl RoomLink {
         }
         match first["type"].as_str() {
             Some("welcome") => {
+                let theirs = first["protocol"].as_u64().map(|p| p as u16);
+                // A number outside the wire's range is a coordinator this build would misread every
+                // frame with, and no redial finds a different one: given up on here, said once.
+                if let Some(theirs) = theirs
+                    && letibot_room::wire::protocol_refusal(theirs).is_some()
+                {
+                    return Err(self.go_dark(format!(
+                        "the room coordinator speaks protocol {theirs}; this bridge speaks \
+                         {PROTOCOL} - rooms are off until one restarts"
+                    )));
+                }
                 *self.inner.named.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 *self
                     .inner
                     .protocol
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner()) =
-                    first["protocol"].as_u64().map(|p| p as u16);
+                    .unwrap_or_else(|e| e.into_inner()) = theirs;
                 // The name the room gave this folder is kept, so a restart asks for it and keeps
                 // the seat - and with it the cursor, which belongs to the seat and not the process.
                 let cwd = std::env::current_dir().unwrap_or_default();
@@ -1393,19 +1455,42 @@ impl RoomLink {
 }
 
 fn supervise(weak: Weak<Inner>, deliver: Deliver) {
+    // A coordinator that is there is redialled at once; one that is not is waited for longer each
+    // time, up to a minute, because a socket with nobody on it is a fact that changes on its own.
+    let mut wait = REDIAL_EVERY;
     loop {
         let Some(inner) = weak.upgrade() else {
             return;
         };
         let link = RoomLink { inner };
-        if link.ensure().is_ok() {
-            // A gap or a first start: what the cursor still holds for this seat.
-            link.replay_the_gap(&deliver);
+        // Off for good: the coordinator speaks a protocol this build cannot, and the thread ends
+        // rather than redialling into the same wall for days. The MCP tools are unaffected.
+        if link.off().is_some() {
+            return;
+        }
+        let mut failed = false;
+        match link.ensure() {
+            Ok(_) => {
+                // A gap or a first start: what the cursor still holds for this seat.
+                link.replay_the_gap(&deliver);
+            }
+            Err(_) if link.off().is_some() => return,
+            Err(_) => failed = true,
         }
         link.reraise(&deliver);
-        link.ack_delivered();
+        // Nothing to ack on a connection that did not come up: acking would redial once more for it.
+        if !failed {
+            link.ack_delivered();
+            // A connection that came up clears the streak: the drop after it is redialled at once,
+            // not at the wait the last outage had grown to.
+            wait = REDIAL_EVERY;
+        }
         drop(link);
-        std::thread::sleep(REDIAL_EVERY);
+        std::thread::sleep(wait);
+        if failed {
+            // The wait this failure earned is slept, and the next one is twice as long, to a minute.
+            wait = (wait * 2).min(REDIAL_MOST);
+        }
     }
 }
 
@@ -2765,5 +2850,79 @@ mod tests {
         assert!(!Attention::Mentions.passes(&from_op, false));
         let own = json!({"seq": 3, "author": handle(), "kind": "external", "room": "host"});
         assert!(!Attention::All.passes(&own, true));
+    }
+
+    /// The range a welcome is judged by is the wire's own: 11 to 13 are speakable, and either side
+    /// of that is a coordinator this build would misread every frame with.
+    #[test]
+    fn a_welcome_outside_the_wires_range_is_unspeakable() {
+        for theirs in 11..=PROTOCOL {
+            assert!(
+                letibot_room::wire::protocol_refusal(theirs).is_none(),
+                "{theirs}"
+            );
+        }
+        for theirs in [0, 9, 10, PROTOCOL + 1, 200] {
+            assert!(
+                letibot_room::wire::protocol_refusal(theirs).is_some(),
+                "{theirs}"
+            );
+        }
+    }
+
+    /// A welcome naming a protocol this build cannot speak turns the room channel off for good,
+    /// says so once, and is never dialled again - which is the sentence every room tool answers
+    /// with while it holds. The MCP server's own tools are outside this and go on working.
+    #[test]
+    fn a_welcome_this_build_cannot_speak_turns_the_channel_off_once() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-dark-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let hellos = Arc::new(Mutex::new(0u32));
+        let counted = hellos.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                *counted.lock().unwrap() += 1;
+                let mut out = stream.try_clone().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                // A coordinator that answers the hello with its own number, whatever it was told.
+                let old = json!({"type": "welcome", "protocol": 9, "lease_ms": 0,
+                    "beat_every_ms": 0, "threshold": 0, "instance": 1});
+                let _ = writeln!(out, "{old}");
+                // Held open, so nothing but the welcome ends this connection.
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+        let link = RoomLink::at(&path);
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        {
+            let seen = said.clone();
+            *link.inner.note.lock().unwrap_or_else(|e| e.into_inner()) =
+                Arc::new(move |what: &str| seen.lock().unwrap().push(what.to_string()));
+        }
+        let why = link
+            .ensure()
+            .expect_err("an unspeakable welcome is not a connection");
+        assert!(
+            why.contains("the room coordinator speaks protocol 9"),
+            "{why}"
+        );
+        assert!(
+            why.contains(&format!("this bridge speaks {PROTOCOL}")),
+            "{why}"
+        );
+        assert_eq!(link.off().as_deref(), Some(why.as_str()));
+        // The second door is told the same thing without dialling: one note, one hello, ever.
+        assert_eq!(link.ensure().expect_err("still off"), why);
+        let notes = said.lock().unwrap().clone();
+        assert_eq!(notes, vec![why], "said once");
+        assert_eq!(*hellos.lock().unwrap(), 1, "no redial into the same wall");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
