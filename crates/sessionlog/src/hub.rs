@@ -86,8 +86,9 @@ const HANDED_ON_KEPT: usize = 64;
 /// daemon can exit before a retried save lands.
 const SUBMIT_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// How long a close waits for the journal's last save, inside the daemon's exit grace.
-const CLOSE_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a close waits for the journal's last save, inside the daemon's exit grace. The WHOLE
+/// close shares it, not each hub: a daemon holding N sessions exits on one grace.
+pub(crate) const CLOSE_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A mutating command, after validation, waiting for the session's single command worker:
 /// commands are serialized on a per-session queue.
@@ -2628,8 +2629,15 @@ impl Hub {
     /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`], and
     /// [`Hub::take_own_work`] returns [`OwnWork::Closed`].
     pub fn close(&self) {
+        self.close_within(CLOSE_SAVE_WAIT);
+    }
+
+    /// [`Hub::close`] with this hub's share of one deadline a caller covering SEVERAL hubs keeps:
+    /// [`Registry::close`] closes them all inside one [`CLOSE_SAVE_WAIT`], because the daemon's
+    /// exit grace does not grow with the number of sessions it holds.
+    pub fn close_within(&self, within: std::time::Duration) {
         // The journal's last save first: the daemon exits right after its hubs close.
-        if !self.journal_settled(CLOSE_SAVE_WAIT) {
+        if !self.journal_settled(within) {
             eprintln!(
                 "  {} · queued prompts not saved at close",
                 self.lock().log.session_id()

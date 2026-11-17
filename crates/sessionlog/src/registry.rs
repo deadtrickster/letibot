@@ -2858,8 +2858,11 @@ impl Registry {
                 ender();
             }
         }
+        // ONE deadline for every hub, as `begin_stop` has it: each hub's journal save is waited
+        // for inside the daemon's exit grace, and N sessions cannot spend it N times.
+        let by = std::time::Instant::now() + crate::hub::CLOSE_SAVE_WAIT;
         for h in hubs {
-            h.close();
+            h.close_within(by.saturating_duration_since(std::time::Instant::now()));
         }
         self.bell.close();
     }

@@ -1203,3 +1203,50 @@ fn begin_stop_marks_stopping_but_not_closing() {
     r.close();
     assert!(r.is_stopping() && r.is_closing());
 }
+
+/// A daemon's exit grace is not per hub. Three sessions whose journal is not answering are waited
+/// for inside ONE `CLOSE_SAVE_WAIT`: on the snapshot each hub spent its own two seconds, so a
+/// daemon with three sessions could pass the grace and be killed with its queues unsaved.
+#[test]
+fn a_close_waits_one_deadline_for_every_hub() {
+    /// A journal whose store is not answering: the save does not return, so the queue stays unsaved
+    /// and the close waits for it, which is the only state that spends the deadline.
+    struct Blocked(std::sync::mpsc::Receiver<()>);
+    impl crate::hub::PromptJournal for Blocked {
+        fn save(&mut self, _prompts: &[crate::hub::JournaledPrompt]) -> Result<(), String> {
+            let _ = self.0.recv();
+            Ok(())
+        }
+    }
+    let r = reg();
+    let mut release = Vec::new();
+    for i in 0..3 {
+        let id = format!("s-{i}");
+        let hub = r.new_hub(&id);
+        let (tx, rx) = std::sync::mpsc::channel();
+        release.push(tx);
+        hub.journal_prompts(Box::new(Blocked(rx)), Vec::new());
+        hub.submit_daemon(
+            "operator",
+            format!("req-{i}"),
+            CommandKind::Prompt {
+                text: "waiting".into(),
+                attachments: Vec::new(),
+                context: None,
+                from: None,
+                delivery: Default::default(),
+            },
+        );
+        r.adopt(hub, id.clone(), SessionWiring::default(), None)
+            .unwrap();
+    }
+    let began = std::time::Instant::now();
+    r.close();
+    let spent = began.elapsed();
+    drop(release);
+    assert!(
+        spent < crate::hub::CLOSE_SAVE_WAIT * 2,
+        "three unsaved hubs spent {spent:?} at close, which is one deadline per hub: a daemon \
+         holding more sessions than that passes its exit grace"
+    );
+}
