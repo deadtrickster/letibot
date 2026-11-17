@@ -812,6 +812,7 @@ fn notice_popup(a: &mut App) {
         placed: false,
         laid: None,
         room: 0,
+        record: None,
     });
 }
 

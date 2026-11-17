@@ -261,3 +261,65 @@ fn an_fyi_rings_only_the_session_it_names() {
     );
     server.stop();
 }
+
+/// A long post is filed as a record: the session it was sent gets its first line and a pointer,
+/// and the whole text is read in that SESSION's name - a dm is its two ends' to read, and the
+/// operator's own seat is neither of them.
+#[test]
+fn a_record_is_read_whole_in_the_sessions_own_name() {
+    let dir = std::env::temp_dir().join(format!("letibot-chat-record-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("room.sock");
+    let server = Server::serve(&path, Room::new()).expect("a coordinator");
+
+    let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+    let _me = SessionRoom::connect("s-rec-me", &path, "c1c1c1c1c1c1", None, bell, None)
+        .expect("connects");
+
+    let text = "Tranche, in order of value:\n\n1. the parser takes the caller's shape\n\
+                2. the caller keeps its own copy\n3. the cache follows the parser";
+    let quiet: letibot_room::client::Wake = Arc::new(|_: &letibot_room::Event| {});
+    let talk = letibot_room::client::Client::connect(
+        &path,
+        letibot_room::Speaker::top_level("s-rec-peer"),
+        quiet,
+    )
+    .expect("a second connection");
+    let filed = match talk.request(&letibot_room::Request::Dm {
+        id: "d1".into(),
+        to: "s-rec-me".into(),
+        text: text.into(),
+        thread: None,
+        attachments: Vec::new(),
+    }) {
+        Ok(letibot_room::Response::Said { message, .. }) => message,
+        other => panic!("the dm was not filed: {other:?}"),
+    };
+    // What the session was sent: the first line, and the pointer to the rest.
+    assert!(filed.text.contains("[record #"), "{}", filed.text);
+    assert!(!filed.text.contains("the cache follows"), "{}", filed.text);
+
+    let seat = OperatorSeat::new(path.clone());
+    seat.reading_records(Arc::new(letibot_harnessd::room::link::record));
+    let op = |seq: u64| json!({"type": "record", "session": "s-rec-me", "room": "dm", "seq": seq});
+    let whole = seat.ask("h1", op(filed.seq));
+    assert_eq!(whole["text"], text, "{whole}");
+
+    // A number the room has nothing for is one sentence, and never an empty text that reads as
+    // "the message was empty".
+    let gone = seat.ask("h1", op(filed.seq + 9));
+    assert!(gone["text"].is_null(), "{gone}");
+    assert!(
+        gone["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no longer holds"),
+        "{gone}"
+    );
+
+    // And the session's own seat reads what it always could: the record is not a widening of the
+    // operator's reach, it is the reader's.
+    let theirs = seat.ask("h1", op(filed.seq));
+    assert!(theirs["error"].is_null(), "{theirs}");
+    server.stop();
+}

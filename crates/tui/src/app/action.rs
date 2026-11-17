@@ -159,9 +159,10 @@ pub enum Action {
     /// the name, its one line and where it was found. A body travels on [`Action::LoadSkill`],
     /// because a listing of bodies is not a listing.
     ListSkills,
-    /// One chat request as the operator, a room `Request` as JSON. The answer comes back as
-    /// `ServerFrame::RoomChat`, routed to the `/rooms` view. `id` is the request id the send was
-    /// minted under, so a send that failed is kept until the operator deals with it.
+    /// One chat request as the operator: a room `Request` as JSON, or one of the daemon's own ops
+    /// (`marks`, `mark`, `record` - the last reads a message in this session's name). The answer
+    /// comes back as `ServerFrame::RoomChat`, routed to the `/rooms` view. `id` is the request id
+    /// the send was minted under, so a send that failed is kept until the operator deals with it.
     RoomChat {
         op: serde_json::Value,
         id: Option<String>,

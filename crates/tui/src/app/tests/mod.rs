@@ -1447,6 +1447,7 @@ mod reseatcard;
 mod restartcard;
 mod retryrow;
 mod reviewcard;
+mod roomrecord;
 mod rooms;
 mod rooms_compose;
 mod rooms_nav;

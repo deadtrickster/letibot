@@ -25,6 +25,18 @@ pub struct DiffPopup {
     pub(crate) laid: Option<Layout>,
     /// How many body rows the last frame had, for the paging keys.
     pub(crate) room: usize,
+    /// The room record a chat row's popup asked for, while it waits for the answer: a long post
+    /// reaches the session as its first line and a pointer, and this is the read that fills it in.
+    pub(crate) record: Option<RecordAsk>,
+}
+
+/// What an open notice popup is waiting on: the record a chat row pointed at, and the row exactly
+/// as the model was sent it, so a read that fails still shows what the head opened with.
+#[derive(Debug, Clone)]
+pub(crate) struct RecordAsk {
+    pub(crate) room: String,
+    pub(crate) seq: u64,
+    pub(crate) stub: String,
 }
 
 /// What a popup over the conversation holds: a change, a job's completion notice, a picture.
@@ -84,6 +96,30 @@ pub(crate) struct Layout {
     pub(crate) note: Option<String>,
 }
 
+/// A record row's popup while the room is being asked: the row as the model was sent it, and what
+/// this head is doing about the rest.
+fn record_asked(stub: &str, seq: u64) -> String {
+    format!("{stub}\n\nasking the room for #{seq} in full…")
+}
+
+/// The room answered: the row's own header, the sentence saying what this is, and the message
+/// whole. The row on the conversation is untouched - it is what the model was sent.
+fn record_fetched(ask: &RecordAsk, whole: &str) -> String {
+    let head = ask.stub.lines().next().unwrap_or_default();
+    format!(
+        "{head}\nfetched from the room - the model was sent this row's first line and a pointer, \
+         not the text below.\n\n{whole}"
+    )
+}
+
+/// The room could not answer: the row as it stands, and the one sentence why.
+fn record_failed(ask: &RecordAsk, why: &str) -> String {
+    format!(
+        "{}\n\nthe room could not give #{} back: {why}",
+        ask.stub, ask.seq
+    )
+}
+
 impl App {
     /// Open the popup on `f`.
     pub(crate) fn open_diff_popup(&mut self, f: &FileRef) {
@@ -101,6 +137,7 @@ impl App {
             placed: false,
             laid: None,
             room: 0,
+            record: None,
         });
     }
 
@@ -157,6 +194,12 @@ impl App {
         let Some(mut text) = agent_row_text(it) else {
             return;
         };
+        // A room line the room filed as a record carries its first line and a pointer where the
+        // rest is: the popup asks the room for it, and the row stays what the model was sent.
+        if let Some((seq, room)) = letibot_plugin::card::readers::record_of(&text) {
+            self.open_record_popup(seq, room, &text);
+            return;
+        }
         // A note pointing at the summary carries it: the summary is the compacted transcript's
         // first row, a System row that can be far above and is hidden entirely at the
         // `conversation` rung, so the click on the note is where a reader looks for it.
@@ -185,6 +228,60 @@ impl App {
             answer,
             title: None,
         });
+    }
+
+    /// Open a room record whole: the row as the model was sent it, and the ask that fills in the
+    /// rest. The read is the daemon's, in this session's own name - a dm is its two ends' to read,
+    /// and a head is neither of them.
+    pub(crate) fn open_record_popup(&mut self, seq: u64, room: &str, stub: &str) {
+        let title = (format!("chat · {room} #{seq}"), Role::Info);
+        self.open_text_popup(record_asked(stub, seq), title);
+        if let Some(p) = self.diff_popup.as_mut() {
+            p.record = Some(RecordAsk {
+                room: room.to_string(),
+                seq,
+                stub: stub.to_string(),
+            });
+        }
+        self.queued.push(Action::RoomChat {
+            op: serde_json::json!({
+                "type": "record",
+                "session": self.session_id,
+                "room": room,
+                "seq": seq,
+            }),
+            id: Some(format!("record:{room}:{seq}")),
+        });
+    }
+
+    /// The room answered the popup's ask: the whole text, or one sentence saying why there is
+    /// none with the row's own stub above it. A popup opened on anything else is left alone.
+    pub(crate) fn record_filled(&mut self, key: &str, reply: &serde_json::Value) {
+        let Some(p) = self.diff_popup.as_mut() else {
+            return;
+        };
+        let Some(ask) = p.record.clone() else {
+            return;
+        };
+        if key != format!("{}:{}", ask.room, ask.seq) {
+            return;
+        }
+        let said = match reply.get("text").and_then(serde_json::Value::as_str) {
+            Some(whole) => record_fetched(&ask, whole),
+            None => record_failed(
+                &ask,
+                reply
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("the room gave no text back"),
+            ),
+        };
+        if let PopupBody::Notice { text, .. } = &mut p.body {
+            *text = said;
+        }
+        // The reader keeps their place: the rows are laid out again at the next frame, and
+        // `placed` stays true so the popup does not scroll back to its first line.
+        p.laid = None;
     }
 
     /// Open a text whole in the notice popup under `title` - the flash notice's, cut on its
