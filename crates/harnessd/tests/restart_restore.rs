@@ -78,10 +78,16 @@ fn wiring(cfg: &Config) -> SessionWiring {
 /// A scratch directory holding a git repository (`repo/`, one commit) and the store.
 struct Scratch {
     root: PathBuf,
+    // Every test opens the same PARENT, whose /tmp is under the process-wide gc root; one test
+    // closing it would delete another's, so the tests in this file run one at a time.
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
+
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Scratch {
     fn new(tag: &str) -> Scratch {
+        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let root = letibot_sessionlog::testing::scratch(tag);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -97,7 +103,10 @@ impl Scratch {
             assert!(ok, "git {args:?}");
         }
         letibot_tools::testing::repo_config(&repo);
-        Scratch { root }
+        Scratch {
+            root,
+            _serial: serial,
+        }
     }
     fn repo(&self) -> PathBuf {
         self.root.join("repo")
