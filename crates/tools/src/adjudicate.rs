@@ -1462,6 +1462,10 @@ pub struct AdjudicatedGate {
     /// The review queue's gatekeeper, for a queue session: a grant answered on a relayed card
     /// is kept for the whole queue.
     queue: Option<String>,
+    /// The session at the root of this session's tree. A view grant is kept under it rather than
+    /// under the asker, because the record is the tree's: a child opened afterwards has to find
+    /// the grant a sibling answered, and the asker's own id is not where that row is.
+    tree: Option<String>,
     /// The ledger generation the copy below was read at.
     loaded_at: u64,
     /// The ledger's own generation at the last load: a revoke in another process moves it.
@@ -1603,6 +1607,7 @@ impl AdjudicatedGate {
             asker: None,
             ledger: None,
             queue: None,
+            tree: None,
             loaded_at: 0,
             loaded_store: String::new(),
             unkept: Vec::new(),
@@ -1628,10 +1633,26 @@ impl AdjudicatedGate {
         self
     }
 
-    /// The scopes this session reads its grants from: its own, and its queue's.
+    /// The session at the root of this session's tree, which is where a view grant is kept: the
+    /// record is the tree's, so the row has to be too, or a sibling opened later reads its own id
+    /// and finds nothing. Handed in rather than looked up here - the gate holds no store.
+    pub fn with_tree_root(mut self, root: impl Into<String>) -> Self {
+        self.tree = Some(root.into());
+        // The ledger may have been read already, before this was known.
+        if self.ledger.is_some() {
+            self.loaded_at = 0;
+            self.refresh_grants();
+        }
+        self
+    }
+
+    /// The scopes this session reads its grants from: its own, its tree's, and its queue's.
     fn grant_scopes(&self) -> Vec<crate::grant_ledger::Scope> {
         use crate::grant_ledger::Scope;
         let mut out = vec![Scope::Session(self.session_id.clone())];
+        if let Some(t) = self.tree.as_ref().filter(|t| **t != self.session_id) {
+            out.push(Scope::Session(t.clone()));
+        }
         if let Some(q) = &self.queue {
             out.push(Scope::Queue(q.clone()));
         }
@@ -1749,7 +1770,11 @@ impl AdjudicatedGate {
         };
         let scope = match (&self.queue, at) {
             (Some(q), Some(crate::grant_ledger::GrantAt::Queue)) => Scope::Queue(q.clone()),
-            _ => Scope::Session(self.session_id.clone()),
+            // A view grant is the tree's, not the asker's: see [`Self::with_tree_root`].
+            _ => Scope::Session(match &kept {
+                Kept::View { .. } => self.tree.clone().unwrap_or_else(|| self.session_id.clone()),
+                _ => self.session_id.clone(),
+            }),
         };
         match ledger.keep(&scope, &kept, why, by) {
             Ok(()) => {
