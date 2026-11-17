@@ -553,10 +553,9 @@ fn down_span(stop: &Stopped, back_ms: u64) -> String {
     }
 }
 
-/// Whether a session's rows stop in a turn that was still going: an `Assistant` with no call is a
-/// finished turn, a harness row of its own is not a turn, and every other row never got its answer.
-/// Display-only rows (offer cards, segment marks) and a park's resume notice are read past: the
-/// first is filed after the answer, the second re-opens the turn before it.
+/// Whether a session's rows stop mid-turn: an `Assistant` with no call is finished, a harness row
+/// is not a turn, any other row never got its answer. Display-only rows and a park's resume
+/// notice are read past, since they are filed after the answer or reopen the turn before it.
 pub fn mid_turn(items: &[TranscriptItem]) -> bool {
     for item in items.iter().rev() {
         if display_only(item) || a_parks_resume(item) {

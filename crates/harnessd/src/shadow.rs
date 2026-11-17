@@ -71,9 +71,8 @@ impl Job {
     }
 
     /// Whether the runner drops a late verdict as stale. Only turn_end's: a late during verdict is
-    /// still a drift measurement, and its skill pick has its own stale rule where it acts
-    /// (`during::operator_since`). Permission answers inside its own deadline, as the oracle's
-    /// bounded wait, so it is never late.
+    /// still a drift measurement with its own stale rule (`during::operator_since`), and
+    /// permission answers inside the oracle's bounded wait, so it is never late.
     pub fn acts(self) -> bool {
         self == Job::TurnEnd
     }
@@ -143,8 +142,6 @@ impl Slot {
     }
 }
 
-/// The shadow for a session with `cfg`, on `watched_model`. `NotYet` while its row or transcript is
-/// still to be written; `Off` for a session no job watches, which is every session by default.
 /// Whether this session gets a shadow: a job on, a top-level session that is not a package, a
 /// gatekeeper or a shadow itself, and a store to record in.
 pub fn watches(cfg: &crate::config::Config) -> bool {
@@ -162,6 +159,8 @@ pub fn is_oracle(cfg: &crate::config::Config) -> bool {
     cfg.shadow.answers_reads() && watches(cfg)
 }
 
+/// The shadow for a session with `cfg`, on `watched_model`. `NotYet` while its row or transcript is
+/// still to be written. `Off` for a session no job watches, which is every session by default.
 pub fn open_for(cfg: &crate::config::Config, watched_model: &str, wake: Wake) -> Slot {
     let shadow = &cfg.shadow;
     if !watches(cfg) {

@@ -1,9 +1,6 @@
-//! Whether a provider's ACCOUNT can serve at all, asked once at a start instead of by the first
-//! turn: a plan with no balance answers its very first real call with `1113`, and the turn is spent
-//! learning a fact the plan's own usage door says for one GET.
-//!
-//! Cheap and never in the way: the probe is one request with a five-second cap, cached per account,
-//! and every failure of the probe itself is [`Account::Unknown`] - which refuses nothing.
+//! Whether a provider's account can serve at all, asked once at a start so a plan with no balance
+//! does not spend the first turn learning it. One capped request, cached per account. A failed
+//! probe is [`Account::Unknown`], which refuses nothing.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
