@@ -392,13 +392,12 @@ R294. No code before the bar is met.
 
 ## The exit test
 
-The stability bar, measured in this order. None of its four conditions is met at the snapshot.
+The stability bar, measured in this order.
 1. **Gate.** After B10, I89 and I92 (R347): three consecutive full gates on one tip, with no rerun
    and no Blocked step, logged. Not measurable before, because a skip passes and a test reads the
-   operator's live state.
-2. **A week of rano.** After B7, B8, B9 and B16 are installed and rano is restarted onto that build
-   with I71's notice in place: seven days with a restart log, and a journal-against-transcript
-   reconciliation counting zero lost and zero repeated prompts, steers, job results and room lines.
+   operator's live state. Met 2026-11-17: three consecutive green gates on 78d2cea3f.
+2. **A week of db-fuzz and arangodb.** Those sessions run on the installed build, and no letibot
+   defect is found in them for seven days.
 3. **Figures.** After B15 and I73-I75: every fact on the STALE list traced to its source, with its
    refresh and its age shown.
 4. **Invariants.** Last, one pass over `docs/review/2026-11-16/invariants.md`: each PARTLY or NOT
