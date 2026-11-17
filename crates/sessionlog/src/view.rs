@@ -1673,7 +1673,7 @@ mod tests {
         assert_eq!(
             v.snapshot(2, 0).items[0].item,
             Some(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
             })
         );
