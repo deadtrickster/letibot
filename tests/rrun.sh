@@ -218,9 +218,8 @@ a_checkout() {
   git -C "$1/tree" commit -qm one
 }
 # ---------------------------------------------------------------------------------------
-# **A run that waited on the lock has an OLD checkout**, cloned before the build it queued behind,
-# and cargo calls a source that is not NEWER than its artifact fresh: the run then built against
-# the other branch's code. Two real crates, one shared target dir, each run its own binary.
+# A run that waited on the lock has an old checkout, and cargo calls a source not newer than its
+# artifact fresh, so it would build the other branch's code. Two crates, one target, each its own binary.
 if command -v cargo > /dev/null 2>&1 && command -v rustc > /dev/null 2>&1; then
   cargo_bin="$(command -v cargo)"
   mkdir -p "$T/crate-a/src" "$T/crate-b/src"
