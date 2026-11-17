@@ -15,14 +15,12 @@ use crate::room::{
 /// 12 with those counted, so only a 13 coordinator is known to read `may_prompt`.
 pub const ROOM_PROTOCOL_VERSION: u16 = 13;
 
-/// The oldest client this coordinator still serves. A bump that changes what an old client is sent
-/// unasked raises this; 13 raised it for nothing, because `may_prompt` is a frame a client chooses
-/// to send and an 11 client never chooses it.
+/// The oldest client this coordinator still serves. Only a bump that changes what an old client
+/// is sent unasked raises it. `may_prompt` does not, since a client chooses to send it.
 pub const OLDEST_CLIENT: u16 = 11;
 
 /// The protocol a frame became what this build means by it, for the frames that need more than the
-/// floor. `12` carried `may_prompt` for part of its life; a frame not named here needs only
-/// [`OLDEST_CLIENT`].
+/// floor. A frame not named here needs only [`OLDEST_CLIENT`].
 pub fn frame_since(frame: &str) -> Option<u16> {
     match frame {
         "may_prompt" => Some(13),

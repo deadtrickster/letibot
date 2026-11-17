@@ -112,10 +112,9 @@ fn sync_dir(path: &Path) {
 }
 
 impl Store {
-    /// Read `path` into the shadow. The bytes are decoded as far as they will go and an unreadable
-    /// line is skipped and said - a torn last line is the ordinary wreckage of a crash. What the
-    /// read could not use is kept, though, and it forbids the one operation that would drop it: a
-    /// compaction rewrites the file from this shadow, so a read that was not whole refuses to.
+    /// Read `path` into the shadow. An unreadable line is skipped and said, since a torn last line
+    /// is the ordinary wreckage of a crash. A read that was not whole refuses compaction, which
+    /// rewrites the file from this shadow and would drop what the read could not use.
     pub fn open(path: &Path) -> Store {
         let read = std::fs::read(path);
         let (text, whole) = match &read {
