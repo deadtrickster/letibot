@@ -6166,6 +6166,35 @@ fn a_train_whose_target_moved_lands_nothing_and_requeues_every_car() {
     }
 }
 
+/// A landing undone because the operator's checkout could not follow leaves the target's reflog as
+/// it was. The rebase reads reflog entries as bases, so an entry naming the undone commit would make
+/// the branch read as carrying nothing of its own when it comes back in line.
+#[test]
+fn an_undone_landing_is_not_left_in_the_targets_reflog() {
+    let w = World::new("undo-reflog");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("one", "test/a");
+    let tip = w.tip();
+    // An uncommitted change in the operator's checkout, in the file the landing touches: the
+    // checkout refuses to follow, so the landing is undone.
+    std::fs::write(w.repo.join("one.txt"), "mine\n").unwrap();
+
+    run(&q, 2);
+
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Blocked, "{row:?}");
+    assert_eq!(w.tip(), tip, "the target is where it was before the gate");
+    for sha in sh(&w.repo, &["reflog", "show", "--format=%H", "main"]).lines() {
+        assert!(
+            git::is_ancestor(&w.repo, sha, "main").unwrap_or(false),
+            "the reflog names {sha}, which is not on `main`: an undone landing left as a base"
+        );
+    }
+}
+
 /// A gate step that runs a `firecode_only` program is named, through a script it calls too, and a
 /// step that runs none is not.
 #[test]

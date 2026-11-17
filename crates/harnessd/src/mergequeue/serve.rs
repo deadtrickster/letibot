@@ -3123,7 +3123,7 @@ impl RepoQueue {
             return Ok(());
         }
         if let Err(e) = git::follow_checkouts(&repo, &target, &tip, &rebased) {
-            if git::update_ref_cas(&repo, &target, &tip, &rebased).is_ok() {
+            if git::undo_landing(&repo, &target, &rebased, &tip).is_ok() {
                 let why = format!("{e}. The landing was undone: `{target}` is at {tip} as before.");
                 self.raise(
                     "queue_blocked",
@@ -3315,7 +3315,7 @@ impl RepoQueue {
             Ok(()) => match git::follow_checkouts(&self.repo, &target, &train.tip, &prev) {
                 Ok(()) => None,
                 Err(e) => {
-                    if git::update_ref_cas(&self.repo, &target, &train.tip, &prev).is_ok() {
+                    if git::undo_landing(&self.repo, &target, &prev, &train.tip).is_ok() {
                         Some(format!(
                             "{e}. The train's landing was undone: `{target}` is at {} as before, \
                              and its branches go back in line",
