@@ -13,6 +13,7 @@ use rusqlite::{Connection, OptionalExtension, Params, TransactionBehavior, param
 use sha2::{Digest, Sha256};
 
 use crate::ledger::LedgerRow;
+use crate::migrate_split::triggers_on;
 use crate::vocab::TokenId;
 
 mod busy;
@@ -4139,26 +4140,41 @@ impl Store {
         Ok(max)
     }
 
-    /// Remove a session that holds no transcript rows. A session with rows cannot be deleted, and
-    /// that is not an omission: `transcript_item` refuses a delete by trigger, so the rows this
-    /// would orphan cannot go.
+    /// Remove a session that holds no row the MODEL was ever sent. A session with one cannot be
+    /// deleted, and that is not an omission: `transcript_item` refuses a delete by trigger, so the
+    /// rows this would orphan cannot go. A session holding only the operator's own offers is not
+    /// one nothing may be removed from - no model ever read those - so its rows go with it.
     pub fn delete_empty_session(&self, id: &str) -> Result<()> {
-        let Some(s) = self.session(id)? else {
+        if self.session(id)?.is_none() {
             return Err(StoreError::NotFound(format!("session {id}")));
-        };
-        if s.items > 0 {
+        }
+        if self.model_rows_of(id)? > 0 {
             return Err(StoreError::Refused(format!(
-                "session {id} holds {} transcript row(s) and cannot be deleted: \
-                 transcript_item carries a BEFORE DELETE trigger, because an \
+                "session {id} holds transcript row(s) the model was sent and cannot be \
+                 deleted: transcript_item carries a BEFORE DELETE trigger, because an \
                  append-only log whose history can be removed is not one. Rename it \
-                 instead.",
-                s.items
+                 instead."
             )));
         }
         // `transcript.session_id` is a foreign key with `foreign_keys` on. One IMMEDIATE transaction
         // per file since none spans a split set: history first, so a session row never points at
-        // a transcript that is gone.
+        // a transcript that is gone. The rows left are the offers, and the append-only trigger is
+        // dropped and put back from `sqlite_master` inside this transaction - the carve's rule: a
+        // DELETE the log refuses is one that has to be made deliberately, under the write lock.
         self.write_tx_at("transcript", |tx| {
+            let triggers = triggers_on(tx, &["transcript_item"])?;
+            for (name, _) in &triggers {
+                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}"))?;
+            }
+            let gone = tx.execute(
+                "DELETE FROM transcript_item WHERE transcript_id IN \
+                 (SELECT id FROM transcript WHERE session_id = ?1)",
+                params![id],
+            );
+            for (_, sql) in &triggers {
+                tx.execute_batch(sql)?;
+            }
+            gone?;
             tx.execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
             Ok(())
         })?;
@@ -4167,6 +4183,31 @@ impl Store {
             tx.execute("DELETE FROM session WHERE id = ?1", params![id])?;
             Ok(())
         })
+    }
+
+    /// How many rows of this session the model was ever sent: the count that decides whether a
+    /// delete would remove history, as against the offers only a head draws.
+    fn model_rows_of(&self, id: &str) -> Result<u32> {
+        // The ids first, with the connection's guard released: `load_transcript` takes the same
+        // connection, and one thread taking it twice is a deadlock, not a wait.
+        let ids: Vec<String> = {
+            let conn = self.at("transcript");
+            let mut st = conn.prepare(
+                "SELECT id FROM transcript WHERE session_id = ?1 ORDER BY created_at, rowid",
+            )?;
+            st.query_map(params![id], |r| r.get(0))?
+                .collect::<std::result::Result<_, _>>()?
+        };
+        let mut n = 0u32;
+        for tid in ids {
+            n += self
+                .load_transcript(&tid)?
+                .items
+                .iter()
+                .filter(|(item, _, _)| item.reaches_model())
+                .count() as u32;
+        }
+        Ok(n)
     }
 
     /// What a stable prefix was rendered from and by. `None` if it is not here.

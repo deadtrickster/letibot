@@ -97,6 +97,47 @@ fn seeded(s: &Store) -> (String, String) {
     ("tr-1".into(), prefix_id)
 }
 
+/// A session of nothing but the operator's offers is one the model was never sent, so a delete
+/// removes it whole; a session holding one model row is still refused, because that history is
+/// what the append-only log keeps.
+#[test]
+fn an_offer_only_session_can_be_deleted_and_a_said_one_cannot() {
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let offer = TranscriptItem::Offer {
+        kind: letibot_transcript::OfferKind::Skill,
+        title: "a skill".into(),
+        body: "what it would say".into(),
+    };
+    let toks = vec![7u32];
+    let row = ledger.append("it-offer", &toks).unwrap().clone();
+    s.append_item(&tr, 0, &offer, &row, &toks).unwrap();
+    s.delete_empty_session("sess-1")
+        .expect("an offer is the operator's, not history the log keeps");
+    assert!(
+        s.session("sess-1").unwrap().is_none(),
+        "the session is gone"
+    );
+    s.load_transcript(&tr)
+        .expect_err("its transcript went with it, so no row points at nothing");
+
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let said = TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![letibot_transcript::UserPart::Text {
+            text: "hello".into(),
+        }],
+    };
+    let toks = vec![9u32];
+    let row = ledger.append("it-said", &toks).unwrap().clone();
+    s.append_item(&tr, 0, &said, &row, &toks).unwrap();
+    let why = s.delete_empty_session("sess-1").unwrap_err().to_string();
+    assert!(why.contains("the model was sent"), "{why}");
+}
+
 /// A listed session carries its current transcript's last row - what the subagents
 /// pane reads to say how a child it did not watch ended.
 #[test]

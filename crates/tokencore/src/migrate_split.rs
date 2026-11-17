@@ -415,7 +415,7 @@ fn delete_key_rows(conn: &Connection) -> Result<()> {
 
 /// Every trigger on one of these tables, with the text that recreates it: the delete above has to
 /// take them out of the way and put them back exactly as the file had them.
-fn triggers_on(conn: &Connection, tables: &[&str]) -> Result<Vec<(String, String)>> {
+pub(crate) fn triggers_on(conn: &Connection, tables: &[&str]) -> Result<Vec<(String, String)>> {
     let list = tables
         .iter()
         .map(|table| format!("'{table}'"))
