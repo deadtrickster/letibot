@@ -4,6 +4,7 @@
 //!   letibot-mcp                              MCP over stdio (what Claude Code runs)
 //!   letibot-mcp wait <worktree> <session> --until attention [--timeout 2h] [--exit-on-stall]
 //!   letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
+//!   letibot-mcp todo-wait [--timeout 2h]
 //!   letibot-mcp wait-queue <repository> <row> [--timeout 2h]
 //! ```
 //!
@@ -50,6 +51,14 @@ letibot-mcp — the Claude Code bridge to leticode
                                   stdout; the inbox cursor is moved past them)
         20  the coordinator could not be reached (why is on stderr)
         30  the timeout passed    (nothing on stdout)
+
+  letibot-mcp todo-wait [--timeout 2h]
+      Block until this seat's plan check comes due and print its notice - the text the channel
+      frame carries. It is the plugin's monitor, so a session started without the channels flag
+      is nagged all the same.
+        0   the check is due        (`[todo check] ...` on stdout)
+        20  the seat cannot be read (why is on stderr)
+        30  the timeout passed     (nothing on stdout)
 
   letibot-mcp wait-queue <repository> <row> [--timeout 2h]
       Follow a merge-queue row (the id `queue` enqueue answered) of the repository at that
@@ -104,6 +113,21 @@ fn main() {
                     0 => println!("{said}"),
                     20 => eprintln!("letibot-mcp: {said}"),
                     _ => eprintln!("letibot-mcp: no room message before the timeout"),
+                }
+                code
+            }
+            Err(e) => {
+                eprintln!("letibot-mcp: {e}\n\n{USAGE}");
+                2
+            }
+        },
+        Some("todo-wait") => match parse_todo_wait(&args[1..]) {
+            Ok(deadline) => {
+                let (code, said) = letibot_bridge::seat_nag::wait(deadline);
+                match code {
+                    0 => println!("{said}"),
+                    20 => eprintln!("letibot-mcp: {said}"),
+                    _ => eprintln!("letibot-mcp: no todo nag before the timeout"),
                 }
                 code
             }
@@ -253,6 +277,23 @@ fn parse_room_wait(args: &[String]) -> Result<(letibot_bridge::rooms::Attention,
     Ok((attention, Instant::now() + timeout))
 }
 
+/// `todo-wait [--timeout DUR]`: the seat is the one this folder's bridge serves, so it takes no
+/// argument a caller could spell differently from the seat it is waiting on.
+fn parse_todo_wait(args: &[String]) -> Result<Instant, String> {
+    let mut timeout = DEFAULT_TIMEOUT;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--timeout" => {
+                let raw = it.next().ok_or("--timeout wants a duration (2h)")?;
+                timeout = duration(raw)?;
+            }
+            other => return Err(format!("unexpected argument `{other}`")),
+        }
+    }
+    Ok(Instant::now() + timeout)
+}
+
 /// `wait-queue <repository> <row> [--timeout DUR]`.
 fn parse_wait_queue(args: &[String]) -> Result<(String, String, Instant), String> {
     let mut timeout = DEFAULT_TIMEOUT;
@@ -363,6 +404,23 @@ mod tests {
         assert!(e.contains("completion") && e.contains("attention"), "{e}");
         let e = parse_wait(&args(&["/tmp/wt", "--until", "attention"])).expect_err("no session");
         assert!(e.contains("session"), "{e}");
+    }
+
+    /// `todo-wait` names no seat and no position: the seat is the folder's own, so the only thing a
+    /// caller can say is how long to wait.
+    #[test]
+    fn todo_wait_takes_a_timeout_and_nothing_else() {
+        let before = Instant::now();
+        let deadline = parse_todo_wait(&args(&["--timeout", "90s"])).expect("parses");
+        let left = deadline.saturating_duration_since(before);
+        assert!(
+            left > Duration::from_secs(89) && left < Duration::from_secs(91),
+            "{left:?}"
+        );
+        assert!(parse_todo_wait(&args(&[])).is_ok(), "the default holds");
+        let e = parse_todo_wait(&args(&["cc@somewhere"])).expect_err("a seat is not an argument");
+        assert!(e.contains("cc@somewhere"), "{e}");
+        assert!(parse_todo_wait(&args(&["--attention", "all"])).is_err());
     }
 
     #[test]

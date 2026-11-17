@@ -165,6 +165,17 @@ never idle for the 60 s the check needs - the field saw thirteen open rows and n
 hour. `tools::call` postpones the check for a tool that is not on `only_reads` (`crates/bridge/src/tools.rs`),
 which is why a new read has to be added there and a new writer needs nothing.
 
+**The delivery is the monitor's, and the frame is the fallback.** Claude Code delivers a channel
+frame only from a server named in `--dangerously-load-development-channels`, and the plugin's server
+is `plugin:leticode@leticode` - a session started with `server:leticode` (a server a bare `claude
+mcp add` made) or with no flag has every frame dropped silently. So the plugin declares a second
+monitor, `letibot-mcp todo-wait`, and the bridge hands the nag to it: the waiter holds a claim file
+beside the seat (`crates/bridge/src/seat_nag.rs`), the watcher writes the notice into the seat's log
+when the claim is held and pushes the frame when it is not. One decision, one delivery - never a
+frame and a notice for the same check. The waiter keeps its own mark, so a nag is reported once even
+across the monitor's hourly restart, and it never computes "due" itself: the seat's idleness is the
+bridge's fact, and a second clock would be a second nag.
+
 ## Reuse, not fork
 
 Nothing above is a second implementation of the session's rules, and that is the point of where the
@@ -212,6 +223,10 @@ and the head has no door to it.
   quiet while the package's turn is in flight and askable when the turn ends.
 - `an_in_progress_row_with_no_wait_is_nagged_once_and_not_again_without_a_change` - one channel push
   after the window, nothing more until the board moves.
+- `a_pane_polling_the_board_does_not_keep_the_check_from_coming_due` - thirteen rows and a read every
+  half window: a poll is not work, and the notice still comes.
+- `a_seat_writing_its_board_is_working_and_the_check_waits` - the other half: a call that does work
+  postpones the check, and the notice comes once the seat stops.
 - `a_packages_open_job_is_a_wait_on_that_package_and_ends_with_it`.
 - `a_row_waiting_on_the_operator_is_quiet_until_the_answer_lands`.
 

@@ -4,13 +4,14 @@ One installable plugin around the leticode bridge (`crates/bridge`, `docs/claude
 It replaces two things a seat used to need: `claude mcp add` for every project, and a shell alias
 around `claude` that registered the server by hand.
 
-It carries six pieces:
+It carries seven pieces:
 
 | piece | what it is |
 |---|---|
 | the MCP server `leticode` | `letibot-mcp` from `PATH` — the session tools, the room tools and the seat's todo board |
 | the channel | `capabilities.experimental["claude/channel"]`, which the server declares; each turn end, ask, failure and provider trouble of a held session is pushed as `notifications/claude/channel` |
 | the room waiter | a plugin monitor: `letibot-mcp room-wait --attention to_me` in a loop, so a message for this seat reaches the session without the channel flag |
+| the todo nag | a plugin monitor: `letibot-mcp todo-wait` in a loop, so the seat's plan check reaches the session without the channel flag |
 | the `leticode` skill | brief a child, wait for it, read it, answer its asks, stop or collect it |
 | the `room-waiter` skill | what arrives, what to answer, and what an ask is that chat is not |
 | the panes | `hooks/register.tsx`, beside the chat: the packages this bridge holds (`/packages`; click a name to follow its transcript), remote runs from `rrun` (`/runs`), and this seat's todo board (`/leticode-todos`) |
@@ -51,6 +52,24 @@ per-session wake as a background command.
 A bare `claude mcp add` registration of the same server is bypassed with
 `--dangerously-load-development-channels server:leticode` — the server name, for the case where
 the plugin is not what registered it.
+
+## The todo nag is a monitor, not a push
+
+The seat's plan check — the `[todo check]` notice a session gets when it has stopped moving its
+board — reaches the session the same way the room waiter does: the plugin's `todo-nag` monitor runs
+
+```text
+while :; do letibot-mcp todo-wait --timeout 1h || sleep 10; sleep 2; done
+```
+
+The bridge's own clock decides when the check is due, because the seat's idleness is what arms it;
+the monitor only waits for that decision and prints the notice, which ends the command and wakes
+the session. It needs no flag and no idle session. **The flag is `plugin:leticode@leticode`** — the
+plugin's server is registered under that name, and `--dangerously-load-development-channels
+server:leticode` names a server a bare `claude mcp add` made, which is not the plugin's; a session
+started with that spelling, or with none, has every `notifications/claude/channel` frame dropped
+silently. A nag is delivered once either way: while a `todo-wait` holds the seat the bridge writes
+the notice for it and does not also push the frame.
 
 ## Permission relay, off by default
 

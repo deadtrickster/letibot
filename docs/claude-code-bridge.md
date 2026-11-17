@@ -72,7 +72,10 @@ remove a hand registration: `claude mcp remove leticode -s user`, then restart t
 **The room waiter is the fallback wake.** Without the channel, or when a push is lost, the plugin's
 monitor (`letibot-mcp room-wait --attention to_me` in a loop) wakes the session on a message for its
 seat. A session without the plugin arms the same loop as a persistent Monitor (`docs/room.md`
-§ *Claude Code*).
+§ *Claude Code*). The seat's own plan check takes the same road: a second monitor,
+`letibot-mcp todo-wait`, prints the `[todo check]` notice the channel frame would have carried, and
+the bridge sends the frame only when no `todo-wait` is holding the seat
+(`docs/seat-todo.md` § *How the nag reaches the seat*).
 
 `letibot doctor`'s Claude Code rows check this: `leticode plugin enabled`, `no user-scope leticode
 MCP server`, `claude channel flag`, `one bridge per Claude session`, `room waiter per Claude

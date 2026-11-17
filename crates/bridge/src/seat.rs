@@ -61,6 +61,9 @@ pub struct Seat {
     /// The seat's channel: the nags and its own jobs' endings, kept so a client that reconnects is
     /// told what it missed. Created by the first [`Seat::watch`].
     outbox: Mutex<Option<Arc<Outbox>>>,
+    /// The monitor's half of a nag: the log a waiting `todo-wait` reports from, and the claim that
+    /// says whether one is there. A channel frame is what a client without the channels flag drops.
+    nag: crate::seat_nag::Nag,
     /// How many notes this seat has pushed. A nag is said again on the ladder, so its outbox key
     /// has to be new every time - the plan key would silence its own repeat.
     notes: AtomicU64,
@@ -86,6 +89,7 @@ impl Seat {
             )),
         );
         SeatJobs::reap_in_background(&jobs);
+        let nag = crate::seat_nag::for_seat(&store, &handle);
         Seat {
             handle,
             board: Arc::new(board),
@@ -97,6 +101,7 @@ impl Seat {
             heads,
             jobs,
             outbox: Mutex::new(None),
+            nag,
             notes: AtomicU64::new(0),
         }
     }
@@ -281,7 +286,7 @@ impl Seat {
         }
         let made = Outbox::at(crate::daemon::rundir().join(format!(
             "{}.seat-nag-{}",
-            crate::daemon::key(seat.store.parent().unwrap_or(&seat.store)),
+            crate::seat_nag::dir_key(&seat.store),
             seat.handle.replace(['/', '@', ':'], "-")
         )));
         made.attach(tx);
@@ -312,10 +317,16 @@ fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
         if let Some(notice) = a_pass(&mut clock, &rows, &children, &jobs, moved, active, now)
             && let Some(text) = notice
         {
-            // A new key per delivery: a plan said again on the ladder is news, and the outbox's
-            // key is what would otherwise silence its own repeat.
-            let n = seat.notes.fetch_add(1, Ordering::SeqCst);
-            outbox.record(format!("nag:{n}"), nag(seat.handle(), &text));
+            // ONE delivery, decided here: the waiter that holds this seat carries the nag and the
+            // channel is silent, or - with nobody waiting - the frame goes as it always did. A
+            // client started without the channels flag drops a frame silently, which is the loss a
+            // monitor of the same notice replaces.
+            if !seat.nag.note(&text) {
+                // A new key per delivery: a plan said again on the ladder is news, and the
+                // outbox's key is what would otherwise silence its own repeat.
+                let n = seat.notes.fetch_add(1, Ordering::SeqCst);
+                outbox.record(format!("nag:{n}"), nag(seat.handle(), &text));
+            }
         }
         drop(clock);
         std::thread::sleep(PASS);
