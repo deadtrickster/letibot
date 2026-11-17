@@ -955,7 +955,9 @@ pub(crate) fn waits_words(t: &letibot_sessionlog::event::TodoEntry) -> Option<St
         TodoNeed::External { what, .. } => Some(what.clone()),
         // Another board's row: a seat's or a session's, and the row's own words - the pane draws
         // `waits on cc@<folder>'s "<row>"`.
-        TodoNeed::Todo { seat, content } => Some(format!("{}'s \"{}\"", seat.trim(), content.trim())),
+        TodoNeed::Todo { seat, content } => {
+            Some(format!("{}'s \"{}\"", seat.trim(), content.trim()))
+        }
         _ => None,
     })
 }

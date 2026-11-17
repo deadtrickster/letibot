@@ -232,7 +232,10 @@ impl Harness {
         let children = self.tasks.snapshot();
         // The other boards this plan waits on, read at most once per name per sweep: a `todo` wait is
         // freed by that board's own row being finished, struck off or gone.
-        let boards = crate::seat_boards::SeatBoards::new(self.cfg.store_at(), self.cfg.workspace.to_string_lossy());
+        let boards = crate::seat_boards::SeatBoards::new(
+            self.cfg.store_at(),
+            self.cfg.workspace.to_string_lossy(),
+        );
         let mut read: std::collections::BTreeMap<
             String,
             Result<letibot_tools::builtins::todo::Board, String>,
@@ -274,7 +277,9 @@ impl Harness {
             // that cannot be read at all is NO answer - an absence is not an ending, so the wait
             // stands until it can be.
             TodoNeed::Todo { seat, content } => {
-                let board = read.entry(seat.clone()).or_insert_with(|| boards.board_of(seat));
+                let board = read
+                    .entry(seat.clone())
+                    .or_insert_with(|| boards.board_of(seat));
                 match board {
                     Ok(letibot_tools::builtins::todo::Board::Rows(rows)) => {
                         letibot_tools::builtins::todo::wait_ended(rows, seat, content)

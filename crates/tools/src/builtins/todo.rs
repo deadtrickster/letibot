@@ -28,9 +28,7 @@ pub use nag::{
 /// The other boards a `todo` wait may name - an external seat's or another session's of this
 /// project - read by the tool, by the daemon's sweep and by the bridge's.
 pub mod boards;
-pub use boards::{
-    Board, board_of, check_wait, folder_words, handle_words, wait_ended,
-};
+pub use boards::{Board, board_of, check_wait, folder_words, handle_words, wait_ended};
 
 /// The session's todo list, shared between the tool that writes it and the
 /// harness that persists and announces it.
@@ -4365,7 +4363,9 @@ fn other_board(seat: &str, content: &str) -> Result<TodoNeed, String> {
         );
     }
     if content.is_empty() {
-        return Err("it names no `content` — the row's exact words, as that board shows them".into());
+        return Err(
+            "it names no `content` — the row's exact words, as that board shows them".into(),
+        );
     }
     Ok(TodoNeed::Todo {
         seat: seat.to_string(),
@@ -4384,7 +4384,11 @@ fn resolve_seat_needs(
     let mut read: BTreeMap<String, Result<Board, String>> = BTreeMap::new();
     for (content, _, needs) in rows.iter_mut() {
         for need in needs.iter_mut() {
-            let TodoNeed::Todo { seat, content: want } = need else {
+            let TodoNeed::Todo {
+                seat,
+                content: want,
+            } = need
+            else {
                 continue;
             };
             let Some(boards) = boards else {
