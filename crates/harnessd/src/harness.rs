@@ -2061,7 +2061,8 @@ pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provid
 pub use wall::{CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model};
 #[cfg(test)]
 pub(crate) use wall::{
-    Resident, grown_with_how, roll_resident, schema_change, smaller_tail, wall_stops_round,
+    Resident, fold_leaves_room, fold_split_with_room, grown_with_how, roll_resident, schema_change,
+    smaller_tail, wall_stops_round,
 };
 pub(crate) use wall::{
     UnsealedFork, WallAnchor, compacted_line, reasoning_text, recovered_scale, round_backstop,

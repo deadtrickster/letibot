@@ -1301,6 +1301,8 @@ impl Harness {
         let prefix_tokens = self.session.ledger.prefix_len() as u64;
         // Ledger units: `per_item` and `prefix_tokens` below are the ledger's.
         let window = self.cfg.planning_window().unwrap_or(u64::MAX);
+        // What the next turn needs, in the same units: the wall a fold has to get under.
+        let headroom = self.cfg.headroom();
         let rows = self.plan_rows();
 
         // The fold the controller named. The ordinary one is the fold the size calls for; the sliced fold is the
@@ -1355,14 +1357,17 @@ impl Harness {
                             &items, &per_item, split, fold_room, scores,
                         ),
                         None => split,
+                    })
+                    // The residue, before a turn is spent on it: a fold that keeps so much
+                    // verbatim that the wall is still there has freed nothing.
+                    .and_then(|split| {
+                        fold_split_with_room(split, &per_item, prefix_tokens, window, headroom)
                     });
-                if let Some(split) = folded {
+                if let Some(fold) = folded {
+                    let split = fold.split;
                     self.hub.warn(
                         "compacting",
-                        format!(
-                            "at the wall: summarising the first {split} item(s) and continuing \
-                             on the summary plus the rest, verbatim"
-                        ),
+                        format!("at the wall: {}", fold.said(per_item.len())),
                     );
                     let (harvest, tail, tail_split) =
                         self.compact_by_folding(&items, split, &mut sink)?;
@@ -1545,15 +1550,18 @@ impl Harness {
                             } else {
                                 split
                             }
+                        })
+                        // And the same residue test: a tail that alone sits at the wall frees
+                        // nothing, and this arm's answer is the record with no tail at all.
+                        .and_then(|split| {
+                            fold_split_with_room(split, &per_item, prefix_tokens, window, headroom)
                         });
                     match split {
-                        Some(split) => {
+                        Some(chosen) => {
+                            let split = chosen.split;
                             self.hub.warn(
                                 "compacting",
-                                format!(
-                                    "over budget: summarising the first {split} item(s) and \
-                                     continuing on the summary plus the rest, verbatim"
-                                ),
+                                format!("over budget: {}", chosen.said(per_item.len())),
                             );
                             self.compact_by_folding(&items, split, &mut sink)?
                         }
@@ -2174,6 +2182,104 @@ pub(crate) fn smaller_tail(
     } else {
         split
     }
+}
+
+/// What a summary turn's record is expected to cost, for [`fold_leaves_room`]'s arithmetic: the
+/// ratio's share of the room a conversation leaves, under the cap every record is held to. Errs
+/// high on purpose - a record guessed small promises room the fold then does not free.
+pub(crate) fn record_estimate(window: u64, prefix_tokens: u64, headroom: u64) -> u64 {
+    let room = window
+        .saturating_sub(prefix_tokens)
+        .saturating_sub(headroom);
+    let share = (room as u128 * letibot_turn::SUMMARY_FIDELITY_PER_MILLE as u128 / 1_000) as u64;
+    share.clamp(
+        letibot_turn::MIN_SUMMARY_TOKENS,
+        letibot_turn::MAX_SUMMARY_TOKENS,
+    )
+}
+
+/// Whether a fold that keeps `tail` tokens verbatim leaves the next turn its room: the prompt, the
+/// record its summary writes and the tail, against the wall (`window - headroom`). A fold whose own
+/// tail sits at the wall frees nothing, and its summary turn is spent proving it.
+pub(crate) fn fold_leaves_room(prefix_tokens: u64, tail: u64, window: u64, headroom: u64) -> bool {
+    prefix_tokens + tail + record_estimate(window, prefix_tokens, headroom) + headroom < window
+}
+
+/// The split a fold runs, and what the fold the size called for would have left - so the line that
+/// announces the fold can say why it is not the one the size asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FoldSplit {
+    /// Where the fold summarises up to: `items.len()` carries nothing verbatim at all.
+    pub(crate) split: usize,
+    /// The verbatim tail the size's own fold would have left, when that alone was over what the
+    /// next turn needs. `None` when the size's own fold is the one running.
+    pub(crate) passed_over: Option<u64>,
+}
+
+impl FoldSplit {
+    /// The sentence a `compacting` warning carries: what the fold summarises, what it keeps, and -
+    /// when the size's fold was passed over - the tail that would still have been at the wall.
+    /// `items` is the history's length, so a `split` at the end reads as nothing carried at all.
+    pub(crate) fn said(&self, items: usize) -> String {
+        let keeps = if self.split >= items {
+            "nothing is carried verbatim: one record replaces the whole history"
+        } else {
+            "continuing on the summary plus the rest, verbatim"
+        };
+        let why = match self.passed_over {
+            Some(tail) => format!(
+                ". The fold the size called for would have kept {tail} token(s) verbatim, still at \
+                 the wall and freeing nothing the next turn can use, so it was not run - and no \
+                 summary turn was spent on it"
+            ),
+            None => String::new(),
+        };
+        format!("summarising the first {} item(s), {keeps}{why}", self.split)
+    }
+}
+
+/// The fold that can, decided BEFORE any summary turn is spent on one that cannot: `split` itself
+/// when its verbatim tail leaves the next turn its room, the smaller-tail rung when halving that
+/// tail does, and the whole history in one record when only that does. `None` when no single-record
+/// fold can make room, and the fold that can is then the caller's two-half plan.
+///
+/// Measured (lead 61): a fold of 984574 tokens kept 3874 items verbatim and left 983066 of
+/// 1048576 - 1.5k freed against the 65536 the next turn needed, for a full summary turn.
+pub(crate) fn fold_split_with_room(
+    split: usize,
+    per_item: &[u64],
+    prefix_tokens: u64,
+    window: u64,
+    headroom: u64,
+) -> Option<FoldSplit> {
+    let tail_at = |at: usize| per_item[at.min(per_item.len())..].iter().sum::<u64>();
+    let passed_over = tail_at(split);
+    if fold_leaves_room(prefix_tokens, passed_over, window, headroom) {
+        return Some(FoldSplit {
+            split,
+            passed_over: None,
+        });
+    }
+    let smaller = smaller_tail(per_item, prefix_tokens, window, split);
+    let carried = if smaller != split {
+        tail_at(smaller)
+    } else {
+        passed_over
+    };
+    if smaller != split && fold_leaves_room(prefix_tokens, carried, window, headroom) {
+        return Some(FoldSplit {
+            split: smaller,
+            passed_over: Some(passed_over),
+        });
+    }
+    // Nothing verbatim, and one record for the whole history - only when that history fits a
+    // single summary call, which is what makes it one turn rather than the two-half plan.
+    let whole: u64 = per_item.iter().sum();
+    (split < per_item.len() && prefix_tokens + whole + letibot_turn::WRITE_ROOM <= window)
+        .then_some(FoldSplit {
+            split: per_item.len(),
+            passed_over: Some(passed_over),
+        })
 }
 
 /// What a pin costs, in ledger tokens: the same ratio the rest of this module estimates with, since a
