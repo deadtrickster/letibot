@@ -610,11 +610,15 @@ pub(super) fn removed(name: &str) -> Option<&'static str> {
         .map(|(_, why)| *why)
 }
 
-/// What a config-backed flag says when it is used: the key, in one line.
+/// What a config-backed flag says when it is used: that it applies, and the key it is read from
+/// next time. "A config setting now" read as "ignored", which is how a `--model` was billed to
+/// another provider than the one asked for.
 pub(super) fn config_notice(name: &str) -> Option<String> {
     let f = find(name)?;
     let key = f.key?;
-    Some(format!("{name} is a config setting now: {key}"))
+    Some(format!(
+        "{name} applies to this run; {key} is where it lives for every run after it"
+    ))
 }
 
 /// The help, generated from the table — so it cannot list a flag the parser refuses, or

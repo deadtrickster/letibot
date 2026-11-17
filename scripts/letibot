@@ -1691,11 +1691,13 @@ version_skew_or_continue() {
 # daemon is stopped; a name would stop every harnessd on the box.
 record_write() {
   rundir
-  python3 - "$RECORD" "$WORKSPACE" "$SOCKET" "$1" "$ROLE" "$MODEL" "$DIALECT" "${BASH_ON:-}" "$(answers_now)" <<'PY'
+  # The model the daemon was HANDED, not the local vocab's default: a `--restart` opens the daemon
+  # it stopped, so what it was started with is what the record has to carry.
+  python3 - "$RECORD" "$WORKSPACE" "$SOCKET" "$1" "$ROLE" "${MODEL_OVERRIDE:-$MODEL}" "$DIALECT" "${BASH_ON:-}" "$(answers_now)" "$PROVIDER_NAME" <<'PY'
 import json, sys, time
-rec, ws, sock, pid, role, model, dialect, bash, answers = sys.argv[1:10]
+rec, ws, sock, pid, role, model, dialect, bash, answers, provider = sys.argv[1:11]
 json.dump({"workspace": ws, "socket": sock, "pid": int(pid), "role": role, "model": model,
-           "answers": answers,
+           "provider": provider, "answers": answers,
            "dialect": dialect, "bash": bool(bash), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
           open(rec, "w"))
 PY
@@ -2521,6 +2523,11 @@ SESSIONS_EOF
     # stop was never read, so the daemon predates this and ended them as a plain stop does.
     [ $# -eq 1 ] || die "--restart takes nothing after it"
     need_where
+    # What the daemon was STARTED with, read before the stop removes its record: a restart opens
+    # the daemon it stopped, so a model or a provider chosen at the start is not dropped.
+    restart_args=()
+    _restart_provider="$(json_str provider "$RECORD")"
+    _restart_model="$(json_str model "$RECORD")"
     if daemon_pid >/dev/null; then
       marker="$SOCKET.restart"
       : >"$marker"
@@ -2533,7 +2540,9 @@ SESSIONS_EOF
         echo "letibot: that daemon predates --restart, so it ended its jobs as --stop does" >&2
       fi
     fi
-    LETIBOT_RESTART_STEPS=1 exec "$0" --continue
+    if [ -n "$_restart_provider" ]; then restart_args+=(--provider "$_restart_provider"); fi
+    if [ -n "$_restart_model" ]; then restart_args+=(--model "$_restart_model"); fi
+    LETIBOT_RESTART_STEPS=1 exec "$0" ${restart_args[@]+"${restart_args[@]}"} --continue
     ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is this one's.

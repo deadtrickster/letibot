@@ -1225,6 +1225,20 @@ fn a_removed_flag_is_refused_by_name_with_its_replacement() {
     }
 }
 
+/// A config-backed flag the daemon APPLIES says so: the old wording ("is a config setting now")
+/// read as "ignored", the defect this row is about, since `--model X` was applied while reading as
+/// a flag with no effect.
+#[test]
+fn a_config_backed_flag_says_it_applies_to_this_run() {
+    let said = help::config_notice("--model").expect("--model is config-backed");
+    assert!(said.contains("applies to this run"), "{said}");
+    assert!(!said.contains("config setting now"), "{said}");
+    assert!(
+        said.contains("providers.toml"),
+        "it names where the setting lives: {said}"
+    );
+}
+
 /// No spelling appears in two rows: a name that means two flags resolves by table order.
 #[test]
 fn no_flag_appears_twice() {

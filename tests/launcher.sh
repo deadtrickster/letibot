@@ -1026,6 +1026,27 @@ else
   echo "skip the start/--new cases: no python3 to listen on a unix socket"
 fi
 
+# restart_keeps_model_and_provider: a restart opens the daemon it stopped, so the model and the
+# provider it was STARTED with come off the record. The record's pid is one no process can have,
+# so nothing is stopped and the case is the start alone. This is above the stop cases because they
+# replace the printing harnessd stub with a python daemon that never prints its argv.
+mkdir -p "$T/restart-model" "$T/home/logs" "$T/run/letibot"
+_rm_ws="$(cd "$T/restart-model" && pwd -P)"
+_rm_key="$(printf '%s' "$_rm_ws" | key12)"
+printf '{"pid": 4000000000, "workspace": "%s", "socket": "%s", "model": "glm-5.1", "provider": "glm"}' \
+  "$_rm_ws" "$T/run/letibot/$_rm_key.sock" > "$T/run/letibot/$_rm_key.json"
+out="$(RUN_WS="$T/restart-model" run "$ONESHOT_MODELS" --restart)"
+# The daemon the start ran records its own argv (`STUB_ARGV`), which is where a started daemon's
+# flags are read: the launcher starts it behind `detach`, so its stdout is in its log.
+_rm_started="$(grep '^harnessd ' "$T/argv.log" 2> /dev/null | tail -1 || true)"
+expect "a restart keeps the provider the daemon was started with" "$_rm_started" \
+  "^harnessd .*--provider glm( |$)"
+expect "  ...and the model" "$_rm_started" "^harnessd .*--model glm-5\.1( |$)"
+refuse "  ...and it did not stop the daemon a stale pid named" "$out" "^stopped "
+kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+  "$T/run/letibot/$_rm_key.json" 2> /dev/null | head -1)" 2> /dev/null || true
+rm -f "$T/run/letibot/"*.json "$T/argv.log"
+
 # ---------------------------------------------------------------------------
 # A DAEMON THAT IS SHUTTING DOWN IS NOT A DAEMON IGNORING SIGTERM. Its orderly stop takes
 # seconds and prints a `  stopping: ...` line per step; `--stop` waits thirty seconds relaying them.

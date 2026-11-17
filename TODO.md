@@ -661,8 +661,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Residue.**
 - Lead 37 is not built: a fan-out budgeting each provider's share against its live window needs the fan-out primitive of lead 32, which is after the phase. Its test `a_fan_out_over_a_providers_live_window_refuses_or_splits` is not written.
-- `restart_keeps_model_and_provider` (I81, P7-F13, HYP) is not written: `--restart` was not changed.
-- harnessd still prints "--model is a config setting now" for a `--model` it applies. The wording reads as "ignored".
+- `restart_keeps_model_and_provider` (I81, P7-F13) is written: the record carries the model the daemon was handed and the provider it was started with, and `--restart` reopens with both, fixed in `a restart reopens the daemon it stopped`.
+- harnessd's config-backed flags say they APPLY: `--model` reads `applies to this run; <key> is where it lives for every run after it` instead of "is a config setting now", fixed in `a restart reopens the daemon it stopped`, and held by `a_config_backed_flag_says_it_applies_to_this_run`.
 - A local model named by a one-shot under a `[default] provider` refuses rather than runs: harnessd has no flag for "the command line chose a local model", and a `main_model` in leticode.toml is not seen by the launcher at all.
 - A SIGKILLed bridge, or a workflow whose subagents share one bridge, still leaves sessions open: the lease is the bridge process. A daemon-side lease keyed on the head's peer pid is the follow-up.
 - The bridge's protocol skew against a daemon (I71's other half) and the stale daemon notice are R344.
