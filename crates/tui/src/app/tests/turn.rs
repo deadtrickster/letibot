@@ -934,6 +934,131 @@ fn no_counter_rides_the_status_line_and_a_dead_one_never_did() {
     assert!(line.contains('·'), "{line}");
 }
 
+/// The work in flight moves on the head's OWN timer: the spinner and the elapsed seconds are the
+/// head's drawing of time, and a compaction's summary turn sends no frame for minutes. Nothing here
+/// arrives between the two frames - only `App::tick` - which is the whole of the requirement.
+#[test]
+fn the_work_in_flight_animates_on_the_heads_own_timer() {
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_000,
+        testing::turn_started("t1"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::delta("t1", "an answer\n\n"),
+    )));
+    // The model is writing a tool call: the row that says so carries its own spinner.
+    a.apply(ServerFrame::Event(env(
+        3,
+        SessionEvent::Delta {
+            turn_id: "t1".into(),
+            target: DeltaTarget::ToolCall,
+            text: "{\"command\":\"cargo".into(),
+        },
+    )));
+    let first = a.screen(100, 30);
+    assert!(
+        first.iter().any(|r| r.contains("writing a tool call")),
+        "the fixture's premise: the call being written is on the screen:\n{}",
+        first.join("\n")
+    );
+
+    // No frame in between. The head's own timer is told what time it is and says the screen moved.
+    assert!(
+        a.tick(2_200),
+        "a turn in flight owes a frame every tick, with nothing arriving"
+    );
+    let later = a.screen(100, 30);
+    // The elapsed counts up from the START the daemon gave - 1.0s - and not from the last frame.
+    let row = later
+        .iter()
+        .find(|r| r.contains("Responding"))
+        .unwrap_or_else(|| panic!("no status row:\n{}", later.join("\n")));
+    assert!(row.contains("1.2s"), "the clock did not run: {row}");
+    // And every spinner on the frame turned, including the one in the conversation: a glyph keyed
+    // to the daemon's last event stands still through a silent prefill.
+    let spinner = |screen: &[String], needle: &str| -> Option<char> {
+        screen
+            .iter()
+            .find(|r| r.contains(needle))
+            .and_then(|r| r.chars().find(|c| "\u{280b}\u{2819}\u{2839}\u{2838}\u{283c}\u{2834}\u{2826}\u{2827}\u{2807}\u{280f}".contains(*c)))
+    };
+    for needle in ["Responding", "writing a tool call"] {
+        let before = spinner(&first, needle);
+        let after = spinner(&later, needle);
+        assert!(
+            before.is_some(),
+            "no spinner on `{needle}`:\n{}",
+            first.join("\n")
+        );
+        assert_ne!(
+            before, after,
+            "the spinner on `{needle}` stood still with the clock running"
+        );
+    }
+
+    // A fold: its summary turn is the long silence, and the row that counts it must move too. The
+    // fold's clock starts when this head hears of it, so the clock is set before the announcement.
+    a.clock(3_000);
+    a.apply(ServerFrame::Event(env(
+        4,
+        SessionEvent::Warning {
+            code: "compacting".into(),
+            detail: "over budget: summarising the first 20 item(s)".into(),
+            compaction: None,
+        },
+    )));
+    a.apply(ServerFrame::Event(env(
+        5,
+        SessionEvent::CompactionProgress {
+            half: 1,
+            halves: 1,
+            prompt_tokens: 60_000,
+            processed: 60_000,
+            written: 1_200,
+            unit: "tokens".into(),
+        },
+    )));
+    let folding = a.screen(100, 30);
+    assert!(
+        a.tick(18_000),
+        "a fold in flight owes a frame every tick, and its summary turn sends none"
+    );
+    let folded = a.screen(100, 30);
+    let at = |screen: &[String]| -> String {
+        screen
+            .iter()
+            .find(|r| r.contains("Compacting"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no fold row:\n{}", screen.join("\n")))
+    };
+    let (before, after) = (at(&folding), at(&folded));
+    assert_ne!(before, after, "the fold's own row stood still: {before}");
+    assert!(
+        after.contains("15.0s"),
+        "the fold counts from its own start: {after}"
+    );
+    assert_ne!(
+        spinner(&folding, "Compacting"),
+        spinner(&folded, "Compacting"),
+        "the fold's spinner stood still"
+    );
+
+    // And an idle head: nothing is in flight, so the timer has nothing to redraw and says so.
+    a.compacting = None;
+    a.compaction_pending = None;
+    a.turn = None;
+    a.notice = None;
+    a.bulk = None;
+    assert!(
+        !a.tick(30_000),
+        "an idle head asked for a frame on the clock's account"
+    );
+}
+
 #[test]
 fn the_spinner_spins_on_the_heads_clock_not_on_the_daemons_events() {
     // A spinner keyed off the last event's timestamp is a snapshot of one: a tool

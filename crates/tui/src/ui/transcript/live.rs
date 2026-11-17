@@ -38,7 +38,9 @@ pub(crate) fn push_turn_pane<'a>(
     } else {
         Some(t.think_last_ms.saturating_sub(t.think_started_ms))
     };
-    let now_ms = t.last_ms;
+    // The log's clock, which stops while the daemon says nothing: it is the right clock for a fact
+    // the LOG measured, and the wrong one for anything that has to move on the screen.
+    let log_now_ms = t.last_ms;
     let TurnPane {
         text,
         reasoning,
@@ -115,13 +117,12 @@ pub(crate) fn push_turn_pane<'a>(
             let before: usize = segs.iter().map(Seg::len).sum();
             let mut owned: Vec<String> = Vec::new();
             for c in live_calls.iter().copied() {
-                // A running call is timed against the clock that was running when it started:
-                // `now_ms` is the log's clock and it stops when the daemon stops saying things, which
-                // a silent `cargo build` does. One clocked by this head is measured by this head.
+                // The log's clock, which stops when the daemon says nothing - a silent `cargo build`
+                // does - so a call this head watched start is timed by the head.
                 let card_now = if c.started_at > 0 {
                     head_now_ms
                 } else {
-                    now_ms
+                    log_now_ms
                 };
                 let lines = step_in(call_card(c, cfg, card_now, tool, diff_split), ind);
                 for i in 0..lines.len() {
@@ -172,10 +173,12 @@ pub(crate) fn push_turn_pane<'a>(
         }
         // The call the model is writing right now. The markup itself is never here: what is on the
         // screen is that a call is being written, which is the fact the raw text accidentally
-        // conveyed and the only part of it a reader wanted.
+        // conveyed and the only part of it a reader wanted. Its spinner runs on the HEAD's clock:
+        // keyed to the last event's ts it stood still through a silent prefill, which is the frame
+        // the operator read as a frozen head.
         if *writing_call {
             segs.push(Seg::Owned(step_in(
-                vec![writing_call_line(cfg, now_ms)],
+                vec![writing_call_line(cfg, head_now_ms)],
                 ind,
             )));
         }

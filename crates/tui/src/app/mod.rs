@@ -1711,6 +1711,37 @@ impl App {
         }
     }
 
+    /// The head's own tick: the clock, and the answer a head that draws needs - does anything on
+    /// the screen move because time did? A compaction's summary turn sends no frame for minutes, so
+    /// the spinner and the elapsed counters are this timer's work and not the daemon's. `false` when
+    /// nothing is in flight, which is what keeps an idle head from composing a frame per pass.
+    pub fn tick(&mut self, now_ms: u64) -> bool {
+        self.clock(now_ms);
+        self.animating()
+    }
+
+    /// Is something on the frame moving on its own - a spinner turning, an elapsed counting, a bar
+    /// filling, a notice timing out? The list is every drawing that reads [`App::now_ms`]; anything
+    /// left out is a part of the screen that would freeze until the next frame, which is the defect
+    /// this exists to close. Cheap on purpose: it is asked once a pass.
+    pub fn animating(&self) -> bool {
+        // A turn in flight: the status row's spinner and its clock, and the run's own marker.
+        self.turn_busy()
+            // A fold: its bar, its clock, and the phase it names. Its summary turn sends nothing.
+            || self.compacting.is_some()
+            || self.compaction_pending.is_some()
+            // A carry's or a restore's bar.
+            || self.filling.is_some()
+            // A transient line with a deadline of its own: it must go when its time is up, and a
+            // head that waited for a frame to notice would leave it on the screen.
+            || self.notice.is_some()
+            // The attach banner counts the seconds since this head asked to join.
+            || self.attaching
+            // And a snapshot's announced rows are still arriving: the line says how many, and the
+            // count moves as each body lands, so the wait has a clock even between frames.
+            || self.bulk.is_some()
+    }
+
     /// Tell the head what time it is. The driver calls this once a tick; nothing
     /// else in `App` reads a clock, so a test drives time by hand.
     pub fn clock(&mut self, now_ms: u64) {

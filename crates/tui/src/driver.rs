@@ -70,6 +70,12 @@ pub struct Link {
     stop_started: Option<u64>,
     /// How the force path sends a signal. `kill(2)`, unless a test stood something else in.
     signaller: Signaller,
+    /// The frame last handed to the terminal, and the size it was composed at: a pass where nothing
+    /// arrived, no key was pressed and the head's own timer moved nothing re-sends this instead of
+    /// composing the session again. The screen has not changed, and the terminal writes nothing for
+    /// an unchanged frame, so an idle head costs no lexing at all.
+    frame: Vec<String>,
+    frame_size: (usize, usize),
 }
 
 /// Which process is at the other end of this socket: `SO_PEERCRED`, filled in from the `connect`, so it is
@@ -337,6 +343,8 @@ impl Link {
             force: None,
             stop_started: None,
             signaller: kill_signaller(),
+            frame: Vec::new(),
+            frame_size: (0, 0),
         }
     }
 
@@ -471,7 +479,11 @@ impl Link {
         raw: &[u8],
         draw: &mut Draw<'_>,
     ) {
-        app.clock(now_ms());
+        // The head's own timer, and the answer this pass needs: no frame arrived for what follows,
+        // so time is the only thing that can have moved the screen. A turn in flight or a fold says
+        // yes every pass, which is what makes the spinner and the clock tick while the daemon is
+        // silent; an idle head says no and costs no lexing below.
+        let animated = app.tick(now_ms());
         // The workspace's branch, read from the loop and never from a paint: it spawns a process, and a
         // measurement never runs where the frame is drawn. Two seconds between readings keeps the rate low.
         app.refresh_git();
@@ -485,9 +497,14 @@ impl Link {
         let mut rendered = 0u64;
         let mut filtered = 0u64;
         let mut last_seq = 0u64;
+        // Anything read off the socket - a frame, a frame this build cannot read, the link going
+        // down - is a reason to compose the screen again. Tracked rather than inferred from the two
+        // counters, which count what reached the TRANSCRIPT and not what reached the head.
+        let mut touched = false;
         loop {
             match self.rx.try_recv() {
                 Ok(Inbound::Frame(frame)) => {
+                    touched = true;
                     if let ServerFrame::Event(env) = &frame {
                         // The read mark, taken from what was *read*. There is no
                         // "last rendered seq" variable here, on purpose.
@@ -506,6 +523,7 @@ impl Link {
                 // moves neither counter the `Ack` carries. It reaches the transcript and the `unreadable`
                 // counter, which is what makes a daemon this head cannot read distinguishable from a quiet one.
                 Ok(Inbound::Unreadable(u)) => {
+                    touched = true;
                     app.unreadable(u);
                 }
                 Err(TryRecvError::Empty) => break,
@@ -513,6 +531,7 @@ impl Link {
                 // closes the socket, the pump reads EOF and the sender is dropped, with nothing failing to write.
                 // Without this arm the loop would tick for ever over a dead channel.
                 Err(TryRecvError::Disconnected) => {
+                    touched = true;
                     app.link_down("the daemon closed the connection");
                     break;
                 }
@@ -555,17 +574,25 @@ impl Link {
         // knows how many rows it got, and the frame it queues is sent on the next tick. Asking here would send
         // the terminal's size as the pane's.
 
-        // 2. Draw. Every frame is built; whether any of it reaches the terminal is
-        //    `Terminal::draw`'s business, and for an unchanged frame the answer is no
-        //    bytes at all.
-        let screen = app.screen(size.0, size.1);
-        draw(&screen, app.cursor());
+        // 2. Draw. A frame the head read, a key the person pressed, a terminal that changed size and
+        //    a tick that moved something on its own all mean the screen has to be built again;
+        //    anything else re-sends the frame already on the glass, for which the terminal writes
+        //    nothing. Whether a frame reaches the terminal is still `Terminal::draw`'s business.
+        let arrived = touched || !keys.is_empty() || !raw.is_empty() || !actions.is_empty();
+        if arrived || animated || self.frame_size != size || self.frame.is_empty() {
+            self.frame = app.screen(size.0, size.1);
+            self.frame_size = size;
+        }
+        draw(&self.frame, app.cursor());
 
         // Answer with what was actually drawn: this is the only place that knows what the person is looking at,
         // since it is the place that put the bytes on the terminal at this head's real size. A failure here is
         // the socket, reported like every other write.
         for req_id in app.take_screen_requests() {
-            if let Err(e) = self.client.screen(&req_id, size.0, size.1, screen.clone()) {
+            if let Err(e) = self
+                .client
+                .screen(&req_id, size.0, size.1, self.frame.clone())
+            {
                 app.link_down(&e.to_string());
             }
         }
