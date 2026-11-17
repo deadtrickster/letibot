@@ -384,6 +384,7 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 "letibot_room::ROOM_PROTOCOL_VERSION",
                 "letibot_room::wire::upgrade_hint",
                 "letibot_room::wire::frame_refusal(",
+                "letibot_room::wire::protocol_refusal(",
                 "letibot_room::EVIDENCE",
                 "letibot_room::claims_operator(",
                 "letibot_room::unbacked(",
