@@ -25,6 +25,13 @@ pub use nag::{
     the_plan_as_a_key, the_plan_as_checked,
 };
 
+/// The other boards a `todo` wait may name - an external seat's or another session's of this
+/// project - read by the tool, by the daemon's sweep and by the bridge's.
+pub mod boards;
+pub use boards::{
+    Board, board_of, check_wait, folder_words, handle_words, wait_ended,
+};
+
 /// The session's todo list, shared between the tool that writes it and the
 /// harness that persists and announces it.
 pub struct TodoBoard {
@@ -1027,6 +1034,9 @@ fn need_key(need: &TodoNeed) -> Option<String> {
         TodoNeed::Child { id } => Some(id.clone()),
         TodoNeed::Pid { pid, start } => Some(format!("pid {pid}:{start}")),
         TodoNeed::Monitor { name } => Some(format!("monitor {name}")),
+        // A row of another board: one read of that board answers every edge on it, so the key is
+        // the seat and the row together.
+        TodoNeed::Todo { seat, content } => Some(format!("todo {seat}:{content}")),
         _ => None,
     }
 }
@@ -1514,6 +1524,13 @@ pub fn waits_on_the_room(row: &TodoItem) -> bool {
     row.needs
         .iter()
         .any(|n| matches!(n, TodoNeed::Room { working: true, .. }))
+}
+
+/// Whether a row waits on a row of ANOTHER board - an external seat's, another session's. The edge
+/// itself is the fact: the wait sweep takes it off the moment that board finishes the row, so while
+/// it is there the check has nothing to say. The same rule `waits_on_the_room` keeps one door over.
+pub fn waits_on_another_board(row: &TodoItem) -> bool {
+    row.needs.iter().any(|n| matches!(n, TodoNeed::Todo { .. }))
 }
 
 /// How long an `external` wait keeps the check quiet on its row, from when it was attached.
@@ -2260,6 +2277,9 @@ pub enum NeedFate {
     /// the question. Like [`NeedFate::OperatorAsked`], the row is a root of the check's silence and
     /// the settlement is the room's to deliver.
     PeerAsked,
+    /// A row of ANOTHER board - a seat's, another session's - has not been finished there yet. The
+    /// name is that board and the row, and the wait sweep is what frees the edge.
+    BoardWaiting,
     /// Something outside this machine's bookkeeping, in the row's own words, inside its quiet
     /// window. Not met, and not this plan's to move: nothing here can tell when it ended.
     External,
@@ -2393,6 +2413,12 @@ fn unmet_needs(
             // other way round, so the row that carries it is the model's own work now.
             TodoNeed::Owed { .. } => {}
             TodoNeed::Answered { .. } => {}
+            // Another board's row is not this board's to finish, so the edge holds - and the sweep
+            // takes it off the moment that board's row is done, which is what frees this row.
+            TodoNeed::Todo { seat, content } => out.push((
+                format!("{}'s \"{}\"", seat.trim(), content.trim()),
+                NeedFate::BoardWaiting,
+            )),
             // Nothing here can watch it, so it is not met - and the words are the name, because they
             // are all the edge has.
             TodoNeed::External { what, .. } => {
@@ -2501,6 +2527,15 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
                  does. If the wait is pointless, take it off — `todo_write` {{\"wait_on\": \
                  [{{\"content\": \"{}\", \"detach\": true}}]}} — which also withdraws the question \
                  from the room.",
+                row.content.trim()
+            ),
+            // Another seat's row: the model reads whose work it is and that nothing here has to be
+            // done about it - the note arrives when that board finishes it.
+            NeedFate::BoardWaiting => format!(
+                "{name}, another board's row. Keep going with the rest of the plan — you are told \
+                 the moment it is finished there, and this row is released then. If the wait is \
+                 pointless, take it off — `todo_write` {{\"wait_on\": [{{\"content\": \"{}\", \
+                 \"detach\": true}}]}}",
                 row.content.trim()
             ),
         })
@@ -2660,6 +2695,11 @@ fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
         "waiting on another session"
     } else if unmet
         .iter()
+        .any(|(_, fate)| matches!(fate, NeedFate::BoardWaiting))
+    {
+        "waiting on another board's row"
+    } else if unmet
+        .iter()
         .any(|(_, fate)| matches!(fate, NeedFate::ChildRunning(_)))
     {
         "waiting on a child that is still running"
@@ -2791,6 +2831,29 @@ impl AskLink for NoAsks {
     }
 }
 
+/// The other boards a row may wait on - an external seat's or another session's of this project -
+/// as the runtime behind this tool reads them. The store holds both; the words a project is known by
+/// are the caller's, because a daemon names a project by the folder it serves and a bridge by the
+/// folder in its own handle.
+pub trait Boards: Send + Sync {
+    /// The board `seat` names. `Err` is the refusal, written to be shown as it stands: a board of
+    /// another project, or a store that could not be read.
+    fn board_of(&self, seat: &str) -> Result<Board, String>;
+}
+
+/// No store behind this tool: a runtime with no daemon and no bridge, where a wait on another board
+/// is refused by name rather than written as an edge nothing would ever free.
+pub struct NoBoards;
+
+impl Boards for NoBoards {
+    fn board_of(&self, seat: &str) -> Result<Board, String> {
+        Err(format!(
+            "`{seat}` cannot be waited on: this runtime holds no store, and another board is read \
+             from one. Only a daemon session or a bridge seat can wait on another board's row."
+        ))
+    }
+}
+
 /// The write tool. Holds the board; the harness holds the same `Arc`.
 pub struct TodoWriteTool {
     board: Arc<TodoBoard>,
@@ -2800,6 +2863,9 @@ pub struct TodoWriteTool {
     /// The daemon's room link, for the one field that leaves this session: `wait_on`'s `ask`. `None`
     /// in a runtime with no room, and the refusal says so rather than silently not asking.
     asks: Option<Arc<dyn AskLink>>,
+    /// The other boards a `todo` wait may name. `None` in a runtime with no store, and the wait is
+    /// then refused by name.
+    boards: Option<Arc<dyn Boards>>,
 }
 
 impl TodoWriteTool {
@@ -2808,6 +2874,7 @@ impl TodoWriteTool {
             board,
             children: None,
             asks: None,
+            boards: None,
         }
     }
 
@@ -2818,7 +2885,16 @@ impl TodoWriteTool {
             board,
             children: Some(children),
             asks: None,
+            boards: None,
         }
+    }
+
+    /// Seat the tool with a way to READ the other boards a `todo` wait names - a seat's, another
+    /// session's - so an unknown one is refused in the call that writes it. Additive: a runtime
+    /// without it refuses the wait by name.
+    pub fn with_boards(mut self, boards: Arc<dyn Boards>) -> Self {
+        self.boards = Some(boards);
+        self
     }
 
     /// Seat the tool with the session's ROOM: the half that lets a row wait on another session's
@@ -2845,19 +2921,20 @@ impl Tool for TodoWriteTool {
             "Write the session's todo list: one row per step, in order, the step being worked \
              on marked `in_progress` and finished ones `completed`. Send the WHOLE list every \
              time — a row you leave out STAYS on the board, and only the operator can remove \
-             one, so retire a row by marking it `completed`. A row whose trimmed text matches \
-             one already there moves that row's state and its edges; a new text adds a row. To \
+             one, so retire a row by marking it `completed`. A matching trimmed text moves that \
+             row and its edges; a new one adds a row. To \
              move ONE row without re-sending the list, name it in `update`.\n\n\
              A row the OPERATOR postponed comes back `[p]`: it is theirs, not work you are asked \
              for, and `postponed` is not a status you may send.\n\n\
              Length is never refused; a row over 4096 bytes, or a write past 256 rows, is refused.\n\n\
-             A row may WAIT — on another row, a child, a job, a monitor or the operator's answer \
-             (`needs`), and `wait_on` attaches a wait to a row already on the board. An operator \
+             A row may WAIT — on another row, a child, a job, a monitor, another board's row \
+             (`todo`) or the operator's answer (`needs`), and `wait_on` attaches a wait to a row \
+             already on the board. An operator \
              wait is a card on their screen: they pick an option, type their own answer, or \
              abstain — and an abstention is an answer, so proceed and state the assumption you \
              proceed on. `wait_on`'s `ask` asks ANOTHER SESSION the same way, in a room: it is the \
              only door that asks, because asking is a side effect, and the answer settles the row \
-             by itself.",
+             by itself. A `todo` wait names another board's row and tells you when it is finished.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2928,12 +3005,13 @@ impl Tool for TodoWriteTool {
                                     "items": {"anyOf": [
                                         {"type": "string"},
                                         {"type": "object", "properties": {
-                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator", "external", "pid"]},
+                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator", "external", "pid", "todo"]},
                                             "name": {"type": "string"},
                                             "content": {"type": "string"},
                                             "id": {"type": "string"},
                                             "handle": {"type": "string"},
                                             "what": {"type": "string"},
+                                            "seat": {"type": "string"},
                                             "pid": {"type": "integer"},
                                             "question": {"type": "string"},
                                             "options": {"type": "array", "items": {"type": "string"}}
@@ -2943,14 +3021,16 @@ impl Tool for TodoWriteTool {
                                                     is another row's exact `content`; the tagged \
                                                     form names a `child` (\"id\"), a \
                                                     `job` (\"handle\"), a \
-                                                    `monitor` (\"name\"), or \
-                                                    the `operator` (\"question\": …, \"options\": \
-                                                    […], at least two) for their answer, `external` (\"what\": …) or `pid` (\"pid\": N). A row \
-                                                    that names nothing is ready at once; a name \
-                                                    matching no row, or two, blocks the row and \
-                                                    the check says which. An `ask` is NOT \
-                                                    spellable here: asking a peer is a side \
-                                                    effect, and only `wait_on` may make one."
+                                                    `monitor` (\"name\"), the `operator` \
+                                                    (\"question\": …, \"options\": […], at \
+                                                    least two), `external` (\"what\": …), \
+                                                    `pid` (\"pid\": N) — or `todo` \
+                                                    (\"seat\": \"cc@…\", \"content\": …) for a \
+                                                    row on ANOTHER board. A row naming nothing \
+                                                    is ready at once; a name matching no row, or \
+                                                    two, blocks the row and the check says which. \
+                                                    An `ask` is NOT spellable here: only \
+                                                    `wait_on` may ask."
                                 }
                             },
                             "required": ["content", "status"]
@@ -2958,13 +3038,13 @@ impl Tool for TodoWriteTool {
                     },
                     "wait_on": {
                         "type": "array",
-                        "description": "Rows already on the board, quoted exactly, that \
-                                        wait on a `job` (a handle or a name), a `child` (an \
-                                        id `task` handed back), the `operator`'s answer, \
-                                        another SESSION's answer (`ask`), what it waits on \
-                                        outside this machine (`external`), a process on this \
-                                        host (`pid`), or `detach: true` to take the waits off. \
-                                        A call of its own.",
+                        "description": "Rows already on the board, by exact quote, that \
+                                        wait on a `job` (handle or name), a `child` (its \
+                                        id), the `operator`'s answer, another SESSION's \
+                                        answer (`ask`), what is outside this machine \
+                                        (`external`), a process (`pid`), a row on ANOTHER \
+                                        board (`todo`), or `detach: true` to take a wait \
+                                        off. A call of its own.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -2973,6 +3053,14 @@ impl Tool for TodoWriteTool {
                                 "child": {"type": "string"},
                                 "external": {"type": "string"},
                                 "pid": {"type": "integer"},
+                                "todo": {
+                                    "type": "object",
+                                    "properties": {
+                                        "seat": {"type": "string"},
+                                        "content": {"type": "string"}
+                                    },
+                                    "required": ["seat", "content"]
+                                },
                                 "operator": {
                                     "type": "object",
                                     "properties": {
@@ -3160,6 +3248,11 @@ impl TodoWriteTool {
             return inv;
         }
         if let Err(inv) = resolve_job_needs(&mut rows, jobs) {
+            return inv;
+        }
+        // And a wait on ANOTHER board is read now, in this call, so a name or a row this project has
+        // not got costs nothing and is said by name rather than stored as an edge nothing frees.
+        if let Err(inv) = resolve_seat_needs(&mut rows, self.boards.as_deref()) {
             return inv;
         }
         let before = self.board.model_snapshot();
@@ -3392,6 +3485,7 @@ impl TodoWriteTool {
                         | "ask"
                         | "external"
                         | "pid"
+                        | "todo"
                 ) {
                     return refused(
                         format!("wait_on entry {n} has an unknown field `{key}`"),
@@ -3403,7 +3497,7 @@ impl TodoWriteTool {
                 return refused(format!("wait_on entry {n} has no `content`"), shape());
             };
             let said: Vec<&str> = [
-                "job", "child", "detach", "operator", "ask", "external", "pid",
+                "job", "child", "detach", "operator", "ask", "external", "pid", "todo",
             ]
             .into_iter()
             .filter(|k| obj.contains_key(*k))
@@ -3412,13 +3506,14 @@ impl TodoWriteTool {
                 return refused(
                     format!(
                         "wait_on entry {n} names {} of `job`, `child`, `operator`, `ask`, \
-                         `external`, `pid` and `detach`",
+                         `external`, `pid`, `todo` and `detach`",
                         said.len()
                     ),
                     "each entry says exactly ONE thing about its row: the job it waits on, the \
                      child it waits on, the question it waits on the operator for, the question it \
                      asks another session, what it waits on outside this machine, the process it \
-                     waits on, or `\"detach\": true`. Send two entries for two waits."
+                     waits on, the row on ANOTHER board it waits on, or `\"detach\": true`. Send \
+                     two entries for two waits."
                         .into(),
                 );
             };
@@ -3470,6 +3565,62 @@ impl TodoWriteTool {
                         );
                     }
                 },
+                // A row on ANOTHER board: `{"seat": …, "content": …}`, the same two words as the
+                // need's own shape. The board is read here, so a name this project has not got is
+                // refused in the call that writes the wait.
+                "todo" => {
+                    let t = obj.get("todo");
+                    let seat = t
+                        .and_then(|t| t.get("seat"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    let want = t
+                        .and_then(|t| t.get("content"))
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
+                    let need = match other_board(seat, want) {
+                        Ok(need) => need,
+                        Err(why) => {
+                            return refused(
+                                format!("wait_on entry {n}'s `todo` is refused: {why}"),
+                                OTHER_BOARD_SHAPE.into(),
+                            );
+                        }
+                    };
+                    let Some(boards) = self.boards.as_deref() else {
+                        return refused(
+                            format!(
+                                "`{seat}` cannot be waited on: this runtime holds no store to \
+                                 read another board from"
+                            ),
+                            OTHER_BOARD_SHAPE.into(),
+                        );
+                    };
+                    match boards.board_of(seat) {
+                        Ok(Board::Rows(rows)) => match check_wait(&rows, want) {
+                            Ok(()) => {}
+                            Err(why) => {
+                                return refused(
+                                    format!("`{seat}` cannot be waited on — {why}"),
+                                    OTHER_BOARD_SHAPE.into(),
+                                );
+                            }
+                        },
+                        Ok(Board::Unknown(why)) => {
+                            return refused(
+                                format!("`{seat}` cannot be waited on — {why}"),
+                                OTHER_BOARD_SHAPE.into(),
+                            );
+                        }
+                        Err(why) => {
+                            return refused(
+                                format!("`{seat}` was not read: {why}"),
+                                OTHER_BOARD_SHAPE.into(),
+                            );
+                        }
+                    }
+                    Wait::On(need)
+                }
                 // The operator, asked - no handle to resolve: the question is the wait, and it
                 // ends when they answer it (or when the model takes it off having worked it out).
                 "operator" => {
@@ -3671,6 +3822,19 @@ impl TodoWriteTool {
             for note in &room_said {
                 out.push_str(&format!("{note}\n"));
             }
+        }
+        // The wait on another board needs its own line too: the model has to know it will not be
+        // asked about that row again, and that the note it gets names the seat and the row.
+        if plan
+            .iter()
+            .any(|(_, w)| matches!(w, Wait::On(TodoNeed::Todo { .. })))
+        {
+            out.push_str(
+                "A row waiting on ANOTHER board's row is not asked about until that board finishes \
+                 it: the sweep reads that board, and when the row is completed — or struck off, or \
+                 gone from it — you are told which, and woken with it. Nothing here has to wait on \
+                 it, and a restatement of your row keeps the wait.\n",
+            );
         }
         Invocation::ok(out)
     }
@@ -4087,6 +4251,16 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                     Invocation::failed(format!("{where_} is refused: {why}"), OPERATOR_SHAPE)
                 })
             }
+            // Another BOARD's row - a seat's, another session's - by that board's name and the
+            // row's words. Whether a board answers to the name is not this parser's to say: the
+            // reader is asked before anything is written.
+            Some("todo") => {
+                let seat = o.get("seat").and_then(|s| s.as_str()).unwrap_or("");
+                let content = o.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                other_board(seat, content).map_err(|why| {
+                    Invocation::failed(format!("{where_} is refused: {why}"), OTHER_BOARD_SHAPE)
+                })
+            }
             // An answer is the OPERATOR's word, never the model's. The kind exists on the board
             // (it is what an answered `operator` edge becomes) and it is refused here by name, so a
             // model cannot write itself an answer and start the row on it.
@@ -4111,12 +4285,14 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                  `child` — a subagent you started with `task`, by the session id it gave you — and \
                  `job` — a background job, by the handle `job_list` prints — `monitor` — a monitor \
                  you armed, by its name, until it fires or ends — `operator` — a \
-                 question for the operator, with at least two `options` — and `external` — \
-                 something outside this machine, by your own words for it. Send a row's name as a \
-                 plain string, or the tagged form {\"kind\": \"row\", \"content\": \"…\"}, \
-                 {\"kind\": \"child\", \"id\": \"s-…\"} or {\"kind\": \"job\", \"handle\": \"j…\"}. \
-                 A kind nobody can evaluate is refused rather than dropped: a need that cannot be \
-                 answered must never read as met.",
+                 question for the operator, with at least two `options` — `todo` — a row on ANOTHER \
+                 board, a seat's or another session's, by that board's name and the row's words — \
+                 and `external` — something outside this machine, by your own words for it. Send a \
+                 row's name as a plain string, or the tagged form {\"kind\": \"row\", \"content\": \
+                 \"…\"}, {\"kind\": \"child\", \"id\": \"s-…\"}, {\"kind\": \"job\", \"handle\": \
+                 \"j…\"} or {\"kind\": \"todo\", \"seat\": \"cc@…\", \"content\": \"…\"}. A kind \
+                 nobody can evaluate is refused rather than dropped: a need that cannot be answered \
+                 must never read as met.",
             )),
             None => Err(Invocation::failed(
                 format!("{where_} has no `kind`"),
@@ -4165,6 +4341,79 @@ fn pid_need(pid: u64, start: Option<u64>, where_: &str) -> Result<TodoNeed, (Str
                 .into(),
         )),
     }
+}
+
+/// What a `todo` wait looks like, for the sentence a refusal ends with. The same shape in `needs`
+/// and in `wait_on`, because a wait on another board is no side effect - it is an edge.
+const OTHER_BOARD_SHAPE: &str = "a `todo` wait is {\"kind\": \"todo\", \"seat\": \
+     \"cc@<folder>\", \"content\": \"<that row's exact words>\"} — or, through `wait_on`, \
+     {\"content\": \"<your row>\", \"todo\": {\"seat\": \"cc@<folder>\", \"content\": \
+     \"…\"}}. The seat is an external seat's handle (`cc@<folder>[:name]`, what its own `todos` \
+     call answers with) or another session of this project by its id or its name; a board of \
+     another project is refused, and `external` is the wait for what nothing here can watch.";
+
+/// A `todo` edge, checked for shape alone: a seat named and a row named. Whether that board answers
+/// is the reader's question, asked before anything is written.
+fn other_board(seat: &str, content: &str) -> Result<TodoNeed, String> {
+    let seat = seat.trim();
+    let content = content.trim();
+    if seat.is_empty() {
+        return Err(
+            "it names no `seat` — say WHOSE board the row is on: an external seat's handle \
+             (`cc@<folder>`) or another session of this project"
+                .into(),
+        );
+    }
+    if content.is_empty() {
+        return Err("it names no `content` — the row's exact words, as that board shows them".into());
+    }
+    Ok(TodoNeed::Todo {
+        seat: seat.to_string(),
+        content: content.to_string(),
+    })
+}
+
+/// A `todo` need checked against the board it names, before anything is written: the board is read
+/// once per name, and a name or a row this project has not got is refused rather than stored as an
+/// edge nothing would ever free.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
+fn resolve_seat_needs(
+    rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
+    boards: Option<&dyn Boards>,
+) -> Result<(), Invocation> {
+    let mut read: BTreeMap<String, Result<Board, String>> = BTreeMap::new();
+    for (content, _, needs) in rows.iter_mut() {
+        for need in needs.iter_mut() {
+            let TodoNeed::Todo { seat, content: want } = need else {
+                continue;
+            };
+            let Some(boards) = boards else {
+                return Err(Invocation::failed(
+                    format!(
+                        "nothing was written: the row `{content}` waits on `{seat}`'s \"{want}\", \
+                         and this runtime holds no store to read another board from"
+                    ),
+                    OTHER_BOARD_SHAPE,
+                ));
+            };
+            let board = read
+                .entry(seat.clone())
+                .or_insert_with(|| boards.board_of(seat));
+            let why = match board {
+                Ok(Board::Rows(rows)) => match check_wait(rows, want) {
+                    Ok(()) => continue,
+                    Err(why) => why,
+                },
+                Ok(Board::Unknown(why)) => why.clone(),
+                Err(why) => why.clone(),
+            };
+            return Err(Invocation::failed(
+                format!("nothing was written: the row `{content}` cannot wait on `{seat}` — {why}"),
+                OTHER_BOARD_SHAPE,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What an `operator` wait looks like, for the sentence a refusal ends with.
@@ -4394,6 +4643,11 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                         // In the reader's own words: they are all the edge has, and they say what
                         // the row is waiting for better than any word this build could add.
                         TodoNeed::External { what, .. } => what.trim().to_string(),
+                        // Another board's row, by that board's name and the row's own words: the
+                        // reader sees whose work it is, and the sweep frees it when they finish.
+                        TodoNeed::Todo { seat, content } => {
+                            format!("{}'s \"{}\"", seat.trim(), content.trim())
+                        }
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
                     .collect();

@@ -8,9 +8,9 @@ use letibot_tokencore::store::TodoItem;
 use super::{
     ChildSessions, RunningJobs, queue_review_in_flight, unfinished_plan,
     waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, waits_on_an_undigested_ending,
-    waits_on_something_external, waits_on_the_room, when_a_queue_reviewer_goes_quiet,
-    when_a_waited_process_is_read_again, when_a_young_child_grows_up, when_an_ending_is_digested,
-    when_an_external_wait_lapses,
+    waits_on_another_board, waits_on_something_external, waits_on_the_room,
+    when_a_queue_reviewer_goes_quiet, when_a_waited_process_is_read_again,
+    when_a_young_child_grows_up, when_an_ending_is_digested, when_an_external_wait_lapses,
 };
 
 /// How long a session sits IDLE before the unfinished-plan check is sent. The operator's scheduling
@@ -78,6 +78,9 @@ pub fn the_check_may_ask_about(
         // room pass puts a `TodoNeed::Room` edge on the row while the holder's beat is fresh and
         // takes it off in the pass that sees either end, so *does this row carry the edge* IS the fact.
         && !waits_on_the_room(row)
+        // And a row waiting on ANOTHER board - a seat's, another session's - is quiet the same way:
+        // the sweep frees it the moment that board finishes the row, so the edge is the fact.
+        && !waits_on_another_board(row)
         // A wait on something outside the machine is quiet for a bounded window only: nothing
         // here can see it end, so past the window the row is asked about again.
         && !waits_on_something_external(row, jobs)
@@ -226,6 +229,7 @@ fn a_wait_in_words(need: &letibot_tokencore::store::TodoNeed) -> String {
         N::Room { item, .. } => format!("room:{item}"),
         N::Operator { question, .. } => format!("operator:{question}"),
         N::External { what, .. } => format!("external:{what}"),
+        N::Todo { seat, content } => format!("todo:{seat}:{content}"),
         N::Answered { question, .. } => format!("answered:{question}"),
         N::Ask { ask, of, .. } => format!("ask:{ask}:{of}"),
         N::Owed { ask } => format!("owed:{ask}"),

@@ -4409,6 +4409,14 @@ impl<'a> Sessions<'a> {
                                     what: what.clone(),
                                     since_ms: *since_ms,
                                 },
+                                // And another board's row, seat and words whole: an edge a head
+                                // dropped here is a row released by nobody.
+                                letibot_sessionlog::event::TodoNeed::Todo { seat, content } => {
+                                    letibot_tokencore::store::TodoNeed::Todo {
+                                        seat: seat.clone(),
+                                        content: content.clone(),
+                                    }
+                                }
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
                                 }

@@ -709,6 +709,7 @@ fn build_ext(
         Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new())),
         None,
         None,
+        None,
         Arc::new(crate::builtins::task::NoTaskRunner),
         Arc::new(crate::builtins::skill::SkillRegistry::default()),
         crate::builtins::skill::Seat::new(),

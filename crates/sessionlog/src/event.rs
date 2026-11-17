@@ -251,6 +251,10 @@ pub enum TodoNeed {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since_ms: Option<u64>,
     },
+    /// Another board's row, by that board's name and the row's exact words: an external seat's
+    /// (`cc@<folder>`) or another session's of this project. A head draws it as
+    /// `waits on cc@<folder>'s "<row>"`, and the daemon's own wait sweep frees it.
+    Todo { seat: String, content: String },
     /// An operator edge the operator has answered - met, and kept as the reply so the row still
     /// records what it waited for. `ask` is the room's id when the reply came from a peer session.
     Answered {

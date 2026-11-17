@@ -89,6 +89,24 @@ impl Store {
         Ok(())
     }
 
+    /// The seat's board as a ROW that is there, not `[]` for a seat that never wrote one: another
+    /// board's `todo` wait is freed by a row it names being gone, so a seat with no board must not
+    /// read as a seat whose board is empty.
+    pub fn seat_board(&self, seat: &str) -> Result<Option<Vec<TodoItem>>> {
+        let exists: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM seat_todo WHERE seat = ?1",
+                params![seat],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match exists {
+            Some(_) => self.seat_todos(seat).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Every seat's board, by handle, for a head's pane: a seat is not a session, so this is the
     /// only read that finds one. A row per seat, in the handles' own order, each with its edges.
     pub fn seat_boards(&self) -> Result<Vec<(String, Vec<TodoItem>)>> {

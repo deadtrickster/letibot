@@ -2536,6 +2536,12 @@ impl Harness {
             // the same slot the `room` tool talks through, so a link made after the open reaches
             // both - and a box with no coordinator refuses the ask by name.
             Some(room_late.clone()),
+            // And the store's half: a row that waits on ANOTHER board - a seat's, another
+            // session's of this project - read by name in the call that writes the wait.
+            Some(std::sync::Arc::new(crate::seat_boards::SeatBoards::new(
+                cfg.store_at(),
+                cfg.workspace.to_string_lossy(),
+            )) as std::sync::Arc<dyn letibot_tools::builtins::todo::Boards>),
             task_runner,
             parts.skills.clone(),
             // Filled below, once the prefix is composed: only then is this session's tool list

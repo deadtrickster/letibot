@@ -552,6 +552,10 @@ fn need_words(n: &TodoNeed) -> String {
         // Something outside this machine, in the row's own words: the row's line says `waits on`
         // them and there is nothing behind them to open.
         TodoNeed::External { what, .. } => clean_line(what),
+        // Another board's row, as the lead asks it drawn: whose board it is, and the row's words.
+        TodoNeed::Todo { seat, content } => {
+            format!("{}'s \"{}\"", clean_line(seat), clean_line(content))
+        }
         // Kept rather than dropped - a plan is what would be lost - and said as the one thing this
         // build can honestly say about it.
         TodoNeed::Unknown => "an edge this build does not know".into(),
