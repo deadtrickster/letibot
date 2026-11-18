@@ -472,8 +472,11 @@ fn the_wide_seats_masks_are_the_list_the_macos_seat_denies() {
     let joined = argv.join(" ");
     for p in &want {
         let p = p.display().to_string();
+        // The mask may leave public holes (`known_hosts`) between the tmpfs and its remount.
+        let tmpfs = joined.find(&format!("--tmpfs {p} "));
+        let ro = joined.find(&format!("--remount-ro {p}"));
         assert!(
-            joined.contains(&format!("--tmpfs {p} --remount-ro {p}")),
+            matches!((tmpfs, ro), (Some(t), Some(r)) if t < r),
             "{p} is on the macOS deny list and not masked here: {joined}"
         );
     }
