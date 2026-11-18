@@ -523,6 +523,16 @@ impl Harness {
             if target != self.model_name() {
                 return Ok(self.pend_switch(choice, target));
             }
+            // Choosing the model already on while a switch waits is the way to call it off: the
+            // turn ends on this model, and so does every turn after it.
+            if let Some(gone) = self.pending_switch.take() {
+                let said = format!(
+                    "the switch to {} is called off - turns stay on {target}",
+                    gone.model
+                );
+                self.hub.warn("model_switch_pending", said.clone());
+                return Ok(said);
+            }
         }
         self.set_provider_now(choice)
     }
