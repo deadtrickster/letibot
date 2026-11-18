@@ -10,13 +10,16 @@ A subagent runs under its parent's permission ruleset (opencode's model,
 it has no operator to ask. `task` takes:
 
 ```
-task(prompt, role?, access?, where?, verify?, repo?)
-  role    a role profile THIS seat may start (coder default). The description lists them, with the
-          one line each; a name that is not one of them is refused with the list
-  access  read-only | no-write, no-exec, no-network (comma-separated)
-  where   host (default) | firecode | host:NAME | host:NAME:vm
-  verify  with a VM only: a shell command firecode runs after the child, before its VM stops
-  repo    with a VM only: which repository the VM holds, when the session root holds several
+task(prompt, role?, access?, where?, verify?, repo?, worktree?, repository?, branch?)
+  role       a role profile THIS seat may start (coder default). The description lists them, with the
+             one line each; a name that is not one of them is refused with the list
+  access     read-only | no-write, no-exec, no-network (comma-separated)
+  where      host (default) | firecode | host:NAME | host:NAME:vm
+  verify     with a VM only: a shell command firecode runs after the child, before its VM stops
+  repo       with a VM only: which repository the VM holds, when the session root holds several
+  worktree   the tree the child works in: an existing checkout, or a path to create. See §1
+  repository with `worktree`: the repository to cut it from, when the path is not there yet
+  branch     with `repository`: the branch it is cut on (default `agent/<slug>`)
 ```
 
 `access` is a `Downgrade` (`letibot_tools::schema::Downgrade`): a set of access classes denied below
@@ -34,6 +37,28 @@ the role. Three properties, each a type rather than a check:
    name whether seated or not (`downgraded_ruleset`), which wins by opencode's last-rule so a tool
    registered outside the role later is refused rather than admitted for want of a rule. The disclosure
    names it: `downgrade: no write, no exec, no network`.
+
+### A child whose work is in another repository
+
+A `task` child is born in its parent's project unless it is told otherwise, and a child briefed to fix
+something in another repository then sees none of its own files: its first `cd` is refused, and every
+path it opens is outside its view. `worktree` is the answer.
+
+```
+task {"prompt": "…", "worktree": "/build/tmp/pg-fuzz-wt",
+      "repository": "/home/dead/Projects/dbtest/pg-fuzz", "branch": "fuzz-fix"}
+```
+
+The child opens with that tree as its **own project**, which is the rule `8419eb4a4` states: read-write
+without a card, and the main checkout of the repository it was cut from readable, so a build against
+the shared cache and a `git log` in the source tree both work. A path that is already a checkout is
+used as it stands (its own branch and HEAD, nothing created, nothing to land); a path that is not there
+is cut as a worktree of `repository` on `branch` before the child spawns, and the answer names the
+path, the branch and the base SHA. `task_start` takes the same `worktree` when the default place under
+the repository is not wanted.
+
+A VM placement refuses `worktree`: a VM works on a copy of one tree, so a worktree arranged here would
+be a tree nothing runs in.
 
 ### A role is a profile, in a file
 

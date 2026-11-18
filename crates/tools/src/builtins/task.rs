@@ -273,6 +273,15 @@ pub struct WorktreeSpec {
     /// a session may run a level above its repositories, and then the root is in none. Relative
     /// to the session root, or absolute. `None` is the session root's own repository.
     pub repo: Option<String>,
+    /// The path the caller named for the child's tree, when it named one: a checkout that is
+    /// already there, or the place a worktree is to be created. `None` is the default, where the
+    /// runner picks the path under the repository. This is the door a parent briefing work in
+    /// ANOTHER repository uses: the child opens in that tree, not in the parent's.
+    pub path: Option<String>,
+    /// The branch a created tree is cut on, when the caller named one. `None` and
+    /// `agent/<slug>` is the default. Ignored for a checkout that already exists, which is on
+    /// whatever branch it is on.
+    pub branch: Option<String>,
 }
 
 /// Where a `task_start` child works, as the runner arranged it: the path, the branch and the base
@@ -1098,7 +1107,10 @@ impl Tool for TaskTool {
                 .to_string()
                 + &roles
                 + super::DELIVERED
-                + " `task_result` shows its state or re-reads its answer. **A child that \
+                + " `task_result` shows its state or re-reads its answer. When the work is in \
+              ANOTHER repository than the one this session is in, give `worktree`: the child then \
+              opens in that tree, its own project read-write with no card, instead of in yours, \
+              where every file of its work would be outside its view. **A child that \
              writes code must be told, in its prompt, to END with \
              the repository's own format check (`sh scripts/check-fmt.sh <the ref it was cut from>` in this tree)**: code a child has \
              written, built and TESTED can still be unformatted, because `cargo fmt` \
@@ -1115,6 +1127,9 @@ impl Tool for TaskTool {
                     "where": {"type": "string", "description": "`host` (the default: your own boundary), `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody), or `host:NAME` — a machine the operator declared for this box, where the child's tools (bash, read, write, jobs) run over ssh while its model connection stays here. Call `hosts` to see which machines are declared, and `hosts {probe: true}` to see which is least loaded. Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
                     "repo": {"type": "string", "description": "With `where: firecode`: the repository the VM copies, relative to the session root or absolute. A VM holds one repository, so it is required when the session root holds several. Refused without `where: firecode`."},
+                    "worktree": {"type": "string", "description": "The tree the child works in, when the work is in ANOTHER repository than the one this session is in: a checkout that already exists (absolute, or relative to the session root), or a path that is not there yet, to be created as a worktree of `repository` on `branch`. The child opens there as its own project, read-write with no card, and that repository's main checkout is readable. Refused with a VM placement, which works on a copy."},
+                    "repository": {"type": "string", "description": "With `worktree`, when that path is to be CREATED: the repository to cut it from, relative to the session root or absolute. The runner creates the worktree before the child starts, and refuses a path that is already there."},
+                    "branch": {"type": "string", "description": "With `worktree` and `repository`: the branch the created worktree is cut on. Omit for `agent/<slug>`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "slug": {"type": "string", "description": "A short name for the child (letters, digits, `-`), your word for the work — `task_result`, `task_message` and `job_kill` take it in place of the handle. Defaults to a derivation from the prompt; made unique among your subagents."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG},
@@ -1254,6 +1269,44 @@ impl Tool for TaskTool {
             Ok(p) => p,
             Err(refused) => return refused,
         };
+        // A child placed in a tree of its OWN, when the parent's work is elsewhere: `worktree`
+        // names a checkout that is already there, or a path to create as a worktree of
+        // `repository` on `branch`. A child born in the parent's project while its work is in
+        // another repository sees none of its own files.
+        let worktree = args
+            .get("worktree")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let repository = args
+            .get("repository")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let branch = args
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if worktree.is_none() && (repository.is_some() || branch.is_some()) {
+            return Invocation::failed(
+                "`repository` and `branch` name the tree a `worktree` is cut from, and none was given",
+                "nothing was spawned. Name the `worktree` the child should work in, or drop both \
+                 and the child works in your own workspace."
+                    .to_string(),
+            );
+        }
+        if worktree.is_some() && placement.is_vm() {
+            return Invocation::failed(
+                "a VM child works on a copy of one tree, so a `worktree` cannot be what it works in",
+                "the VM copies a tree and the child's commits stay in the copy, so a worktree \
+                 arranged here would be a tree nothing runs in. Nothing was spawned. Drop \
+                 `worktree` for this placement."
+                    .to_string(),
+            );
+        }
+        // The slug the child was named, kept for a worktree: it is also the branch's name.
+        let named_slug = slug.clone().unwrap_or_default();
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
@@ -1278,9 +1331,25 @@ impl Tool for TaskTool {
             helper: false,
             skills,
         };
-        let handle = match self.runner.start(prompt, &spec) {
-            Ok(h) => h,
-            Err(e) => return Invocation::failed(e, "the subagent did not start."),
+        let (handle, placed) = match worktree {
+            None => match self.runner.start(prompt, &spec) {
+                Ok(h) => (h, None),
+                Err(e) => return Invocation::failed(e, "the subagent did not start."),
+            },
+            Some(at) => {
+                let request = WorktreeSpec {
+                    slug: named_slug,
+                    base: None,
+                    main_tree: false,
+                    repo: repository.map(str::to_string),
+                    path: Some(at.to_string()),
+                    branch: branch.map(str::to_string),
+                };
+                match self.runner.start_worktree(prompt, &spec, &request) {
+                    Ok(h) => (h.handle, Some(h.placement)),
+                    Err(e) => return Invocation::failed(e, "the subagent did not start."),
+                }
+            }
         };
         // The name the runner gave it, for every sentence below: `slug · handle`.
         let label = self.runner.label_of(&handle);
@@ -1288,6 +1357,15 @@ impl Tool for TaskTool {
         if let Some(w) = wake {
             ctx.want_completion(&handle, w);
         }
+        // Where a placed child works, named in the answer: a caller who asked for another
+        // repository's tree has to be able to check that is where the child is.
+        let place = match &placed {
+            Some(p) => format!(
+                "  path: {}\n  branch: {}\n  base: {}\n",
+                p.path, p.branch, p.base_sha
+            ),
+            None => String::new(),
+        };
         // `Backgrounded`, not `Ok`: the outcome names a fact about the world, this is running and
         // has not answered yet, and an `Ok` here would be grounding for an answer nothing produced.
         Invocation::backgrounded(
@@ -1300,7 +1378,7 @@ impl Tool for TaskTool {
             ),
             format!(
                 // Running and unwaited is the envelope's; the `task_result` call is `next`'s.
-                "started subagent `{label}` as `{}`.\n  subtask: {}\n\n{}",
+                "started subagent `{label}` as `{}`.\n  subtask: {}\n{place}\n{}",
                 match &spec.model {
                     // The model is named when the child was given one - a spawn that
                     // prints only the role would leave the reader to guess which model is
@@ -1594,6 +1672,8 @@ impl Tool for TaskStartTool {
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
                     "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."},
+                    "worktree": {"type": "string", "description": "Where to put the tree, when the default place is not wanted: an absolute path, or one relative to the session root. A path that is already there must be a checkout, and is used as it stands (its own branch and HEAD, nothing created); one that is not there is cut as a worktree of `repo` on `branch`."},
+                    "branch": {"type": "string", "description": "The branch the created worktree is cut on. Defaults to `agent/<slug>`."},
                     "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG},
                     "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."},
@@ -1673,7 +1753,29 @@ impl Tool for TaskStartTool {
             .and_then(|v| v.as_str())
             .map(|r| r.trim().trim_end_matches('/').to_string())
             .filter(|r| !r.is_empty() && r != ".");
+        // Where to put the tree, when the caller does not want the default place: the door a parent
+        // briefing work in ANOTHER repository uses.
+        let at = args
+            .get("worktree")
+            .and_then(|v| v.as_str())
+            .map(|p| p.trim().trim_end_matches('/').to_string())
+            .filter(|p| !p.is_empty());
+        let cut_on = args
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty());
 
+        // The two name different trees, and a spawn that quietly picked one would work in the tree
+        // the caller did not choose.
+        if main_tree && at.is_some() {
+            return Invocation::failed(
+                "`main_tree` and `worktree` name two different trees",
+                "nothing was arranged and nothing was spawned. `main_tree` is *work in the main \
+                 checkout, here*; `worktree` is *work in that tree*. Name one of them."
+                    .to_string(),
+            );
+        }
         // A VM child works on a COPY of the tree, so a worktree arranged here is not the tree its
         // commits land in. `main_tree` promises no branch, so it is not this case.
         if placement.is_vm() && !main_tree {
@@ -1738,8 +1840,9 @@ impl Tool for TaskStartTool {
 
         // The refusal of an existing path, by name and without spawning anything: a path that
         // already exists, a directory or a worktree an earlier `task_start` made, is refused here
-        // rather than by a child that never started.
-        if !main_tree {
+        // rather than by a child that never started. A path the caller NAMED is its own answer:
+        // the runner uses it when it is a checkout and refuses it when it is not.
+        if !main_tree && at.is_none() {
             // Under the named repository, when there is one - the runner arranges it there.
             let under = match &repo {
                 Some(r) if r.starts_with('/') => r.clone(),
@@ -1843,6 +1946,8 @@ impl Tool for TaskStartTool {
             base,
             main_tree,
             repo,
+            path: at,
+            branch: cut_on,
         };
 
         let handle = match self.runner.start_worktree(prompt, &spec, &worktree_spec) {
@@ -1861,7 +1966,12 @@ impl Tool for TaskStartTool {
         // The placement is in the answer: the handle names the path, the branch and the base SHA,
         // so the caller and the operator see where the child works without re-reading the brief.
         // The main tree is named as the exception, and a firecode spawn says the VM got a copy.
-        let where_line = if handle.placement.main_tree {
+        let where_line = if worktree_spec.path.is_some() && handle.placement.main_tree {
+            format!(
+                "the checkout the caller named (`{}`) — nothing was created",
+                handle.placement.path
+            )
+        } else if handle.placement.main_tree {
             "the main checkout (the exception — a fresh worktree is the default)".to_string()
         } else {
             "a fresh worktree".to_string()

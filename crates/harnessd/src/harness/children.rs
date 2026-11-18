@@ -2810,12 +2810,32 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // session root. A root that is in no repository (a session a level above its repos) is
         // refused by name with the repositories it can see, so the next call can name one.
         let root = self.base.workspace.display().to_string();
-        let workspace = match worktree.repo.as_deref() {
-            Some(r) if r.starts_with('/') => r.to_string(),
-            Some(r) => format!("{root}/{r}"),
-            None => root.clone(),
+        // A tree the caller NAMED is the door a parent briefing work in ANOTHER repository uses:
+        // the child opens there, not in the parent's project. A named path that is already there
+        // is a checkout and nothing is created; one that is not is a worktree of `repo`.
+        let named = worktree.path.as_deref().map(|p| match p.starts_with('/') {
+            true => p.to_string(),
+            false => format!("{root}/{p}"),
+        });
+        let existing = named
+            .as_deref()
+            .filter(|at| std::fs::symlink_metadata(at).is_ok());
+        if let Some(at) = existing
+            && let Err(e) = git_in(at, &["rev-parse", "--show-toplevel"])
+        {
+            return Err(format!(
+                "`{at}` is there and is not a git checkout ({e}), so a child cannot work in \
+                 it. Nothing was arranged and nothing was spawned. Name a checkout, or a path \
+                 that is not there yet with `repo` and `branch` to have one cut."
+            ));
+        }
+        let workspace = match (existing, worktree.repo.as_deref()) {
+            (Some(_), _) => String::new(),
+            (None, Some(r)) if r.starts_with('/') => r.to_string(),
+            (None, Some(r)) => format!("{root}/{r}"),
+            (None, None) => root.clone(),
         };
-        if git_in(&workspace, &["rev-parse", "--show-toplevel"]).is_err() {
+        if existing.is_none() && git_in(&workspace, &["rev-parse", "--show-toplevel"]).is_err() {
             let repos = repos_under(std::path::Path::new(&root), 3);
             return Err(match &worktree.repo {
                 Some(r) => format!(
@@ -2838,7 +2858,22 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         };
         let base = worktree.base.clone().unwrap_or_else(|| "HEAD".to_string());
 
-        let placement = if worktree.main_tree {
+        let placement = if let Some(at) = existing {
+            // A checkout the caller named: its own branch and HEAD, and nothing created. It is a
+            // placement and not a `main_tree` request, though it carries that flag for the one
+            // thing the flag means downstream - the child does not own its branch, so there is
+            // nothing of its own to land.
+            let branch = git_in(at, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .map_err(|e| format!("the branch of `{at}` could not be read: {e}"))?;
+            let base_sha = git_in(at, &["rev-parse", "HEAD"])
+                .map_err(|e| format!("the HEAD of `{at}` could not be read: {e}"))?;
+            WorktreePlacement {
+                path: at.to_string(),
+                branch,
+                base_sha,
+                main_tree: true,
+            }
+        } else if worktree.main_tree {
             // The exception: the child works in the main checkout. No tree is
             // arranged; the placement is the main tree's own path, branch and HEAD.
             let branch = git_in(&workspace, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -2852,9 +2887,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 main_tree: true,
             }
         } else {
-            // The default: a fresh worktree, arranged before the child is spawned.
-            let path = worktree_path(&workspace, &slug);
-            let branch = worktree_branch(&slug);
+            // The default: a fresh worktree, arranged before the child is spawned - at the path
+            // the caller named when it named one, else where the repository keeps its worktrees.
+            let path = named
+                .clone()
+                .unwrap_or_else(|| worktree_path(&workspace, &slug));
+            let branch = worktree
+                .branch
+                .clone()
+                .filter(|b| !b.trim().is_empty())
+                .unwrap_or_else(|| worktree_branch(&slug));
             // The refusal of an existing path, by name and without spawning anything: the tool pre-checks it
             // and the runner re-checks it, because the runner is what creates the path and a check the creator
             // does not make is a check that can be raced.

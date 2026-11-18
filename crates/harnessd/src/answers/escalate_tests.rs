@@ -896,7 +896,13 @@ fn view_request(id: &str, path: &str, access: letibot_tools::Access) -> Adjudica
     req.target = path.into();
     req.class = letibot_tools::adjudicate::ActionClass::host(access, false, false);
     req.arguments = serde_json::json!({ "path": path });
-    req.options = letibot_tools::adjudicate::view_grant_options();
+    req.options = letibot_tools::adjudicate::view_grant_options(
+        match access {
+            letibot_tools::schema::Access::Write => letibot_tools::view::ViewAccess::Write,
+            _ => letibot_tools::view::ViewAccess::Read,
+        },
+        None,
+    );
     req.tier = letibot_tools::adjudicate::Tier::MayApprove;
     req.baseline = format!("a path outside the view: {path}");
     // As `ask_to_see` builds it: layer A's reading of the path, and the asker's trail.
