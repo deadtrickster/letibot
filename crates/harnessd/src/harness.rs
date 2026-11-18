@@ -2004,8 +2004,10 @@ pub(crate) use children::{
     subagent_depth_refusal, subagent_title, unsettled_children,
 };
 pub use children::{
-    ChildExit, ChildTurns, SubagentModel, derive_title, message_from_a_session, serve_child_under,
-    subagent_model, subagent_model_in,
+    ChildExit, ChildTurns, JOBS_TURN_BACKS, SubagentModel, derive_title, held_said,
+    jobs_open_notice, message_from_a_session, newest_answer, open_job_clause,
+    open_jobs_answer_line, open_jobs_clause, serve_child_under, subagent_model, subagent_model_in,
+    turn_back_for_jobs, turned_back_for_its_jobs,
 };
 pub(crate) use children::{
     HarnessTaskRunner, TaskSlots, a_child_turn_ended, child_mode_source, git_in,

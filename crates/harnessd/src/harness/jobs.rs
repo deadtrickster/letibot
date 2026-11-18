@@ -22,6 +22,46 @@ impl Harness {
         j.background.is_some() || j.state.is_running()
     }
 
+    /// The jobs this session started that are still running, as its own process host lists them.
+    /// The one reading behind `live_jobs`, the child's turn-back and the hold's row, so a session
+    /// cannot be described as holding something it is not.
+    pub fn open_jobs(&self) -> Vec<letibot_tools::exec::JobView> {
+        let Some(host) = self.runtime.backend.processes() else {
+            return Vec::new();
+        };
+        host.jobs()
+            .into_iter()
+            .filter(|j| j.state.is_running())
+            .collect()
+    }
+
+    /// The turn a child owes when its turn ended over jobs it started: one message naming them and
+    /// the two ways out, and the child's own turn to wait on them or kill them before it answers.
+    /// `None` when a layer dropped the sentence, and then no turn is opened.
+    pub fn jobs_open_turn(
+        &mut self,
+        notice: &str,
+        jobs: &[letibot_tools::exec::JobView],
+    ) -> Result<Option<Reply>, HarnessError> {
+        let ids: Vec<String> = jobs.iter().map(|j| j.id.0.clone()).collect();
+        let facts = letibot_plugin::notice::Facts::Job { jobs: ids };
+        let Some(text) = self.say(&facts, notice) else {
+            return Ok(None);
+        };
+        self.compact_if_at_the_wall();
+        self.trail.begin_turn();
+        self.trail
+            .say(Speaker::Agent, &text, Some(std::time::Instant::now()));
+        self.submit_items_then(
+            vec![TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text }],
+            }],
+            |_| {},
+        )
+        .map(Some)
+    }
+
     /// The jobs, as data, for any head that asks: the same list `job_lines` prints, before it is
     /// prose. Every decision in it is the daemon's, so no head rebuilds these rows out of the
     /// event stream and no head needs its own copy of the rules.
