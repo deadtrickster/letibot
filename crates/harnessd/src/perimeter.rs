@@ -592,6 +592,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).expect("a parent");
         let base = base.canonicalize().expect("a real directory");
+        // The fixture's own project file, so `LeticodeConfig::discover` stops here: a temp
+        // directory under somebody's tree would otherwise read that tree's config, and this test
+        // would measure the box instead of the rule.
+        std::fs::write(
+            base.join("leticode.toml"),
+            "# this fixture's own, so discovery stops here\n",
+        )
+        .expect("a project file");
         let main = base.join("letibot");
         std::fs::create_dir_all(main.join("crates/tui/src/app")).expect("a source tree");
         std::fs::write(main.join("Cargo.toml"), "[workspace]\n").expect("a manifest");
@@ -650,8 +658,10 @@ mod tests {
         assert_eq!(main_checkout(&wt).as_deref(), Some(main.as_path()));
         // A plain checkout: the repository IS the workspace, and nothing is added for it.
         assert_eq!(main_checkout(&main), None);
-        // A directory that is no repository answers nothing rather than guessing a parent.
-        assert_eq!(main_checkout(main.parent().expect("a parent")), None);
+        // A directory git cannot answer about answers nothing rather than guessing a parent. (A
+        // directory merely outside every repository is not a shape a fixture can build: a temp dir
+        // under a worktree's `target/` resolves to that worktree's main checkout, same rule.)
+        assert_eq!(main_checkout(&main.join("nowhere")), None);
         // And a top-level session — the operator's own — never gets the grant at all.
         assert!(main_checkout_grant(Level::Wide, &wt).is_none());
         assert!(main_checkout_grant(Level::Tight, &main).is_none());
