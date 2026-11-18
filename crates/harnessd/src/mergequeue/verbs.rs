@@ -1215,5 +1215,77 @@ mod tests {
         assert!(may(Verb::Restart, "bridge:cc", &bridges).is_ok());
         assert!(may(Verb::Restart, "bridge:cc", &row("s-x", "operator:s", false)).is_err());
         assert!(may(Verb::Restart, "agent:s-x", &row("s-x", "agent:s-x", true)).is_err());
+        // A stop is the gate's own: an agent's row, a bridge's, or the operator's any.
+        assert!(
+            may(
+                Verb::Stop,
+                "operator:s",
+                &row("somebody-else", "queue:d", false)
+            )
+            .is_ok()
+        );
+        assert!(may(Verb::Stop, "agent:s-x", &agents).is_ok());
+        assert!(may(Verb::Stop, "agent:s-y", &agents).is_err());
+        assert!(may(Verb::Stop, "bridge:cc", &bridges).is_ok());
+        assert!(may(Verb::Stop, "bridge:other", &bridges).is_err());
+    }
+
+    /// A target's gate belongs to whoever re-gated it: `regate` is a move into `gating` on the
+    /// target's history, and the session that asked may stop the gate that answers it.
+    #[test]
+    fn a_targets_gate_is_stopped_by_the_session_that_re_gated_it() {
+        let dir = TempDir::new("verbs-target-gate");
+        let store = Store::open(&dir.0.join("sessions.db")).unwrap();
+        store
+            .set_target_health(
+                &TargetHealth {
+                    repository: "/r".into(),
+                    target: "main".into(),
+                    sha: "abc".into(),
+                    state: HealthState::Gating,
+                    checked_ms: 1,
+                    evidence: "re-gate asked by agent:s-r".into(),
+                    gate_steps: vec![],
+                },
+                "agent:s-r",
+            )
+            .unwrap();
+        store
+            .gate_began(&letibot_tokencore::store::LiveGate {
+                repository: "/r".into(),
+                run_id: "abc-1".into(),
+                kind: "target".into(),
+                target: "main".into(),
+                entry: String::new(),
+                sha: "abc".into(),
+                host: "local".into(),
+                dir: "/w/target".into(),
+                step: 1,
+                of_step: 2,
+                command: "cargo test".into(),
+                step_ms: 1,
+                started_ms: 1,
+                stop_by: String::new(),
+                stop_why: String::new(),
+            })
+            .unwrap();
+        let refused = stop_by(&store, "/r", "agent:s-other", "not mine", &|_| {})
+            .expect_err("another session's re-gate");
+        assert!(
+            refused.contains("only the gate of its own row") && refused.contains("agent:s-r"),
+            "{refused}"
+        );
+        let said = stop_by(
+            &store,
+            "/r",
+            "agent:s-r",
+            "the tip is the wrong one",
+            &|_| {},
+        )
+        .expect("its own re-gate");
+        assert!(said.contains("asked to stop"), "{said}");
+        let live = store.live_gate("/r").unwrap().unwrap();
+        assert!(live.stopping());
+        assert_eq!(live.stop_by, "agent:s-r");
     }
 }
