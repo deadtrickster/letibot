@@ -64,6 +64,9 @@ letibot-builtins.workspace = true
 # levels live there, and so do the two names a leticode's instruction file may have —
 # which is why this crate asks for a list of paths and holds no copy of a name.
 leticode-config.workspace = true
+# The options reference for every config file: the `config` tool's desk reads it to answer what a
+# file is, which key a credential hides under, and how a change takes effect.
+letibot-config-ref.workspace = true
 # **The GitHub reviewer seat** (R118): the poll, the rows, the review's drafts and the pane's
 # snapshot. The daemon holds the seat, so this is where `letibot attach github <scope>` lands and
 # where `/pane github/github` reads its feed from. `crates/harnessd/src/github.rs` is the daemon's
@@ -111,7 +114,6 @@ required-features = ["local"]
 
 [dev-dependencies]
 letibot-testenv.workspace = true
-letibot-config-ref.workspace = true
 # The fake MCP server, served from this crate's test binary.
 letibot-mcp-client = { workspace = true, features = ["fake"] }
 letibot-tools = { workspace = true, features = ["testing"] }

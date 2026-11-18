@@ -40,10 +40,16 @@ pub fn describe<'a, 'b>(f: &'a File, path: &'b str) -> Option<(&'a Table, &'a Ke
 }
 
 /// Every file that has this key path, in the reference's own order.
+///
+/// A key the reference lists as `<tool>` or `<name>` accepts any name at all, so asking what
+/// `answer_reads` does must not be answered with `permission.json`'s `<tool>`: a key the operator
+/// names is found by [`search`], and a path landing on one has told this function nothing.
 pub fn hits(path: &str) -> Vec<Hit> {
     let mut out = Vec::new();
     for f in ALL {
-        if let Some((table, key)) = describe(f, path) {
+        if let Some((table, key)) = describe(f, path)
+            && !key.key.starts_with('<')
+        {
             out.push(Hit {
                 file: f,
                 table,

@@ -2926,8 +2926,15 @@ impl LeticodeConfig {
             return Ok(LeticodeConfig::default());
         }
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::parse_text(&text, path, level)
+    }
+
+    /// The same reader over bytes already in hand. `config propose` judges a proposal with THIS
+    /// rather than with a second parser: a file the daemon would refuse is refused there, in the
+    /// words it would have used, and `path` is only ever a name in those words.
+    pub fn parse_text(text: &str, path: &Path, level: Level) -> Result<LeticodeConfig, String> {
         let file: LeticodeConfigFile =
-            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            toml::from_str(text).map_err(|e| format!("{}: {e}", path.display()))?;
 
         let mut roles = BTreeMap::new();
         for (role, value) in &file.roles {
@@ -2936,9 +2943,9 @@ impl LeticodeConfig {
             roles.insert(role.clone(), settings);
         }
 
-        workspace::validate(file.project.as_ref(), path, &text, level == Level::User)?;
+        workspace::validate(file.project.as_ref(), path, text, level == Level::User)?;
         let mcp_projects_read = match &file.mcp_projects {
-            Some(v) => mcp_projects(v, path, &text, level == Level::User)?,
+            Some(v) => mcp_projects(v, path, text, level == Level::User)?,
             None => Default::default(),
         };
         let mut config = LeticodeConfig {
@@ -2962,11 +2969,11 @@ impl LeticodeConfig {
                 None => GithubKeys::default(),
             },
             boundary: match &file.boundary {
-                Some(v) => boundary_keys(v, path, &text, level == Level::User)?,
+                Some(v) => boundary_keys(v, path, text, level == Level::User)?,
                 None => BoundaryConfig::default(),
             },
             perimeters: match &file.perimeter {
-                Some(v) => perimeter_tables(v, path, &text, level == Level::User)?,
+                Some(v) => perimeter_tables(v, path, text, level == Level::User)?,
                 None => BTreeMap::new(),
             },
             fallback: Vec::new(),
@@ -2994,57 +3001,57 @@ impl LeticodeConfig {
                 None => OutputKeys::default(),
             },
             mcp: match &file.mcp {
-                Some(v) => mcp_tables(v, path, &text, level == Level::User)?,
+                Some(v) => mcp_tables(v, path, text, level == Level::User)?,
                 None => BTreeMap::new(),
             },
             mcp_trusted: mcp_projects_read.0,
             mcp_pinned: mcp_projects_read.1,
             provider: match &file.provider {
-                Some(v) => provider_keys(v, path, &text, level == Level::User)?,
+                Some(v) => provider_keys(v, path, text, level == Level::User)?,
                 None => ProviderKeys::default(),
             },
             // The six tables below refuse with their own file and line (`{from}`), so their
             // message is the whole sentence and there is nothing to prefix.
             nag: match &file.nag {
-                Some(v) => nag_keys(v, path, &text, level == Level::User)?,
+                Some(v) => nag_keys(v, path, text, level == Level::User)?,
                 None => NagKeys::default(),
             },
             queue: match &file.queue {
-                Some(v) => queue_keys(v, path, &text, level == Level::User)?,
+                Some(v) => queue_keys(v, path, text, level == Level::User)?,
                 None => QueueKeys::default(),
             },
             room: match &file.room {
-                Some(v) => room_keys(v, path, &text, level == Level::User)?,
+                Some(v) => room_keys(v, path, text, level == Level::User)?,
                 None => RoomKeys::default(),
             },
             ui: match &file.ui {
-                Some(v) => ui_keys(v, path, &text, level == Level::User)?,
+                Some(v) => ui_keys(v, path, text, level == Level::User)?,
                 None => UiKeys::default(),
             },
             sessions: match &file.sessions {
-                Some(v) => session_keys(v, path, &text, level == Level::User)?,
+                Some(v) => session_keys(v, path, text, level == Level::User)?,
                 None => SessionKeys::default(),
             },
             subagents: match &file.subagents {
-                Some(v) => subagent_keys(v, path, &text, level == Level::User)?,
+                Some(v) => subagent_keys(v, path, text, level == Level::User)?,
                 None => SubagentKeys::default(),
             },
             warnings: match &file.warnings {
-                Some(v) => warning_keys(v, path, &text, level == Level::User)?,
+                Some(v) => warning_keys(v, path, text, level == Level::User)?,
                 None => WarningKeys::default(),
             },
             keys: match &file.keys {
-                Some(v) => key_keys(v, path, &text, level == Level::User)?,
+                Some(v) => key_keys(v, path, text, level == Level::User)?,
                 None => KeyKeys::default(),
             },
             verbosity: match &file.verbosity {
-                Some(v) => verbosity_keys(v, path, &text, level == Level::User)?,
+                Some(v) => verbosity_keys(v, path, text, level == Level::User)?,
                 None => VerbosityKeys::default(),
             },
         };
 
         if let Some(v) = &file.fallback {
-            (config.fallback, config.fallback_for) = fallback_keys(v, path, &text)?;
+            (config.fallback, config.fallback_for) = fallback_keys(v, path, text)?;
         }
 
         // One list of models, two places to write it. `[provider] fallback` is the newer home of

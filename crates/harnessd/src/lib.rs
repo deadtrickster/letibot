@@ -41,6 +41,9 @@ pub mod close_settle;
 pub mod commands;
 pub mod compaction_relevance;
 pub mod config;
+/// The daemon's half of the `config` tool: the operator's config dir, the readers that judge a
+/// proposal, and one atomic write.
+pub mod config_desk;
 pub mod context_claim;
 pub mod corpus;
 pub mod daemon;

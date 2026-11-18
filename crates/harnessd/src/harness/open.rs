@@ -2549,6 +2549,15 @@ impl Harness {
                 )),
             ))
             .map_err(|e| HarnessError::Setup(format!("registering the host config: {e}")))?;
+        // Letibot's own configuration, from the model's side. The config dir stays masked inside
+        // the session - a model that edits its own boundary grants itself anything - so what is
+        // registered is a door: a read the operator allows, and a proposal they answer. Registered
+        // before `with_session_tools`, which seats a stub only where none is.
+        registry
+            .register(Box::new(letibot_tools::builtins::config::ConfigTool::new(
+                std::sync::Arc::new(crate::config_desk::SessionConfig::here()),
+            )))
+            .map_err(|e| HarnessError::Setup(format!("registering the config tool: {e}")))?;
         let seat_cell = letibot_tools::builtins::skill::Seat::new();
         registry = letibot_tools::with_session_tools(
             registry,
