@@ -92,6 +92,14 @@ default, libvirt/qemu when a device must be passed through - and the VM is the b
 mode is allow-all and no gate question is ever asked, because nothing it does reaches the host except
 through doors the host holds. The downgrade composes on top; it is the caller's explicit ask.
 
+**A child's turn does not end as its answer over a job it started - at any placement.** A child that
+backgrounds work and answers is turned back AT ONCE, once, with one message naming each running job
+by handle, command and age and the two ways out (`job_wait`, `job_kill`); the answer that goes up is
+the one after it. The bound is the plan check's - the same notice is not said twice - so a child that
+answers over the same job again has that job named in the answer the parent reads. At a VM placement
+the hold below is the backstop on top of that, and the row the parent draws for the child names the
+jobs it is held for.
+
 **A VM's life is the turn's, so the turn does not end over a job still running in it.** A child that
 backgrounds work and answers is HELD: the VM stays up, the job's settlement rings the child's bell, the
 wake runs a turn that names the job's exit, and the VM comes down when nothing is left running and

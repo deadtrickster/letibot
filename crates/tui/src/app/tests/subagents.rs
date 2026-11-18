@@ -1798,4 +1798,20 @@ fn a_held_childs_row_names_the_job_it_is_held_for_and_stays_live() {
         screen.find("port the widgets") < screen.find("finished (1)"),
         "a held child is drawn with the live ones, above the finished group:\n{screen}"
     );
+
+    // The head's clicks read the pane's own record of where each stop was drawn, and the sentence
+    // the hold adds is a row of its own: the record moves with the row it names.
+    let rows = a.subagents_lines(120);
+    let at = a.subagents_stop_rows.clone();
+    assert_eq!(at.len(), 2, "a held child, and the finished group: {at:?}");
+    assert!(
+        rows.get(at[0])
+            .is_some_and(|r| r.contains("port the widgets")),
+        "the click on row {} is not the held child: {rows:#?}",
+        at[0]
+    );
+    assert!(
+        rows.get(at[1]).is_some_and(|r| r.contains("finished (1)")),
+        "the finished group's row moved and the click did not: {rows:#?}"
+    );
 }
