@@ -4436,12 +4436,12 @@ impl HarnessTaskRunner {
         // A VM goes down with this turn, so the turn may not end over a job still running in it:
         // the VM is held, the child woken with each job's exit, and it goes when nothing is left -
         // before the "done" row, so the head never draws a finish it then retracts.
-        if placement != Placement::Host && sub.live_jobs() > 0 {
-            publish(
-                "held",
-                held_said(&sub.open_jobs()).as_deref().unwrap_or_default(),
-                None,
-            );
+        if placement != Placement::Host
+            && let Some(held) = held_said(&sub.open_jobs())
+        {
+            // Only ever with a job named: an empty `held` row is the row the operator could not
+            // act on - `waiting`, and no job.
+            publish("held", &held, None);
             let _ = serve_child_with(
                 &mut sub,
                 &sub_hub,
