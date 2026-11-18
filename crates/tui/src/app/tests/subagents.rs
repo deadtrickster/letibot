@@ -1747,3 +1747,55 @@ fn the_waiting_line_does_not_repeat_the_card_on_screen() {
     assert!(!line.contains("ask"), "{line:?}");
     assert!(!line.contains("delivery"), "{line:?}");
 }
+
+/// A child that answered and is held for the jobs it started: its row says which job, and it is
+/// drawn as live work rather than as one of the finished. The state word is one word and cannot
+/// name them, which is what the operator saw - `waiting`, and no job.
+#[test]
+fn a_held_childs_row_names_the_job_it_is_held_for_and_stays_live() {
+    let mut a = app();
+    // The daemon's list measures that no turn is generating in the held child: it answered, and
+    // what keeps it up is a job of its own, not a round.
+    let mut list = a_family();
+    list[1].status.running = false;
+    a.apply(hello("s", list, Hub::new("s").snapshot()));
+    let held = "answered - held for `tests · j41` (`cargo test --release`, 4m12s)";
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "held".into(),
+            prompt: held.into(),
+            role: "coder".into(),
+            task: "port the widgets".into(),
+            model: String::new(),
+            answer: None,
+            slug: String::new(),
+        },
+    )));
+
+    // A child that answered and is kept up for its own job is this session's work: the count says
+    // so, and the answer it gave is not drawn as one (it has not been given to the parent).
+    let row = count_row(&mut a);
+    assert!(
+        row.contains("1 subagent running"),
+        "a held child is neither finished nor idle: {row}"
+    );
+    assert!(!a.subagents[0].is_finished(), "{:?}", a.subagents[0]);
+
+    // The pane: the job, by handle, by command and by age, under the child's own row.
+    a.key(Key::CtrlG);
+    let screen = a.screen(120, 24).join("\n");
+    assert!(
+        screen.contains("`tests · j41`"),
+        "the child's row does not name the job it is held for:\n{screen}"
+    );
+    assert!(
+        screen.contains("cargo test --release") && screen.contains("4m12s"),
+        "the job is named by what it runs and how long it has run:\n{screen}"
+    );
+    assert!(
+        screen.find("port the widgets") < screen.find("finished (1)"),
+        "a held child is drawn with the live ones, above the finished group:\n{screen}"
+    );
+}
