@@ -56,6 +56,10 @@ ignore = "0.4"
 # separate crate because the grammars are C and pull a `cc` build, and this
 # crate deliberately has no `build.rs` — see below.
 letibot-code.workspace = true
+# The options reference for the operator's config files. The `config` tool refuses a file or a key
+# the reference does not name, and knows which key a credential hides under; the reference sits
+# below every parser, so this is the tool crate reading a table and not a second reader.
+letibot-config-ref.workspace = true
 # The screen model behind the `screen` tool: bytes in, cells out, no dependencies of its own.
 letibot-vt.workspace = true
 # PNG for `screen shot`: a zlib stream and a crc, already in the tree through rano.
@@ -84,7 +88,6 @@ libc = "0.2"
 testing = []
 
 [dev-dependencies]
-letibot-config-ref.workspace = true
 letibot-tools = { path = ".", features = ["testing"] }
 # A real second tier over a tiny model, so the blend's tests run the crate's own path
 # instead of a fake that agrees with them.

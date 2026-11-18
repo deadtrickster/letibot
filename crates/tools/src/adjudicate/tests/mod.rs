@@ -178,6 +178,7 @@ fn bash_at<'a>(args: &'a Value, turn_id: &'a str) -> GateCall<'a> {
 mod boundary;
 mod breaker;
 mod card;
+mod config;
 mod floor;
 mod gate;
 mod grants;

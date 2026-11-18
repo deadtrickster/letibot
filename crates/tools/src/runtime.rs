@@ -530,6 +530,20 @@ impl InvokeCtx<'_> {
         }
     }
 
+    /// Put a config read or a proposed change to the operator, see [`Gate::ask_config`]. The lock
+    /// is taken for the question, as `admit` takes it: a card may wait minutes for a person.
+    pub fn ask_config(
+        &self,
+        ask: &crate::builtins::config::ConfigAsk,
+    ) -> crate::builtins::config::ConfigAnswer {
+        match self.gate {
+            Some(g) => g.lock().unwrap_or_else(|e| e.into_inner()).ask_config(ask),
+            None => crate::builtins::config::ConfigAnswer::NotAsked(
+                "this runtime has no gate, so nobody can be asked".into(),
+            ),
+        }
+    }
+
     /// The perimeter this session's own commands run in: what a child starts from, and what a spawn
     /// may only narrow. `None` in a runtime with no daemon behind it.
     pub fn perimeter(&self) -> Option<&crate::exec::perimeter::Perimeter> {
@@ -854,6 +868,18 @@ pub trait Gate: Send + Sync {
         _ask: &crate::exec::perimeter::PerimeterAsk,
     ) -> crate::exec::perimeter::PerimeterGrant {
         crate::exec::perimeter::PerimeterGrant::NotAsked
+    }
+
+    /// May this session read a config file, or write a proposed change to one? Put to the
+    /// OPERATOR alone: the config directory is masked inside a session so a model cannot grant
+    /// itself anything, and a card a mode, a standing grant, a bridge seat or a guard model could
+    /// answer would hand that power back. The default is `NotAsked` - not a refusal, because
+    /// nobody decided - and nothing is shown or written on a question nobody answered.
+    fn ask_config(
+        &mut self,
+        _ask: &crate::builtins::config::ConfigAsk,
+    ) -> crate::builtins::config::ConfigAnswer {
+        crate::builtins::config::ConfigAnswer::NotAsked("this gate has no operator to ask".into())
     }
 
     /// Who is adjudicating, for the daemon's startup disclosure. Defaults to naming the
