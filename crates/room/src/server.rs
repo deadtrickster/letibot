@@ -97,9 +97,28 @@ struct Conn {
     /// The name an external asked for before taking a suffixed one: mail to it reaches this
     /// connection too. Checked at the `Hello` to be this name's own prefix.
     family: Option<String>,
+    /// The seat's stable id, from the `Hello`'s own field: empty from a client that predates it.
+    /// What the seat's own state is keyed by where that state must outlive a reconnect
+    /// ([`Server::principal`]), and what a nick is filed under.
+    id: String,
+    /// The label this connection is drawn by: the `Hello`'s `nick`, else the name it speaks as.
+    nick: String,
 }
 
 impl Conn {
+    /// The seat id this connection was told about, or the one this box would have minted for a
+    /// session that sent none - a session's id is its own half, and the host half is the box's.
+    /// One spelling for the roster, the nick table and the refusal that says whose a label is.
+    fn seat(&self, host: &str) -> String {
+        if !self.id.is_empty() {
+            return self.id.clone();
+        }
+        match self.seat {
+            Seat::Session => crate::SeatId::of_session(host, &self.who.session).to_string(),
+            Seat::External => self.who.session.clone(),
+            _ => String::new(),
+        }
+    }
     /// Hand a frame to this connection's writer thread. Never blocks: the room's clock, its
     /// router and every author go on to the next connection whatever this one is doing.
     fn send(&self, response: Response) {
@@ -223,6 +242,12 @@ struct Inner {
     /// The polled accept thread of an inherited listener, joined by `stop` so nothing accepts
     /// on the manager's socket after it returns.
     accept: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The label each seat is drawn by, by seat id: what [`Request::Nick`] set. Display only -
+    /// nothing is keyed on it, and a seat with no entry is drawn by the name it speaks as.
+    nicks: Mutex<BTreeMap<String, String>>,
+    /// This box's half of every seat id it hands out, pinned in the data directory by
+    /// [`crate::id::seat_host`] - or what a test set. An id is minted nowhere else.
+    seat_host: Mutex<String>,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -352,6 +377,12 @@ impl Server {
                 served: AtomicU64::new(0),
                 inherited,
                 accept: Mutex::new(None),
+                nicks: Mutex::new(BTreeMap::new()),
+                // The data directory is the socket's own: `seat_host` pins this box's half of
+                // every id it hands out there, once, and reads it back after a rename.
+                seat_host: Mutex::new(crate::id::seat_host(
+                    path.parent().unwrap_or(std::path::Path::new(".")),
+                )),
             }),
         };
         if inherited {
@@ -729,12 +760,26 @@ impl Server {
             room,
             token,
             share,
+            id,
             ..
         } = frame
         {
             if let Some(why) = crate::wire::protocol_refusal(*protocol) {
                 return Answer {
                     response: Response::Bye { why },
+                    events: Vec::new(),
+                };
+            }
+            // A seat id is minted once, by the box that holds the seat, and nothing here can
+            // repair a malformed one: a `Hello` that carries something other than an id is refused
+            // before it is admitted, so a typo does not become a second seat of the same name.
+            let id = id.trim();
+            if !id.is_empty() && crate::SeatId::parse(id).is_none() {
+                return Answer {
+                    response: Response::Refused {
+                        id: None,
+                        why: crate::Refused::BadSeatId { id: id.to_string() },
+                    },
                     events: Vec::new(),
                 };
             }
@@ -1842,6 +1887,7 @@ impl Server {
         let seat_row = |id: &str, connected: bool| chat::Presence {
             name: id.to_string(),
             id: id.to_string(),
+            seat_id: crate::SeatId::of_session(&self.seat_host(), id).to_string(),
             kind: Seat::Session,
             connected,
             project: queue_seat_project(id).unwrap_or_default().to_string(),
@@ -1884,6 +1930,202 @@ impl Server {
             return false;
         };
         other == chat::OPERATOR || self.seat_and_project_of(other).1 == key
+    }
+
+    /// This box's half of every seat id it hands out: the pinned answer, or what a test set. A
+    /// session that sends no id of its own is minted one from this, which is why it is a fact of
+    /// the box rather than of a connection.
+    pub fn seat_host(&self) -> String {
+        self.inner
+            .seat_host
+            .lock()
+            .expect("the seat host lock")
+            .clone()
+    }
+
+    /// Pin the seat host - a test that must not read this machine's name, and the one place a
+    /// coordinator's own half of an id can be said.
+    pub fn with_seat_host(&self, host: impl Into<String>) -> &Self {
+        *self.inner.seat_host.lock().expect("the seat host lock") = host.into();
+        self
+    }
+
+    /// The seat id a name is a connection of: what the roster draws beside it. `None` for a name
+    /// no connection speaks as - a member with no connection is minted one by [`Server::live_nicks`].
+    pub fn seat_of(&self, name: &str) -> Option<String> {
+        self.conn_list()
+            .into_iter()
+            .find(|c| c.who.session == name)
+            .map(|c| c.seat(&self.seat_host()))
+    }
+
+    /// The label the room holds for a seat: the nick it was given, else the name it is drawn by.
+    pub fn nick_of(&self, seat: &str) -> Option<String> {
+        self.live_nicks().remove(seat).map(|(nick, _)| nick)
+    }
+
+    /// Every live seat's label, by seat id, with the name it is drawn by when it has no nick: a
+    /// connection's own, and a live roster member's handle (the slug of its title). A seat with no
+    /// connection is a seat with a name - the tree lists it - so both halves are here.
+    fn live_nicks(&self) -> BTreeMap<String, (String, String)> {
+        let host = self.seat_host();
+        let mut out: BTreeMap<String, (String, String)> = BTreeMap::new();
+        // A member's own handle first: it is the label a session's title gives it, and a session's
+        // connection name is an id rather than a name anybody reads.
+        {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            for r in rooms.values() {
+                for m in r
+                    .members()
+                    .iter()
+                    .filter(|m| m.group == crate::Group::Top && m.live)
+                {
+                    let seat = crate::SeatId::of_session(&host, &m.session).to_string();
+                    let drawn = if m.handle.is_empty() {
+                        m.session.clone()
+                    } else {
+                        m.handle.clone()
+                    };
+                    out.insert(seat, (drawn, m.session.clone()));
+                }
+            }
+        }
+        for c in self.conn_list() {
+            let seat = c.seat(&host);
+            if seat.is_empty() {
+                continue;
+            }
+            let drawn = if c.nick.is_empty() {
+                c.who.session.clone()
+            } else {
+                c.nick.clone()
+            };
+            match out.entry(seat) {
+                // A connection that brought its own label keeps it; another is drawn by the
+                // member's handle, which is what the tree calls it.
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    if !c.nick.is_empty() {
+                        e.insert((drawn, c.who.session.clone()));
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert((drawn, c.who.session.clone()));
+                }
+            }
+        }
+        // A nick the room was told beats the one derived from a title: it is the operator's word.
+        for (seat, nick) in self.inner.nicks.lock().expect("the nicks lock").iter() {
+            if let Some(row) = out.get_mut(seat) {
+                row.0 = nick.clone();
+            }
+        }
+        out
+    }
+
+    /// Who is drawn as `nick` among the live seats, other than `except`: the holder's own name, so
+    /// a refusal can say whose the label is. A bare name (a handle, a session id) is held by
+    /// whoever speaks as it, so this answers for both spellings a person types.
+    fn nick_holder(&self, nick: &str, except: &str) -> Option<String> {
+        self.live_nicks()
+            .into_iter()
+            .filter(|(seat, _)| seat != except)
+            .find(|(_, (label, name))| label == nick || name == nick)
+            .map(|(_, (_, name))| name)
+    }
+
+    /// The rooms a seat is in: the host room and its own project's, every room for the operator (who
+    /// is in all), and the host room alone for a seat with no project or one that only serves it.
+    fn rooms_of(&self, seat: Seat, project: &str) -> Vec<String> {
+        if seat == Seat::Operator {
+            let mut all = vec![chat::HOST_ROOM.to_string()];
+            all.extend(self.projects().into_iter().map(|p| chat::project_room(&p)));
+            return all;
+        }
+        let mut rooms = vec![chat::HOST_ROOM.to_string()];
+        if !project.is_empty() {
+            rooms.push(chat::project_room(project));
+        }
+        rooms
+    }
+
+    /// Take `nick` for the caller's seat, or say who holds it. The seat keeps its id either way: a
+    /// nick is a label, and the one thing a rename must not do is make the seat somebody else.
+    fn take_nick(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        asked: &str,
+        nick: &str,
+        now: u64,
+    ) -> Response {
+        let refuse = |why: crate::Refused| Response::Refused { id: None, why };
+        let mine = self.seat_of(name).unwrap_or_else(|| name.to_string());
+        let asked = asked.trim();
+        if !asked.is_empty() && asked != mine && asked != name {
+            return refuse(crate::Refused::NotYourSeat {
+                id: asked.to_string(),
+                yours: mine,
+            });
+        }
+        let nick = nick.trim().trim_start_matches('@').to_lowercase();
+        if !chat::valid_nick(&nick) {
+            return refuse(crate::Refused::BadNick { nick });
+        }
+        if let Some(held_by) = self.nick_holder(&nick, &mine) {
+            let next = chat::next_nick(&nick, |c| self.nick_holder(c, &mine).is_some());
+            return refuse(crate::Refused::NickTaken {
+                nick,
+                held_by,
+                next,
+            });
+        }
+        let previous = self
+            .inner
+            .nicks
+            .lock()
+            .expect("the nicks lock")
+            .get(&mine)
+            .cloned()
+            .unwrap_or_default();
+        if previous == nick {
+            return Response::Nicked {
+                id: mine,
+                nick,
+                previous,
+            };
+        }
+        self.inner
+            .nicks
+            .lock()
+            .expect("the nicks lock")
+            .insert(mine.clone(), nick.clone());
+        // Said once in each room the seat is in, because a reader who saw the old label has no
+        // other way to learn it moved: the log is what history is read from.
+        for room in self.rooms_of(seat, project) {
+            let text = if previous.is_empty() {
+                format!("{name} is now {nick}")
+            } else {
+                format!("{name} is now {nick}, and was {previous}")
+            };
+            let _ = self.append_and_push(
+                &format!("nick:{mine}:{nick}:{now}"),
+                &room,
+                chat::DIGEST_AUTHOR,
+                Seat::System,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                &text,
+                now,
+            );
+        }
+        Response::Nicked {
+            id: mine,
+            nick,
+            previous,
+        }
     }
 
     /// Does anybody on this host answer to `name`? A session the room has merely seen before is NOT
@@ -1940,12 +2182,13 @@ impl Server {
     /// every project's - so its rows carry the project each one is in; a project room is its own.
     pub fn roster_rows(&self, room: &str) -> Vec<chat::Presence> {
         let key = chat::project_of_room(room);
-        let host = room == chat::HOST_ROOM;
+        let host_room = room == chat::HOST_ROOM;
+        let host = self.seat_host();
         let mut rows: BTreeMap<String, chat::Presence> = BTreeMap::new();
         {
             let rooms = self.inner.rooms.lock().expect("the rooms lock");
             for (project, r) in rooms.iter() {
-                if !host && project.as_str() != key.unwrap_or(crate::DEFAULT_PROJECT) {
+                if !host_room && project.as_str() != key.unwrap_or(crate::DEFAULT_PROJECT) {
                     continue;
                 }
                 for m in r.members().iter().filter(|m| m.group == crate::Group::Top) {
@@ -1958,6 +2201,7 @@ impl Server {
                                 m.handle.clone()
                             },
                             id: m.session.clone(),
+                            seat_id: crate::SeatId::of_session(&host, &m.session).to_string(),
                             kind: Seat::Session,
                             connected: false,
                             project: project.clone(),
@@ -1980,6 +2224,7 @@ impl Server {
             rows.entry(g.clone()).or_insert(chat::Presence {
                 name: g.clone(),
                 id: g.clone(),
+                seat_id: crate::SeatId::of_session(&host, g).to_string(),
                 kind: Seat::Session,
                 connected: false,
                 project: key.unwrap_or("").to_string(),
@@ -1992,7 +2237,7 @@ impl Server {
             // A queue seat is one project's queue and not a member of the host room. Every other
             // seat is in the host room and in its own project's room; the operator is in all.
             let in_room = c.seat.is_wide()
-                || if host {
+                || if host_room {
                     queue_seat_project(&name).is_none()
                 } else {
                     key == Some(c.project.as_str())
@@ -2004,6 +2249,7 @@ impl Server {
             let row = rows.entry(name.clone()).or_insert(chat::Presence {
                 id: name.clone(),
                 name,
+                seat_id: c.seat(&host),
                 kind: c.seat,
                 connected: false,
                 project: c.project.clone(),
@@ -2012,10 +2258,29 @@ impl Server {
             });
             row.connected = true;
             row.kind = c.seat;
+            // The row is drawn by the label the seat holds - a nick, not the name it speaks as.
+            if !c.nick.is_empty() {
+                row.name = c.nick.clone();
+            } else if let Some(n) = self
+                .inner
+                .nicks
+                .lock()
+                .expect("the nicks lock")
+                .get(&row.seat_id)
+            {
+                row.name = n.clone();
+            }
         }
         let display = self.bridge_display();
         let gatekeepers = self.gatekeeper_display();
+        let nicks = self.inner.nicks.lock().expect("the nicks lock").clone();
         for row in rows.values_mut() {
+            // A label the seat was given is what it is drawn by, whatever its handle derives to:
+            // the room was told, and a reader addresses nothing with it.
+            if let Some(n) = nicks.get(&row.seat_id) {
+                row.name = n.clone();
+                continue;
+            }
             if row.kind == Seat::External
                 && let Some(d) = display.get(&row.id)
             {
@@ -2870,6 +3135,7 @@ impl Server {
                     cursor: chat.ack(name, *seq),
                 }
             }
+            Request::Nick { id, nick } => self.take_nick(project, seat, name, id, nick, now),
             Request::Signals => Response::Signals {
                 card: self.scorecard(),
             },
@@ -4404,18 +4670,28 @@ impl Server {
                         return;
                     }
                 };
-                let (speaker, seat, family) = match &hello {
+                let (speaker, seat, family, seat_id, seat_nick) = match &hello {
                     Request::Hello {
                         speaker,
                         seat,
                         family,
+                        id,
+                        nick,
                         ..
                     } => (
                         speaker.clone(),
                         *seat,
                         family_of(*seat, &speaker.session, family.as_deref()),
+                        id.trim().to_string(),
+                        nick.trim().to_string(),
                     ),
                     _ => return,
+                };
+                // A nick that is not a label is no label: the name it speaks as is drawn instead.
+                let seat_nick = if crate::chat::valid_nick(&seat_nick) {
+                    seat_nick
+                } else {
+                    String::new()
                 };
                 // Which room this connection is in, resolved ONCE - the `Hello`'s name, and
                 // every frame from this connection is answered in it. A connection that could move
@@ -4465,6 +4741,8 @@ impl Server {
                     socket: w,
                     gone: AtomicBool::new(false),
                     family,
+                    id: seat_id.clone(),
+                    nick: seat_nick.clone(),
                 });
                 me.inner
                     .conns
@@ -4921,6 +5199,7 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::MayPrompt { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Nick { .. }
             | Request::Signals
             | Request::Acted { .. }
             | Request::WakeEnded { .. }
@@ -5185,6 +5464,8 @@ mod tests {
             token: None,
             share: false,
             family: None,
+            id: String::new(),
+            nick: String::new(),
         })
         .unwrap();
         a.write_all(format!("{hello}\n").as_bytes()).unwrap();
@@ -5253,6 +5534,8 @@ mod tests {
                 token: None,
                 share: false,
                 family: None,
+                id: String::new(),
+                nick: String::new(),
             },
             now_ms(),
         );
@@ -5281,6 +5564,8 @@ mod tests {
                 token: None,
                 share: false,
                 family: None,
+                id: String::new(),
+                nick: String::new(),
             },
             now_ms(),
         );
@@ -5316,6 +5601,8 @@ mod tests {
                 token: None,
                 share: false,
                 family: None,
+                id: String::new(),
+                nick: String::new(),
             },
             now,
         );
@@ -5668,6 +5955,8 @@ mod tests {
             socket: mine.try_clone().expect("a clone"),
             gone: AtomicBool::new(false),
             family: None,
+            id: String::new(),
+            nick: String::new(),
         };
         let bye = |why: &str| Response::Bye { why: why.into() };
         conn.send(bye("one"));

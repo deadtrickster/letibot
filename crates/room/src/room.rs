@@ -317,6 +317,32 @@ pub enum Refused {
     NameInUse {
         name: String,
     },
+    /// A seat id that no minting would have written: `host/local`, the host the box's short name
+    /// and the local half `[a-z0-9-]`. A seat is named once, so a malformed one is refused here
+    /// rather than admitted as a second seat of the same name.
+    BadSeatId {
+        id: String,
+    },
+    /// A nick that is not a label: 1-24 of `[a-z0-9-]`, no edge `-`, not `operator`, a bridge
+    /// alias, or a prefix that reads as a session's or a bridge's id.
+    BadNick {
+        nick: String,
+    },
+    /// A nick a live seat already answers to. `held_by` is who holds it, drawn as that seat names
+    /// itself, and `next` is the next counter nobody has (`db-fuzz-fable-2`) - `None` when every
+    /// number [`crate::chat::NICK_TRIES`] offers is taken too.
+    NickTaken {
+        nick: String,
+        held_by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+    },
+    /// A `Nick` frame naming a seat that is not the caller's. A nick is the seat's own label, so
+    /// one seat cannot rename another.
+    NotYourSeat {
+        id: String,
+        yours: String,
+    },
     /// A short name that fits more than one connected member, so the message names no one.
     /// `shown` is each candidate as a reader picks it: its handle, id and title.
     Ambiguous {
@@ -630,6 +656,40 @@ impl fmt::Display for Refused {
             Refused::NameInUse { name } => {
                 write!(f, "another connection already speaks as `{name}`")
             }
+            Refused::BadSeatId { id } => write!(
+                f,
+                "`{id}` is not a seat id: one is `<host>/<local>`, the host the box's short name \
+                 and the local half `[a-z0-9-]` (`lab2x1/s-1792687430252160872`, \
+                 `lab2x1/cc-<Claude Code session id>`). It is minted when the seat is, never here"
+            ),
+            Refused::BadNick { nick } => write!(
+                f,
+                "`{nick}` is not a nick: 1-{} of a-z, 0-9 and `-`, no leading or trailing `-`, and \
+                 not `operator`, `cc`, `claude-code`, `s-…` or `cc-…` - those would read as a name \
+                 the room already means",
+                crate::chat::NICK_MAX
+            ),
+            Refused::NickTaken {
+                nick,
+                held_by,
+                next,
+            } => match next {
+                Some(next) => write!(
+                    f,
+                    "`{nick}` is `{held_by}`'s while it is live. A name is a label, not an \
+                     identity: this seat keeps its id either way. `{next}` is free"
+                ),
+                None => write!(
+                    f,
+                    "`{nick}` is `{held_by}`'s, and every number up to {} is taken too",
+                    crate::chat::NICK_TRIES
+                ),
+            },
+            Refused::NotYourSeat { id, yours } => write!(
+                f,
+                "`{id}` is not this connection's seat (`{yours}`): a nick is a seat's own label, \
+                 so one seat cannot rename another"
+            ),
             Refused::Ambiguous {
                 name,
                 candidates,

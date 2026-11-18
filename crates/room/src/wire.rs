@@ -206,6 +206,18 @@ pub enum Request {
         /// held it. Mail to the family reaches this connection too, under its own cursor.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         family: Option<String>,
+        /// The seat's stable identity ([`crate::SeatId`]): `<host>/<local>`, minted once by the
+        /// box that holds it. Empty from a client that predates it, and then the connection is the
+        /// seat it always was - `speaker.session` is the key, and a reconnect under another name is
+        /// another seat. What keys on it is the seat's own state (its cursor, what it missed), so a
+        /// bridge that reconnects under a new name keeps reading where it was.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        id: String,
+        /// The label the seat is drawn by ([`crate::chat::valid_nick`]): display only, changeable
+        /// with [`Request::Nick`], and never what anything is keyed on. Empty means *the name I
+        /// speak as*.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        nick: String,
     },
     /// The rooms this connection may see, with unread counts.
     Rooms,
@@ -319,6 +331,14 @@ pub enum Request {
     },
     /// Move this principal's inbox cursor to `seq`.
     Ack { seq: u64 },
+    /// Take `nick` as the label this seat is drawn by. Refused when a live seat already answers to
+    /// it, naming the holder and the next counter (`db-fuzz-fable-2`); granted, it is said once in
+    /// every room the seat is in. `id` must be the caller's own seat or empty for *the one I am*.
+    Nick {
+        #[serde(default)]
+        id: String,
+        nick: String,
+    },
     /// The signal scorecard: what followed each sender's and each kind's messages.
     Signals,
     /// Something followed message `seq` (a todo row naming it, an ownership claim). The caller is
@@ -477,6 +497,7 @@ impl Request {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Nick { .. }
             | Request::Signals
             | Request::Acted { .. }
             | Request::WakeEnded { .. }
@@ -576,6 +597,15 @@ pub enum Response {
     Acknowledged {
         id: String,
         item: Item,
+    },
+    /// The label the room now holds for the seat, and what it was before (`previous` is empty for a
+    /// first nick). The seat's name is unchanged: a nick is display, and everything keyed on the
+    /// seat keys on its id.
+    Nicked {
+        id: String,
+        nick: String,
+        #[serde(default)]
+        previous: String,
     },
     Finished {
         id: String,
@@ -801,13 +831,7 @@ impl Room {
     pub fn answer_traced(&mut self, who: &Speaker, request: &Request, now: u64) -> Answer {
         match request {
             Request::Hello {
-                protocol,
-                speaker,
-                room: _,
-                seat: _,
-                token: _,
-                share: _,
-                family: _,
+                protocol, speaker, ..
             } => {
                 if let Some(why) = protocol_refusal(*protocol) {
                     return Answer::quiet(Response::Bye { why });
@@ -948,6 +972,7 @@ impl Room {
             | Request::MayPrompt { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Nick { .. }
             | Request::Signals
             | Request::Acted { .. }
             | Request::WakeEnded { .. }
