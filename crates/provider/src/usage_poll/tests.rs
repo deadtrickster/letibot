@@ -117,7 +117,7 @@ fn a_kimi_body_with_both_shapes_reports_the_greater_used() {
 fn zai_windows_are_read_off_percentage() {
     let body = serde_json::json!({"data": {"limits": [
         {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 12, "nextResetTime": 1_794_766_268_000u64},
-        {"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 41, "nextResetTime": 1_795_000_000_000u64},
+        {"type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 41, "nextResetTime": 1_795_000_000_000u64},
         {"type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 3, "nextResetTime": 0}]}});
     let w = windows(&body);
     assert_eq!(w[0].name, "5h");
@@ -125,6 +125,37 @@ fn zai_windows_are_read_off_percentage() {
     assert_eq!(w[1].name, "7d");
     assert_eq!(w[2].name, "time");
     assert_eq!(w[2].reset_ms, None);
+}
+
+/// The coding plan's weekly window as its console reports it: `unit` 6 with `number` 1. Named by its
+/// seven days, which the status bar used to print as `1d` - and which is the one spelling
+/// `usage_warn::Kind::of` reads as weekly, so the 70% notice still fires.
+#[test]
+fn a_zai_week_is_seven_days_and_not_one() {
+    let body = serde_json::json!({"code": 200, "success": true,
+        "data": {"level": "pro", "limits": [
+            {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 4,
+             "nextResetTime": 1_794_766_268_000u64},
+            {"type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 70,
+             "nextResetTime": 1_794_668_460_000u64}]}});
+    let w = windows(&body);
+    assert_eq!(w[1].name, "7d", "the weekly window is a week, not a day");
+    assert_eq!(w[1].used, 0.70);
+    assert_eq!(
+        crate::usage_warn::Kind::of(&w[1].name),
+        Some(crate::usage_warn::Kind::Weekly),
+        "the name a week gets is the one the threshold list knows"
+    );
+    assert_eq!(
+        label(&w[1], ms("2026-11-11T00:00:00Z"), 0),
+        "7d 70% · resets Sat 15:01",
+        "the operator's own line, with the window named for what it is"
+    );
+    // The other spelling of the same window - seven days - still reads `7d`.
+    let spelled_as_days = serde_json::json!({"data": {"limits": [
+        {"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 70,
+         "nextResetTime": 1_794_668_460_000u64}]}});
+    assert_eq!(windows(&spelled_as_days)[0].name, "7d");
 }
 
 #[test]

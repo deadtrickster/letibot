@@ -108,8 +108,9 @@ fn kimi_limits(body: &Value) -> impl Iterator<Item = Window> + '_ {
         })
 }
 
-/// Z.ai's `data.limits[]`: `percentage` 0-100 and `nextResetTime` in millis. `unit` 3 is hours and
-/// 6 is read as days (`number` 7 beside a weekly reset); any other window is named by its `type`.
+/// Z.ai's `data.limits[]`: `percentage` 0-100 and `nextResetTime` in millis. `unit` 3 is hours, and
+/// `unit` 6 is the weekly window, whose `number` 1 is one week - seven days, so `7d` rather than
+/// `1d`, and rather than a `1w` no threshold list knows. Any other unit is named by its `type`.
 fn zai_limits(body: &Value) -> impl Iterator<Item = Window> + '_ {
     body["data"]["limits"]
         .as_array()
@@ -118,6 +119,10 @@ fn zai_limits(body: &Value) -> impl Iterator<Item = Window> + '_ {
         .filter_map(|l| {
             let name = match (l["unit"].as_u64(), l["number"].as_u64()) {
                 (Some(3), Some(n)) => format!("{n}h"),
+                // The weekly window reads `unit` 6 `number` 1 on the coding plan's console, which
+                // is two windows - 5 hours and weekly - so 1 here is one week, not one day. A
+                // door that spells the same window as seven days still reads `7d`.
+                (Some(6), Some(1)) => "7d".to_string(),
                 (Some(6), Some(n)) => format!("{n}d"),
                 _ => l["type"]
                     .as_str()
