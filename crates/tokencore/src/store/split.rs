@@ -105,6 +105,9 @@ pub const SHARED_TABLES: &[&str] = &[
     "target_health",
     "claude_review",
     "queue_mute",
+    // the gate a repository is running: its own daemon publishes it, and any of the sessions it
+    // serves reads it to ask it to stop
+    "gate_live",
     // ports and hosts are box-wide, and so is the heartbeat
     "host_lease",
     "daemon_life",

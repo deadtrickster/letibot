@@ -672,3 +672,67 @@ fn a_claude_reviews_conversation_outlives_its_run_and_a_second_head_resumes_it()
     assert_eq!(again.handle.as_deref(), Some("claude-r1-2"));
     assert_eq!(s.stored_schema_version().unwrap(), SCHEMA_VERSION);
 }
+
+/// The gate a repository is running is ONE published row: a second start replaces it (a dead worker's
+/// row must not outlive the run), a step is written only for the run it belongs to, a stop names a
+/// run, and the verdict's application takes the row away.
+#[test]
+fn the_running_gate_is_one_row_and_a_stop_is_bound_to_one_run() {
+    let d = TempDir::new("live");
+    let s = Store::open(&d.db()).unwrap();
+    assert_eq!(s.live_gate("/repo").unwrap(), None, "nothing runs yet");
+    let gate = |run: &str, sha: &str| LiveGate {
+        repository: "/repo".into(),
+        run_id: run.into(),
+        kind: "land".into(),
+        target: "main".into(),
+        entry: "m-1".into(),
+        sha: sha.into(),
+        host: "lab2x1".into(),
+        dir: "/build/gate/repo-1f/target".into(),
+        step: 0,
+        of_step: 0,
+        command: String::new(),
+        step_ms: 0,
+        started_ms: 100,
+        stop_by: String::new(),
+        stop_why: String::new(),
+    };
+    s.gate_began(&gate("run-1", "aaa")).unwrap();
+    let live = s.live_gate("/repo").unwrap().expect("the row");
+    assert_eq!(live.kind, "land");
+    assert_eq!(live.entries(), vec!["m-1"]);
+    assert!(!live.stopping());
+    s.gate_step_at("/repo", "run-1", 2, 4, "cargo test --workspace", 500)
+        .unwrap();
+    let live = s.live_gate("/repo").unwrap().unwrap();
+    assert_eq!((live.step, live.of_step), (2, 4));
+    assert_eq!(live.command, "cargo test --workspace");
+    assert!(!live.stopping(), "a step is not a stop");
+    // A stop is that run's, so a request for a run that has gone is refused rather than applied to
+    // whatever runs next.
+    assert!(
+        !s.ask_gate_stop("/repo", "run-0", "agent:s-1", "stale")
+            .unwrap(),
+        "no such run"
+    );
+    assert!(
+        s.ask_gate_stop("/repo", "run-1", "agent:s-1", "the build thrashes")
+            .unwrap()
+    );
+    let live = s.live_gate("/repo").unwrap().unwrap();
+    assert!(live.stopping());
+    assert_eq!(live.stop_by, "agent:s-1");
+    assert_eq!(live.stop_why, "the build thrashes");
+    // A second start takes the row whole: the stop was about the run that ended.
+    s.gate_began(&gate("run-2", "bbb")).unwrap();
+    let live = s.live_gate("/repo").unwrap().unwrap();
+    assert_eq!(live.run_id, "run-2");
+    assert!(!live.stopping(), "the next run does not inherit a stop");
+    assert_eq!(live.step, 0, "nor the step the old one was on");
+    // And a finished run's row is gone, without taking the next one with it.
+    s.gate_ended("/repo", "run-1").unwrap();
+    assert_eq!(s.live_gate("/repo").unwrap().unwrap().run_id, "run-2");
+    s.gate_ended("/repo", "run-2").unwrap();
+    assert_eq!(s.live_gate("/repo").unwrap(), None);
+}

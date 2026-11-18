@@ -8,7 +8,8 @@ use std::sync::Arc;
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{
-    HealthState, MergeRow, MergeState, QueueLease, ReviewRow, ReviewState, Store, TargetHealth,
+    HealthState, LiveGate, MergeRow, MergeState, QueueLease, ReviewRow, ReviewState, Store,
+    TargetHealth,
 };
 use letibot_tools::builtins::queue::QueueDesk;
 use letibot_transcript::text::clip_chars;
@@ -144,6 +145,11 @@ impl QueueDesk for SessionQueue {
     fn withdraw(&self, id: &str, why: &str) -> Result<String, String> {
         let words = format!("withdrawn by {}: {why}", self.who());
         verbs::withdraw_by(&self.store()?, id, &self.who(), &words, &self.events())
+    }
+
+    fn stop(&self, repository: Option<&str>, why: &str) -> Result<String, String> {
+        let (repo, _) = resolve(&self.workspace, repository, Some("-"))?;
+        verbs::stop_by(&self.store()?, &repo, &self.who(), why, &self.events())
     }
 
     fn propose_target(&self, target: &str, why: &str) -> Result<String, String> {
@@ -708,6 +714,32 @@ fn tail_words(g: &gate::RunningGate, now: u64) -> String {
             "tail still for {} — it may be stuck ({wrote})",
             dur_human(still)
         )
+    }
+}
+
+/// A running gate in one clause: the step it is on, how long, and where - with the machine's own facts
+/// (`machine`, empty when nobody could read them) when the caller had them.
+pub(super) fn gate_said(g: &LiveGate, now: u64, machine: &str) -> String {
+    let step = match (g.step, g.of_step) {
+        (n, of) if n > 0 && of > 0 => format!("step {n} of {of} `{}`", g.command),
+        _ => "not on a step yet".to_string(),
+    };
+    let mut said = vec![
+        step,
+        format!("{} so far", dur_human(now.saturating_sub(g.started_ms))),
+        format!("on {}", host_words(&g.host)),
+    ];
+    if !machine.is_empty() {
+        said.push(machine.to_string());
+    }
+    said.join(" · ")
+}
+
+/// Where a gate runs, as a sentence: `local`, a declared host's name, or either with ` (firecode)`.
+fn host_words(host: &str) -> String {
+    match host.strip_suffix(" (firecode)") {
+        Some(name) => format!("{name}, in a firecode VM"),
+        None => host.to_string(),
     }
 }
 
