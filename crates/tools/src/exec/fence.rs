@@ -3,6 +3,7 @@
 //! from the seat and the view the shell is threaded with, so there is one list and not two.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use super::boundary::Origin;
 use super::confine::{ChildSpills, Grant, HomeView, TmpView, ViewSpec};
@@ -12,7 +13,7 @@ use super::seat::SeatView;
 /// and a tight view holds nothing else - the same two the shell obeys. The one exception is this
 /// session's own directory in the letibot store, which is the part of it a session writes (its
 /// plugins).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct FileFence {
     /// Every path the view masks, read and write: the credential stores, the profiles, `hide`.
     denied: Vec<PathBuf>,
@@ -38,6 +39,11 @@ pub struct FileFence {
     /// What a mask of the session's config directory leaves through: the ssh pair — `known_hosts`
     /// and `keys/` — and the files the operator granted inside it (see [`super::config_dir`]).
     config_readable: Vec<PathBuf>,
+    /// Roots granted AFTER the view was measured: a card answered mid-session widens the shell's
+    /// view in the same step ([`crate::backend::HostBackend`]'s `grant_into_view`), and the file
+    /// tools ask this fence, so without them a `read` of what `bash` was just let into stays
+    /// refused in the boundary's own words. Shared, so every clone of a backend sees the widening.
+    later: Arc<Mutex<Vec<(PathBuf, bool)>>>,
 }
 
 impl FileFence {
@@ -100,6 +106,18 @@ impl FileFence {
         self.store = Some(store.to_path_buf());
         self.own = Some(store.join("sessions").join(session));
         self
+    }
+
+    /// A path a card just let into the session's view. The shell's view was widened in the same
+    /// step, so this is the file tools' half of one decision and not a second one: recorded here
+    /// or the next `read` of what `bash` was just granted is refused by the boundary it runs in.
+    pub fn granting(&self, path: &Path, writable: bool) {
+        let key = crate::view::key(path);
+        let mut later = self.later.lock().unwrap_or_else(|e| e.into_inner());
+        match later.iter_mut().find(|(p, _)| *p == key) {
+            Some((_, w)) => *w |= writable,
+            None => later.push((key, writable)),
+        }
     }
 
     /// Is there anything to refuse? A fence with no denied path, no store and no view is the
@@ -189,16 +207,30 @@ impl FileFence {
     }
 
     /// The root of the view that holds `path`, and whether it is writable. A wide view holds
-    /// everything, so its answer is the path itself, writable.
+    /// everything, so its answer is the path itself, writable. The roots a card granted after the
+    /// fence was measured are roots too: the shell runs with both lists, so the file tools must
+    /// refuse with neither, and the deepest match wins as it does among the measured ones.
     fn holder(&self, path: &Path) -> Option<(PathBuf, bool)> {
+        fn deepest(roots: &[(PathBuf, bool)], path: &Path) -> Option<(PathBuf, bool)> {
+            roots
+                .iter()
+                .filter(|(r, _)| path.starts_with(r))
+                .max_by_key(|(r, _)| r.components().count())
+                .cloned()
+        }
+        let later = self.later.lock().unwrap_or_else(|e| e.into_inner());
         let Some(roots) = &self.inside else {
             return Some((path.to_path_buf(), true));
         };
-        roots
-            .iter()
-            .filter(|(r, _)| path.starts_with(r))
-            .max_by_key(|(r, _)| r.components().count())
-            .cloned()
+        match (deepest(roots, path), deepest(&later, path)) {
+            (Some((at, _)), Some((later_at, later_writable)))
+                if later_at.components().count() > at.components().count() =>
+            {
+                Some((later_at, later_writable))
+            }
+            (Some(found), _) => Some(found),
+            (None, found) => found,
+        }
     }
 
     fn outside_view(&self, path: &Path) -> String {

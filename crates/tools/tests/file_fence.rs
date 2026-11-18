@@ -422,6 +422,78 @@ fn a_wide_seat_file_read_refuses_flow_rule_secrets() {
     let _ = std::fs::remove_dir_all(f.root());
 }
 
+/// A card answered on a `bash` call widens the shell's view in that step, and the file tools' fence
+/// is the same step: `read` of the tree `bash` was just let into must not be refused with the
+/// boundary's own sentence. The fence is shared by every clone of a backend, which is what makes
+/// one call on the backend's fence reach the harness's `read`.
+#[test]
+fn a_grant_answered_after_the_view_was_measured_widens_the_file_tools_in_the_same_step() {
+    let f = Fixture::new("latergrant");
+    let outside = f.root().join("leakidx-wt");
+    std::fs::create_dir_all(outside.join("scripts")).expect("a tree the view does not hold");
+    let script = outside.join("scripts/cert-archive.py");
+    std::fs::write(&script, "print(1)\n").expect("a file in it");
+    let outside = outside.canonicalize().expect("a real directory");
+    let script = outside.join("scripts/cert-archive.py");
+
+    let seat = seat::seat_view(
+        &Mode::WRITES_ALLOWED,
+        "this machine",
+        &[] as &[&str],
+        &f.home(),
+    );
+    let view = ViewSpec::of_seat(f.project(), &seat);
+    let fence = FileFence::of(&seat, &view).owning(&f.store(), "s-1");
+    let backend = HostBackend::writable("/")
+        .expect("a whole-host backend")
+        .with_cwd(f.project())
+        .expect("the workspace")
+        .with_home(f.home())
+        .with_file_fence(fence.clone());
+    let mut h = harness_over(Box::new(backend), f.project(), f.root().join("notes"));
+
+    // The tree is outside the view, so the file tools refuse it - the state before the card.
+    let why = refused(&h.call("read", &format!(r#"{{"path":"{}"}}"#, script.display())));
+    assert!(
+        why.contains("not in this session's filesystem view"),
+        "{why}"
+    );
+
+    // What `HostBackend::grant_into_view` does when the card is answered: the one call, in the
+    // same step as the shell's own widening.
+    fence.granting(&outside, true);
+
+    let r = h.call("read", &format!(r#"{{"path":"{}"}}"#, script.display()));
+    assert_eq!(
+        r.outcome,
+        ToolOutcome::Ok,
+        "`read` of what `bash` was just granted is still outside the view: {}",
+        r.render()
+    );
+    let made = outside.join("scripts/next.py");
+    let r = h.call(
+        "write",
+        &format!(r#"{{"path":"{}","content":"x"}}"#, made.display()),
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+
+    // A read-only grant covers a read and refuses a write, and the masks have not moved.
+    let ro = f.root().join("readonly-tree");
+    std::fs::create_dir_all(&ro).expect("a tree");
+    let ro = ro.canonicalize().expect("a real directory");
+    std::fs::write(ro.join("x.txt"), "x\n").expect("a file");
+    fence.granting(&ro, false);
+    assert_eq!(fence.refusal(&ro.join("x.txt"), false), None);
+    assert!(fence.refusal(&ro.join("x.txt"), true).is_some());
+    assert!(
+        fence
+            .refusal(&f.home().join(".ssh/id_rsa"), false)
+            .is_some(),
+        "a mask is still a mask after a grant"
+    );
+    let _ = std::fs::remove_dir_all(f.root());
+}
+
 /// A tight seat's commands never mount the store, so its file tools may not read the store's data
 /// either: only the session's own folder, or a store path a view root holds.
 #[test]
