@@ -52,7 +52,7 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
         r.render()
     );
     assert!(
-        r.render().contains("detected afterwards"),
+        r.render().contains("by the command, not `edit`"),
         "the note that says HOW the pair was obtained: {}",
         r.render()
     );
