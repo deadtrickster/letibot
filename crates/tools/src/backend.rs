@@ -661,7 +661,15 @@ impl HostBackend {
                 why: why.to_string(),
             }
         };
-        self.reshape_view(|view| view.granting(g))
+        self.reshape_view(|view| view.granting(g)).inspect(|_| {
+            // The file tools' half of the SAME step: `read`, `write`, `edit`, `grep` and `glob`
+            // ask the fence, not the boundary, so a path bound into the view here and not added
+            // there is refused by the next call in the boundary's own words - the operator's
+            // card answered `bash` and then `read` of the same tree went out of the view again.
+            if let Some(fence) = &self.fence {
+                fence.granting(path, writable);
+            }
+        })
     }
 
     /// The view rebuilt by `change` and re-probed, so the boundary described is the one that runs.
