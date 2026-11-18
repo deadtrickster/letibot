@@ -423,29 +423,35 @@ impl OptionKind {
     }
 }
 
-/// The ladder for a path the boundary hid: readable, read and write, or no. One button
-/// for both would make an operator pick the wider to get anything done. Read-only is
-/// first and is where Enter lands.
-pub fn view_grant_options() -> Vec<DecisionOption> {
-    vec![
-        DecisionOption {
+/// The ladder for a path the boundary hid. A READ refusal offers readable, read and write, or no:
+/// one button for both would make an operator pick the wider to get anything done, so read-only
+/// is first and is where Enter lands.
+///
+/// A WRITE refusal offers only read-and-write and no, write first: the session already reads the
+/// path (that is what "this session's view holds read-only" says), so a read-only rung would change
+/// nothing and the next call would fail in the same words.
+pub fn view_grant_options(access: crate::view::ViewAccess) -> Vec<DecisionOption> {
+    let mut out = Vec::new();
+    if access == crate::view::ViewAccess::Read {
+        out.push(DecisionOption {
             id: "grant_ro".into(),
             label: "Let this session READ it (for the rest of the session)".into(),
             // The label promises the session and the kind said once: a head reads the kind to
             // know which rung takes words, and one word moved here so it cannot be read wrong.
             kind: OptionKind::AllowSession,
-        },
-        DecisionOption {
-            id: "grant_rw".into(),
-            label: "Let this session READ AND WRITE it (for the rest of the session)".into(),
-            kind: OptionKind::AllowSession,
-        },
-        DecisionOption {
-            id: "deny".into(),
-            label: "No — leave it outside the view".into(),
-            kind: OptionKind::Deny,
-        },
-    ]
+        });
+    }
+    out.push(DecisionOption {
+        id: "grant_rw".into(),
+        label: "Let this session READ AND WRITE it (for the rest of the session)".into(),
+        kind: OptionKind::AllowSession,
+    });
+    out.push(DecisionOption {
+        id: "deny".into(),
+        label: "No — leave it outside the view".into(),
+        kind: OptionKind::Deny,
+    });
+    out
 }
 
 /// The memory card's answers: grant what was asked once, or for the session. The
@@ -2859,7 +2865,7 @@ impl AdjudicatedGate {
                 "the command that hit this has already run; granting does not re-run it".to_string(),
             ],
             kind: RequestKind::Permission,
-            options: view_grant_options(),
+            options: view_grant_options(access),
             // A view grant is offered as it always was: it is a fact about the session's
             // filesystem view rather than about a command's class, and nothing here is
             // left off the ladder.
@@ -2904,10 +2910,13 @@ impl AdjudicatedGate {
     }
 
     /// At a point the model decides, its advisor answers a may-approve view ask first. Its allow
-    /// is the decision; anything else goes to the person with the advice beside it.
+    /// is the decision; anything else goes to the person with the advice beside it. A WRITE ask is
+    /// never the model's: every rung here is a grant for the rest of the session, and the read rung
+    /// it may pick would not answer a write.
     fn view_by_model(&mut self, req: &AdjudicationRequest) -> Option<AdjudicationDecision> {
         if self.mode.decider != crate::mode::Decider::Model
             || !matches!(req.tier, Tier::MayApprove)
+            || req.class.access != Access::Read
             || self.unasked
         {
             return None;
