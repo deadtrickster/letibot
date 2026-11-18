@@ -409,6 +409,8 @@ impl Wire for HttpWire {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|c| c.contains("text/event-stream"));
+        // A finite stream is drained after its answer, so the connection goes back to the pool.
+        let finite = res.headers().contains_key("content-length");
         let mut body = res.into_body();
         if !sse {
             let text = body
@@ -449,6 +451,12 @@ impl Wire for HttpWire {
                 continue;
             }
             if v.get("id").and_then(Value::as_u64) == Some(id) {
+                if finite {
+                    let _ = std::io::copy(
+                        &mut (&mut stream).take(MAX_LINE_BYTES as u64),
+                        &mut std::io::sink(),
+                    );
+                }
                 return Ok(v);
             }
         }
