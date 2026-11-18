@@ -331,9 +331,9 @@ impl WritesWith {
     /// nothing judged it before it landed.
     pub fn after_a_command(&self) -> Option<&'static str> {
         match (self.edit, self.write) {
-            (true, true) => Some("`edit` and `write` judge a change before it lands"),
-            (false, true) => Some("`write` judges a change before it lands"),
-            (true, false) => Some("`edit` judges a change before it lands"),
+            (true, true) => Some("`edit`/`write` judge a change first"),
+            (false, true) => Some("`write` judges a change first"),
+            (true, false) => Some("`edit` judges a change first"),
             (false, false) => None,
         }
     }
