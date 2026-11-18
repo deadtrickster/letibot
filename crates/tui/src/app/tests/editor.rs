@@ -2340,3 +2340,178 @@ fn a_replys_cited_lines_are_marks_in_the_pane() {
         .clone();
     assert!(ed.mark_stale(&hunk), "and it went stale");
 }
+
+/// The operator's shape from the live session: an edit card, a folded `▸ N tool calls, … thinking
+/// lines` group, then a write card packed straight under it (no blank between two activity rows).
+/// The group's rows are nobody's, and the lower card's rows are ITS rows: a click on the write card
+/// opens the write card, not the diff of the card above - which is what a block reaching back
+/// across the group did.
+#[test]
+fn a_click_on_a_card_below_a_folded_group_opens_that_card() {
+    const WRITE: &str = "/build/orafuzz/fix/workspace.conf";
+    let ws = workspace("two-cards");
+    let hub = Hub::new("s");
+    hub.publish(testing::appended("s.0", "user"));
+    hub.record_item(
+        "s.0",
+        TranscriptItem::User {
+            parts: vec![UserPart::Text {
+                text: "please fix line eleven and write the config".into(),
+            }],
+            speaker: letibot_transcript::Speaker::Operator,
+        },
+    );
+    // The round's own narration, carrying every call's target - the only place a card's target
+    // survives, since a result row names only its call.
+    hub.publish(testing::appended("s.1", "assistant"));
+    hub.record_item(
+        "s.1",
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: [
+                ("c1", "edit", FILE),
+                ("c2", "read", "fuzz/list.inc"),
+                ("c3", "grep", "gamma"),
+                ("c4", "write", WRITE),
+            ]
+            .iter()
+            .map(|(id, name, path)| letibot_transcript::ToolCall {
+                id: (*id).into(),
+                name: (*name).into(),
+                arguments: format!("{{\"path\": \"{path}\"}}"),
+            })
+            .collect(),
+            truncated: false,
+        },
+    );
+    // The cards, and between them the rows the rung hides: two calls and a thought.
+    let rows: Vec<(String, TranscriptItem)> = vec![
+        row("s.2", "c1", "edit", Some(change())),
+        ("s.3".into(), result("c2", "read", "alpha\nbeta\n")),
+        ("s.4".into(), result("c3", "grep", "gamma\n")),
+        (
+            "s.5".into(),
+            TranscriptItem::Reasoning {
+                text: "the file has thirty lines and the change is on eleven".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+        ),
+        (
+            "s.6".into(),
+            // The write that changed nothing: it carries no excerpt, so there is no change of its
+            // own to open - the row a click must not hand to the card above it.
+            result(
+                "c4",
+                "write",
+                &format!(
+                    "[note] no write was performed, so nothing that watches this file was woken.\n\
+                     `{WRITE}` already has exactly that content; the file was not touched.\n"
+                ),
+            ),
+        ),
+    ];
+    for (id, item) in rows {
+        let kind = if matches!(item, TranscriptItem::Reasoning { .. }) {
+            "reasoning"
+        } else {
+            "tool_result"
+        };
+        hub.publish(testing::appended(&id, kind));
+        hub.record_item(&id, item);
+    }
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a.wiring.workspace = ws.0.display().to_string();
+    // The rung the operator was on: the head's edits shown, its other tool rows hidden - which is
+    // what folds the middle of the round into one marker line.
+    a.visibility = Visibility::of(Profile::READ_EDITS);
+    a.invalidate_history();
+
+    let frame = a.screen(120, 40);
+    let at = |needle: &str| {
+        frame
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} is drawn: {frame:#?}")) as u16
+    };
+    let edit_card = at("Edited notes.txt");
+    let write_card = at("workspace.conf");
+    assert!(
+        edit_card < write_card,
+        "the two cards, in order: {frame:#?}"
+    );
+    assert!(
+        frame.iter().any(|l| l.contains("tool calls")),
+        "the group between them is one marker line: {frame:#?}"
+    );
+
+    // Hovering the lower card lights its own rows and none of the card above it.
+    a.hover_at(10, write_card);
+    let lit: Vec<usize> = a
+        .hovered
+        .as_ref()
+        .map(|h| h.rows.iter().map(|(r, _)| *r).collect())
+        .unwrap_or_default();
+    assert!(
+        lit.contains(&usize::from(write_card)),
+        "it lights itself: {lit:?}"
+    );
+    assert!(
+        !lit.contains(&usize::from(edit_card)),
+        "and not the card above it, which was one block with it: {lit:?}"
+    );
+
+    // A click on it is its own: no neighbour's diff, and its own body opens.
+    assert_eq!(
+        a.key(Key::Click {
+            x: 10,
+            y: write_card
+        }),
+        None
+    );
+    assert!(
+        a.diff_popup.is_none(),
+        "the .c card's diff is not what the write card opens"
+    );
+    assert_eq!(
+        a.payload_sel.as_deref(),
+        Some("s.6"),
+        "the write card's own body is what opened"
+    );
+
+    // And the upper card is still its own door.
+    a.key(Key::Esc);
+    a.screen(120, 40);
+    let edit_card = a
+        .screen(120, 40)
+        .iter()
+        .position(|l| l.contains("Edited notes.txt"));
+    let edit_card = edit_card.expect("the edit card is still drawn") as u16;
+    assert_eq!(
+        a.key(Key::Click {
+            x: 10,
+            y: edit_card
+        }),
+        None
+    );
+    assert!(
+        a.diff_popup.is_some(),
+        "a click on the edit card opens its change"
+    );
+}
+
+/// A tool result row with no change of its own.
+fn result(call: &str, name: &str, payload: &str) -> TranscriptItem {
+    TranscriptItem::ToolResult {
+        call_id: call.into(),
+        name: name.into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: payload.into(),
+        edits: Vec::new(),
+        origin: None,
+        media: None,
+        ran_ms: None,
+        decision: None,
+    }
+}
