@@ -430,7 +430,13 @@ impl OptionKind {
 /// A WRITE refusal offers only read-and-write and no, write first: the session already reads the
 /// path (that is what "this session's view holds read-only" says), so a read-only rung would change
 /// nothing and the next call would fail in the same words.
-pub fn view_grant_options(access: crate::view::ViewAccess) -> Vec<DecisionOption> {
+///
+/// `folder` is the whole tree the path sits in, offered beside the path itself: one answer for a
+/// worktree is one card, where the path alone would ask again at every sibling.
+pub fn view_grant_options(
+    access: crate::view::ViewAccess,
+    folder: Option<&std::path::Path>,
+) -> Vec<DecisionOption> {
     let mut out = Vec::new();
     if access == crate::view::ViewAccess::Read {
         out.push(DecisionOption {
@@ -446,12 +452,62 @@ pub fn view_grant_options(access: crate::view::ViewAccess) -> Vec<DecisionOption
         label: "Let this session READ AND WRITE it (for the rest of the session)".into(),
         kind: OptionKind::AllowSession,
     });
+    if let Some(folder) = folder {
+        let at = short(folder);
+        if access == crate::view::ViewAccess::Read {
+            out.push(DecisionOption {
+                id: "grant_ro_folder".into(),
+                label: format!("READ `{at}` and everything below it (this session)"),
+                kind: OptionKind::AllowSession,
+            });
+        }
+        out.push(DecisionOption {
+            id: "grant_rw_folder".into(),
+            label: format!("READ+WRITE `{at}` and everything below it (this session)"),
+            kind: OptionKind::AllowSession,
+        });
+    }
     out.push(DecisionOption {
         id: "deny".into(),
         label: "No — leave it outside the view".into(),
         kind: OptionKind::Deny,
     });
     out
+}
+
+/// The rung id that grants a whole folder rather than the one path, and whether it is a write. The
+/// card's ids are the whole of what a head sends back, so this is the one place that decides which
+/// answer widened the tree.
+fn folder_rung(option_id: &str) -> Option<bool> {
+    match option_id {
+        "grant_ro_folder" => Some(false),
+        "grant_rw_folder" => Some(true),
+        _ => None,
+    }
+}
+
+/// A folder as a button's label names it: the last two components, which is the part that tells two
+/// trees apart, because a label is one line and a deep path is a paragraph. Capped, so a card's
+/// rungs stay inside the one line the head draws.
+pub fn short(path: &std::path::Path) -> String {
+    const ROOM: usize = 34;
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+        .collect();
+    let shown = match parts.len() {
+        0 => path.display().to_string(),
+        n if n <= 2 => parts.join("/"),
+        n => format!("…/{}/{}", parts[n - 2], parts[n - 1]),
+    };
+    if shown.chars().count() <= ROOM {
+        return shown;
+    }
+    let tail: String = shown
+        .chars()
+        .skip(shown.chars().count().saturating_sub(ROOM - 1))
+        .collect();
+    format!("…{tail}")
 }
 
 /// The memory card's answers: grant what was asked once, or for the session. The
@@ -1487,6 +1543,9 @@ pub struct AdjudicatedGate {
     view_by: (String, String),
     /// Who answered the last view card, kept past `keep_view` for the note the model reads.
     view_answered_by: Option<String>,
+    /// The folder the last view card's answer granted, when the operator took the whole-tree rung:
+    /// the record, the ledger and the model's note name it rather than the file that asked.
+    view_root: Option<std::path::PathBuf>,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1622,6 +1681,7 @@ impl AdjudicatedGate {
             view_grant_at: None,
             view_by: Default::default(),
             view_answered_by: None,
+            view_root: None,
         }
     }
 
@@ -2826,6 +2886,9 @@ impl AdjudicatedGate {
             ),
         };
         let reading = self.view_reading(path, access);
+        // The tree the path sits in, offered beside the path: the worktree's root when it is in one,
+        // else the nearest existing parent. Absent when there is none to offer.
+        let folder = crate::view::folder_for(path);
         let req = AdjudicationRequest {
             id: self.next_id(),
             session_id: self.session_id.clone(),
@@ -2865,7 +2928,7 @@ impl AdjudicatedGate {
                 "the command that hit this has already run; granting does not re-run it".to_string(),
             ],
             kind: RequestKind::Permission,
-            options: view_grant_options(access),
+            options: view_grant_options(access, folder.as_deref()),
             // A view grant is offered as it always was: it is a fact about the session's
             // filesystem view rather than about a command's class, and nothing here is
             // left off the ladder.
@@ -2890,6 +2953,13 @@ impl AdjudicatedGate {
         self.view_grant_at = d.grant_at;
         self.view_by = (d.by.clone(), d.basis.clone());
         self.view_answered_by = Some(d.by.clone());
+        // Which root the answer grants: the folder when the operator took that rung, else the path
+        // the card was raised for. Read off the option the answer names, so a head cannot widen a
+        // tree by picking an id the card did not offer.
+        self.view_root = match &d.outcome {
+            DecisionOutcome::Selected { option_id } if folder_rung(option_id).is_some() => folder,
+            _ => None,
+        };
         let answer = self.view_answer(&d);
         // Recorded like any decision, so a view ask is a corpus row a replay can label, and
         // counted like one: the same refused path asked for three turns running is the loop the
@@ -2929,18 +2999,23 @@ impl AdjudicatedGate {
         admits.then_some(d)
     }
 
-    /// A view ask's decision, as the grant it amounts to.
+    /// A view ask's decision, as the grant it amounts to. The four granting rungs are one function
+    /// apart: two name the path and two the folder above it, and both pairs read-and-write or read.
     fn view_answer(&self, d: &AdjudicationDecision) -> crate::runtime::ViewGrant {
         use crate::runtime::ViewGrant;
         match &d.outcome {
             // An oracle answers in the call vocabulary: its `allow_once` is the read-only rung,
             // never the write one, which only a person picks.
             DecisionOutcome::Selected { option_id }
-                if option_id == "grant_ro" || option_id == "allow_once" =>
+                if folder_rung(option_id) == Some(false)
+                    || option_id == "grant_ro"
+                    || option_id == "allow_once" =>
             {
                 ViewGrant::Granted { writable: false }
             }
-            DecisionOutcome::Selected { option_id } if option_id == "grant_rw" => {
+            DecisionOutcome::Selected { option_id }
+                if folder_rung(option_id) == Some(true) || option_id == "grant_rw" =>
+            {
                 ViewGrant::Granted { writable: true }
             }
             DecisionOutcome::Selected { .. } => ViewGrant::Refused(d.basis.clone()),
@@ -2993,14 +3068,15 @@ impl Gate for AdjudicatedGate {
         self.refresh_grants();
         let Some(view) = self.view.clone() else {
             let answer = self.ask_to_see(path, tool, access);
-            self.keep_view(path, &answer);
+            let at = self.view_root.clone().unwrap_or_else(|| path.to_path_buf());
+            self.keep_view(&at, &answer);
             return answer;
         };
         match view.claim(path, access) {
             Claim::Covered { writable } => ViewGrant::Covered { writable },
             // A sibling is asking about this same path: one card, and its answer releases both.
             Claim::Shares(open) => match open.wait(crate::view::SHARED_ASK_WAIT) {
-                Some(Answer::Granted { writable }) => ViewGrant::Covered { writable },
+                Some(Answer::Granted { writable, .. }) => ViewGrant::Covered { writable },
                 Some(Answer::Refused(why)) => ViewGrant::Refused(why),
                 // Nobody answered within the wait, which is not a denial: the caller has to be
                 // told that nobody decided rather than that this was refused.
@@ -3008,17 +3084,21 @@ impl Gate for AdjudicatedGate {
             },
             Claim::Raises(raised) => {
                 let answer = self.ask_to_see(path, tool, access);
+                // The root the answer grants: the folder when the operator took that rung, so the
+                // record and the ledger name what was granted rather than the file that asked.
+                let at = self.view_root.clone().unwrap_or_else(|| path.to_path_buf());
                 view.settle(
                     raised,
                     match &answer {
                         ViewGrant::Granted { writable } => Answer::Granted {
                             writable: *writable,
+                            at: self.view_root.clone(),
                         },
                         ViewGrant::Refused(why) => Answer::Refused(why.clone()),
                         _ => Answer::Nobody,
                     },
                 );
-                self.keep_view(path, &answer);
+                self.keep_view(&at, &answer);
                 answer
             }
         }
@@ -3026,6 +3106,10 @@ impl Gate for AdjudicatedGate {
 
     fn view_answered_by(&self) -> Option<String> {
         self.view_answered_by.clone()
+    }
+
+    fn view_granted_root(&self) -> Option<std::path::PathBuf> {
+        self.view_root.clone()
     }
 
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {

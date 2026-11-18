@@ -401,6 +401,49 @@ fn a_write_refusal_offers_the_write_and_never_a_read_only_rung() {
     assert_eq!(ladder.last().map(String::as_str), Some("deny"));
 }
 
+/// One card can grant a whole folder: the operator answered four cards for four paths inside one
+/// worktree, each granting only the path it named. The card offers the tree, and one answer on it
+/// covers every sibling afterwards, with no second card.
+#[test]
+fn one_answer_on_the_folder_covers_every_path_below_it() {
+    let dir = crate::backend::tempdir::TempDir::new();
+    let tree = dir.path().join("leakidx-wt");
+    std::fs::create_dir_all(tree.join("b")).expect("a sibling directory");
+    std::fs::write(tree.join(".git"), "gitdir: /elsewhere/.git/worktrees/w\n")
+        .expect("a worktree's git file");
+    std::fs::write(tree.join("b/c"), "x\n").expect("a sibling file");
+    let tree = tree.canonicalize().expect("a real directory");
+    let view = Arc::new(ViewGrants::new());
+    let cards = Cards::new("grant_ro_folder");
+    let mut g = gate(cards.clone(), &view, None);
+
+    // `a` does not exist: the card offers the worktree's root, and the operator takes it.
+    let asked = tree.join("a");
+    assert_eq!(
+        g.grant_view(&asked, "bash", ViewAccess::Read),
+        ViewGrant::Granted { writable: false }
+    );
+    let ladder = cards.first_ladder();
+    assert!(
+        ladder.iter().any(|id| id == "grant_ro_folder"),
+        "the card offers the tree: {ladder:?}"
+    );
+    // The record is the folder, so every sibling is covered and no second card goes up.
+    assert_eq!(view.covers(&tree, ViewAccess::Read), Some(false));
+    assert_eq!(
+        g.grant_view(&tree.join("b/c"), "read", ViewAccess::Read),
+        ViewGrant::Covered { writable: false }
+    );
+    assert_eq!(cards.count(), 1, "one answer on the tree, one card");
+    // And the write below it is still the wider ask: a read-only answer did not cover it.
+    let _ = g.grant_view(&tree.join("b/c"), "bash", ViewAccess::Write);
+    assert_eq!(
+        cards.count(),
+        2,
+        "a read-only answer on the tree does not cover a write below it"
+    );
+}
+
 /// The read refusal keeps its read rung, first: that is the card an operator answers most often and
 /// the narrower grant is the one Enter should take.
 #[test]
@@ -416,11 +459,13 @@ fn a_read_refusal_still_offers_the_read_rung_first() {
         ),
         ViewGrant::Granted { writable: false }
     );
+    let ladder = cards.first_ladder();
     assert_eq!(
-        cards.first_ladder(),
-        vec!["grant_ro", "grant_rw", "deny"],
-        "a read refusal keeps both grants, narrowest first"
+        &ladder[..2],
+        ["grant_ro", "grant_rw"],
+        "a read refusal keeps both grants, narrowest first: {ladder:?}"
     );
+    assert_eq!(ladder.last().map(String::as_str), Some("deny"));
 }
 
 /// Keeps the tier and whether a trail came with each view ask, and refuses it.

@@ -106,6 +106,37 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
+/// The folder a card offers beside the path itself: a path inside a git worktree offers the
+/// worktree's root, and anything else the nearest existing parent directory. `None` when there is
+/// no folder to offer - the filesystem root, or a path that IS its own nearest directory.
+///
+/// A worktree root is worth offering because a session's work usually lives in one: four cards for
+/// four paths inside one tree is one question asked four times with a narrower answer each time.
+pub fn folder_for(path: &Path) -> Option<PathBuf> {
+    let key = key(path);
+    // Every ancestor, the path itself first: a worktree's root is the nearest one holding a `.git`
+    // entry - a directory in a checkout, a file in a linked worktree.
+    fn ancestors(from: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+        let mut at = Some(from);
+        std::iter::from_fn(move || {
+            let here = at?;
+            at = here.parent();
+            Some(here.to_path_buf())
+        })
+    }
+    if let Some(root) = ancestors(&key).find(|at| at.join(".git").exists()) {
+        return (root != key).then_some(root);
+    }
+    // Otherwise the nearest directory that is really there: where a `mkdir` of the path would land.
+    let start = if key.is_dir() {
+        key.parent()?.to_path_buf()
+    } else {
+        key.clone()
+    };
+    let found = ancestors(&start).find(|at| at.is_dir())?;
+    (found != key).then_some(found)
+}
+
 /// The grant record: what was granted, and which paths have a card open right now.
 #[derive(Debug, Default)]
 pub struct ViewGrants {
@@ -135,6 +166,11 @@ pub struct Open {
 pub enum Answer {
     Granted {
         writable: bool,
+        /// The root the operator granted, when the card offered the folder above the path and that
+        /// is what was chosen. The record holds THIS rather than the file that raised the card: a
+        /// revoke names what the operator granted, and an entry for the file below a revoked folder
+        /// would keep the widening after the revoke.
+        at: Option<PathBuf>,
     },
     Refused(String),
     /// Nobody answered: the call has to be told that rather than told no.
@@ -274,10 +310,12 @@ impl ViewGrants {
     }
 
     /// Answer the card a claim raised. The grant is recorded BEFORE any waiting asker is woken,
-    /// so a sibling that reads the answer also finds the grant that came with it.
+    /// so a sibling that reads the answer also finds the grant that came with it. The grant is made
+    /// on the root the answer names - the folder, when the card offered one and the operator took it.
     pub fn settle(&self, raised: Raised, answer: Answer) {
-        if let Answer::Granted { writable } = &answer {
-            self.record(&raised.path, *writable);
+        if let Answer::Granted { writable, at } = &answer {
+            let at = at.as_deref().unwrap_or(&raised.path);
+            self.record(at, *writable);
         }
         *raised
             .open
@@ -425,10 +463,19 @@ mod tests {
             other => panic!("the second ask waits on the first card: {other:?}"),
         };
         assert_eq!(g.waiting_on(Path::new("/build/x")), 1);
-        g.settle(raised, Answer::Granted { writable: true });
+        g.settle(
+            raised,
+            Answer::Granted {
+                writable: true,
+                at: None,
+            },
+        );
         assert_eq!(
             open.wait(SHARED_ASK_WAIT),
-            Some(Answer::Granted { writable: true })
+            Some(Answer::Granted {
+                writable: true,
+                at: None,
+            })
         );
         assert_eq!(
             g.covers(Path::new("/build/x/y"), ViewAccess::Write),
@@ -449,5 +496,76 @@ mod tests {
             g.claim(Path::new("/build/x"), ViewAccess::Read),
             Claim::Raises(_)
         ));
+    }
+
+    /// A card answered on the FOLDER records the folder, not the file that asked: a revoke names
+    /// what the operator granted, so an entry for the file below it would outlive the revoke.
+    #[test]
+    fn a_folder_answer_is_recorded_as_the_folder() {
+        let g = ViewGrants::new();
+        let raised = match g.claim(Path::new("/build/wt/a.txt"), ViewAccess::Read) {
+            Claim::Raises(r) => r,
+            other => panic!("the ask raises the card: {other:?}"),
+        };
+        g.settle(
+            raised,
+            Answer::Granted {
+                writable: false,
+                at: Some(PathBuf::from("/build/wt")),
+            },
+        );
+        assert_eq!(
+            g.covers(Path::new("/build/wt/b.txt"), ViewAccess::Read),
+            Some(false)
+        );
+        assert_eq!(
+            g.covers(Path::new("/build/wt/a.txt"), ViewAccess::Read),
+            Some(false),
+            "the file is under the folder it granted"
+        );
+        assert!(g.revoke(Path::new("/build/wt")));
+        assert_eq!(
+            g.covers(Path::new("/build/wt/a.txt"), ViewAccess::Read),
+            None,
+            "the revoke of the folder takes the file with it"
+        );
+    }
+
+    /// The folder a card offers: a worktree's root for a path inside one, the nearest existing
+    /// parent otherwise, and nothing where there is nothing to offer.
+    #[test]
+    fn the_folder_offered_is_the_worktree_root_or_the_nearest_parent() {
+        let dir = crate::backend::tempdir::TempDir::new();
+        let tree = dir.path().join("wt");
+        std::fs::create_dir_all(tree.join("deep/inner")).expect("a tree");
+        // A linked worktree's git entry is a FILE; a checkout's is a directory.
+        std::fs::write(tree.join(".git"), "gitdir: elsewhere\n").expect("a git file");
+        let tree = tree.canonicalize().expect("a real directory");
+        assert_eq!(
+            folder_for(&tree.join("a")),
+            Some(tree.clone()),
+            "a path that is not there yet is offered its worktree"
+        );
+        assert_eq!(
+            folder_for(&tree.join("deep/inner/x.txt")),
+            Some(tree.clone()),
+            "the root, not the nearest parent, when the tree is a worktree"
+        );
+        // A plain directory offers the nearest existing parent, and offers nothing for itself.
+        let plain = dir.path().join("plain/one/two");
+        std::fs::create_dir_all(&plain).expect("a plain tree");
+        let plain = plain.canonicalize().expect("a real directory");
+        assert_eq!(folder_for(&plain.join("three/four")), Some(plain.clone()));
+        let parent = plain.parent().expect("a parent").to_path_buf();
+        assert_eq!(
+            folder_for(&plain),
+            Some(parent),
+            "a directory offers the folder above it"
+        );
+        assert_eq!(
+            folder_for(Path::new("/")),
+            None,
+            "the filesystem root has nothing above it to offer"
+        );
     }
 }
