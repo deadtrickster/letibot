@@ -6,6 +6,8 @@ Location: $XDG_CONFIG_HOME/letibot/modes.tsv, else ~/.config/letibot/modes.tsv
 
 legacy: where each project sits. Imported once into the session store; later edits are not read. `/mode` changes the store
 
+A change takes effect: nothing: it was imported once into the store, and `/mode` writes the store now
+
 ## `top level`
 
 One TAB-separated row per project root; `#` lines are comments. The longest matching ancestor wins; a root with no row is always-ask.

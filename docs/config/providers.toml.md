@@ -8,6 +8,8 @@ API keys, provider doors, per-model sampling and fleet models, prices, and box-w
 
 Written by: the daemon, from /models --key, /default-model and the first-turn key prompt: it rewrites only [default] or [NAME], mode 0600
 
+A change takes effect: a key or a door is read when a session opens and when a key is resolved; the daemon's own model is chosen at start, so a change there needs a daemon restart
+
 ## `[default]`
 
 Below both leticode.toml levels.

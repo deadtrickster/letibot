@@ -7,6 +7,7 @@ pub const HEAD: File = File {
     location: "$XDG_CONFIG_HOME/letibot/head.toml, else ~/.config/letibot/head.toml",
     about: "the head's own preferences: flat `key = value` lines, no tables",
     writer: "the head, from the /config pane and on every saved preference; unknown lines are kept",
+    reload: "the head reads it when it starts; /config in a running head saves through this file and applies it at once",
     tables: &[Table {
         path: "",
         note: "Booleans take true/false, yes/no or on/off. Shared by every head on the box.",

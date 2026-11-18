@@ -6,6 +6,8 @@ Location: user: $XDG_CONFIG_HOME/letibot/leticode.toml (else ~/.config/letibot);
 
 which models answer, and the session, queue, head and sandbox settings, at two levels
 
+A change takes effect: a session reads it when it opens, so the next session has it; the daemon reads [gc], [docker], [firecode] and [memory] at start, so a change there needs a daemon restart
+
 ## `top level`
 
 Order: command line, project file, user file, providers.toml. A key a level does not set falls through.

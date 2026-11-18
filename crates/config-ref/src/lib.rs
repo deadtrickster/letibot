@@ -2,8 +2,11 @@
 //! static [`File`]; `letibot --config-reference`, `docs/config/<file>.md` and the TOML header
 //! block are all rendered from it, and each parser's crate tests itself against it.
 
+pub mod edit;
 pub mod files;
+pub mod lookup;
 pub mod probe;
+pub mod redact;
 
 pub use files::ALL;
 
@@ -27,6 +30,8 @@ pub struct File {
     pub about: &'static str,
     /// Who writes it besides the operator; empty when only the operator does.
     pub writer: &'static str,
+    /// How a change takes effect: what reads it, and whether a restart is needed.
+    pub reload: &'static str,
     pub tables: &'static [Table],
 }
 
@@ -120,6 +125,7 @@ pub fn text(f: &File) -> String {
     if !f.writer.is_empty() {
         out.push_str(&format!("  written by: {}\n", f.writer));
     }
+    out.push_str(&format!("  reload: {}\n", f.reload));
     for t in f.tables {
         out.push_str(&format!("\n{}\n", heading(t.path)));
         if !t.note.is_empty() {
@@ -170,6 +176,7 @@ pub fn markdown(f: &File) -> String {
     if !f.writer.is_empty() {
         out.push_str(&format!("\nWritten by: {}\n", f.writer));
     }
+    out.push_str(&format!("\nA change takes effect: {}\n", f.reload));
     let levels = f.keys().any(|(_, k)| !k.level.is_empty());
     for t in f.tables {
         out.push_str(&format!("\n## `{}`\n\n", heading(t.path)));

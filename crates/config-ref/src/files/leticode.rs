@@ -13,6 +13,7 @@ pub const LETICODE: File = File {
     location: "user: $XDG_CONFIG_HOME/letibot/leticode.toml (else ~/.config/letibot); project: the nearest leticode.toml at or above the workspace",
     about: "which models answer, and the session, queue, head and sandbox settings, at two levels",
     writer: "",
+    reload: "a session reads it when it opens, so the next session has it; the daemon reads [gc], [docker], [firecode] and [memory] at start, so a change there needs a daemon restart",
     tables: &[
         Table {
             path: "",
