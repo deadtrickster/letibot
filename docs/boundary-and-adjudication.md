@@ -1135,6 +1135,25 @@ widening raises, are the perimeter's and not a second list. What is still true o
 that no process is bounded: it runs no command for a boundary to go in front of, and the prompt and
 the hub both say so.
 
+### A grant widens both halves in one step, and a session owns what it creates
+
+A grant answered on a card widens the SHELL's view (`HostBackend::grant_into_view`, which re-probes
+the boundary) and the file tools' fence (`FileFence::granting`) in the same step: `read` asks the
+fence and not the boundary, so a path bound in one and not the other is refused by the next call in
+the boundary's own words — the operator answered `bash` on a directory and then `read` of the same
+tree went out of the view again.
+
+And a path a session's own command CREATED is the session's work, not a widening to ask about
+(`crates/tools/src/created.rs`): a `git worktree add`, a `git clone` or a `mkdir -p` that leaves a
+directory where there was none, under a place the command could write, joins the session's view
+read-write with no card — and its children's, because the record is the session tree's. Detection is
+a difference of directory listings taken before and after the call, not the command's own words: the
+places watched are the view's read-write roots plus every bind-mount source the command hands a
+container (`docker run -v SRC:DST`, `--volume`, `--mount source=…`), and a directory whose mtime moved
+is read for what appeared inside it. It cannot see a creation in a place it did not watch, anything a
+container wrote where it was given no bind mount, a creation by a BACKGROUND command (the scan runs
+when the call ends), or a write INTO a file that already existed.
+
 ## 4l. The order the gate decides in
 
 `AdjudicatedGate::admit`, in order. Each arm is a rule, not an implementation detail, and the
