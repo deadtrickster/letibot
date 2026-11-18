@@ -835,6 +835,12 @@ pub trait Gate: Send + Sync {
         None
     }
 
+    /// A path this session's own command CREATED, and the runtime has just bound into its view.
+    /// Not a decision by anybody: the record holds it so a later ask for the same path raises no
+    /// card, and the ledger holds it so the session's children inherit it. The default keeps
+    /// nothing, for a gate with no record.
+    fn own_created(&mut self, _path: &std::path::Path) {}
+
     /// Paths taken back out of this session's view since the last call, to unbind before the
     /// next one runs. The default is none.
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
@@ -1989,6 +1995,87 @@ impl ToolRuntime {
         })
     }
 
+    /// The places this call could write, as they stand now, for [`crate::created`]: the view's
+    /// read-write roots, every bind-mount source the command hands a container, and nothing when
+    /// the session has no writable place on this host to watch. `None` is *nothing to watch*, so a
+    /// call that could not create anything pays one comparison.
+    fn created_watch(&self, args: &Value) -> Option<crate::created::Created> {
+        let mut places = self.backend.writable_places();
+        if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
+            places.extend(crate::created::bind_sources(command));
+        }
+        places.sort();
+        places.dedup();
+        (!places.is_empty()).then(|| crate::created::Created::before(&places))
+    }
+
+    /// Bind what this call created into the session's view: a directory the session's own command
+    /// made is its work, so it is read-write without a card, and its children's, because the record
+    /// is the tree's. A path the view already holds at a write is skipped - every file a heredoc
+    /// leaves in the workspace is such a path, and a grant restating the view is noise.
+    fn own_created(
+        &self,
+        mut invocation: Invocation,
+        watch: crate::created::Created,
+        tool: &str,
+    ) -> Invocation {
+        let found = watch.created_since();
+        let held = self.backend.boundary().map(|b| b.view);
+        let mut bound: Vec<std::path::PathBuf> = Vec::new();
+        for path in found.paths {
+            if held.as_ref().is_some_and(|v| v.holds_writable(&path)) || !path.exists() {
+                continue;
+            }
+            match self
+                .backend
+                .grant_into_view(&path, true, "this session's own command created it")
+            {
+                Ok(_) => {
+                    let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+                    gate.own_created(&path);
+                    bound.push(path);
+                }
+                Err(e) => invocation.notes.push(format!(
+                    "`{}` was created by this command but could not be bound into the view, so \
+                     it is still outside it: {e}",
+                    path.display()
+                )),
+            }
+        }
+        if !bound.is_empty() {
+            invocation.notes.push(format!(
+                "{} created by this session's own `{tool}` {}, so it is in this session's view, \
+                 writable, without a card: the boundary was only asking about the session's own \
+                 work. Nothing else was widened.",
+                if bound.len() == 1 {
+                    "a tree".to_string()
+                } else {
+                    format!("{} trees", bound.len())
+                },
+                if bound.len() == 1 {
+                    format!("is (`{}`)", bound[0].display())
+                } else {
+                    format!(
+                        "are ({})",
+                        bound
+                            .iter()
+                            .map(|p| format!("`{}`", p.display()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+            ));
+        }
+        if found.capped {
+            invocation.notes.push(format!(
+                "the look for what this command created stopped at {} entries, so a tree it made \
+                 past that is not in the view and asks for a card as any other path does",
+                crate::created::MAX_LISTED
+            ));
+        }
+        invocation
+    }
+
     /// Did a file the gate judged change before the command ran? `None` when every body that was
     /// read is still those bytes; only read bodies are re-read. It refuses rather than
     /// re-judging, because a second decision is one the operator never saw.
@@ -2351,6 +2438,14 @@ impl ToolRuntime {
             access: schema.access,
         });
 
+        // A tree this call makes ITSELF is the session's own work, not a widening to ask about: a
+        // `git worktree add` inside a place the session can write left a directory that did not
+        // exist before the call, and every path under it was refused afterwards. Watched from
+        // before the call to after it, so what appeared is known to be this command's.
+        let created = (gated && schema.name == "bash")
+            .then(|| self.created_watch(&args))
+            .flatten();
+
         let invocation = {
             let tool = self
                 .registry
@@ -2411,6 +2506,12 @@ impl ToolRuntime {
             {
                 invocation = invocation.with_note(nudge);
             }
+        }
+        // What this command left on the host that was not there before it: the session's own
+        // work, bound into the view without a card. Before the view asks below, so a path it
+        // created is already in the view and never becomes a question.
+        if let Some(watch) = created {
+            invocation = self.own_created(invocation, watch, &schema.name);
         }
         if !invocation.needs_in_view.is_empty() {
             let asked: Vec<crate::view::ViewAsk> = std::mem::take(&mut invocation.needs_in_view);

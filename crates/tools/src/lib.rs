@@ -29,6 +29,9 @@ pub mod console_bash;
 /// recorded, replayed through today's parser and gate, so "the parser reads more than it
 /// did" is a number rather than an impression.
 pub mod corpus_replay;
+/// What a command CREATED on the host, so a tree the session built itself joins its view without a
+/// card. Read as a difference of directory listings, because the command's own words are a claim.
+pub mod created;
 pub mod detect;
 /// Docker for a seat: no engine socket by default, a labelling proxy when one is granted. A module
 /// of its own rather than part of [`lifecycle`] because a proxy is not a reaper: the reaper reads the

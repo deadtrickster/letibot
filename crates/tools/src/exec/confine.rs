@@ -895,6 +895,29 @@ impl ViewSpec {
         self
     }
 
+    /// Whether this view already holds `path` at a WRITE: the project root, a home of its own, and
+    /// every read-write grant. Read-only roots and a session's children's spills are inside it and
+    /// not writable, so they answer false - a path there is not one the view already lets a write
+    /// land in. A wide view holds the machine and answers true for everything.
+    pub fn holds_writable(&self, path: &Path) -> bool {
+        if self.wide {
+            return true;
+        }
+        let roots = std::iter::once(self.project.as_path()).chain(self.grants.iter().filter_map(
+            |g| match g {
+                Grant::ReadWrite { path, .. } => Some(path.as_path()),
+                _ => None,
+            },
+        ));
+        if roots.into_iter().any(|r| path == r || path.starts_with(r)) {
+            return true;
+        }
+        match &self.home {
+            HomeView::Dir(d) => path == d || path.starts_with(d),
+            HomeView::Tmpfs => false,
+        }
+    }
+
     /// What a host path is, from inside the view: three answers, not two, because a fresh
     /// tmpfs inside the view is not the host's `/tmp`. Lexical on purpose: a `stat` on the
     /// host would disclose what the operator has, and cannot answer about an absent path.
