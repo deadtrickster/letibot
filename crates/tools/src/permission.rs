@@ -905,8 +905,14 @@ pub fn load_file(path: &std::path::Path) -> Result<Ruleset, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
+    parse_text(&raw, path)
+}
+
+/// The same reader over bytes already in hand, so `config propose` judges a proposed file with
+/// the parser the gate would have used; `path` is only ever a name in its refusals.
+pub fn parse_text(raw: &str, path: &std::path::Path) -> Result<Ruleset, String> {
     let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        serde_json::from_str(raw).map_err(|e| format!("{}: {e}", path.display()))?;
     let obj = value
         .as_object()
         .ok_or_else(|| format!("{}: not a JSON object", path.display()))?;

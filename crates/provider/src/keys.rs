@@ -848,6 +848,17 @@ struct ProvidersFile {
 
 fn parse_file(path: &Path) -> Result<ProvidersFile, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse_text(&text)
+}
+
+/// Judge bytes rather than a path: what `config propose` holds a proposed `providers.toml` to, so
+/// a file the daemon would refuse is refused there, in this parser's own words. The file's shape
+/// stays private — a caller learns whether it parses and nothing else.
+pub fn validate_text(text: &str) -> Result<(), String> {
+    parse_text(text).map(|_| ())
+}
+
+fn parse_text(text: &str) -> Result<ProvidersFile, String> {
     let mut out = ProvidersFile::default();
     let mut current: Option<String> = None;
     for (n, raw) in text.lines().enumerate() {

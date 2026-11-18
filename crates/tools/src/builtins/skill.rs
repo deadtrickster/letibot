@@ -688,6 +688,9 @@ impl SkillRegistry {
                 "mcp-servers",
                 include_str!("../../../../skills/mcp-servers/SKILL.md"),
             ),
+            // How to answer "what do I edit to do X": the reference first, then a proposal the
+            // operator answers.
+            ("config", include_str!("../../../../skills/config/SKILL.md")),
         ]
         .into_iter()
         .filter_map(|(what, text)| {

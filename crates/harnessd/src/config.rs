@@ -1243,8 +1243,14 @@ impl Prompts {
             return Ok(Prompts::default());
         }
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::parse_text(&text, path)
+    }
+
+    /// The same reader over bytes already in hand, so `config propose` judges a proposal with the
+    /// parser the daemon would have used and not with a second one.
+    pub fn parse_text(text: &str, path: &Path) -> Result<Prompts, String> {
         let file: PromptsFile =
-            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            toml::from_str(text).map_err(|e| format!("{}: {e}", path.display()))?;
 
         // The `[base]` layer. An unknown section name is refused by name; an empty
         // one is dropped (it would shadow the provider glob it should fall through
