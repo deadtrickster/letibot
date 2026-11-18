@@ -3,9 +3,10 @@
 //! and `letibot boundary`.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use letibot_tools::exec::boundary::{self, BoundaryConfig, Resolved};
+use letibot_tools::exec::confine::Grant;
 use letibot_tools::exec::perimeter::{self, Perimeter, PerimeterTable, SUBAGENT, TOP_LEVEL};
 use letibot_tools::exec::seat::{self, Level, SeatView};
 use letibot_tools::mode::Mode;
@@ -50,6 +51,63 @@ pub fn resolved(workspace: &Path, home: &Path) -> Result<Resolved, String> {
 /// The `[perimeter.<name>]` tables of both files.
 pub fn tables(workspace: &Path) -> Result<BTreeMap<String, PerimeterTable>, String> {
     both(workspace).map(|b| b.1)
+}
+
+/// What the main checkout's grant says, in the words a disclosure prints beside it.
+const MAIN_CHECKOUT_WHY: &str = "the MAIN checkout of the repository this worktree belongs to \
+     — the canonical source, read-only: its tree, its `target/` and its `.git` are readable and a \
+     write below it is refused by this grant, so nothing a child may write has changed";
+
+/// The main checkout a linked worktree was cut from, DERIVED and never guessed: a worktree's git
+/// entry names `<main>/.git/worktrees/<name>`, so `--git-common-dir`'s parent is the checkout a
+/// person opens at `~/Projects/<org>/<repo>` — and where the `target/` both trees build into lives.
+pub fn main_checkout(workspace: &Path) -> Option<PathBuf> {
+    // A plain checkout's git entry is a directory: nothing is outside this tree, and a grant on
+    // it would only restate the view's own read-write root. Checked first, so a session that is
+    // not a worktree costs no process at all.
+    if workspace.join(".git").is_dir() {
+        return None;
+    }
+    let common = crate::harness::git_in(
+        &workspace.display().to_string(),
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let main = Path::new(common.trim()).parent()?.to_path_buf();
+    // Canonical, because the view's roots and the path a command names are compared lexically:
+    // a `/var` that is really `/private/var` would be a grant that covers nothing.
+    let main = main.canonicalize().unwrap_or(main);
+    let here = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    // The common dir's parent has to BE a checkout: a bare repository's git dir has no `<dir>/.git`
+    // under its parent, and granting that parent would hand a child a directory of mirrors.
+    (main != here && main.join(".git").is_dir()).then_some(main)
+}
+
+/// The one grant every child holds BY CONSTRUCTION, and no top-level session needs: a read-only
+/// view of the main checkout its worktree was cut from. Reading the canonical source cannot
+/// corrupt it, so this is not a grant to ask for; writing there stays refused by the same grant.
+pub fn main_checkout_grant(level: Level, workspace: &Path) -> Option<Grant> {
+    if level != Level::Tight {
+        return None;
+    }
+    Some(Grant::ReadOnly {
+        path: main_checkout(workspace)?,
+        why: MAIN_CHECKOUT_WHY.to_string(),
+    })
+}
+
+/// Add [`main_checkout_grant`] to a rendered view: the last thing a seat is given, so every door
+/// that asks *what does this session's commands see* answers with it — the shell's view, the file
+/// tools' fence and `/boundary` alike.
+fn with_main_checkout(mut view: SeatView, level: Level, workspace: &Path) -> SeatView {
+    if let Some(g) = main_checkout_grant(level, workspace)
+        && !view.grants.iter().any(|had| had.path() == g.path())
+    {
+        view.grants.push(g);
+    }
+    view
 }
 
 /// The perimeter a session at `level` gets, out of the tables its config carries: the reserved
@@ -148,6 +206,8 @@ pub fn seat_for_fence(
         home,
         &Default::default(),
     )?;
+    // No [`with_main_checkout`] here: this seat's only consumer is `ViewSpec::of_seat`, which the
+    // caller renders with `confined_grants` — where the grant is added once, not twice.
     Ok(boundary::apply(view, &r))
 }
 
@@ -169,7 +229,11 @@ pub fn seat_for(
         home,
         &p.placeholder_values(),
     )?;
-    Ok((boundary::apply(view, &r), r, p))
+    Ok((
+        boundary::apply(with_main_checkout(view, level, workspace), &r),
+        r,
+        p,
+    ))
 }
 
 /// What a command gets at `level`, as lines. No real secret is ever resolved here: nothing is
@@ -204,7 +268,7 @@ pub fn session_lines(
         &home,
         &p.placeholder_values(),
     ) {
-        Ok(v) => v,
+        Ok(v) => with_main_checkout(v, p.level, workspace),
         Err(why) => return vec![format!("boundary config refused: {why}")],
     };
     let mut out = boundary::report(&boundary::apply(view, &r), &r, level, probe);
@@ -514,5 +578,148 @@ mod tests {
             let _ = std::fs::remove_dir_all(&d);
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A git checkout and a worktree cut from it beside it, which is the shape `task_start`
+    /// arranges and the one place a child's view has to reach past its own tree. The commit is
+    /// given its own identity and no signing, because a box whose git signs commits would
+    /// otherwise fail a fixture over a key this test has no business holding.
+    fn repo_and_worktree(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "letibot-main-checkout-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("a parent");
+        let base = base.canonicalize().expect("a real directory");
+        let main = base.join("letibot");
+        std::fs::create_dir_all(main.join("crates/tui/src/app")).expect("a source tree");
+        std::fs::write(main.join("Cargo.toml"), "[workspace]\n").expect("a manifest");
+        std::fs::write(
+            main.join("crates/tui/src/app/mod.rs"),
+            "// the file a child reads to learn what the tree says\n",
+        )
+        .expect("a source file");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&main)
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "user.name=fixture",
+                ])
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one"]);
+        let wt = base.join("agent-x");
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            wt.to_str().expect("a utf-8 path"),
+            "-b",
+            "agent/x",
+        ]);
+        // Made after the commit, so it is the build cache this repository has and not a file in
+        // its history: a child reads the binary, and never writes one here.
+        std::fs::create_dir_all(main.join("target/release")).expect("a build cache");
+        std::fs::write(main.join("target/release/harnessd"), "#!/bin/sh\n").expect("a binary");
+        let home = base.join("home");
+        std::fs::create_dir_all(&home).expect("a home");
+        (main, wt, home)
+    }
+
+    /// The main checkout is DERIVED and never guessed: `--git-common-dir` answers `<main>/.git`
+    /// from anywhere in the tree, and a plain checkout is its own main checkout.
+    #[test]
+    fn the_main_checkout_is_derived_from_git() {
+        let (main, wt, _) = repo_and_worktree("derive");
+        assert_eq!(main_checkout(&wt).as_deref(), Some(main.as_path()));
+        // A plain checkout: the repository IS the workspace, and nothing is added for it.
+        assert_eq!(main_checkout(&main), None);
+        // A directory that is no repository answers nothing rather than guessing a parent.
+        assert_eq!(main_checkout(main.parent().expect("a parent")), None);
+        // And a top-level session — the operator's own — never gets the grant at all.
+        assert!(main_checkout_grant(Level::Wide, &wt).is_none());
+        assert!(main_checkout_grant(Level::Tight, &main).is_none());
+        let _ = std::fs::remove_dir_all(main.parent().expect("the parent"));
+    }
+
+    /// **A child reads its MAIN checkout and writes only its own tree.** Reading the canonical
+    /// source cannot corrupt it, so it is in the view by construction and asks nobody; the SAME
+    /// read-only grant is what refuses a write there, so nothing about the write boundary moved.
+    #[test]
+    fn a_child_reads_its_main_checkout_and_writes_only_its_own_tree() {
+        use letibot_tools::exec::confine::ViewSpec;
+        use letibot_tools::exec::fence::FileFence;
+
+        let (main, wt, home) = repo_and_worktree("child");
+        let (view, _, _) = seat_for(Level::Tight, &Mode::WRITES_ALLOWED, &wt, &home)
+            .expect("a tight view for a worktree");
+        let granted = view
+            .grants
+            .iter()
+            .find(|g| g.path() == main.as_path())
+            .unwrap_or_else(|| panic!("the main checkout is in a child's view: {view:?}"));
+        assert!(
+            matches!(granted, Grant::ReadOnly { .. }),
+            "read-only, never writable: {granted:?}"
+        );
+        assert!(
+            !view
+                .grants
+                .iter()
+                .any(|g| g.path() == main.as_path() && matches!(g, Grant::ReadWrite { .. })),
+            "no writable grant on the main checkout: {view:?}"
+        );
+
+        // The fence the file tools obey holds the same view, so a read reaches it and a write
+        // stops at the same grant — the boundary's answer, not a card's.
+        let fence = FileFence::of(&view, &ViewSpec::of_seat(wt.clone(), &view));
+        for read in [
+            "Cargo.toml",
+            "crates/tui/src/app/mod.rs",
+            "target/release/harnessd",
+        ] {
+            assert!(
+                fence.refusal(&main.join(read), false).is_none(),
+                "a child reads `{read}` with no grant and no card"
+            );
+        }
+        for write in ["Cargo.toml", "target/release/harnessd"] {
+            let said = fence
+                .refusal(&main.join(write), true)
+                .unwrap_or_else(|| panic!("a write to `{write}` is refused"));
+            assert!(
+                said.contains("read-only"),
+                "refused because the view holds it read-only, not because it is absent: {said}"
+            );
+        }
+        // The inverse: its own worktree is writable, including a file that does not exist yet.
+        assert!(fence.refusal(&wt.join("Cargo.toml"), true).is_none());
+        assert!(fence.refusal(&wt.join("crates/new.rs"), true).is_none());
+
+        // And the operator's own session is untouched: a wide view reads the whole machine and
+        // gains nothing from this rule.
+        let (wide, _, _) =
+            seat_for(Level::Wide, &Mode::WRITES_ALLOWED, &main, &home).expect("a wide view");
+        assert!(
+            !wide.grants.iter().any(|g| g.path() == main.as_path()),
+            "a top-level session's view is what it was: {wide:?}"
+        );
+        let _ = std::fs::remove_dir_all(main.parent().expect("the parent"));
     }
 }
