@@ -5081,14 +5081,21 @@ pub fn confined_grants(
     landing_root: Option<&std::path::Path>,
 ) -> Vec<letibot_tools::exec::confine::Grant> {
     use letibot_tools::exec::confine::Grant;
-    let mut out: Vec<Grant> = cfg
-        .grants_ro
-        .iter()
-        .map(|p| Grant::ReadOnly {
-            path: p.clone(),
-            why: "granted on the command line with --grant-ro".into(),
-        })
-        .collect();
+    let mut out: Vec<Grant> = Vec::new();
+    // A child reads its repository's MAIN checkout, always: the tree it was cut from is the
+    // canonical source. FIRST, because a renderer applies mounts in order — the writable bind of
+    // `<main>/.git` below has to land ON TOP of this read-only one or `git commit` breaks.
+    let level = match &cfg.perimeter {
+        Some(p) => p.level,
+        None => letibot_tools::exec::seat::Level::of(cfg.parent_session_id.as_deref()),
+    };
+    if let Some(g) = crate::perimeter::main_checkout_grant(level, &cfg.workspace) {
+        out.push(g);
+    }
+    out.extend(cfg.grants_ro.iter().map(|p| Grant::ReadOnly {
+        path: p.clone(),
+        why: "granted on the command line with --grant-ro".into(),
+    }));
     // A landing tree per repository of the workspace - one, or each of a one-org project
     // folder's, since the queue serves every one of them there.
     let landings: Vec<PathBuf> = landing_root
@@ -5151,7 +5158,8 @@ pub(crate) fn whole_host_brief() -> String {
      this session's perimeter instead: a credential store, letibot's own store and every path a \
      `[boundary] hide` or a `[perimeter.<name>] hide` names are refused to them, naming the key, \
      and beyond that they reach what the perimeter's level allows - the machine for a top-level \
-     session, its project and the toolchain for a child. Nothing refuses a path outside the \
+     session; for a child its own tree, the toolchain, and the main checkout of the repository \
+     that worktree belongs to, that one read-only. Nothing refuses a path outside the \
      workspace, so one is somebody's property and not absent. The gate decides each call on what \
      it does, and that is not a boundary."
         .to_string()
