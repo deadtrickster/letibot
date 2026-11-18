@@ -13,6 +13,7 @@ fn a_session(tag: &str) -> (Harness, std::path::PathBuf) {
     let mut cfg = Config::for_this_box(&dir);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.session_id = format!("s-note-{tag}");
+    at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     cfg.notes_home = Some(dir.join("notes"));
     cfg.notes_home_env = true;

@@ -107,6 +107,7 @@ fn a_switch_to_a_cloud_preset_sends_no_local_sampling() {
     .unwrap();
     let mut cfg = Config::for_this_box(&dir);
     cfg.session_id = "s-cloud-sampling".into();
+    at_always_ask(&mut cfg);
     cfg.sampling = serde_json::json!({"temperature": 0.7, "top_k": 40, "seed": 7});
     cfg.providers_file = Some(file.clone());
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no file");
@@ -195,6 +196,7 @@ fn proxy_session(tag: &str, extra: &str) -> (Harness, Seen<serde_json::Value>, S
     .unwrap();
     let mut cfg = Config::for_this_box(&dir);
     cfg.session_id = format!("s-{tag}");
+    at_always_ask(&mut cfg);
     cfg.providers_file = Some(file);
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no file");
     let mut h =

@@ -1224,6 +1224,9 @@ fn a_no_queue_daemon_tells_its_sessions_nothing_about_the_queues() {
     let repository = std::fs::canonicalize(&root).unwrap().display().to_string();
     let mut cfg = Config::for_this_box(dir.path());
     cfg.store = Some(db.clone());
+    // The point an unseen project gets is `automode`, which needs an authorisation oracle; this
+    // test is about the queue, not the point, so it stands where it always did.
+    cfg.mode = letibot_tools::mode::Mode::ALWAYS_ASK;
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no apparatus");
     let s = Store::open(&db).expect("the store opens");
 

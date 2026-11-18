@@ -44,6 +44,7 @@ fn a_harness(dir: &Scratch, id: &str) -> Harness {
     cfg.store = Some(dir.0.join("sessions.db"));
     cfg.session_id = id.into();
     cfg.vocab_gguf = None;
+    at_always_ask(&mut cfg);
     let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
     Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens")
 }

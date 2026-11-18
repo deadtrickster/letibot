@@ -104,6 +104,7 @@ fn opened_by_a_later_daemon_with(
     cfg.store = Some(path);
     cfg.session_id = id.into();
     cfg.vocab_gguf = Some(gguf);
+    at_always_ask(&mut cfg);
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     Some(Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens"))
 }
@@ -169,6 +170,7 @@ fn reopened_with(dir: &Scratch, id: &str, set: impl FnOnce(&mut Config)) -> Harn
     cfg.store = Some(dir.store());
     cfg.session_id = id.into();
     cfg.vocab_gguf = crate::vocab_gguf();
+    at_always_ask(&mut cfg);
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens again")
 }
@@ -242,6 +244,7 @@ fn on_bytes(dir: &Scratch, id: &str) -> Config {
     cfg.store = Some(dir.store());
     cfg.session_id = id.into();
     cfg.vocab_gguf = None;
+    at_always_ask(&mut cfg);
     cfg
 }
 

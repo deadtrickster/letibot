@@ -816,6 +816,15 @@ impl Harness {
                  command gets: {what}"
             ));
         }
+        // A move cannot rebuild the substrate: the backend, its view and its fence are built at
+        // open. Said aloud, because "allow-all" would otherwise read as a promise about the
+        // commands this session runs, and it is a promise about what it ASKS.
+        if mode.admits_everything() && !self.cfg.mode.admits_everything() {
+            said.push_str(
+                "; its commands keep the substrate this session opened with - only a restart gives \
+                 it the unbounded one",
+            );
+        }
         if mode.decider == letibot_tools::mode::Decider::Model && !self.gate().supervising() {
             // The check above holds an oracle to be present at this point, so an
             // error here is a real one and not the ordinary "no `--oracle`".

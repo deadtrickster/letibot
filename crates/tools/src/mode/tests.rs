@@ -419,13 +419,29 @@ fn an_unknown_mode_names_the_four_rather_than_defaulting() {
     assert_eq!(Mode::parse("READ_ONLY").unwrap().name, "read-only");
 }
 
-/// An unseen directory starts where nothing happens without the operator, and not at
-/// read-only: the complaint that started this was a session that could not edit and had
-/// no way to change that in place.
+/// An unseen directory starts at `automode`: the model answers within its earned scope, so a
+/// project nobody configured still runs unattended work. Not read-only - the complaint that
+/// started this was a session that could not edit and had no way to change that in place - and not
+/// `always-ask`, which puts every call to a person on a box built to run without one.
 #[test]
-fn an_unseen_project_starts_at_always_ask() {
-    assert_eq!(UNSEEN_PROJECT.name, "always-ask");
+fn an_unseen_project_starts_at_automode() {
+    assert_eq!(UNSEEN_PROJECT.name, "automode");
     assert!(UNSEEN_PROJECT.seats(Access::Write));
+    // A point whose decider is a model refuses by name where no oracle exists - it is not a
+    // quieter spelling of `always-ask`.
+    let seats = Seats {
+        write: true,
+        exec: true,
+        network: false,
+    };
+    let why = UNSEEN_PROJECT
+        .check(
+            &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
+            seats,
+        )
+        .expect_err("no oracle on a bare box");
+    assert!(why.contains("authorisation oracle"), "{why}");
+    assert!(why.contains("[gatekeeper]"), "{why}");
 }
 
 /// Every named point's prerequisites are things this crate has a name for, and

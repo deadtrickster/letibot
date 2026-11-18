@@ -10,10 +10,10 @@ A change takes effect: nothing: it was imported once into the store, and `/mode`
 
 ## `top level`
 
-One TAB-separated row per project root; `#` lines are comments. The longest matching ancestor wins; a root with no row is always-ask.
+One TAB-separated row per project root; `#` lines are comments. The longest matching ancestor wins; a root with no row is automode.
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `1: mode` | read-only \| always-ask \| writes-allowed \| automode \| automode-edits \| allow-all | always-ask | the mode; also plan, default, acceptEdits, bypassPermissions |
+| `1: mode` | read-only \| always-ask \| writes-allowed \| automode \| automode-edits \| allow-all | automode | the mode; also plan, default, acceptEdits, bypassPermissions |
 | `2: root` | absolute path | required | project root |
 | `3: consented_at` | timestamp | none | when the operator consented to allow-all on a bare host |

@@ -17,6 +17,7 @@ fn choosing_the_current_model_calls_off_a_waiting_switch() {
     .unwrap();
     let mut cfg = Config::for_this_box(&dir);
     cfg.session_id = "s-switch-cancel".into();
+    at_always_ask(&mut cfg);
     cfg.providers_file = Some(file);
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no file");
     let mut h = Harness::open(&parts, cfg, Hub::new("s-switch-cancel")).expect("the session opens");

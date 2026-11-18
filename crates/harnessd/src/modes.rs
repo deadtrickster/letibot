@@ -26,6 +26,9 @@ pub struct ModeStore {
     /// The legacy `modes.tsv` still to import, taken at the first read.
     legacy: Option<PathBuf>,
     by_root: BTreeMap<PathBuf, Mode>,
+    /// When each project's row was written, unix ms, beside [`ModeStore::by_root`]. A restart
+    /// compares it with a session's own row: the later of the two is the operator's latest word.
+    set_at: BTreeMap<PathBuf, i64>,
     /// The operator's recorded consent, per root - the moment it was given, for the one
     /// point that needs one. `allow-all` on a bare host is reachable only through the
     /// operator's answer to a question ([`Mode::ALLOW_ALL_HERE`])
@@ -81,6 +84,7 @@ impl ModeStore {
             let _ = import_tsv(db, &tsv);
         }
         self.by_root.clear();
+        self.set_at.clear();
         self.consented.clear();
         self.unreadable.clear();
         let rows = match Store::open(db).and_then(|st| st.project_modes()) {
@@ -101,6 +105,7 @@ impl ModeStore {
                     if let Some(when) = r.consented_at.filter(|c| !c.is_empty()) {
                         self.consented.insert(root.clone(), when);
                     }
+                    self.set_at.insert(root.clone(), r.set_at);
                     self.by_root.insert(root, m);
                 }
                 Err(why) => self.unreadable.push(Unreadable {
@@ -123,6 +128,17 @@ impl ModeStore {
             .max_by_key(|(k, _)| k.as_os_str().len())
             .map(|(_, m)| *m)
             .unwrap_or(UNSEEN_PROJECT)
+    }
+
+    /// When the row this project sits by was written, if one is. Same longest-ancestor rule as
+    /// [`ModeStore::for_project`], so the moment and the point always come from one row.
+    pub fn project_set_at(&self, root: &Path) -> Option<i64> {
+        let root = canonical(root);
+        self.set_at
+            .iter()
+            .filter(|(k, _)| root.starts_with(k))
+            .max_by_key(|(k, _)| k.as_os_str().len())
+            .map(|(_, at)| *at)
     }
 
     /// Whether this project's point was set, as opposed to defaulted. A separate question from
@@ -176,6 +192,7 @@ impl ModeStore {
         let root = canonical(root);
         let Some(db) = &self.db else {
             self.consented.remove(&root);
+            self.set_at.remove(&root);
             return Ok(self.by_root.remove(&root).is_some());
         };
         let had = Store::open(db)
@@ -196,9 +213,15 @@ impl ModeStore {
     /// The point this session was put at, with the answer that opened it - `None` for a
     /// session nobody moved, which opens at its project's point.
     pub fn session(&self, session_id: &str) -> Option<(Mode, Option<String>)> {
+        self.session_at(session_id).map(|(m, when, _)| (m, when))
+    }
+
+    /// [`ModeStore::session`], with the moment the row was written: an open compares it with the
+    /// project's row so that a project moved LATER than the session is not overruled by it.
+    pub fn session_at(&self, session_id: &str) -> Option<(Mode, Option<String>, i64)> {
         let db = self.session_db.as_ref()?;
-        let (name, when) = Store::open(db).ok()?.session_mode(session_id).ok()??;
-        Some((Mode::parse(&name).ok()?, when))
+        let (name, when, at) = Store::open(db).ok()?.session_mode_at(session_id).ok()??;
+        Some((Mode::parse(&name).ok()?, when, at))
     }
 
     /// Record the point this session was put at.
@@ -223,6 +246,8 @@ impl ModeStore {
                 Some(w) => self.consented.insert(root.to_path_buf(), w.clone()),
                 None => self.consented.remove(root),
             };
+            self.set_at
+                .insert(root.to_path_buf(), letibot_tools::lifecycle::now_ms());
             self.by_root.insert(root.to_path_buf(), mode);
             return Ok(());
         };
@@ -516,12 +541,12 @@ mod tests {
         );
     }
 
-    /// A directory nobody has configured is at always-ask, and says nobody said.
+    /// A directory nobody has configured is at `automode`, and says nobody said.
     #[test]
-    fn an_unseen_project_is_always_ask_and_says_nobody_said() {
+    fn an_unseen_project_is_automode_and_says_nobody_said() {
         let s = ModeStore::default();
         let root = Path::new("/tmp/never-configured");
-        assert_eq!(s.for_project(root).name, "always-ask");
+        assert_eq!(s.for_project(root).name, "automode");
         assert!(!s.is_set(root));
         let d = s.describe(root);
         assert!(d.contains("nobody has said"), "{d}");
@@ -542,7 +567,7 @@ mod tests {
         assert!(!back.remove(&root).unwrap(), "and now there is not");
         assert_eq!(
             ModeStore::load(&d.path()).for_project(&root).name,
-            "always-ask"
+            "automode"
         );
     }
 
@@ -567,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             s.for_project(Path::new("/home/x")).name,
-            "always-ask",
+            "automode",
             "a parent must not inherit a child's widening"
         );
     }
@@ -585,7 +610,7 @@ mod tests {
         let mut s = ModeStore::load(&d.path());
         assert_eq!(s.unreadable.len(), 1, "{:?}", s.unreadable);
         assert_eq!(s.for_project(Path::new("/home/x/a")).name, "writes allowed");
-        assert_eq!(s.for_project(Path::new("/home/x/b")).name, "always-ask");
+        assert_eq!(s.for_project(Path::new("/home/x/b")).name, "automode");
         let desc = s.describe(Path::new("/home/x/b"));
         assert!(desc.contains("could not be read"), "{desc}");
         assert!(desc.contains("SKIPPED"), "{desc}");

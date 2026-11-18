@@ -67,3 +67,42 @@ fn a_session_opens_at_its_own_point_over_its_projects() {
     let h = Harness::open(&parts, cfg, Hub::new("s-other")).expect("opens");
     assert_eq!(h.config().mode.name, Mode::READ_ONLY.name);
 }
+
+/// A restart brings back the LATER of the two rows. A project moved after the session was put
+/// somewhere is the operator's newest word for that project, so the session comes back at it - and
+/// says why. Observed live: db-fuzz had been put at `allow-all`, the project's row was later set to
+/// `automode`, and the restart brought the session back at `allow-all`.
+#[test]
+fn a_project_row_written_after_the_sessions_own_wins_at_reopen() {
+    let dir = TempDir::new("later-project-row");
+    let ws = dir.0.join("ws");
+    let cfg = config(&dir, "s-later");
+    let db = cfg.store.clone().unwrap();
+    let mut modes = ModeStore::load(&db);
+    modes.set(&ws, Mode::WRITES_ALLOWED).unwrap();
+    modes.set_session("s-later", Mode::READ_ONLY, None).unwrap();
+    // The operator moves the PROJECT afterwards - from another session of it, or from `/mode` on
+    // a root. Only the project's row is touched here, which is the case that came back wrong.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    modes.set(&ws, Mode::ALWAYS_ASK).unwrap();
+
+    let parts = Parts::load(&cfg).expect("parts");
+    let h = Harness::open(&parts, cfg, Hub::new("s-later")).expect("opens");
+    assert_eq!(
+        h.config().mode.name,
+        Mode::ALWAYS_ASK.name,
+        "the session's older row overruled the project's newer one"
+    );
+
+    // And the other way round: the session's own row, written after the project's, still wins.
+    let cfg = config(&dir, "s-earlier");
+    let mut modes = ModeStore::load(&db);
+    modes.set(&ws, Mode::ALWAYS_ASK).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    modes
+        .set_session("s-earlier", Mode::READ_ONLY, None)
+        .unwrap();
+    let parts = Parts::load(&cfg).expect("parts");
+    let h = Harness::open(&parts, cfg, Hub::new("s-earlier")).expect("opens");
+    assert_eq!(h.config().mode.name, Mode::READ_ONLY.name);
+}

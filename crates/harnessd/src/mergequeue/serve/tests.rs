@@ -3211,6 +3211,9 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
     cfg.vocab_gguf = None;
     cfg.store = Some(db.clone());
     cfg.session_id = "s-reviewer-opening".into();
+    // An unseen project is `automode` now, which needs an authorisation oracle: this fixture is
+    // about a reviewer's liveness, so it stands where it always did.
+    cfg.mode = letibot_tools::mode::Mode::ALWAYS_ASK;
     // The reviewer's clone goes in this fixture's own directory - a sweep refuses any directory
     // not named `CLONES_DIR`, and a test must never write into (or sweep) the box's own.
     cfg.review_clones = Some(dir.0.join(crate::mergequeue::review::CLONES_DIR));

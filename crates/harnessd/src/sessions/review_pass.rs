@@ -127,6 +127,9 @@ impl Fixture {
         // A temp store, never the daemon's own.
         cfg.store = Some(db.clone());
         cfg.session_id = "s-host".into();
+        // An unseen project is `automode` now, which needs an authorisation oracle: this fixture
+        // is about the review pass, so it stands where it always did.
+        cfg.mode = letibot_tools::mode::Mode::ALWAYS_ASK;
         cfg.http_retries = 0;
         // A directory of the fixture's own for the reviewers' clones - `sweep_clones` refuses
         // any other name, and a fixture must never sweep the box's own.

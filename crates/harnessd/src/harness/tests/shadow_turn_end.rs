@@ -79,6 +79,7 @@ fn a_session(tag: &str, reply: &'static str) -> (Harness, mpsc::Receiver<()>, Ar
     let mut cfg = Config::for_this_box(&dir);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.session_id = format!("s-shadow-{tag}");
+    at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     cfg.intent_prose = true;
     cfg.shadow = shadow::config::ShadowConfig::from_lines(
@@ -259,6 +260,7 @@ fn a_shadow_seat_refuses_a_prompt() {
     let mut cfg = Config::for_this_box(&dir);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.session_id = "s-watched-shadow".into();
+    at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     cfg.seat = crate::config::Seat::Shadow;
     let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
