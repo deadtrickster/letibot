@@ -292,6 +292,19 @@ impl App {
                  read mark. Closing one does not stop the turn.",
             );
         }
+        // The session's mode, read through the SAME function the permission card's `mode \`x\``
+        // line reads (`mode_current`), so a card and this screen cannot name two modes at once.
+        // Absent when the daemon has sent no rows yet, which is not a mode.
+        let mode = self.mode_current();
+        if !mode.trim().is_empty() {
+            row(
+                "mode",
+                mode,
+                "What this session is allowed to do now, from the daemon's own `mode` setting — \
+                 the row `/mode` writes and the one the permission card's `mode` line prints. \
+                 The `verbosity` row below is not this: it is what this HEAD draws.",
+            );
+        }
         // A stood-down auto-compaction is a state, not an event, so it sits beside `session` and
         // `head` rather than among the diagnostics: a person diagnosing a session that stopped
         // compacting needs this first. Absent means the guard has not fired, which is not drawn.
@@ -545,9 +558,10 @@ impl App {
             "verbosity",
             self.visibility.as_str(),
             "What reaches the transcript at the current filter — a SET of switches, and the \
-             profile is the name of one. `/verbosity` with nothing after it shows every \
-             profile and what each one gives you — conversation, read-edits, terse, normal, \
-             loud — and `/verbosity NAME` sets one; a switch moved off a profile reads as \
+             profile is the name of one. NOT the session's mode: that is the `mode` row above, \
+             which is the setting a permission card decides by. `/verbosity` with nothing after it \
+             shows every profile and what each one gives you — conversation, read-edits, terse, \
+             normal, loud — and `/verbosity NAME` sets one; a switch moved off a profile reads as \
              `custom …`. It used to sit on the composer's border, which was a row of \
              attention paid for ever for a fact read once.",
         );

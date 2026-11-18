@@ -17,6 +17,9 @@ use crate::view::{ViewAccess, ViewGrants};
 struct Cards {
     answer: &'static str,
     seen: Arc<Mutex<Vec<(String, String)>>>,
+    /// The ladder each card offered: a test reads what a person could have picked, not only that
+    /// a card went up.
+    ladders: Arc<Mutex<Vec<Vec<DecisionOption>>>>,
 }
 
 impl Cards {
@@ -24,7 +27,18 @@ impl Cards {
         Cards {
             answer,
             seen: Arc::new(Mutex::new(Vec::new())),
+            ladders: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// The option ids of the first card, in the order it drew them.
+    fn first_ladder(&self) -> Vec<String> {
+        self.ladders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .first()
+            .map(|l| l.iter().map(|o| o.id.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn count(&self) -> usize {
@@ -47,6 +61,10 @@ impl Adjudicator for Cards {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((req.summary.clone(), req.target.clone()));
+        self.ladders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(req.options.clone());
         AdjudicationDecision::selected(req, self.answer, "human:test", "because")
     }
 
@@ -352,6 +370,56 @@ fn a_write_the_view_refuses_says_which_of_the_two_it_was() {
         seen[0].0.contains("read-only") && seen[0].0.contains("/build/x"),
         "a write ask is not a read ask with a different path: {}",
         seen[0].0
+    );
+}
+
+/// A write refusal is a wider ask than the same path's read, which the session already holds: the
+/// card must not offer the rung that changes nothing, and the first option must grant the write.
+#[test]
+fn a_write_refusal_offers_the_write_and_never_a_read_only_rung() {
+    let view = Arc::new(ViewGrants::new());
+    let cards = Cards::new("grant_rw");
+    let mut g = gate(cards.clone(), &view, None);
+    assert_eq!(
+        g.grant_view(
+            Path::new("/home/dead/.gitconfig"),
+            "bash",
+            ViewAccess::Write
+        ),
+        ViewGrant::Granted { writable: true }
+    );
+    let ladder = cards.first_ladder();
+    assert!(
+        !ladder.iter().any(|id| id == "grant_ro"),
+        "a read-only rung on a write refusal is a button that changes nothing: {ladder:?}"
+    );
+    assert_eq!(
+        ladder.first().map(String::as_str),
+        Some("grant_rw"),
+        "Enter on an untouched write card has to grant the write: {ladder:?}"
+    );
+    assert_eq!(ladder.last().map(String::as_str), Some("deny"));
+}
+
+/// The read refusal keeps its read rung, first: that is the card an operator answers most often and
+/// the narrower grant is the one Enter should take.
+#[test]
+fn a_read_refusal_still_offers_the_read_rung_first() {
+    let view = Arc::new(ViewGrants::new());
+    let cards = Cards::new("grant_ro");
+    let mut g = gate(cards.clone(), &view, None);
+    assert_eq!(
+        g.grant_view(
+            Path::new("/home/dead/skills/full.md"),
+            "read",
+            ViewAccess::Read
+        ),
+        ViewGrant::Granted { writable: false }
+    );
+    assert_eq!(
+        cards.first_ladder(),
+        vec!["grant_ro", "grant_rw", "deny"],
+        "a read refusal keeps both grants, narrowest first"
     );
 }
 

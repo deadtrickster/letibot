@@ -1201,7 +1201,8 @@ option the request did not offer: once means once, so the answer settles the cal
 for. On a host with no boundary a call that runs project code
 offers neither standing rung, and the note says why (R98). Three other ladders are the same shape with
 their own nouns: `view_grant_options` (read it, read and write it, no - read-only first, where Enter
-lands), `memory_grant_options` (this once, up to this for the session, no) and `always_ask_options`
+lands; a WRITE refusal offers read-and-write first and no read-only rung at all, because the session
+already reads the path), `memory_grant_options` (this once, up to this for the session, no) and `always_ask_options`
 (allow this one, deny, deny and tell) - which has no standing rung at all, because an always-ask can be
 admitted by a human this turn but never turned into a grant.
 

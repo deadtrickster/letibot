@@ -1999,3 +1999,27 @@ fn no_surface_lets_the_wheel_through_to_the_conversation() {
         assert_eq!(a.scroll, 0, "{s:?} let the wheel reach the conversation");
     }
 }
+
+/// `/status` used to have no mode row at all, so the only word on it a person could read as "the
+/// mode" was the HEAD's verbosity profile — `read-edits` — while a permission card drawn at the same
+/// moment said `mode allow-all`. One reader for both: the card's `mode \`x\`` line and this row are
+/// `mode_current`.
+#[test]
+fn the_status_names_the_mode_the_permission_card_reads() {
+    let mut a = app();
+    a.apply(mode_settings("allow-all", MODES));
+    let want = a.mode_current();
+    assert_eq!(want, "allow-all", "the fixture's own mode row");
+    let status = a.status_lines(200).join("\n");
+    assert!(
+        status
+            .lines()
+            .any(|l| l.contains("mode") && l.contains(&want)),
+        "`/status` has no row naming the session's mode `{want}`: {status}"
+    );
+    // And the row that IS the head's own says so, so the two words cannot be read as one setting.
+    assert!(
+        status.contains("NOT the session's mode"),
+        "the verbosity row does not say it is not the mode: {status}"
+    );
+}
