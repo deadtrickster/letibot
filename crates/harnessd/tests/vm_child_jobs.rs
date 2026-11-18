@@ -721,7 +721,9 @@ fn a_vm_childs_turn_does_not_end_its_vm_while_its_job_runs() {
     let Some(_) = apparatus() else {
         return;
     };
-    let scene = Scene::new("vm-child-hold", 2);
+    // The job's own life has to outlast three turns - the call, the answer and the turn-back -
+    // because the turn-back only exists while the job runs; the wake is what then ends the wait.
+    let scene = Scene::new("vm-child-hold", 8);
     let sessions_cell = std::cell::RefCell::new(scene.open());
     let _drain = DrainOnDrop {
         sessions: &sessions_cell,
@@ -760,17 +762,38 @@ fn a_vm_childs_turn_does_not_end_its_vm_while_its_job_runs() {
         "the VM was brought down under the job the child left running: {calls:?}"
     );
 
+    // The turn-back comes first: the child's answer went up over a job still running, and the
+    // turn it owes is the one naming that job. It runs while the VM is up, which is the hold's
+    // own rule - a `Jobs` hold is over only when nothing runs and nothing is owed.
+    until(
+        &mut sessions,
+        &scene.registry,
+        "the child was turned back for the job it left running",
+        || scene.stub.child_turns() >= 3,
+    );
+    let turned_back = scene.stub.prompt(2).expect("the child's third turn");
+    assert!(
+        turned_back.contains("turn ended with 1 background job(s) it started still running")
+            && turned_back.contains(SLUG),
+        "the child's third turn is not the turn-back naming its running job: {turned_back}"
+    );
+    let up_during = scene.vm_calls(&child);
+    assert!(
+        !up_during.iter().any(|c| c.starts_with("down")),
+        "the VM came down while the job was still running: {up_during:?}"
+    );
+
     // And then the job ends, the child is woken with it, and only after that turn does the VM go.
     until(
         &mut sessions,
         &scene.registry,
         "the child was woken with its job's ending",
-        || scene.stub.child_turns() >= 3,
+        || scene.stub.child_turns() >= 4,
     );
-    let woken = scene.stub.prompt(2).expect("the child's third turn");
+    let woken = scene.stub.prompt(3).expect("the child's fourth turn");
     assert!(
         woken.contains("a job you backgrounded has ended"),
-        "the child's third turn was not woken by its job's ending: {woken}"
+        "the child's fourth turn was not woken by its job's ending: {woken}"
     );
     assert!(
         woken.contains(SLUG),
