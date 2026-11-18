@@ -540,6 +540,188 @@ pub fn confined_harness_with_gate(
     })
 }
 
+/// A session whose commands really RUN (a plain process-group tree, which needs no cgroup) while
+/// the view the runtime reasons about is one a real boundary measured. On a box whose `bwrap`
+/// cannot make a namespace there is no measured boundary to test against, and what such a test can
+/// still measure is everything the runtime decides ABOUT the view: which places a command could
+/// write, what a grant does to it, and which of a call's findings become a card. `wrap` returns no
+/// argv, so the boundary is described and not enforced - and a test over it must not read its
+/// success as proof that the boundary holds.
+pub fn carrying_view_harness(
+    gate: Box<dyn crate::runtime::Gate>,
+    view: impl FnOnce(&std::path::Path) -> crate::exec::confine::ViewSpec,
+) -> Harness {
+    let dir = TempDir::new();
+    let temp = dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| dir.path().to_path_buf());
+    // The project is a directory of its own under the fixture, so a test has somewhere beside it
+    // that the view does NOT hold - which is where a container's own writes land.
+    let root = temp.join("project");
+    fixture_tree(&root);
+    let view = view(&root);
+    let tree: Box<dyn crate::exec::ScopeTree> = Box::new(PlainScopes::over(temp.join("scopes")));
+    let host = Arc::new(
+        crate::exec::HostProcesses::with_tree(&root, tree)
+            .with_confinement(Box::new(CarriedView::new(view))),
+    );
+    let backend = crate::backend::HostBackend::executable_with(&root, Arc::clone(&host))
+        .expect("fixture root");
+    let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(gate);
+    Harness {
+        rt,
+        sink: RecordingToolSink::new(),
+        processes: Some(host),
+        mount: Default::default(),
+        promote: None,
+        interrupt: None,
+        _dir: dir,
+        _scratch: None,
+        _notes_global: TempDir::new(),
+        _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _notes_repo: TempDir::new(),
+        _notes_project: std::path::PathBuf::new(),
+        _changelog: std::path::PathBuf::new(),
+        _changelog_dir: TempDir::new(),
+        _host_config: FixturePlatform::new(),
+    }
+}
+
+/// The carried view [`carrying_view_harness`] hands its host: a boundary record, and no argv.
+struct CarriedView {
+    boundary: crate::exec::Boundary,
+}
+
+impl CarriedView {
+    fn new(view: crate::exec::confine::ViewSpec) -> CarriedView {
+        CarriedView {
+            boundary: crate::exec::Boundary::namespaces(
+                "a carried view: described, not enforced",
+                view,
+                crate::exec::confine::Egress::Denied,
+                Default::default(),
+                Default::default(),
+            ),
+        }
+    }
+}
+
+impl crate::exec::Confinement for CarriedView {
+    fn describe(&self) -> String {
+        "a CARRIED view: every decision is made about it, and no namespace enforces it".into()
+    }
+
+    fn boundary(&self) -> Option<&crate::exec::Boundary> {
+        Some(&self.boundary)
+    }
+
+    fn wrap(
+        &self,
+        _plan: &crate::exec::ConfinePlan<'_>,
+    ) -> Result<Vec<String>, crate::exec::ExecError> {
+        Ok(Vec::new())
+    }
+}
+
+/// A scope tree that is directories and a `cgroup.procs` a test writes into: what a kernel would
+/// answer, on a box with no cgroup v2 subtree to delegate. A command started under it really runs;
+/// what it does not get is a kernel's reaping, so a test over it ends its own processes.
+struct PlainScopes {
+    root: std::path::PathBuf,
+}
+
+impl PlainScopes {
+    fn over(root: std::path::PathBuf) -> PlainScopes {
+        let _ = std::fs::create_dir_all(&root);
+        PlainScopes { root }
+    }
+}
+
+impl crate::exec::ScopeTree for PlainScopes {
+    fn describe(&self) -> String {
+        format!("plain directories under {}", self.root.display())
+    }
+
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.root.clone())
+    }
+
+    fn open(
+        &self,
+        kind: crate::exec::ScopeKind,
+        name: &str,
+        parent: Option<&crate::exec::ScopeId>,
+    ) -> Result<crate::exec::ScopeId, crate::exec::ExecError> {
+        use crate::exec::ExecError;
+        let base = parent
+            .map(|p| p.path.clone())
+            .unwrap_or_else(|| self.root.clone());
+        let path = base.join(format!("{}.{name}", kind.as_str()));
+        std::fs::create_dir_all(&path)
+            .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
+        for file in ["cgroup.procs", "pids.current"] {
+            std::fs::write(path.join(file), b"")
+                .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
+        }
+        Ok(crate::exec::ScopeId {
+            kind,
+            name: name.to_string(),
+            path,
+        })
+    }
+
+    /// What the kernel would answer: the pids the join script wrote, less the ones that have gone.
+    fn members(&self, scope: &crate::exec::ScopeId) -> Result<Vec<u32>, crate::exec::ExecError> {
+        use crate::exec::ExecError;
+        let body = std::fs::read_to_string(scope.path.join("cgroup.procs"))
+            .map_err(|e| ExecError::NoSuchScope(format!("{}: {e}", scope.path.display())))?;
+        Ok(body
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .filter(|pid| crate::exec::procs::read(*pid).is_some())
+            .collect())
+    }
+
+    /// Nothing is signalled here, on purpose: a fixture that killed a process would kill the test
+    /// that started it. A test stands its own pid in for whatever a command left behind.
+    fn end(&self, scope: &crate::exec::ScopeId) -> crate::exec::Reaping {
+        use crate::exec::Reaped;
+        let observed = self
+            .members(scope)
+            .unwrap_or_default()
+            .into_iter()
+            .map(Reaped::observe)
+            .collect();
+        let removed = std::fs::remove_dir_all(&scope.path).is_ok();
+        crate::exec::Reaping {
+            scope: scope.clone(),
+            at: std::time::SystemTime::now(),
+            mechanism: "nothing to kill",
+            observed,
+            survivors: Vec::new(),
+            waited: std::time::Duration::ZERO,
+            removed,
+            note: None,
+        }
+    }
+
+    fn migrate(
+        &self,
+        _from: &crate::exec::ScopeId,
+        _to: &crate::exec::ScopeId,
+    ) -> Result<crate::exec::Migration, crate::exec::ExecError> {
+        Err(crate::exec::ExecError::Spawn(
+            "this tree cannot move a process".into(),
+        ))
+    }
+
+    fn list(&self) -> Vec<crate::exec::ScopeId> {
+        Vec::new()
+    }
+}
+
 /// A session with the network tools registered, over whatever is behind them. The gate allows,
 /// because what these tests are about is the second gate: the backend seam. A session with no
 /// adjudicator refuses at the first gate and never reaches the tool.

@@ -127,6 +127,14 @@ pub trait ExecBackend: Send + Sync {
         ))
     }
 
+    /// The places a command here could write, at their own host paths: what this session's view
+    /// holds read-write. Read by [`crate::created`] to tell a tree the command made itself from one
+    /// that was already there. Empty for a backend whose writes are not on this host's filesystem -
+    /// a VM's copy and another machine's checkout are the child's own tree there.
+    fn writable_places(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
     /// Re-decide the network a command gets, after the point moved. The argv was built at probe
     /// time, so a session that widened keeps the empty namespace it opened with and one that
     /// narrowed keeps the host's network. `Ok(None)` where this backend's network is not the
@@ -641,6 +649,31 @@ impl HostBackend {
         })
     }
 
+    /// The places this session's commands could write, out of the view that runs: the project, a
+    /// home of its own, its `/tmp`, and every read-write grant - "a place the command could write",
+    /// which is what [`crate::created`] watches for a tree the command made itself. A wide view
+    /// holds the machine and a path outside it is nobody's to refuse, so its only places are the
+    /// scratches a session was handed.
+    fn writable_places_impl(&self) -> Vec<PathBuf> {
+        let Some(view) = self.processes.as_ref().and_then(|h| h.current_view()) else {
+            return Vec::new();
+        };
+        let mut out = vec![view.project.clone()];
+        if let crate::exec::confine::HomeView::Dir(h) = &view.home {
+            out.push(h.clone());
+        }
+        if let crate::exec::confine::TmpView::Session(t) = &view.tmp {
+            out.push(t.clone());
+        }
+        out.extend(view.grants.iter().filter_map(|g| match g {
+            crate::exec::confine::Grant::ReadWrite { path, .. } => Some(path.clone()),
+            _ => None,
+        }));
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Bind a path into this session's view, now, and re-probe so the boundary described is the
     /// boundary that runs: the argv is built once, at probe time. Commands already running keep
     /// the namespace they started in. Refuses on a backend with no view.
@@ -820,6 +853,10 @@ impl ExecBackend for HostBackend {
 
     fn revoke_from_view(&self, path: &Path) -> Result<String, BackendError> {
         self.reshape_view(|view| view.revoking(path))
+    }
+
+    fn writable_places(&self) -> Vec<PathBuf> {
+        self.writable_places_impl()
     }
 
     /// Runs only on a backend built by [`HostBackend::executable`], and even there it runs

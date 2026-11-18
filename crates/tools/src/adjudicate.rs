@@ -3112,6 +3112,24 @@ impl Gate for AdjudicatedGate {
         self.view_root.clone()
     }
 
+    /// A path this session's own command created. Recorded like a granted path, so a later ask
+    /// about it - from this session or a sibling - raises no card - and kept in the ledger under
+    /// the session tree's scope, which is what makes it the children's too.
+    fn own_created(&mut self, path: &std::path::Path) {
+        if let Some(view) = &self.view {
+            view.record(path, true);
+        }
+        self.keep_grant(
+            crate::grant_ledger::Kept::View {
+                path: crate::view::key(path),
+                writable: true,
+            },
+            Some(crate::grant_ledger::GrantAt::Session),
+            "a place this session's own command created, so it is the session's work and not a widening: nothing was asked for, and nothing outside it moved",
+            "the rule, not a person",
+        );
+    }
+
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
         // A grant revoked in the ledger leaves the record here, so it is unbound below.
         self.refresh_grants();
