@@ -134,7 +134,10 @@ fn the_ladder_has_no_standing_answer() {
         "the ladder is {:?}",
         req.options
     );
-    assert!(req.options_note.is_some(), "the card says why a rung is missing");
+    assert!(
+        req.options_note.is_some(),
+        "the card says why a rung is missing"
+    );
     assert!(req.on_timeout == OnTimeout::Deny);
     assert_eq!(req.preview.len(), 0, "show's card draws no diff");
     // A proposal's card carries the diff itself, so whoever answers reads the change rather
@@ -143,7 +146,10 @@ fn the_ladder_has_no_standing_answer() {
         Value::Object(o) => {
             let diff = o.get("diff").and_then(Value::as_str).unwrap_or_default();
             assert!(diff.contains("+++ b/providers.toml"), "{diff}");
-            assert_eq!(o.get("why").and_then(Value::as_str), Some("the guard answers too much"));
+            assert_eq!(
+                o.get("why").and_then(Value::as_str),
+                Some("the guard answers too much")
+            );
         }
         other => panic!("{other}"),
     }
@@ -157,6 +163,16 @@ fn with_nobody_to_ask_nothing_is_applied() {
         ConfigAnswer::NotAsked(why) => assert!(!why.is_empty()),
         other => panic!("{other:?}"),
     }
+}
+
+/// A look a plugin layer declared runs on the thread that polls the watch, so it may not put up a
+/// card: nobody is asked and nothing is applied.
+#[test]
+fn a_look_that_may_not_ask_puts_up_no_card() {
+    let (mut g, seen) = gate("human:dead", "allow_once");
+    g.unasked = true;
+    assert!(matches!(g.ask_config(&ask()), ConfigAnswer::NotAsked(_)));
+    assert_eq!(seen.load(Ordering::SeqCst), 0, "nobody was asked");
 }
 
 /// The door is on `Gate` so a runtime with no gate behind it answers `NotAsked` rather than

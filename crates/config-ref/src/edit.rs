@@ -87,10 +87,7 @@ fn drop_emptied(doc: &mut toml_edit::DocumentMut, removed: &[&str]) {
     }
 }
 
-fn table_at<'d>(
-    doc: &'d toml_edit::DocumentMut,
-    path: &[&str],
-) -> Option<&'d toml_edit::Table> {
+fn table_at<'d>(doc: &'d toml_edit::DocumentMut, path: &[&str]) -> Option<&'d toml_edit::Table> {
     let mut table = doc.as_table();
     for seg in path {
         table = table.get(seg)?.as_table()?;
@@ -195,7 +192,10 @@ foreground_seconds = 60
     #[test]
     fn a_set_keeps_the_comments_and_the_order() {
         let out = apply(HAND, &edits(&[("shadow.answer_reads", "true")], &[])).unwrap();
-        assert!(out.starts_with("# the operator's own note\n[shadow]\n"), "{out}");
+        assert!(
+            out.starts_with("# the operator's own note\n[shadow]\n"),
+            "{out}"
+        );
         assert!(
             out.contains("enabled = [\"turn_end\"]   # only the reminder"),
             "{out}"
@@ -240,7 +240,10 @@ foreground_seconds = 60
         let e = apply(HAND, &edits(&[("shadow..mode", "1")], &[])).unwrap_err();
         assert!(e.contains("not a key path"), "{e}");
         let e = apply(HAND, &edits(&[], &["shadow.nope"])).unwrap_err();
-        assert_eq!(e, "`shadow.nope` is not in the file, so there is nothing to remove");
+        assert_eq!(
+            e,
+            "`shadow.nope` is not in the file, so there is nothing to remove"
+        );
         let e = apply("not toml = = =", &edits(&[], &[])).unwrap_err();
         assert!(!e.is_empty());
     }

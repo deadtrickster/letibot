@@ -17,3 +17,11 @@ file (`FILE.bak` first). `head.toml` gets it on every save.
 - [plugin-trust.json](plugin-trust.json.md)
 - [modes.tsv](modes.tsv.md)
 - [commands/*.md](commands.md) (Markdown slash commands)
+
+## Changing one
+
+A session does not edit these files: `~/.config/letibot` is masked inside a session so a model
+cannot grant itself anything. The `config` tool is the door. `config explain` answers what a key
+does from these pages, `config show {file}` prints one with every credential value redacted, and
+`config propose {file, edit, why}` puts a diff on a card that **only the operator's own answer
+applies**. The result says what a restart means for that file, and each page carries that line.

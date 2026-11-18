@@ -67,7 +67,9 @@ fn redact_toml(text: &str) -> Result<Redacted, String> {
 fn walk(table: &mut toml_edit::Table, all: bool, count: &mut usize) {
     for (key, item) in table.iter_mut() {
         match item {
-            toml_edit::Item::Value(v) => redact_value(v, all || lookup::is_credential(key.get()), count),
+            toml_edit::Item::Value(v) => {
+                redact_value(v, all || lookup::is_credential(key.get()), count)
+            }
             toml_edit::Item::Table(t) => walk(t, all || named_by_credentials(key.get()), count),
             toml_edit::Item::ArrayOfTables(a) => {
                 let all = all || named_by_credentials(key.get());

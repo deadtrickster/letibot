@@ -8,7 +8,7 @@ default.
 
 ## The seat
 
-`Role::leticode` (`crates/tools/src/runtime.rs`) seats 38 tools, and `max_tools` is 39 - the list's
+`Role::leticode` (`crates/tools/src/runtime.rs`) seats 41 tools, and `max_tools` is 41 - the list's
 own count and nothing like the crate's default ceiling, with the one spare the session's own verbs
 and the optional web tools are added under. In groups: **files and search** (`read`, `write`,
 `edit`, `grep`, `glob`, `notes`); **exec and its follow-ups** (`bash` with
@@ -17,7 +17,8 @@ and the optional web tools are added under. In groups: **files and search** (`re
 which has no deadline of its own, and `pkill` finds by string and kills by (pid, start time) only,
 never itself); **delegation** (`task`, `task_result`, `task_message`,
 `task_resume`, `task_start`, `hosts`, `fanout`, `scenario`); **the box and its work** (`room`,
-`queue`, `merge_gate`, `decisions`, `harness`, `host_changelog`, `host_config`, `transcript`,
+`queue`, `merge_gate`, `decisions`, `harness`, `host_changelog`, `host_config`, `config`,
+`transcript`,
 `digest`, `plugin`, `plugin_hooks`); and **asking the person** (`ask_user_question`, `todo_write`,
 `skill`, `lsp`).
 

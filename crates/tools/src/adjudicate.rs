@@ -3293,6 +3293,15 @@ impl Gate for AdjudicatedGate {
                 "no adjudicator is attached, so there is no operator to ask".into(),
             );
         }
+        // A plugin layer's look runs on the thread that polls the watch, where a card would park
+        // the watch. Nobody decided, so this is `NotAsked` and not a refusal.
+        if self.unasked {
+            return ConfigAnswer::NotAsked(
+                "this is a look a plugin layer declared, adjudicated without asking: nothing is \
+                 put to anybody from here"
+                    .into(),
+            );
+        }
         let file = ask.file().to_string();
         let path = format!("$XDG_CONFIG_HOME/letibot/{file}");
         let (target, class, facts, arguments, preview, claim) = match ask {
@@ -3312,10 +3321,7 @@ impl Gate for AdjudicatedGate {
                 None,
             ),
             ConfigAsk::Propose {
-                diff,
-                why,
-                preview,
-                ..
+                diff, why, preview, ..
             } => (
                 file.clone(),
                 ActionClass::host(Access::Write, true, false),

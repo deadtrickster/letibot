@@ -46,12 +46,24 @@ fn a_proposal_keeps_the_file_and_renders_a_diff() {
     std::fs::write(dir.join("providers.toml"), PROVIDERS).unwrap();
     let desk = SessionConfig::at(&dir);
     let p = desk
-        .propose("providers.toml", &edits(&[("shadow.answer_reads", "true")], &[]))
+        .propose(
+            "providers.toml",
+            &edits(&[("shadow.answer_reads", "true")], &[]),
+        )
         .expect("a proposal");
-    assert!(p.text.starts_with("# mine, hand-edited\n[default]\n"), "{}", p.text);
+    assert!(
+        p.text.starts_with("# mine, hand-edited\n[default]\n"),
+        "{}",
+        p.text
+    );
     assert!(p.text.contains("# the one that works"), "{}", p.text);
     assert!(p.text.contains("answer_reads = true"), "{}", p.text);
-    assert!(p.diff.starts_with("--- a/providers.toml\n+++ b/providers.toml\n"), "{}", p.diff);
+    assert!(
+        p.diff
+            .starts_with("--- a/providers.toml\n+++ b/providers.toml\n"),
+        "{}",
+        p.diff
+    );
     assert!(p.diff.contains("-answer_reads = false"), "{}", p.diff);
     assert!(p.diff.contains("+answer_reads = true"), "{}", p.diff);
     assert!(p.check.contains("providers.toml reader"), "{}", p.check);
@@ -59,19 +71,29 @@ fn a_proposal_keeps_the_file_and_renders_a_diff() {
     assert_eq!(p.preview.len(), 1);
     assert!(p.preview[0].after.contains("answer_reads = true"));
     // And the file itself has not changed: a proposal writes nothing.
-    assert_eq!(std::fs::read_to_string(dir.join("providers.toml")).unwrap(), PROVIDERS);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("providers.toml")).unwrap(),
+        PROVIDERS
+    );
 }
 
 /// A result the file's own reader refuses is refused here, in the daemon's words, before any card.
 #[test]
 fn a_result_the_reader_refuses_is_refused_with_its_words() {
     let dir = temp("refuse");
-    std::fs::write(dir.join("leticode.toml"), "[exec]\nforeground_seconds = 60\n").unwrap();
+    std::fs::write(
+        dir.join("leticode.toml"),
+        "[exec]\nforeground_seconds = 60\n",
+    )
+    .unwrap();
     let desk = SessionConfig::at(&dir);
     // `foreground_seconds` must be an integer, and a string is what the reader refuses by naming
     // the key and its type — the daemon's own sentence, not a second one written here.
     let e = desk
-        .propose("leticode.toml", &edits(&[("exec.foreground_seconds", "\"sixty\"")], &[]))
+        .propose(
+            "leticode.toml",
+            &edits(&[("exec.foreground_seconds", "\"sixty\"")], &[]),
+        )
         .expect_err("the reader refuses a string here");
     assert!(e.contains("leticode.toml"), "{e}");
     assert!(e.contains("foreground_seconds"), "the reader's words: {e}");
@@ -91,14 +113,20 @@ fn a_write_keeps_the_mode_and_leaves_no_temp_file() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let desk = SessionConfig::at(&dir);
     let p = desk
-        .propose("providers.toml", &edits(&[("shadow.answer_reads", "true")], &[]))
+        .propose(
+            "providers.toml",
+            &edits(&[("shadow.answer_reads", "true")], &[]),
+        )
         .unwrap();
     let w = desk.write("providers.toml", &p.before, &p.text).unwrap();
     assert_eq!(w.mode, Some(0o600));
     assert_eq!(w.bytes, p.text.len());
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
-    assert!(!dir.join(".providers.toml.tmp").exists(), "the temp file is gone");
+    assert!(
+        !dir.join(".providers.toml.tmp").exists(),
+        "the temp file is gone"
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), p.text);
     // A file that moved under the card is not overwritten by an answer about the old bytes.
     let e = desk
@@ -113,12 +141,19 @@ fn a_new_file_is_written_at_0600() {
     let dir = temp("new");
     let desk = SessionConfig::at(&dir);
     let p = desk
-        .propose("providers.toml", &edits(&[("default.provider", "\"glm\"")], &[]))
+        .propose(
+            "providers.toml",
+            &edits(&[("default.provider", "\"glm\"")], &[]),
+        )
         .expect("a new file's proposal");
     assert!(p.preview[0].created);
     let w = desk.write("providers.toml", &p.before, &p.text).unwrap();
     assert_eq!(w.mode, Some(0o600));
-    let mode = std::fs::metadata(dir.join("providers.toml")).unwrap().permissions().mode() & 0o777;
+    let mode = std::fs::metadata(dir.join("providers.toml"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(mode, 0o600);
 }
 
@@ -151,9 +186,13 @@ fn show_redacts_and_says_what_it_took_out() {
 fn the_files_this_tool_does_not_open_are_refused_by_name() {
     let dir = temp("names");
     let desk = SessionConfig::at(&dir);
-    let e = desk.show("theme.toml").expect_err("a palette is not a file");
+    let e = desk
+        .show("theme.toml")
+        .expect_err("a palette is not a file");
     assert!(e.contains("themes/NAME.toml"), "{e}");
-    let e = desk.show("keys/lab2x1").expect_err("a key is not a config file");
+    let e = desk
+        .show("keys/lab2x1")
+        .expect_err("a key is not a config file");
     assert!(e.contains("is not one of letibot's config files"), "{e}");
     let e = desk
         .propose("permission.json", &edits(&[("bash.ls", "allow")], &[]))
@@ -181,6 +220,8 @@ fn explain_reads_the_reference_and_not_a_file() {
     let said = desk.explain(Some("leticode.toml"), None).unwrap();
     assert!(said.contains("leticode.toml - "), "{said}");
     assert!(said.contains("main_model"), "{said}");
-    let e = desk.explain(None, Some("no_such_key_anywhere")).expect_err("no such key");
+    let e = desk
+        .explain(None, Some("no_such_key_anywhere"))
+        .expect_err("no such key");
     assert!(e.contains("no key of"), "{e}");
 }
