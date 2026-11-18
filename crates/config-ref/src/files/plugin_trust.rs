@@ -7,6 +7,7 @@ pub const PLUGIN_TRUST: File = File {
     location: "$LETIBOT_PLUGIN_TRUST (empty = memory only), else $XDG_CONFIG_HOME/letibot/plugin-trust.json, else ~/.config/letibot/plugin-trust.json",
     about: "the plugin trust book: which layer directories run without asking, at which hashes",
     writer: "letibot, on /plugin trust, /plugin untrust, a kept rebuild and every tool write of a plugin file; merged under plugin-trust.lock. Unknown keys are dropped on save",
+    reload: "the daemon and the head read it when they start, and a `/plugin trust` writes and applies it at once",
     tables: &[
         Table {
             path: "pins[]",

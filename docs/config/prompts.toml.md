@@ -6,6 +6,8 @@ Location: beside providers.toml: $XDG_CONFIG_HOME/letibot/prompts.toml, else ~/.
 
 system-prompt overrides: replace a built-in section or append text, for every model or one
 
+A change takes effect: a session reads it when it opens, so the next session has it
+
 ## `[base]`
 
 Every model. An unknown table or section name fails the file; the built-in prompt is used.

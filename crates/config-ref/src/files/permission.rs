@@ -7,6 +7,7 @@ pub const PERMISSION: File = File {
     location: "$XDG_CONFIG_HOME/letibot/permission.json, else ~/.config/letibot/permission.json; $LETIBOT_PERMISSION (JSON) is appended",
     about: "what never asks: per tool, a pattern over its path or one simple bash command, to allow, deny or ask. The last matching rule wins; no match asks",
     writer: "the daemon: installs config/permission.json once when absent, and appends each \"Always allow\" (whole file re-serialised)",
+    reload: "read when a session opens, so a running session keeps the rules it opened with",
     tables: &[Table {
         path: "",
         note: "Patterns: * any run (including /), ? one character; a trailing ` *` makes the space optional. A bad entry fails the whole file.",

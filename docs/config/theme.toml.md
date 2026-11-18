@@ -6,6 +6,8 @@ Location: themes/NAME.toml beside head.toml, chosen by head.toml `theme = "NAME"
 
 a head palette: one `role = "look"` line per role. Read by rano::theme; a bad line is reported and skipped
 
+A change takes effect: the head reads it when it starts, and when `theme` names another
+
 ## `top level`
 
 A look is words: fg:N / bg:N (N 0-15, #rrggbb, or cube:0-255), bold, dim, italic, underline, reverse; or plain. head.toml color.ROLE applies on top.

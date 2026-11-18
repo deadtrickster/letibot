@@ -8,6 +8,8 @@ the plugin trust book: which layer directories run without asking, at which hash
 
 Written by: letibot, on /plugin trust, /plugin untrust, a kept rebuild and every tool write of a plugin file; merged under plugin-trust.lock. Unknown keys are dropped on save
 
+A change takes effect: the daemon and the head read it when they start, and a `/plugin trust` writes and applies it at once
+
 ## `[pins[]]`
 
 A layer runs freely when its module and manifest hashes match an in-force pin for its dir.

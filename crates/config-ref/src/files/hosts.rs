@@ -7,6 +7,7 @@ pub const HOSTS: File = File {
     location: "$LETIBOT_HOSTS, else $XDG_CONFIG_HOME/letibot/hosts.toml, else ~/.config/letibot/hosts.toml",
     about: "machines letibot may place sessions, children and gates on over ssh (docs/remote-hosts.md)",
     writer: "",
+    reload: "read when a command needs a host, so nothing has to restart",
     tables: &[
         Table {
             path: "host.<name>",

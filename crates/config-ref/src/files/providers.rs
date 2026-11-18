@@ -7,6 +7,7 @@ pub const PROVIDERS: File = File {
     location: "$XDG_CONFIG_HOME/letibot/providers.toml, else ~/.config/letibot/providers.toml",
     about: "API keys, provider doors, per-model sampling and fleet models, prices, and box-wide limits",
     writer: "the daemon, from /models --key, /default-model and the first-turn key prompt: it rewrites only [default] or [NAME], mode 0600",
+    reload: "a key or a door is read when a session opens and when a key is resolved; the daemon's own model is chosen at start, so a change there needs a daemon restart",
     tables: &[
         Table {
             path: "default",

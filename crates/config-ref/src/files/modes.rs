@@ -7,6 +7,7 @@ pub const MODES: File = File {
     location: "$XDG_CONFIG_HOME/letibot/modes.tsv, else ~/.config/letibot/modes.tsv",
     about: "legacy: where each project sits. Imported once into the session store; later edits are not read. `/mode` changes the store",
     writer: "",
+    reload: "nothing: it was imported once into the store, and `/mode` writes the store now",
     tables: &[Table {
         path: "",
         note: "One TAB-separated row per project root; `#` lines are comments. The longest matching ancestor wins; a root with no row is always-ask.",

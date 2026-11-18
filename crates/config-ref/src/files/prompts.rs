@@ -7,6 +7,7 @@ pub const PROMPTS: File = File {
     location: "beside providers.toml: $XDG_CONFIG_HOME/letibot/prompts.toml, else ~/.config/letibot/prompts.toml",
     about: "system-prompt overrides: replace a built-in section or append text, for every model or one",
     writer: "",
+    reload: "a session reads it when it opens, so the next session has it",
     tables: &[
         Table {
             path: "base",

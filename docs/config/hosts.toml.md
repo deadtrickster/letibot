@@ -6,6 +6,8 @@ Location: $LETIBOT_HOSTS, else $XDG_CONFIG_HOME/letibot/hosts.toml, else ~/.conf
 
 machines letibot may place sessions, children and gates on over ssh (docs/remote-hosts.md)
 
+A change takes effect: read when a command needs a host, so nothing has to restart
+
 ## `[host.<name>]`
 
 NAME is what --host and `host:NAME` take. Unknown keys and a key stated twice fail the whole file. Values are one line.
