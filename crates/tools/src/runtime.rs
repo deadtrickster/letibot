@@ -1997,9 +1997,11 @@ impl ToolRuntime {
 
     /// The places this call could write, as they stand now, for [`crate::created`]: the view's
     /// read-write roots, every bind-mount source the command hands a container, and nothing when
-    /// the session has no writable place on this host to watch. `None` is *nothing to watch*, so a
-    /// call that could not create anything pays one comparison.
+    /// the session has no view to widen. `None` is *nothing to watch*, so a call that could not
+    /// create anything pays one comparison - and a session with NO boundary is `None` too: what its
+    /// commands create is already reachable, and a grant would be a note about nothing.
     fn created_watch(&self, args: &Value) -> Option<crate::created::Created> {
+        self.backend.boundary()?;
         let mut places = self.backend.writable_places();
         if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
             places.extend(crate::created::bind_sources(command));
