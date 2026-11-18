@@ -4,6 +4,7 @@
 
 pub mod ask;
 pub mod boundary;
+pub mod config_dir;
 pub mod confine;
 pub mod console;
 #[cfg(target_os = "macos")]

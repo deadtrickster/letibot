@@ -354,6 +354,71 @@ fn the_masked_store_mounts_its_data_read_only_and_covers_its_secrets() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The masked config directory keeps the one public file readable, and a file the operator
+/// granted inside it, and nothing else: `keys/` stays under the empty tmpfs unless that very file
+/// was granted. This is what a session running `ssh` needs — `ssh` opens the host keys before it
+/// authenticates, so a view with the identity file and no `known_hosts` refuses the connection at
+/// the host-key check with `Operation not permitted` and never reads the key.
+#[test]
+fn the_masked_config_dir_mounts_known_hosts_and_a_granted_key_and_denies_the_rest() {
+    let dir = std::env::temp_dir().join(format!("letibot-config-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    let config = home.join(".config/letibot");
+    let key = config.join("keys/lab2x1");
+    std::fs::create_dir_all(config.join("keys")).expect("a fake config dir");
+    std::fs::create_dir_all(dir.join("project")).expect("a project");
+    for f in [config.join("known_hosts"), key.clone()] {
+        std::fs::write(&f, "").expect("a config file");
+    }
+    let argv = |view: &ViewSpec| {
+        build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        )
+        .join(" ")
+    };
+    let granted = ViewSpec::project_only(dir.join("project"))
+        .with_home(HomeView::Dir(home.clone()))
+        .wide()
+        .masking([config.clone()])
+        .granting(Grant::ReadOnly {
+            path: key.clone(),
+            why: "granted on a card".into(),
+        });
+    let joined = argv(&granted);
+    let c = config.display().to_string();
+    let known = format!("--ro-bind-try {c}/known_hosts {c}/known_hosts");
+    let identity = format!("--ro-bind-try {c}/keys/lab2x1 {c}/keys/lab2x1");
+    let remount = format!("--remount-ro {c}");
+    let at = |needle: &str| {
+        joined
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {joined}"))
+    };
+    assert!(at(&format!("--tmpfs {c} ")) < at(&known), "{joined}");
+    assert!(at(&known) < at(&remount), "{joined}");
+    assert!(at(&identity) < at(&remount), "{joined}");
+
+    // The inverse: with no grant, the key is not mounted at all and only `known_hosts` is. A
+    // session that holds the public file and not the identity file fails on the key, which is the
+    // secret half.
+    let bare = ViewSpec::project_only(dir.join("project"))
+        .with_home(HomeView::Dir(home))
+        .wide()
+        .masking([config]);
+    let joined = argv(&bare);
+    assert!(joined.contains(&known), "{joined}");
+    assert!(!joined.contains("keys/lab2x1"), "{joined}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// One list, two renderings: the Linux seat's masks are the paths the macOS profile denies,
 /// over the same home, so a store added to one cannot be missing from the other.
 #[test]
