@@ -1151,6 +1151,49 @@ pub struct HostProcesses {
 /// Distinguishes the scopes two sessions in one process open.
 static SCOPE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// How long to wait before looking at the join again. A millisecond is a busy loop that adds to the
+/// load which is already delaying the wrapper, so the first 50 ms ask cheaply and then back off.
+fn join_pause(waited: Duration) -> Duration {
+    if waited < Duration::from_millis(50) {
+        Duration::from_millis(1)
+    } else if waited < Duration::from_millis(250) {
+        Duration::from_millis(10)
+    } else {
+        Duration::from_millis(50)
+    }
+}
+
+/// The box's load, as the join's refusal words it (`load 140 on 32 cores`): an operator reading a
+/// failed command needs to see that the machine was saturated rather than the command wedged.
+fn load_words() -> Option<String> {
+    let said = std::fs::read_to_string("/proc/loadavg").ok()?;
+    let cores = std::thread::available_parallelism().map_or(0, |n| n.get());
+    load_of(&said, cores)
+}
+
+/// [`load_words`] over a `/proc/loadavg` a test can write. The first field is the one-minute
+/// average; it is rounded to a whole number because that is the figure a person quotes.
+fn load_of(loadavg: &str, cores: usize) -> Option<String> {
+    let load: f64 = loadavg.split_whitespace().next()?.parse().ok()?;
+    Some(match cores {
+        0 => format!("load {load:.0}"),
+        n => format!("load {load:.0} on {n} cores"),
+    })
+}
+
+/// Where a process never appeared in its cgroup: killed, as an orphan must be, and why - the load
+/// when this box could read it, so a saturated machine is not read as a broken harness.
+fn not_joined_said(pid: u32, waited: Duration, load: Option<&str>) -> String {
+    let and_why = match load {
+        Some(load) => format!(" ({load})"),
+        None => String::new(),
+    };
+    format!(
+        "pid {pid} started but was still not a member of its cgroup after {waited:?}{and_why}; \
+         it was killed rather than left running outside any scope"
+    )
+}
+
 fn unique(prefix: &str) -> String {
     format!(
         "{prefix}{}",
@@ -1209,6 +1252,11 @@ pub const KEPT_FINISHED_JOBS: usize = 32;
 /// How long a finished job is kept whatever the window says. A watcher polls its settlement every
 /// five seconds, and a row that went before the poll is a completion nobody was told about.
 pub const FINISHED_JOB_GRACE: Duration = Duration::from_secs(120);
+
+/// How long a spawn waits for its process to appear in its cgroup before killing it. Thirty seconds
+/// because a saturated box schedules the wrapper late: at five, a gate that took a 32-core box to
+/// load 140 failed every command on it with "was still not a member of its cgroup".
+pub const JOIN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// A job this host did not start: a restarted daemon's record of one, or a peer's, as this layer
 /// needs it. See [`HostProcesses::adopt`] and [`hand_over`].
@@ -1491,7 +1539,7 @@ impl HostProcesses {
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
-            join_deadline: Duration::from_secs(5),
+            join_deadline: JOIN_DEADLINE,
             scratch: Mutex::new(None),
             shell: vec!["/bin/sh".into(), "-c".into()],
             console_shell: super::console::shell(),
@@ -1577,7 +1625,7 @@ impl HostProcesses {
         self
     }
 
-    /// A test on a loaded box raises this so a slow join script is not read as an orphan.
+    /// Raise it for a machine that is habitually busier than [`JOIN_DEADLINE`] allows for.
     pub fn with_join_deadline(mut self, deadline: Duration) -> Self {
         self.join_deadline = deadline;
         self
@@ -2596,7 +2644,8 @@ impl ProcessHost for HostProcesses {
         // Do not return until the process is IN its cgroup, or is finished. Without it, a
         // background run followed by `job_kill` reads an empty cgroup and kills nothing. The loop
         // ends on either half because a fast command can finish before it is ever a member.
-        let deadline = Instant::now() + self.join_deadline;
+        let began = Instant::now();
+        let deadline = began + self.join_deadline;
         let joined = loop {
             if self
                 .tree
@@ -2612,7 +2661,7 @@ impl ProcessHost for HostProcesses {
             if Instant::now() >= deadline {
                 break false;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(join_pause(began.elapsed()));
         };
         if !joined {
             // A live process that is not in its scope is the orphan this substrate exists to
@@ -2625,10 +2674,10 @@ impl ProcessHost for HostProcesses {
             // The wrapper may have written its token before it was killed: a job that never joined
             // is still a job whose evidence file must not outlive it.
             let _ = std::fs::remove_file(&token_path);
-            return Err(ExecError::Spawn(format!(
-                "pid {pid} started but was still not a member of its cgroup after {:?}; \
-                 it was killed rather than left running outside any scope",
-                self.join_deadline
+            return Err(ExecError::Spawn(not_joined_said(
+                pid,
+                self.join_deadline,
+                load_words().as_deref(),
             )));
         }
 

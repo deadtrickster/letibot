@@ -11,6 +11,52 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
 
 use super::*;
 
+/// The join's rule, pure: thirty seconds because a saturated box schedules the wrapper late, a poll
+/// that backs off rather than adding to the load it waits for, and a refusal that names the load -
+/// at five seconds with the box at 140, every command on it failed instead.
+#[test]
+fn a_join_waits_thirty_seconds_backs_off_and_says_what_the_box_was_doing() {
+    assert_eq!(JOIN_DEADLINE, Duration::from_secs(30));
+    let load = load_of("140.27 138.90 120.11 2/1234 5678\n", 32);
+    let said = not_joined_said(42, JOIN_DEADLINE, load.as_deref());
+    assert!(
+        said.contains("still not a member of its cgroup after 30s (load 140 on 32 cores)"),
+        "{said}"
+    );
+    // The kill stays: an unscoped live process is never handed back as a job.
+    assert!(
+        said.contains("killed rather than left running outside any scope"),
+        "{said}"
+    );
+    // A machine whose load cannot be read says nothing rather than saying zero.
+    assert_eq!(load_of("", 32), None);
+    assert_eq!(load_of("not a load", 32), None);
+    let unexplained = not_joined_said(42, JOIN_DEADLINE, None);
+    assert!(unexplained.contains("after 30s;"), "{unexplained}");
+    // One millisecond for the first 50 ms, then ten, then fifty: a busy loop is load, not a wait.
+    assert_eq!(join_pause(Duration::ZERO), Duration::from_millis(1));
+    assert_eq!(
+        join_pause(Duration::from_millis(49)),
+        Duration::from_millis(1)
+    );
+    assert_eq!(
+        join_pause(Duration::from_millis(50)),
+        Duration::from_millis(10)
+    );
+    assert_eq!(
+        join_pause(Duration::from_millis(249)),
+        Duration::from_millis(10)
+    );
+    assert_eq!(
+        join_pause(Duration::from_millis(250)),
+        Duration::from_millis(50)
+    );
+    assert_eq!(
+        join_pause(Duration::from_secs(29)),
+        Duration::from_millis(50)
+    );
+}
+
 /// The dead check's rule, both sides of both edges: a job that is printing or burning CPU is
 /// never ended, a silent one is warned about once at four fifths of the window and ended only
 /// when the whole window has gone. Pure, so a window can be a number rather than a wait.
