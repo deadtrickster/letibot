@@ -1253,9 +1253,8 @@ pub const KEPT_FINISHED_JOBS: usize = 32;
 /// five seconds, and a row that went before the poll is a completion nobody was told about.
 pub const FINISHED_JOB_GRACE: Duration = Duration::from_secs(120);
 
-/// How long a spawn waits for its process to appear in its cgroup before killing it. Thirty seconds
-/// because a saturated box schedules the wrapper late: at five, a gate that took a 32-core box to
-/// load 140 failed every command on it with "was still not a member of its cgroup".
+/// How long a spawn waits for its process to appear in its cgroup before killing it. A saturated
+/// box schedules the wrapper late, and a command killed for that is the box's fault, not its own.
 pub const JOIN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// A job this host did not start: a restarted daemon's record of one, or a peer's, as this layer
