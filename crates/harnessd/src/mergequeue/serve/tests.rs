@@ -1224,6 +1224,131 @@ fn a_stopping_daemon_kills_the_gate_and_the_row_goes_back_in_line() {
     assert_eq!(row.owner, "", "nobody's");
 }
 
+/// A gate that blocks, so a test can watch what a request does to a run that is going on. The local
+/// runner kills the `sleep` on `ctl.stop`, so a stop is seen in a hundred milliseconds, not a minute.
+struct Blocking;
+
+impl GateRunner for Blocking {
+    fn run(&self, wt: &Path, _steps: &[String], ctl: &GateControl) -> GateRun {
+        LocalGate.run(wt, &["sleep 60".to_string()], ctl)
+    }
+}
+
+/// A model stops the gate of its own row: the worker notices on its next pass, kills the run, and the
+/// row goes back in line carrying the REQUESTER's words - not the runner's `the daemon is stopping`.
+#[test]
+fn an_agent_stops_its_own_rows_gate_and_the_row_goes_back_in_line_with_the_reason() {
+    let w = World::new("gate-stop");
+    let (wt, base, head) = branch(&w.repo, "gs", "gs.txt");
+    w.enqueue("gs", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let m = w.accept("gs", "test/a");
+    let q = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(Arc::new(Blocking), w.door.clone(), "a"),
+    );
+    let stop = AtomicBool::new(false);
+    q.pass(&stop).unwrap();
+    // The gate is running, and it says so where another process reads it.
+    let live = w
+        .store()
+        .live_gate(&w.key())
+        .unwrap()
+        .expect("the running gate is published");
+    assert_eq!(live.kind, "land");
+    assert_eq!(live.entries(), vec![m.as_str()]);
+    assert!(!live.stopping());
+    // The row's own session asks, and nobody else could have.
+    let refused = crate::mergequeue::verbs::stop_by(
+        &w.store(),
+        &w.key(),
+        "agent:s-other",
+        "not mine",
+        &|_| {},
+    )
+    .expect_err("another agent's row");
+    assert!(
+        refused.contains("only the gate of its own row"),
+        "{refused}"
+    );
+    crate::mergequeue::verbs::stop_by(
+        &w.store(),
+        &w.key(),
+        "agent:s-gs",
+        "the build thrashes",
+        &|_| {},
+    )
+    .expect("its own row");
+    // The worker's next passes: the kill, then its verdict.
+    q.settle(&stop).unwrap();
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Queued, "{row:?}");
+    assert!(
+        row.evidence.starts_with(crate::mergequeue::serve::STOPPED),
+        "{}",
+        row.evidence
+    );
+    assert!(
+        row.evidence.contains("agent:s-gs") && row.evidence.contains("the build thrashes"),
+        "{}",
+        row.evidence
+    );
+    assert!(
+        !row.evidence.contains("the daemon is stopping"),
+        "the requester's words, not the runner's: {}",
+        row.evidence
+    );
+    // Nothing is running, and the row is not taken again the moment it is back in line.
+    assert_eq!(w.store().live_gate(&w.key()).unwrap(), None);
+    q.pass(&stop).unwrap();
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Queued,
+        "a stopped row waits its window before it is gated again"
+    );
+}
+
+/// The operator stops any gate - another session's row included - and the row it was for goes back in
+/// line with the operator's words.
+#[test]
+fn the_operator_stops_any_rows_gate() {
+    let w = World::new("gate-stop-operator");
+    let (wt, base, head) = branch(&w.repo, "go", "go.txt");
+    w.enqueue("go", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let m = w.accept("go", "test/a");
+    let q = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(Arc::new(Blocking), w.door.clone(), "a"),
+    );
+    let stop = AtomicBool::new(false);
+    q.pass(&stop).unwrap();
+    let said = crate::mergequeue::verbs::stop_by(
+        &w.store(),
+        &w.key(),
+        "operator:head",
+        "this box is needed for something else",
+        &|_| {},
+    )
+    .expect("the operator stops any gate");
+    assert!(said.contains("asked to stop"), "{said}");
+    q.settle(&stop).unwrap();
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Queued, "{row:?}");
+    assert!(
+        row.evidence.contains("operator:head")
+            && row
+                .evidence
+                .contains("this box is needed for something else"),
+        "{}",
+        row.evidence
+    );
+}
+
 /// A repository with no `origin` pushes nowhere, so the install step is skipped: a build installed
 /// on this box while the landing was never sent is the one thing the install gate exists to stop.
 #[test]

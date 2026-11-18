@@ -137,6 +137,28 @@ CREATE TABLE IF NOT EXISTS target_health (
     gate_steps_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (repository, target)
 );
+
+-- **The gate running right now** (schema 61): one row per repository, written by the worker that
+-- runs it and deleted when its verdict is applied. `run_id` names ONE run, so a stop asked for a
+-- gate that has since ended is not applied to the next one. `entry` is the row the gate is for (or
+-- a train's rows, comma-joined), empty for a target's own tip - which is what decides who may stop it.
+CREATE TABLE IF NOT EXISTS gate_live (
+    repository  TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    target      TEXT NOT NULL,
+    entry       TEXT NOT NULL DEFAULT '',
+    sha         TEXT NOT NULL,
+    host        TEXT NOT NULL,
+    dir         TEXT NOT NULL DEFAULT '',
+    step        INTEGER NOT NULL DEFAULT 0,
+    of_step     INTEGER NOT NULL DEFAULT 0,
+    command     TEXT NOT NULL DEFAULT '',
+    step_ms     INTEGER NOT NULL DEFAULT 0,
+    started_ms  INTEGER NOT NULL,
+    stop_by     TEXT NOT NULL DEFAULT '',
+    stop_why    TEXT NOT NULL DEFAULT ''
+);
 "#;
 
 /// What a review row is about - a branch somebody wants landed, or the target's own tip.
@@ -498,6 +520,50 @@ pub struct TargetHealth {
     pub checked_ms: u64,
     pub evidence: String,
     pub gate_steps: Vec<MergeGateStep>,
+}
+
+/// What is under the gate a repository is running right now - see the `gate_live` table. It is a
+/// PUBLISHED fact, not the worker's own state: another daemon's session is what asks, and a stop asked
+/// here is answered by the worker on its next pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveGate {
+    pub repository: String,
+    /// One run: a stop that names a run which has ended is not applied to the next.
+    pub run_id: String,
+    /// `target` for a target's own tip, `land` for one row, `train` for several.
+    pub kind: String,
+    pub target: String,
+    /// The merge row (or the train's rows, comma-joined); `''` for a target's tip.
+    pub entry: String,
+    pub sha: String,
+    /// Where it runs: `local`, a declared host's name, or either one with ` (firecode)`.
+    pub host: String,
+    /// The build directory on that machine, which is where `status` reads the room left.
+    pub dir: String,
+    pub step: usize,
+    pub of_step: usize,
+    pub command: String,
+    /// When the step now running started; `started_ms` is when the gate did.
+    pub step_ms: u64,
+    pub started_ms: u64,
+    /// Who asked for this gate to be stopped, and why - empty until somebody does.
+    pub stop_by: String,
+    pub stop_why: String,
+}
+
+impl LiveGate {
+    /// The rows this gate is for - one, or a train's several; empty for a target's tip.
+    pub fn entries(&self) -> Vec<&str> {
+        self.entry
+            .split(',')
+            .filter(|e| !e.is_empty())
+            .collect::<Vec<_>>()
+    }
+
+    /// A stop was asked for this run and the worker has not honoured it yet.
+    pub fn stopping(&self) -> bool {
+        !self.stop_by.is_empty()
+    }
 }
 
 /// A conditional move's guard and what it writes. `expect_owner` is the second half of
@@ -1615,6 +1681,121 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Publish the gate this repository is running - one row, replacing whatever a dead worker left.
+    pub fn gate_began(&self, g: &LiveGate) -> Result<()> {
+        self.exec(
+            "INSERT INTO gate_live (repository, run_id, kind, target, entry, sha, host, dir, step,
+                 of_step, command, step_ms, started_ms, stop_by, stop_why)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, '', '')
+             ON CONFLICT(repository) DO UPDATE SET run_id = excluded.run_id, kind = excluded.kind,
+                 target = excluded.target, entry = excluded.entry, sha = excluded.sha,
+                 host = excluded.host, dir = excluded.dir, step = excluded.step,
+                 of_step = excluded.of_step, command = excluded.command,
+                 step_ms = excluded.step_ms, started_ms = excluded.started_ms,
+                 stop_by = '', stop_why = ''",
+            params![
+                g.repository,
+                g.run_id,
+                g.kind,
+                g.target,
+                g.entry,
+                g.sha,
+                g.host,
+                g.dir,
+                g.step as i64,
+                g.of_step as i64,
+                g.command,
+                g.step_ms as i64,
+                g.started_ms as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The step a run is on, as the worker's own runner saw it - keyed by `run_id`, so a pass that
+    /// races a gate's end cannot write its step onto the next run's row.
+    pub fn gate_step_at(
+        &self,
+        repository: &str,
+        run_id: &str,
+        step: usize,
+        of_step: usize,
+        command: &str,
+        step_ms: u64,
+    ) -> Result<()> {
+        self.exec(
+            "UPDATE gate_live SET step = ?3, of_step = ?4, command = ?5, step_ms = ?6
+              WHERE repository = ?1 AND run_id = ?2",
+            params![
+                repository,
+                run_id,
+                step as i64,
+                of_step as i64,
+                command,
+                step_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The run ended and its verdict is being applied: nothing is running here any more.
+    pub fn gate_ended(&self, repository: &str, run_id: &str) -> Result<()> {
+        self.exec(
+            "DELETE FROM gate_live WHERE repository = ?1 AND run_id = ?2",
+            params![repository, run_id],
+        )?;
+        Ok(())
+    }
+
+    /// The gate this repository is running, as its worker published it.
+    pub fn live_gate(&self, repository: &str) -> Result<Option<LiveGate>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT repository, run_id, kind, target, entry, sha, host, dir, step, of_step,
+                     command, step_ms, started_ms, stop_by, stop_why
+                   FROM gate_live WHERE repository = ?1",
+                params![repository],
+                |r| {
+                    Ok(LiveGate {
+                        repository: r.get(0)?,
+                        run_id: r.get(1)?,
+                        kind: r.get(2)?,
+                        target: r.get(3)?,
+                        entry: r.get(4)?,
+                        sha: r.get(5)?,
+                        host: r.get(6)?,
+                        dir: r.get(7)?,
+                        step: ms(r.get(8)?) as usize,
+                        of_step: ms(r.get(9)?) as usize,
+                        command: r.get(10)?,
+                        step_ms: ms(r.get(11)?),
+                        started_ms: ms(r.get(12)?),
+                        stop_by: r.get(13)?,
+                        stop_why: r.get(14)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Ask the gate `run_id` to stop - `false` when that run is over and no such gate is running, which
+    /// is the caller's answer to give (`status` shows what is there now).
+    pub fn ask_gate_stop(
+        &self,
+        repository: &str,
+        run_id: &str,
+        by: &str,
+        why: &str,
+    ) -> Result<bool> {
+        let n = self.exec(
+            "UPDATE gate_live SET stop_by = ?3, stop_why = ?4
+              WHERE repository = ?1 AND run_id = ?2",
+            params![repository, run_id, by, why],
+        )?;
+        Ok(n == 1)
     }
 
     /// The v23 queue as it was archived - `(id, branch, state, evidence)` per row, for the

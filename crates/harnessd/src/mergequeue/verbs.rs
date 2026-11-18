@@ -144,6 +144,8 @@ fn actor(who: &str) -> &str {
 pub(crate) enum Verb {
     Approve,
     Restart,
+    /// Kill the gate of a row: the row's own, not somebody else's, and the operator's any.
+    Stop,
 }
 
 /// What the table reads about a row: who wrote it, who put it where it is, and whether it is out.
@@ -185,6 +187,13 @@ pub(crate) fn may(verb: Verb, who: &str, row: &Facts) -> Result<(), String> {
             row.author
         )),
         Verb::Restart => Ok(()),
+        // A stop is the model's answer to a gate that is going nowhere, and it is its OWN gate's:
+        // an agent or a bridge stops the gate of a row it enqueued, or one its own `regate` started.
+        Verb::Stop if row.author != name && row.author != who => Err(format!(
+            "`{who}` may stop only the gate of its own row; this one is `{}`'s",
+            row.author
+        )),
+        Verb::Stop => Ok(()),
     }
 }
 
@@ -592,6 +601,95 @@ pub fn withdraw_by(
         }
         Found::Merge(m) => withdraw_merge(store, &m, why, &who, events),
     }
+}
+
+/// Stop the gate this repository is running - `queue`'s `stop`, and what withdrawing a gated row does
+/// first. The worker notices on its next pass, kills the run, and the verdict it applies is `stopped`:
+/// the rows go back in line, with this request's words on them.
+pub fn stop_by(
+    store: &Store,
+    repository: &str,
+    who: &str,
+    why: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let Some(gate) = store.live_gate(repository).map_err(|e| e.to_string())? else {
+        return Err(format!(
+            "no gate is running in {repository} now. What is gated, and what it is doing, is what \
+             `queue` with `action: \"status\"` prints"
+        ));
+    };
+    may_stop(store, &gate, who)?;
+    if gate.stopping() {
+        return Err(format!(
+            "{} already asked this gate to stop ({}), and its worker has not killed it yet",
+            gate.stop_by, gate.stop_why
+        ));
+    }
+    let asked = store
+        .ask_gate_stop(repository, &gate.run_id, who, why)
+        .map_err(|e| e.to_string())?;
+    if !asked {
+        return Err(format!(
+            "the gate of {repository} ended while you asked; `queue` with `action: \"status\"` \
+             shows what is there now"
+        ));
+    }
+    let said = format!("{} by {who}: {why}", super::serve::STOPPED);
+    announce(events, "gate", &gate.run_id, "stopping", &said);
+    Ok(format!(
+        "the gate of {repository} is asked to stop: {}. Its worker kills it on its next pass, and \
+         the verdict it then writes is `stopped` - nothing is judged about the code, and what the \
+         gate was for goes back in line with your words on it",
+        super::desk::gate_said(&gate, now_ms(), "")
+    ))
+}
+
+/// Whether `who` may stop this gate: the operator any; an agent or a bridge its own row's, or a
+/// target it re-gated itself (`regate` asks for that gate, and the target's history says so).
+fn may_stop(
+    store: &Store,
+    gate: &letibot_tokencore::store::LiveGate,
+    who: &str,
+) -> Result<(), String> {
+    if gate.entries().is_empty() {
+        // A target's own tip: who asked for the gate on it is the last move INTO `gating`, and a gate
+        // the queue started for itself was asked for by the queue - the operator's, not an agent's.
+        let by = store
+            .transitions("target", &gate.target)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .rev()
+            .find(|t| t.to_state == HealthState::Gating.as_str())
+            .map(|t| t.by)
+            .unwrap_or_default();
+        return may(
+            Verb::Stop,
+            who,
+            &Facts {
+                author: &by,
+                parked_by: "",
+                withdrawn: false,
+            },
+        );
+    }
+    for id in gate.entries() {
+        let row = store.merge_row(id).map_err(|e| e.to_string())?;
+        let author = row
+            .and_then(|m| store.review_row(&m.review_id).ok().flatten())
+            .map(|r| r.session_id)
+            .unwrap_or_default();
+        may(
+            Verb::Stop,
+            who,
+            &Facts {
+                author: &author,
+                parked_by: "",
+                withdrawn: false,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// The parked rows a sweep acts on, by id: rejected, undecided and blocked reviews; failed, timed

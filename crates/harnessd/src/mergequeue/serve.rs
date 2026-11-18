@@ -314,9 +314,14 @@ struct InFlight {
     what: GateFor,
     /// The commit under the gate: the target's tip, or the rebased branch.
     sha: String,
+    /// This run's name in the store's `gate_live` row, so a stop names the run it was asked about.
+    run_id: String,
     started: Instant,
-    /// Set to kill the gate - the daemon is stopping.
+    /// Set to kill the gate - the daemon is stopping, or somebody asked this run to stop.
     cancel: Arc<AtomicBool>,
+    /// The words a stop asked for this run carries - `None` for the daemon's own stop, whose
+    /// sentence the runner wrote itself.
+    stop: Option<String>,
     run: Running,
 }
 
@@ -705,6 +710,7 @@ impl RepoQueue {
         // The verdict of a gate that ended, applied once - before the upkeep, so the review of a
         // tip that just went red is claimed in this pass, first, as soon as a reviewer is free.
         let mut worked = self.reap_gate()?;
+        worked |= self.mind_gate()?;
         worked |= self.adopt_orphans()?;
         worked |= self.review_upkeep(&settings)?;
         worked |= self.settle_landed_by_hand()?;
@@ -914,11 +920,14 @@ impl RepoQueue {
             gate_in = super::settings::GateIn::Firecode;
         }
         let runner = super::gate_firecode::runner_for(gate_in, &self.env.gate);
+        // Where it runs and where its build goes, read before the runner is moved into its thread.
+        let host = runner.name();
+        let dir = build_dir(&host, &wt);
         let lock = self
             .env
             .gate_lock
             .clone()
-            .filter(|_| runner.name().starts_with("local"));
+            .filter(|_| host.starts_with("local"));
         let stop = cancel.clone();
         let short: String = sha.chars().take(8).collect();
         let run = std::thread::Builder::new()
@@ -958,11 +967,41 @@ impl RepoQueue {
                 self.key, old.sha
             );
         }
+        let started_ms = gate::now_ms();
+        let (kind, target, entry) = gate_subject(&what);
+        let run_id = format!("{sha}-{started_ms}");
+        // Published before the thread can finish: no reader sees a gate running unpublished, and no
+        // stop can name a run that is not there yet.
+        let published = self.store.gate_began(&letibot_tokencore::store::LiveGate {
+            repository: self.key.clone(),
+            run_id: run_id.clone(),
+            kind: kind.to_string(),
+            target,
+            entry,
+            sha: sha.to_string(),
+            host,
+            dir,
+            step: 0,
+            of_step: 0,
+            command: String::new(),
+            step_ms: 0,
+            started_ms,
+            stop_by: String::new(),
+            stop_why: String::new(),
+        });
+        if let Err(e) = published {
+            eprintln!(
+                "  merge queue: {}: the running gate was not published: {e}",
+                self.key
+            );
+        }
         *slot = Some(InFlight {
             what,
             sha: sha.to_string(),
+            run_id,
             started: Instant::now(),
             cancel,
+            stop: None,
             run,
         });
     }
@@ -972,6 +1011,54 @@ impl RepoQueue {
         if let Some(g) = self.slot().as_ref() {
             g.cancel.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// What a gate in flight has to be told on every pass: the step it is on, so a reader in another
+    /// process can say what it is doing, and a stop somebody asked for, which kills it here and now.
+    fn mind_gate(&self) -> Result<bool, StoreError> {
+        if !self.gate_in_flight() {
+            return Ok(false);
+        }
+        let (run_id, asked) = {
+            let slot = self.slot();
+            let Some(g) = slot.as_ref() else {
+                return Ok(false);
+            };
+            (g.run_id.clone(), g.stop.is_some())
+        };
+        let mut worked = false;
+        // The step, from the runner's own record - both machines write it as they start a step, so a
+        // local gate and a host gate publish the same fact.
+        if let Some(step) = gate::running(&self.key) {
+            self.store.gate_step_at(
+                &self.key,
+                &run_id,
+                step.step,
+                step.of,
+                &step.command,
+                step.started_ms,
+            )?;
+            worked = true;
+        }
+        if asked {
+            return Ok(worked);
+        }
+        // A stop asked for THIS run. A request that names a run which has ended is left where it is:
+        // the row it is on is gone with the run, and the next gate starts with no stop at all.
+        let Some(live) = self.store.live_gate(&self.key)? else {
+            return Ok(worked);
+        };
+        if !live.stopping() || live.run_id != run_id {
+            return Ok(worked);
+        }
+        let words = format!("{STOPPED} by {}: {}", live.stop_by, live.stop_why);
+        let mut slot = self.slot();
+        if let Some(g) = slot.as_mut() {
+            g.stop = Some(words.clone());
+            g.cancel.store(true, Ordering::Relaxed);
+        }
+        eprintln!("  merge queue: {}: {words}; the gate is killed", self.key);
+        Ok(true)
     }
 
     /// Apply the verdict of a gate that ended - taken out of the slot first, so it is applied
@@ -989,8 +1076,20 @@ impl RepoQueue {
             return Ok(false);
         };
         let run = g.run.wait();
-        self.apply_gate(g.what, run)?;
+        self.gate_over(&g.run_id);
+        self.apply_gate(g.what, with_stop(run, g.stop))?;
         Ok(true)
+    }
+
+    /// Nothing is running here any more, so the published row goes - before the verdict is applied,
+    /// which may start the install's gate and publish its own.
+    fn gate_over(&self, run_id: &str) {
+        if let Err(e) = self.store.gate_ended(&self.key, run_id) {
+            eprintln!(
+                "  merge queue: {}: the finished gate's row was not taken down: {e}",
+                self.key
+            );
+        }
     }
 
     fn apply_gate(&self, what: GateFor, run: GateRun) -> Result<(), StoreError> {
@@ -1046,7 +1145,8 @@ impl RepoQueue {
         let g = self.slot().take();
         if let Some(g) = g {
             let run = g.run.wait();
-            if let Err(e) = self.apply_gate(g.what, run) {
+            self.gate_over(&g.run_id);
+            if let Err(e) = self.apply_gate(g.what, with_stop(run, g.stop)) {
                 eprintln!(
                     "  merge queue: {}: the stopped gate's verdict was not written: {e}",
                     self.key
@@ -1056,7 +1156,8 @@ impl RepoQueue {
             if let Some(next) = self.slot().take() {
                 next.cancel.store(true, Ordering::Relaxed);
                 let run = next.run.wait();
-                if let Err(e) = self.apply_gate(next.what, run) {
+                self.gate_over(&next.run_id);
+                if let Err(e) = self.apply_gate(next.what, with_stop(run, next.stop)) {
                     eprintln!(
                         "  merge queue: {}: the stopped install's verdict was not written: {e}",
                         self.key
@@ -1868,13 +1969,18 @@ impl RepoQueue {
         // A gate that could not run waits out its retry window: the row is `gating` and carries the
         // sentence that stopped it, so the tip is neither judged nor blocked and a host that is down is
         // not dialled once a second. `Gating` with plain *gating* evidence is a gate on its thread now.
-        if let Some(h) = self.store.target_health(&self.key, target)?
-            && h.sha == tip
-            && h.state == HealthState::Gating
-            && h.evidence.starts_with(UNJUDGED_RETRY)
-            && now.saturating_sub(h.checked_ms) < UNJUDGED_RETRY_MS
-        {
-            return Ok(Health::Known(h, false));
+        for (clause, window) in [
+            (UNJUDGED_RETRY, UNJUDGED_RETRY_MS),
+            (STOPPED, STOPPED_RETRY_MS),
+        ] {
+            if let Some(h) = self.store.target_health(&self.key, target)?
+                && h.sha == tip
+                && h.state == HealthState::Gating
+                && h.evidence.starts_with(clause)
+                && now.saturating_sub(h.checked_ms) < window
+            {
+                return Ok(Health::Known(h, false));
+            }
         }
         let was_red = self
             .store
@@ -1972,13 +2078,43 @@ impl RepoQueue {
                 return self.unjudged(h, w, run.steps);
             }
             GateVerdict::Infra(w) => (HealthState::Blocked, w, run.steps),
-            GateVerdict::Stopped(_) => {
-                // Judged nothing: the row stays `gating`, and the next pass (here or in the next
-                // lease holder) gates it again.
-                return Ok(());
+            GateVerdict::Stopped(w) => {
+                // Judged nothing: the tip stays `gating` and is gated again - after the window, when
+                // somebody stopped it on purpose, so the stop is a fact the row carries and not a
+                // restart dressed as one.
+                return self.stopped_health(h, &target, w, run.steps);
             }
         };
         self.judged(&mut h, state, evidence, steps)
+    }
+
+    /// The health row of a tip whose gate was stopped: gating, un-judged, and saying who stopped it.
+    fn stopped_health(
+        &self,
+        mut h: TargetHealth,
+        target: &str,
+        why: String,
+        steps: Vec<letibot_tokencore::store::MergeGateStep>,
+    ) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        // A tip that was red keeps its queue halted: the stop judged nothing about the code.
+        let halted = halts_reviews(&h);
+        h.state = HealthState::Gating;
+        h.evidence = match why.starts_with(STOPPED) {
+            true => format!(
+                "{why}; nothing was judged, and the tip is gated again in {} minutes' time",
+                STOPPED_RETRY_MS / 60_000
+            ),
+            false => format!("{why}; nothing was judged, and it is gated again"),
+        };
+        if halted {
+            h.evidence = format!("{}; {STILL_HALTED}", h.evidence);
+        }
+        h.gate_steps = steps;
+        h.checked_ms = gate::now_ms();
+        self.store.set_target_health(&h, &me)?;
+        self.announce_move("target", target, "gating", &h.evidence);
+        Ok(())
     }
 
     /// A gate that could not run - the tip stays UNJUDGED, the queue keeps moving, and the row says
@@ -2313,8 +2449,14 @@ impl RepoQueue {
             // the sentence that stopped it, and without this it would be taken on the next pass: one
             // ssh attempt per second at a host that is down, and a queue that never settles.
             .filter(|m| {
-                !(m.evidence.starts_with(UNJUDGED_RETRY)
-                    && gate::now_ms().saturating_sub(m.state_ms) < UNJUDGED_RETRY_MS)
+                let now = gate::now_ms();
+                let since = now.saturating_sub(m.state_ms);
+                if m.evidence.starts_with(UNJUDGED_RETRY) {
+                    return since >= UNJUDGED_RETRY_MS;
+                }
+                // A stopped gate is not somebody's accident: the row waits, so stopping it was not
+                // the same as restarting it.
+                !(m.evidence.starts_with(STOPPED) && since < STOPPED_RETRY_MS)
             })
             .collect();
         if queued.is_empty() {
@@ -3057,10 +3199,17 @@ impl RepoQueue {
                 return Ok(());
             }
             GateVerdict::Stopped(w) => {
+                let wait = match w.starts_with(STOPPED) {
+                    true => format!(
+                        " and waits {} minutes before it is gated again",
+                        STOPPED_RETRY_MS / 60_000
+                    ),
+                    false => String::new(),
+                };
                 self.gating_to(
                     row,
                     MergeState::Queued,
-                    Move::new(&me, format!("{w}; it goes back in line and is gated again"))
+                    Move::new(&me, format!("{w}; it goes back in line{wait}"))
                         .set("gate_steps_json", rows_json(&run.steps)),
                 )?;
                 return Ok(());
@@ -3284,7 +3433,14 @@ impl RepoQueue {
                 Ok(())
             }
             GateVerdict::Stopped(w) => {
-                let why = format!("{w}; it goes back in line and is gated again");
+                let wait = match w.starts_with(STOPPED) {
+                    true => format!(
+                        " and waits {} minutes before it is gated again",
+                        STOPPED_RETRY_MS / 60_000
+                    ),
+                    false => String::new(),
+                };
+                let why = format!("{w}; it goes back in line{wait}");
                 self.train_back(&train.cars, &why, &run.steps)?;
                 Ok(())
             }
@@ -3717,6 +3873,78 @@ impl Drop for RepoQueue {
 pub fn gate_running_words(sha: &str, for_ms: u64) -> String {
     let short: String = sha.chars().take(10).collect();
     format!("gate running on {short} for {}m", for_ms / 60_000)
+}
+
+/// The clause a stopped gate's row leads with. A row that carries it waits its window before it is
+/// gated again (`STOPPED_RETRY_MS`): whoever stopped it did so to get the box back, and taking the
+/// row on the very next pass would undo that.
+pub const STOPPED: &str = "its gate was stopped";
+
+/// How long a stopped row or target waits before the gate is taken again - ten minutes: long enough
+/// that a stop is felt and a person can act on it, short enough that a forgotten one does not hold
+/// the queue for ever.
+pub const STOPPED_RETRY_MS: u64 = 10 * 60 * 1000;
+
+/// The verdict a stopped run carries. The runners' own sentence is about their kill (`the daemon is
+/// stopping`); a person's or a model's stop replaces it, and that sentence is what the row records.
+fn with_stop(run: GateRun, stop: Option<String>) -> GateRun {
+    match (stop, run.verdict) {
+        (Some(why), GateVerdict::Stopped(_)) => GateRun {
+            steps: run.steps,
+            verdict: GateVerdict::Stopped(why),
+        },
+        (_, verdict) => GateRun {
+            steps: run.steps,
+            verdict,
+        },
+    }
+}
+
+/// What a gate is for, as its published row says it: the kind of subject, the target, and the rows
+/// (comma-joined for a train, empty for a target's own tip).
+fn gate_subject(what: &GateFor) -> (&'static str, String, String) {
+    fn of_train(t: &Train) -> (&'static str, String, String) {
+        let ids: Vec<&str> = t.cars.iter().map(|c| c.row.id.as_str()).collect();
+        (
+            "train",
+            t.cars
+                .first()
+                .map(|c| c.row.target.clone())
+                .unwrap_or_default(),
+            ids.join(","),
+        )
+    }
+    match what {
+        GateFor::Target { health, .. } => ("target", health.target.clone(), String::new()),
+        GateFor::Land(l) => ("land", l.row.target.clone(), l.row.id.clone()),
+        GateFor::Train(t) => of_train(t),
+        GateFor::Install { landing, .. } => {
+            ("land", landing.row.target.clone(), landing.row.id.clone())
+        }
+        GateFor::InstallTrain { train, .. } => of_train(train),
+    }
+}
+
+/// Where a gate's build goes on the machine that runs it, which is where `status` reads the room left.
+/// `local` is this box's `<worktree>/target`; a declared host builds under its root, at the same
+/// `<repo>-<hex>` directory the local landing uses.
+fn build_dir(host: &str, wt: &Path) -> String {
+    let name = host.strip_suffix(" (firecode)").unwrap_or(host);
+    if name == "local" {
+        return gate::gate_target_dir(wt).display().to_string();
+    }
+    let root = letibot_tools::remote::Hosts::load()
+        .get(name)
+        .map(|h| letibot_tools::remote::expand_root(&h.root));
+    match root {
+        Some(root) => format!(
+            "{}/gate/{}/target",
+            root.trim_end_matches('/'),
+            super::gate_host::dir_name(wt)
+        ),
+        // A host nobody declares any more: the sentence `status` prints still names where it runs.
+        None => String::new(),
+    }
 }
 
 /// The `queue_told` key that counts a target tip's gate kills (`""` for the sha: every tip's).

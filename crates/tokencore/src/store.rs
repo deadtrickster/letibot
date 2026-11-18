@@ -207,7 +207,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 60;
+pub const SCHEMA_VERSION: i64 = 61;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -2774,6 +2774,11 @@ impl Store {
             // v60: warnings that carry recovery instructions, kept across a restart. Additive: a
             // new table, empty, which is true - no earlier daemon kept one.
             self.batch_for(file, disclosures::DISCLOSURES_SQL)?;
+        }
+        if from < 61 {
+            // v61: the gate a repository is running, published where a session's own daemon reads it.
+            // `QUEUES_SQL` is idempotent throughout, so `gate_live` arrives alone.
+            self.batch_for(file, queues::QUEUES_SQL)?;
         }
         Ok(())
     }
