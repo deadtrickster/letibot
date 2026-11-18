@@ -250,6 +250,14 @@ pub fn with_session_tools(
     if reg.get(builtins::host_config::TOOL).is_none() {
         reg.register(Box::new(builtins::host_config::HostConfigTool::nowhere()))?;
     }
+    // Letibot's own configuration, and `queue`'s shape once more: `explain` answers from the
+    // reference alone, and `show`/`propose` say by name that no config dir is behind this
+    // registry rather than guessing one and reading the operator's.
+    if reg.get(builtins::config::TOOL).is_none() {
+        reg.register(Box::new(builtins::config::ConfigTool::new(
+            std::sync::Arc::new(builtins::config::NoConfig),
+        )))?;
+    }
     // The model's own verbs on its own session. Registered here for the reason `room` is: a
     // role that names one resolves on every registry this crate builds, and the tool then says there
     // is no session behind it. The daemon seats its own desk at open.

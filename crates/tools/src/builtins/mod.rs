@@ -4,6 +4,8 @@
 
 pub mod bash;
 pub mod changelog;
+/// `config`: letibot's own configuration, read back redacted and proposed to the operator.
+pub mod config;
 pub mod decisions;
 pub mod digest;
 pub mod edit;

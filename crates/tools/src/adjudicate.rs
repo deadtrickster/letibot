@@ -3275,6 +3275,166 @@ impl Gate for AdjudicatedGate {
         self.record(req, d, effect, direction.key());
         answer
     }
+
+    /// A config read or a proposed change, as a card the OPERATOR and nobody else answers.
+    ///
+    /// `AlwaysAsk` with the always-ask ladder, which has no standing rung: a rule or a session
+    /// grant that covered the next one would be a permission to edit letibot's own configuration
+    /// taken once and spent for ever. The answer is then checked for WHO gave it, because the
+    /// ladder is only the first half - a guard model at an automode point and a bridge seat both
+    /// reach a person-shaped channel in this tree, and neither is the operator.
+    fn ask_config(
+        &mut self,
+        ask: &crate::builtins::config::ConfigAsk,
+    ) -> crate::builtins::config::ConfigAnswer {
+        use crate::builtins::config::{ConfigAnswer, ConfigAsk};
+        if self.adjudicator.describe().starts_with("none") {
+            return ConfigAnswer::NotAsked(
+                "no adjudicator is attached, so there is no operator to ask".into(),
+            );
+        }
+        let file = ask.file().to_string();
+        let path = format!("$XDG_CONFIG_HOME/letibot/{file}");
+        let (target, class, facts, arguments, preview, claim) = match ask {
+            ConfigAsk::Show { .. } => (
+                file.clone(),
+                ActionClass::host(Access::Read, false, false),
+                vec![
+                    "the config directory is masked inside every session on purpose: a model that \
+                     can edit its own boundary or its own mode grants itself anything"
+                        .to_string(),
+                    "`show` redacts every credential value before the bytes reach this transcript; \
+                     the file itself is not bound into the session's view"
+                        .to_string(),
+                ],
+                serde_json::json!({ "file": file, "path": path }),
+                Vec::new(),
+                None,
+            ),
+            ConfigAsk::Propose {
+                diff,
+                why,
+                preview,
+                ..
+            } => (
+                file.clone(),
+                ActionClass::host(Access::Write, true, false),
+                vec![
+                    "the diff below is the whole change; the file is written by an atomic rename \
+                     that keeps its mode, and only if it still holds the bytes the diff was made \
+                     from"
+                        .to_string(),
+                    "no mode, no session or always grant and no model applies this: only your own \
+                     answer does"
+                        .to_string(),
+                ],
+                serde_json::json!({ "file": file, "path": path, "diff": diff, "why": why }),
+                preview.clone(),
+                Some(why.clone()),
+            ),
+        };
+        let req = AdjudicationRequest {
+            id: self.next_id(),
+            session_id: self.session_id.clone(),
+            turn_id: String::new(),
+            call_id: String::new(),
+            agent: self.agent.clone(),
+            tool: crate::builtins::config::TOOL.to_string(),
+            target,
+            class,
+            prior: Vec::new(),
+            examples: Vec::new(),
+            brief_variant: crate::authorise::BriefVariant::AskedForIt,
+            agent_claim: claim,
+            reading: None,
+            shape: None,
+            advice: None,
+            summary: ask.summary(),
+            arguments,
+            arguments_digest: String::new(),
+            scripts: Vec::new(),
+            preview,
+            boundary_facts: facts,
+            kind: RequestKind::Permission,
+            options: always_ask_options(),
+            // No standing rung at all: a change to letibot's configuration is answered once, for
+            // the change in front of the person.
+            options_note: Some(
+                "a config change is answered for this change only; there is no standing answer to \
+                 offer"
+                    .into(),
+            ),
+            on_timeout: OnTimeout::Deny,
+            tier: Tier::AlwaysAsk {
+                rule: "config_change",
+                why: "letibot's own configuration is the operator's: those files decide what may \
+                      run unasked, so only their presence answers for them"
+                    .into(),
+            },
+            resolved: true,
+            baseline: ask.summary(),
+            trail: crate::authorise::AuthorisationTrail::default(),
+        };
+        let d = self.adjudicator.decide(&req);
+        self.file_exchange();
+        // The rule the ladder cannot state: the answerer must BE the operator. A mode's own
+        // admission, an oracle's `allow` and a bridge seat's answer all arrive here with a name
+        // that is not `human:`, and so does a session's or a parent agent's.
+        let answer = if !d.by.starts_with("human:") {
+            ConfigAnswer::Refused {
+                by: d.by.clone(),
+                why: format!(
+                    "`{}` is not the operator, and a config change is answered by nobody else - \
+                     not a mode, not a standing grant, not a bridge seat and not a model. Their \
+                     answer was `{}`: {}",
+                    d.by,
+                    d.outcome.as_str(),
+                    d.basis
+                ),
+            }
+        } else {
+            match &d.outcome {
+                DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
+                    ConfigAnswer::Granted { by: d.by.clone() }
+                }
+                DecisionOutcome::Selected { .. } => ConfigAnswer::Refused {
+                    by: d.by.clone(),
+                    why: d.basis.clone(),
+                },
+                _ => ConfigAnswer::NotAsked(format!(
+                    "the operator's answer never came back: {} ({})",
+                    d.basis,
+                    d.outcome.as_str()
+                )),
+            }
+        };
+        // A config change is a decision like any other: it lands in the row a replay can label,
+        // and a refusal is counted where every other refusal is counted.
+        let direction = crate::authorise::TaskDirection::of_parts(
+            crate::builtins::config::TOOL,
+            &crate::intent::Baseline::of_paths(
+                std::iter::empty::<&str>(),
+                false,
+                false,
+                &self.surroundings,
+            ),
+            req.class.scope,
+        );
+        let effect = match &answer {
+            ConfigAnswer::Granted { .. } => {
+                self.breaker.admitted(&direction);
+                "admit"
+            }
+            ConfigAnswer::Refused { .. } => {
+                self.breaker.refused(&direction);
+                "refuse"
+            }
+            ConfigAnswer::NotAsked(_) => "refuse",
+        };
+        self.record(req, d, effect, direction.key());
+        answer
+    }
+
     fn supervising(&self) -> bool {
         self.supervise && self.advisor.is_some()
     }
