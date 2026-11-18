@@ -73,10 +73,19 @@ pub(crate) fn tool_result_row_lines(
         live_edits
     };
     let edit = edits.first();
+    // A write that changed nothing is not `Wrote`: the tool pushes an excerpt for every write it
+    // makes, so an `ok` writer with none touched no file, and the reason for that is the row.
+    let unchanged = crate::ui::unchanged_write(name, edits, outcome);
     // The envelope is the model's, so it is noise on a screen. The bytes are the command's, and an
     // escape that reaches the terminal is a mode change nobody asked for - so each line is walked by
     // `letibot_ui::ansi::line`: SGR painted into the palette's roles, everything else removed whole.
-    let payload = payload.lines().map(payload_line).collect();
+    let sentences: Vec<&str> = payload.lines().collect();
+    let sentences = if unchanged {
+        reason_first(&sentences)
+    } else {
+        sentences
+    };
+    let payload = sentences.into_iter().map(payload_line).collect();
     let p = cfg.palette();
     let w = cfg.width.saturating_sub(ind).max(20);
     // A call the person ran says so: a tool row names its call and never its author, which is right
@@ -86,10 +95,15 @@ pub(crate) fn tool_result_row_lines(
         origin,
         Some(letibot_transcript::CallOrigin::Operator { .. })
     );
-    let shown = ctx.cards.verb(name, edit);
+    let shown = if unchanged {
+        UNCHANGED.to_string()
+    } else {
+        ctx.cards.verb(name, edit)
+    };
     let target = match targets.get(call_id) {
-        // An edit card names its file, and a note's target is its stem and its text.
-        _ if shown != *name => edit.map(|e| e.path.clone()).unwrap_or_default(),
+        // An edit card names its file, and a note's target is its stem and its text. A verb this
+        // head chose because nothing was written is not one of those: the call's own target stands.
+        _ if shown != *name && !unchanged => edit.map(|e| e.path.clone()).unwrap_or_default(),
         Some(t) if !t.is_empty() => t.clone(),
         _ => String::new(),
     };
@@ -171,6 +185,16 @@ pub(crate) fn tool_result_row_lines(
         rendered.extend(rows);
     }
     (RowClass::Activity, step_in(rendered, ind))
+}
+
+/// The payload's own sentences, the tool's before the harness's `[note]`s: a folded row shows one
+/// line, and for a write that changed nothing the reason is the line worth the room.
+fn reason_first<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    let (harness, body): (Vec<&str>, Vec<&str>) = lines
+        .iter()
+        .copied()
+        .partition(|l| l.starts_with("[note] ") || l.starts_with("[repaired] "));
+    body.into_iter().chain(harness).collect()
 }
 
 /// One payload line as drawn. A spill seam is the model's sentence, too long for a row and read as
