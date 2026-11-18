@@ -1349,6 +1349,52 @@ fn the_operator_stops_any_rows_gate() {
     );
 }
 
+/// Withdrawing a row whose gate is running kills that gate: nothing is left building for a row that is
+/// out of line, and the `stopped` verdict its worker then writes does not bring the row back.
+#[test]
+fn withdrawing_a_gated_row_kills_its_gate_and_the_row_stays_withdrawn() {
+    let w = World::new("gate-withdraw");
+    let (wt, base, head) = branch(&w.repo, "gw", "gw.txt");
+    w.enqueue("gw", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let m = w.accept("gw", "test/a");
+    let q = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(Arc::new(Blocking), w.door.clone(), "a"),
+    );
+    let stop = AtomicBool::new(false);
+    q.pass(&stop).unwrap();
+    assert!(
+        w.store().live_gate(&w.key()).unwrap().is_some(),
+        "the gate is running"
+    );
+    let said = crate::mergequeue::verbs::withdraw_by(
+        &w.store(),
+        &m,
+        "agent:s-gw",
+        "not going anywhere",
+        &|_| {},
+    )
+    .expect("a gating row is withdrawable");
+    assert!(said.contains("stopped too"), "{said}");
+    // The worker's next passes: the kill, then its verdict - which finds the row gone from `gating`.
+    q.settle(&stop).unwrap();
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Withdrawn, "{row:?}");
+    assert!(
+        row.evidence.contains("not going anywhere"),
+        "the withdrawer's words stand, not the stop's: {}",
+        row.evidence
+    );
+    assert_eq!(
+        w.store().live_gate(&w.key()).unwrap(),
+        None,
+        "nothing is running for a row that is out of line"
+    );
+}
+
 /// A repository with no `origin` pushes nowhere, so the install step is skipped: a build installed
 /// on this box while the landing was never sent is the one thing the install gate exists to stop.
 #[test]

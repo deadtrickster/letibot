@@ -531,10 +531,46 @@ fn withdraw_merge(
         return Err(format!("`{}` moved while you asked; look again", m.id));
     }
     announce(events, "merge", &m.id, "withdrawn", why);
+    // A row out of line has no gate: one still running for it would hold the box's build lock and
+    // judge a branch nobody waits for. The verdict it then writes is `stopped`, and a row that has
+    // left `gating` is not moved by it.
+    let stopped = stop_gate_of(store, &m.repository, &[&m.id], who, why, events)?;
     Ok(format!(
-        "`{}` withdrawn from the merge queue; the branch stays",
+        "`{}` withdrawn from the merge queue; the branch stays{stopped}",
         m.branch
     ))
+}
+
+/// Take down the gate of `ids`, if that is the one running - answered with the clause a caller adds to
+/// its own sentence, empty when no gate of those rows was running.
+fn stop_gate_of(
+    store: &Store,
+    repository: &str,
+    ids: &[&str],
+    who: &str,
+    why: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let Some(gate) = store.live_gate(repository).map_err(|e| e.to_string())? else {
+        return Ok(String::new());
+    };
+    let carries_one = gate.entries().iter().any(|e| ids.contains(e));
+    if !carries_one || gate.stopping() {
+        return Ok(String::new());
+    }
+    // `false` is a gate that ended between the read and the ask: it judged nothing about this row,
+    // which is out of line either way.
+    let _ = store
+        .ask_gate_stop(repository, &gate.run_id, who, why)
+        .map_err(|e| e.to_string())?;
+    announce(
+        events,
+        "gate",
+        &gate.run_id,
+        "stopping",
+        &format!("{} by {who}: {why}", super::serve::STOPPED),
+    );
+    Ok("; the gate it was under is stopped too".to_string())
 }
 
 /// Take a row out - withdrawn, with the person's words; the branch and its worktree stay.
