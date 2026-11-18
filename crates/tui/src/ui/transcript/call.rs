@@ -7,6 +7,7 @@ use letibot_sessionlog::view::CallState;
 use rano::agent::card::{CallState as Live, EditDiff, RawCall, ToolCall, WritingCall};
 use rano::agent::decision::{Advice, SettledDecision, Verdict};
 use rano::agent::outcome::Outcome;
+use rano::agent::tool_row::ToolRow;
 #[cfg(test)]
 use rano::style::Role;
 
@@ -140,6 +141,21 @@ pub(crate) fn drawn_as<'a>(
         Some(_) if name == "notes" => "edit",
         _ => name,
     }
+}
+
+/// The word a `write` that changed nothing wears: `Wrote` over a file nobody touched is a claim
+/// the call did not make, and `Unchanged` is what happened.
+pub(crate) const UNCHANGED: &str = "Unchanged";
+
+/// A write that changed nothing: an `ok` writer carrying no excerpt. The tool pushes one for every
+/// write it makes (`Invocation::edits` says so), so no excerpt on an `ok` write is the no-op, and a
+/// no-op is not the verb `Wrote`.
+pub(crate) fn unchanged_write(
+    name: &str,
+    edits: &[letibot_transcript::ToolEditExcerpt],
+    outcome: &letibot_transcript::ToolOutcome,
+) -> bool {
+    name == "write" && edits.is_empty() && matches!(outcome, letibot_transcript::ToolOutcome::Ok)
 }
 
 /// What drawing a set of excerpts needs. A struct because the rules are seven facts and a signature
@@ -298,7 +314,16 @@ pub(crate) fn call_card(
     // `ToolCallProposed` carries a bounded display target beside the digest - the
     // path, the pattern, the command line - so a call that is still running says `Running
     // "cargo test --workspace"` rather than `Running bash`. Empty is rendered as nothing.
-    let name = drawn_as(&c.name, edits.first());
+    // A finished write with no excerpt touched no file, and the card says so rather than `Wrote`.
+    let nothing_written = matches!(
+        &c.state,
+        CallState::Finished { outcome, edits, .. } if unchanged_write(&c.name, edits, outcome)
+    );
+    let name = if nothing_written {
+        UNCHANGED
+    } else {
+        drawn_as(&c.name, edits.first())
+    };
     let verb = rano::agent::card::Verb::of(name);
     let call = ToolCall {
         name: name.to_string(),

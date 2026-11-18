@@ -1455,3 +1455,95 @@ fn a_folded_rows_rest_skips_the_reason_the_row_already_prints() {
     };
     assert_eq!(crate::ui::folded_rest(&it, 40), 2);
 }
+
+/// A `write` over a file that already held exactly that content: the tool wrote nothing, so the
+/// card does not say `Wrote` - and the reason it gives is on the row without `/t`, folded or not.
+#[test]
+fn a_write_that_changed_nothing_says_unchanged_and_shows_its_reason() {
+    const PATH: &str = "/build/orafuzz/fix/workspace.conf";
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("s.0", "assistant"),
+    )));
+    // The row that carries the call's target: a result row names only its call, so the path a
+    // card is titled with arrives with the narration that proposed it.
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![letibot_transcript::ToolCall {
+                    id: "c1".into(),
+                    name: "write".into(),
+                    arguments: format!("{{\"path\": \"{PATH}\", \"content\": \"x\"}}"),
+                }],
+                truncated: false,
+            }),
+        },
+    )));
+    a.apply(ServerFrame::Event(env(
+        3,
+        testing::proposed_on("t1", "c1", "write", PATH),
+    )));
+    a.apply(ServerFrame::Event(env(
+        4,
+        testing::appended("s.1", "tool_result"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        5,
+        SessionEvent::TranscriptContent {
+            item_id: "s.1".into(),
+            item: Box::new(TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "write".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                // The runtime's own rendering of the no-op: the note, then the sentence saying
+                // why nothing was written.
+                payload: format!(
+                    "[note] no write was performed, so nothing that watches this file was woken.\n\
+                     `{PATH}` already has exactly that content; the file was not touched.\n"
+                ),
+                edits: Vec::new(),
+                origin: None,
+                media: None,
+                ran_ms: None,
+                decision: None,
+            }),
+        },
+    )));
+
+    assert_eq!(a.tools, Fold::Folded, "the fold this is measured folded at");
+    let folded = a.screen(120, 40).join("\n");
+    assert!(
+        folded.contains(&format!("▸ Unchanged {PATH}")),
+        "the verb says what happened:\n{folded}"
+    );
+    assert!(
+        !folded.contains("Wrote"),
+        "and it does not say Wrote:\n{folded}"
+    );
+    assert!(
+        folded.contains("already has exactly that content"),
+        "the reason is on the row without /t:\n{folded}"
+    );
+
+    a.tools = Fold::Open;
+    a.refold();
+    let open = a.screen(120, 40).join("\n");
+    assert!(
+        open.contains(&format!("Unchanged {PATH}"))
+            && open.contains("already has exactly that content"),
+        "open, the same verb and the same reason:\n{open}"
+    );
+    assert!(
+        open.contains("nothing that watches this file was woken"),
+        "and the note the tool sent is not thrown away:\n{open}"
+    );
+}
