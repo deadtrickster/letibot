@@ -843,6 +843,12 @@ pub trait Gate: Send + Sync {
         None
     }
 
+    /// The folder the last answer granted, when the card offered the whole tree above the path and
+    /// the operator took that rung. `None` is the ordinary answer, which granted the path itself.
+    fn view_granted_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Paths taken back out of this session's view since the last call, to unbind before the
     /// next one runs. The default is none.
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
@@ -2450,10 +2456,14 @@ impl ToolRuntime {
                 if !gated {
                     continue;
                 }
-                let (answer, by) = {
+                let (answer, by, root) = {
                     let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
                     let answer = gate.grant_view(&path, &schema.name, ask.access);
-                    (answer, gate.view_answered_by())
+                    let by = gate.view_answered_by();
+                    // The tree the answer granted, when that was the folder rung: the note names
+                    // what was granted, not the file that happened to ask for it.
+                    let root = gate.view_granted_root();
+                    (answer, by, root)
                 };
                 match answer {
                     ViewGrant::Refused(why) => {
@@ -2477,8 +2487,9 @@ impl ToolRuntime {
                             }
                             _ => "by your answer".to_string(),
                         };
+                        let granted_at = root.as_deref().unwrap_or(&path);
                         let note = match self.backend.grant_into_view(
-                            &path,
+                            granted_at,
                             writable,
                             &format!("granted mid-session for `{}`", schema.name),
                         ) {
@@ -2486,7 +2497,7 @@ impl ToolRuntime {
                                 "`{}` is now in this session's view{} {how}. The command above \
                                  already ran without it — run it again and it will see the path. \
                                  The view is now: {view}",
-                                path.display(),
+                                granted_at.display(),
                                 if writable {
                                     ", writable"
                                 } else {

@@ -296,8 +296,18 @@ fn every_rung_is_one_line_and_the_two_refusals_are_one_shape() {
         always_ask_options(),
         options(&offer, crate::mode::GrantScope::Session),
         options(&offer, crate::mode::GrantScope::Once),
-        view_grant_options(crate::view::ViewAccess::Read),
-        view_grant_options(crate::view::ViewAccess::Write),
+        view_grant_options(crate::view::ViewAccess::Read, None),
+        view_grant_options(crate::view::ViewAccess::Write, None),
+        view_grant_options(
+            crate::view::ViewAccess::Read,
+            Some(std::path::Path::new("/build/tmp/leakidx-wt")),
+        ),
+        view_grant_options(
+            crate::view::ViewAccess::Write,
+            Some(std::path::Path::new(
+                "/build/tmp/a-folder-name-that-is-far-too-long-for-one-card-line",
+            )),
+        ),
         memory_grant_options(),
     ];
     for opts in &ladders {
@@ -341,7 +351,7 @@ fn every_rung_is_one_line_and_the_two_refusals_are_one_shape() {
 /// rung as one call, which is the difference between a reason typed on it and words it refuses.
 #[test]
 fn a_session_grant_is_marked_as_one() {
-    let view = view_grant_options(crate::view::ViewAccess::Read);
+    let view = view_grant_options(crate::view::ViewAccess::Read, None);
     for id in ["grant_ro", "grant_rw"] {
         let o = view.iter().find(|o| o.id == id).expect("the rung");
         assert!(
