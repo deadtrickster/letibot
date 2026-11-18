@@ -152,7 +152,8 @@ fn harness(answer: ConfigAnswer) -> Harness {
     let ask = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut reg = Registry::new();
-    reg.register(Box::new(ConfigTool::new(desk.clone()))).unwrap();
+    reg.register(Box::new(ConfigTool::new(desk.clone())))
+        .unwrap();
     let d = crate::backend::tempdir::TempDir::new();
     let backend = crate::backend::HostBackend::new(d.path()).unwrap();
     let rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(Scripted {
@@ -202,12 +203,18 @@ fn a_proposal_renders_its_diff_and_waits_for_the_operator() {
             "why": "the guard's own reads are safe enough to answer"
         }),
     );
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Ok), "{:?}", r.outcome);
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?}",
+        r.outcome
+    );
     // The card carried the diff and the why, so a person reads the change and not a summary.
     let cards = h.ask.lock().unwrap();
     assert_eq!(cards.len(), 1, "one card");
     match &cards[0] {
-        ConfigAsk::Propose { file, diff, why, .. } => {
+        ConfigAsk::Propose {
+            file, diff, why, ..
+        } => {
             assert_eq!(file, "providers.toml");
             assert!(diff.contains("+answer_reads = true"), "{diff}");
             assert!(diff.contains("+++ b/providers.toml"), "{diff}");
@@ -222,7 +229,8 @@ fn a_proposal_renders_its_diff_and_waits_for_the_operator() {
     assert!(after.contains("answer_reads = true"), "{after}");
     assert!(r.payload.contains("human:dead"), "{}", r.payload);
     assert!(
-        r.payload.contains("read back by the real providers.toml reader"),
+        r.payload
+            .contains("read back by the real providers.toml reader"),
         "{}",
         r.payload
     );
@@ -245,7 +253,11 @@ fn a_broken_result_is_refused_with_the_readers_words() {
             "why": "x"
         }),
     );
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }), "{:?}", r.outcome);
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+        "{:?}",
+        r.outcome
+    );
     // The reference does not list the key, so it never reaches the reader: the refusal names it.
     assert!(r.payload.contains("nonsense.setting"), "{}", r.payload);
     assert!(h.ask.lock().unwrap().is_empty(), "nobody was asked");
@@ -273,7 +285,10 @@ fn an_answer_that_is_not_the_operators_writes_nothing() {
                 "why": "x"
             }),
         );
-        assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }), "{who}");
+        assert!(
+            matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+            "{who}"
+        );
         assert!(r.payload.contains(who), "{}", r.payload);
         let after = std::fs::read_to_string(h.desk.path("providers.toml")).unwrap();
         assert!(after.contains("answer_reads = false"), "{who}: {after}");
@@ -319,11 +334,19 @@ fn a_path_is_refused_by_name_and_nobody_is_asked() {
         "/etc/passwd",
         "id_rsa",
         "known_hosts",
+        // A palette is `themes/NAME.toml`, so the name alone is not a file — and it is refused
+        // here rather than after a card nobody could answer with a yes.
+        "theme.toml",
     ] {
         let r = invoke(&mut h, json!({"action": "show", "file": name}));
-        assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }), "{name}");
         assert!(
-            r.payload.contains("keys/") || r.payload.contains("not one of letibot's config files"),
+            matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+            "{name}"
+        );
+        assert!(
+            r.payload.contains("keys/")
+                || r.payload.contains("not one of letibot's config files")
+                || r.payload.contains("themes/NAME.toml"),
             "{name}: {}",
             r.payload
         );
@@ -356,7 +379,10 @@ fn a_credential_edit_is_refused_and_nobody_is_asked() {
             &mut h,
             json!({"action": "propose", "file": file, "edit": edit, "why": "needed"}),
         );
-        assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }), "{edit}");
+        assert!(
+            matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+            "{edit}"
+        );
         assert!(
             r.payload.contains("sets a credential"),
             "{edit}: {}",
@@ -378,7 +404,10 @@ fn a_proposal_needs_a_reason() {
         json!({"action": "propose", "file": "providers.toml",
                "edit": {"shadow.answer_reads": true}}),
     );
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }));
+    assert!(matches!(
+        r.outcome,
+        letibot_transcript::ToolOutcome::Failed { .. }
+    ));
     assert!(r.payload.contains("`why` is required"), "{}", r.payload);
 }
 
@@ -389,7 +418,11 @@ fn a_proposal_needs_a_reason() {
 fn explain_answers_without_a_card() {
     let mut h = harness(human());
     let r = invoke(&mut h, json!({"action": "explain"}));
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Ok), "{:?}", r.outcome);
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?}",
+        r.outcome
+    );
     assert!(r.payload.contains("providers.toml"), "{}", r.payload);
     let r = invoke(&mut h, json!({"action": "explain", "key": "answer_reads"}));
     assert!(r.payload.contains("answer_reads"), "{}", r.payload);
@@ -401,7 +434,11 @@ fn explain_answers_without_a_card() {
 fn show_prints_the_redacted_bytes() {
     let mut h = harness(human());
     let r = invoke(&mut h, json!({"action": "show", "file": "providers.toml"}));
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Ok), "{:?}", r.outcome);
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?}",
+        r.outcome
+    );
     assert!(!r.payload.contains("sk-secret"), "{}", r.payload);
     assert!(r.payload.contains("<redacted>"), "{}", r.payload);
     assert!(r.payload.contains("mode 600"), "{}", r.payload);
@@ -412,7 +449,10 @@ fn show_prints_the_redacted_bytes() {
         by: "agent:s-9".into(),
     });
     let r = invoke(&mut h, json!({"action": "show", "file": "providers.toml"}));
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }));
+    assert!(matches!(
+        r.outcome,
+        letibot_transcript::ToolOutcome::Failed { .. }
+    ));
     assert!(!r.payload.contains("<redacted>"), "{}", r.payload);
 }
 
@@ -424,7 +464,7 @@ fn no_desk_says_so_and_explain_still_answers() {
         .unwrap();
     let d = crate::backend::tempdir::TempDir::new();
     let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let rt = ToolRuntime::new(reg, Box::new(backend));
     let mut sink = crate::NullToolSink;
     let r = rt.invoke(
         "t1",
@@ -435,8 +475,16 @@ fn no_desk_says_so_and_explain_still_answers() {
         },
         &mut sink,
     );
-    assert!(matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }), "{:?}", r.outcome);
-    assert!(r.payload.contains("serves no config directory"), "{}", r.payload);
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+        "{:?}",
+        r.outcome
+    );
+    assert!(
+        r.payload.contains("serves no config directory"),
+        "{}",
+        r.payload
+    );
 }
 
 /// The values a proposal can name, as TOML: a string stays quoted, a number does not, and a null
@@ -460,5 +508,8 @@ fn json_becomes_toml_source() {
     }))
     .unwrap();
     assert_eq!(edits.remove, vec!["shadow.fresh_every".to_string()]);
-    assert_eq!(edits.set.get("shadow.mode").map(String::as_str), Some("\"stateless\""));
+    assert_eq!(
+        edits.set.get("shadow.mode").map(String::as_str),
+        Some("\"stateless\"")
+    );
 }

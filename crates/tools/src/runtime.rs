@@ -1203,6 +1203,9 @@ pub mod roles {
                 // the privilege stated and every change recorded in `host_changelog` one entry
                 // up. A setting this platform has not got is refused by name.
                 "host_config",
+                // `config`: letibot's own configuration files. Nothing here is written by a mode
+                // or a model: a proposal is a card, and only the operator's answer applies it.
+                "config",
                 // `transcript` and `digest`: this session's own conversation, including what
                 // compaction replaced. Seated together on purpose, because `transcript` names
                 // `digest` as the way to ask about the rest.
@@ -1234,7 +1237,7 @@ pub mod roles {
         // The declared ceiling is this list's own count and not DEFAULT_MAX_TOOLS: the
         // number is written down where somebody deciding can read it, and a ceiling
         // quietly raised for everybody is not a ceiling.
-        r.max_tools = 40;
+        r.max_tools = 41;
         r
     }
 
@@ -1254,6 +1257,11 @@ pub mod roles {
                 "recall",
                 "todo_write",
                 "room",
+                // `config`: a setting that is wrong is the model's to see and the operator's to
+                // change. The tool reads the reference, shows a redacted file and puts a
+                // proposal on a card nobody but the operator answers; without it the only way
+                // to a key is asking somebody to read their own config dir aloud.
+                "config",
             ],
         )
     }

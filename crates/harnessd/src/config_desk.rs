@@ -95,9 +95,7 @@ fn check(f: &cref::File, text: &str, path: &Path) -> Result<String, String> {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             "reads as JSON; the trust book's own reader is the plugins crate's and is not run here"
         }
-        "modes.tsv" => {
-            "reads as a TSV table; this file was imported once and is not read any more"
-        }
+        "modes.tsv" => "reads as a TSV table; this file was imported once and is not read any more",
         _ => {
             if f.format == cref::Format::Toml {
                 toml::from_str::<toml::Value>(text)
@@ -248,11 +246,7 @@ impl ConfigDesk for SessionConfig {
         })
     }
 
-    fn propose(
-        &self,
-        file: &str,
-        edits: &cref::edit::Edits,
-    ) -> Result<Proposal, String> {
+    fn propose(&self, file: &str, edits: &cref::edit::Edits) -> Result<Proposal, String> {
         let f = file_for(file)?;
         if f.format != cref::Format::Toml {
             return Err(format!(

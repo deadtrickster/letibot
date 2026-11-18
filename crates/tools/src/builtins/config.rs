@@ -53,8 +53,13 @@ impl ConfigAsk {
 /// The answer. `Granted` carries who answered, so the result can say whose yes it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigAnswer {
-    Granted { by: String },
-    Refused { by: String, why: String },
+    Granted {
+        by: String,
+    },
+    Refused {
+        by: String,
+        why: String,
+    },
     /// Nobody answered, or there was nobody who could: not a refusal, and not a yes.
     NotAsked(String),
 }
@@ -105,7 +110,11 @@ pub trait ConfigDesk: Send + Sync {
     /// One file's bytes with every credential value replaced.
     fn show(&self, file: &str) -> Result<Shown, String>;
     /// Apply `edits` in memory, judge the result with the file's own reader, and describe it.
-    fn propose(&self, file: &str, edits: &letibot_config_ref::edit::Edits) -> Result<Proposal, String>;
+    fn propose(
+        &self,
+        file: &str,
+        edits: &letibot_config_ref::edit::Edits,
+    ) -> Result<Proposal, String>;
     /// Write `text` atomically, keeping the mode — but only over `before`, so a file somebody
     /// changed while the card was up is not overwritten by an answer about the old bytes.
     fn write(&self, file: &str, before: &str, text: &str) -> Result<Written, String>;
@@ -180,6 +189,16 @@ pub fn file_named(args: &Value) -> Result<&'static letibot_config_ref::File, Str
             known_files().join(", ")
         ));
     }
+    if name == "theme.toml" {
+        // A palette is `themes/NAME.toml`, chosen by `head.toml`'s `theme`, so there is no one
+        // file this could mean — said here rather than after a card nobody can answer with a yes.
+        return Err(
+            "`theme.toml` is a name and not a file: palettes are `themes/NAME.toml` beside \
+             `head.toml`, chosen by `theme = \"NAME\"`. Edit the palette you mean, or propose a \
+             change to `head.toml`'s `theme` to pick another."
+                .to_string(),
+        );
+    }
     let known = known_files();
     match letibot_config_ref::find(name) {
         Some(f) => Ok(f),
@@ -240,9 +259,10 @@ pub fn edits_of(args: &Value) -> Result<letibot_config_ref::edit::Edits, String>
         if value.is_null() {
             edits.remove.push(path.clone());
         } else {
-            edits
-                .set
-                .insert(path.clone(), json_to_toml(value).map_err(|why| format!("`{path}`: {why}"))?);
+            edits.set.insert(
+                path.clone(),
+                json_to_toml(value).map_err(|why| format!("`{path}`: {why}"))?,
+            );
         }
     }
     Ok(edits)
@@ -259,8 +279,9 @@ pub fn json_to_toml(v: &Value) -> Result<String, String> {
             let mut out = String::from("[");
             for (i, item) in items.iter().enumerate() {
                 if item.is_null() {
-                    return Err("null is how a whole key is removed, not what an array item is"
-                        .into());
+                    return Err(
+                        "null is how a whole key is removed, not what an array item is".into(),
+                    );
                 }
                 if i > 0 {
                     out.push_str(", ");
@@ -274,8 +295,9 @@ pub fn json_to_toml(v: &Value) -> Result<String, String> {
             let mut out = String::from("{ ");
             for (i, (k, item)) in map.iter().enumerate() {
                 if item.is_null() {
-                    return Err("null is how a whole key is removed, not what a table entry is"
-                        .into());
+                    return Err(
+                        "null is how a whole key is removed, not what a table entry is".into(),
+                    );
                 }
                 if i > 0 {
                     out.push_str(", ");
@@ -290,7 +312,10 @@ pub fn json_to_toml(v: &Value) -> Result<String, String> {
 }
 
 fn toml_key(k: &str) -> String {
-    if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !k.is_empty()
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         k.to_string()
     } else {
         format!("{k:?}")
@@ -372,11 +397,10 @@ impl ConfigTool {
     fn explain(&self, args: &Value) -> Result<String, String> {
         let file = text(args, "file");
         let key = text(args, "key");
-        if let Some(name) = file {
-            let f = file_named(args)?;
-            if f.name != name {
-                return Err(format!("`{name}` is not the file that was resolved"));
-            }
+        if file.is_some() {
+            // A name the reference does not carry is refused here, before the desk is asked to
+            // describe a list of keys that does not exist.
+            file_named(args)?;
         }
         if file.is_none() && key.is_none() {
             return Ok(format!(
@@ -391,9 +415,12 @@ impl ConfigTool {
     fn show(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Result<String, String> {
         let f = file_named(args)?;
         self.desk.ready()?;
-        let by = operator_only(ctx, &ConfigAsk::Show {
-            file: f.name.to_string(),
-        })?;
+        let by = operator_only(
+            ctx,
+            &ConfigAsk::Show {
+                file: f.name.to_string(),
+            },
+        )?;
         let shown = self.desk.show(f.name)?;
         let mode = shown
             .mode
@@ -409,8 +436,9 @@ impl ConfigTool {
         let f = file_named(args)?;
         self.desk.ready()?;
         let edits = edits_of(args)?;
-        let why = text(args, "why")
-            .ok_or_else(|| "`why` is required: it is the line the operator reads before deciding".to_string())?;
+        let why = text(args, "why").ok_or_else(|| {
+            "`why` is required: it is the line the operator reads before deciding".to_string()
+        })?;
         // Before any card: the reference must know every key, and no key it names may be a
         // credential.
         let mut unknown = Vec::new();

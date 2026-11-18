@@ -261,6 +261,7 @@ per entry, as a field rather than a comment, because a list without reasons gets
 | `changes_its_own_rules` | the call writes the files that decide what may run unasked - the preapproved ruleset and the sensitive-path list. A session that can edit those can grant itself anything and then do it quietly |
 | `persistence` | the action outlives the session - a cron entry, a unit enabled, a login item. A session ends; a foothold does not |
 | `machine_power` | shutdown, reboot, halt: every process on the box, the operator's own included |
+| `config_change` | a read of, or a change to, letibot's own configuration - the files that decide what may run unasked, reached through the `config` tool. The operator is the only answerer: a mode, a session or always grant, a bridge seat and a guard model are all refused by name, because a session that could answer for this file would be granting itself the rest |
 | `could_not_be_read` | layer A could not read the action at all, carried as `NotRun` rather than as this tier, and listed because "I could not read it" and "a human must read it" are one sentence. An unresolvable *argument* is no longer this: it widens instead |
 
 ## 4e. The points
@@ -1169,6 +1170,28 @@ numbers are the ones the arms carry in the code:
 Every settled arm records a row and tells the model, and a denial carries the adjudicator's basis
 unless the answer was a bare `Deny`, in which case the model is told the reasoning stayed in the audit
 row. A refusal the model cannot understand is a refusal it will retry.
+
+### Who answered, for the two doors whose subject is letibot itself
+
+Eleven arms decide *whether* a call may run. Two doors ask a question whose subject is letibot's own
+configuration - `config`'s `show` and `propose` - and there the answerer is part of the rule,
+because the file they are about is the one that decides what runs unasked. Both are raised directly
+against the adjudicator as `AlwaysAsk` with `always_ask_options()`, so no mode admits them, no session
+or always grant covers them and no guard model's `admit` stands in (arm 11 is not reached at all),
+and the answer is then read for **who gave it**. `host_config`'s `set` is not this door: it is an
+ordinary `Exec` call decided by the ladder, with its own requirement that a change names a reason
+and the operator's words.
+
+`human:<who>` is the operator and the only yes. Everything else is refused by name, with the answer
+still recorded: `agent:<session>` is a session, a child or a bridge seat answering on somebody's
+behalf (`crates/bridge/tests/bridge_answers.rs` is where that name is pinned), `model:`/`shadow:` is a
+guard or the shadow judge, and `gate:*` is one of this gate's own arms. A refusal that did not say
+*you are not the operator* would read as this gate's opinion, and the model would retry it.
+
+What that buys: `~/.config/letibot` stays masked inside a session - a model that can edit its own
+boundary, its own mode or its own `permission.json` grants itself everything - and a session still has
+a way to say *this setting is wrong, here is the change and here is why*, with the diff in front of the
+person who owns it.
 
 ### What a card offers
 

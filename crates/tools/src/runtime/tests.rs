@@ -885,8 +885,9 @@ fn the_leticode_seat_carries_ask_user_question() {
     // tool added without a decision fails here. 38 since `job_extend` (R160): a background job
     // has no deadline of its own, and the warning before a dead check names the way out.
     // 39 with `screen`. 40 with `job_resume` (R269): the disk floor freezes a job, and its row
-    // names the way out.
-    assert_eq!(seat.tools.len(), 40, "{:?}", seat.tools);
+    // names the way out. 41 with `config`: a setting that is wrong is the model's to see and the
+    // operator's to change, and the card is the only door to one.
+    assert_eq!(seat.tools.len(), 41, "{:?}", seat.tools);
     assert!(
         seat.tools.len() <= seat.max_tools,
         "the seat is over its own ceiling: {} > {}",

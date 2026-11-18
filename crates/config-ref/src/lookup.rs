@@ -14,7 +14,7 @@ pub struct Hit {
 
 /// The descriptive half of an edit's path, when it names one: the table's path and the key.
 /// `None` for a key the reference does not have, which a caller refuses by name.
-pub fn describe<'a, 'b>(f: &'a File, path: &'b str) -> Option<(&'a Table, &'a Key)> {
+pub fn describe(f: &File, path: &str) -> Option<(&'static Table, &'static Key)> {
     let parts: Vec<&str> = path.split('.').collect();
     for split in 0..=parts.len() {
         let table_path = parts[..split].join(".");
@@ -129,10 +129,24 @@ mod tests {
     /// The predicate separates a value from the NAME of one.
     #[test]
     fn a_credential_is_a_value_not_a_name() {
-        for k in ["key", "api_key", "gh-token", "password", "Authorization", "secret"] {
+        for k in [
+            "key",
+            "api_key",
+            "gh-token",
+            "password",
+            "Authorization",
+            "secret",
+        ] {
             assert!(is_credential(k), "{k}");
         }
-        for k in ["key_env", "token_path", "secrets", "keys", "keywords", "monkey"] {
+        for k in [
+            "key_env",
+            "token_path",
+            "secrets",
+            "keys",
+            "keywords",
+            "monkey",
+        ] {
             assert!(!is_credential(k), "{k}");
         }
     }
