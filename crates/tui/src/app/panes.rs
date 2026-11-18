@@ -281,9 +281,16 @@ impl SubagentState {
     }
 
     /// Whether this child is done: the one thing the pane's two groups are made of, and the count above the composer
-    /// too. Anything that is not `running` or `opening` is finished, a rebuilt row included.
+    /// too. Anything that is not `running`, `opening` or `held` is finished, a rebuilt row included - and a HELD child
+    /// has answered but is still this session's work, so it is not one of the finished.
     pub(crate) fn is_finished(&self) -> bool {
-        !matches!(self.state.as_str(), "running" | "opening")
+        !matches!(self.state.as_str(), "running" | "opening" | "held")
+    }
+
+    /// What this child answered and is being held for - its own jobs, which the daemon names on a
+    /// `held` row - or `None` when it is not held. The state word is one word and cannot carry it.
+    pub(crate) fn held_for(&self) -> Option<&str> {
+        (self.state == "held" && !self.prompt.trim().is_empty()).then_some(self.prompt.as_str())
     }
 }
 

@@ -7,16 +7,78 @@ use letibot_sessionlog::event::{Envelope, SessionEvent};
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::text::without_control_lines;
+use rano::agent::pane::PaneLines;
 use rano::agent::subagents::{SubagentOutput, SubagentRow, SubagentsPane};
+use rano::render::{Line, Span};
+use rano::style::Role;
+
+/// The columns rano indents a row's detail under its child by (`detail_column` in its own pane).
+/// The sentence a hold adds under a row is a detail, and an indented one.
+const DETAIL_COLUMN: usize = 7;
+
+/// A held child's sentence, as one faint row under its detail: the words the daemon published,
+/// and nothing this head can say better - an unknown state cannot be drawn by rano's own row.
+fn held_line(said: &str) -> Line {
+    Line::new(vec![Span::role(
+        format!("{}{said}", " ".repeat(DETAIL_COLUMN)),
+        Role::Faint,
+    )])
+}
 
 impl App {
     /// The subagent tree: the children this session spawned, drawn from [`App::subagent_stops`] -
     /// the list the arrows, Enter and `p` read - so the drawn mark and the key that acts cannot
     /// disagree; `&mut self` records those rows, which is what the arrows scroll to.
     pub(crate) fn subagents_lines(&mut self, w: usize) -> Vec<String> {
-        let content = self.subagents_view().content(w);
+        let pane = self.subagents_view();
+        let stops = pane.stops();
+        let content = pane.content(w);
+        let content = self.with_held_rows(content, &stops);
         self.subagents_stop_rows = content.stop_rows;
         row_strings(&content.lines, self.cfg.palette())
+    }
+
+    /// The pane's rows with one more under every child that answered and is held for its jobs. The
+    /// state word rano draws is `waiting`, which names the state and not the work, so the hold's
+    /// own sentence - which the daemon published and which names each job - is drawn under it.
+    fn with_held_rows(&self, content: PaneLines, stops: &[SubStop]) -> PaneLines {
+        // Where each held child's sentence goes: rano draws a child on one row and one detail line
+        // under it, and the clamp is for a pane that drew fewer rows than its stops claim.
+        let mut at: Vec<(usize, String)> = Vec::new();
+        for (k, stop) in stops.iter().enumerate() {
+            let SubStop::Agent(i) = stop else { continue };
+            let Some(said) = self.subagents.get(*i).and_then(SubagentState::held_for) else {
+                continue;
+            };
+            if let Some(row) = content.stop_rows.get(k) {
+                at.push(((row + 2).min(content.lines.len()), said.to_string()));
+            }
+        }
+        if at.is_empty() {
+            return content;
+        }
+        // A stop's row is its record and the head's clicks read it, so it moves with the line it
+        // names - `shifts[i]` is how many lines were inserted before the original line `i`.
+        let mut shifts: Vec<usize> = Vec::with_capacity(content.lines.len() + 1);
+        let mut lines: Vec<Line> = Vec::with_capacity(content.lines.len() + at.len());
+        let mut added = 0;
+        let mut next = 0;
+        for (i, line) in content.lines.iter().enumerate() {
+            while next < at.len() && at[next].0 == i {
+                lines.push(held_line(&at[next].1));
+                added += 1;
+                next += 1;
+            }
+            shifts.push(added);
+            lines.push(line.clone());
+        }
+        shifts.push(added);
+        let stop_rows = content
+            .stop_rows
+            .iter()
+            .map(|r| r + shifts[(*r).min(shifts.len() - 1)])
+            .collect();
+        PaneLines { lines, stop_rows }
     }
 
     /// The subagents pane's facts, in rano's words: each child's state and what it was
@@ -28,7 +90,14 @@ impl App {
                 .subagents
                 .iter()
                 .map(|s| SubagentRow {
-                    state: s.state.clone(),
+                    // A held child is drawn by rano as `running` with no turn generating - its
+                    // `waiting` - because a state word rano does not know is drawn as unknown and
+                    // grouped with the finished. What it is held FOR is the line under the row.
+                    state: if s.held_for().is_some() {
+                        "running".to_string()
+                    } else {
+                        s.state.clone()
+                    },
                     asked: subagent_asked(s),
                     // The child by its name, `fix-login · …14688401`, where the pane drew the
                     // bare short id - the operator's *"slugs for subagents too"*. A child nobody

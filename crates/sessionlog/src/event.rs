@@ -1490,9 +1490,12 @@ pub enum SessionEvent {
         /// [`Envelope`] already carries the parent's `session_id`, and a flattened duplicate field
         /// would fail to parse.
         subagent_id: String,
+        /// `opening`, `running`, `held`, `done` or `failed`. `held` is a child that has answered and
+        /// is kept up for the jobs it started - still this session's work, and not one of the finished.
         state: String,
         /// The subtask's first line on the opening states, and the child's answer's first line on
-        /// the finish: one field, because a card draws one line.
+        /// the finish: one field, because a card draws one line. On `held` it is what the child is
+        /// held for, naming each job - the state word is one word and cannot carry them.
         prompt: String,
         role: String,
         /// The subtask this child was asked to do, in full, and the same string on every state.
