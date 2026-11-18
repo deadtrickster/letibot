@@ -99,14 +99,16 @@ fn a_python_inline_program_that_rewrites_a_tracked_file_draws_its_diff() {
     assert_eq!(edit.after, "alpha\nbeta\ngamma\n");
     assert!(!edit.created);
     assert!(
-        inv.notes.iter().any(|n| n.contains("detected afterwards")),
+        inv.notes
+            .iter()
+            .any(|n| n.contains("by the command, not `edit`")),
         "{:?}",
         inv.notes
     );
     // One note: the change and the tools that would have judged it are one sentence.
     assert_eq!(inv.notes.len(), 1, "{:?}", inv.notes);
     assert!(
-        inv.notes[0].contains("judge a change before it lands"),
+        inv.notes[0].contains("`edit`/`write` judge a change first"),
         "{:?}",
         inv.notes
     );
@@ -154,7 +156,7 @@ fn a_python_inline_program_that_rewrites_two_files_draws_both_diffs() {
     assert_eq!(wrote.len(), 2, "{wrote:?}");
     let note = inv.notes.join("\n");
     assert!(note.contains("changed 2 files"), "{note}");
-    assert!(note.contains("detected afterwards"), "{note}");
+    assert!(note.contains("by the command, not `edit`"), "{note}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -337,7 +339,7 @@ fn the_note_names_only_the_writing_tools_the_seat_has() {
     let note = inv.notes.join("\n");
     assert!(note.contains("changed `a.txt`"), "{note}");
     assert!(
-        !note.contains("judges a change before it lands"),
+        !note.contains("judge a change first"),
         "a seat with no writing tool was given advice it cannot take: {note}"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1030,7 +1032,7 @@ fn a_sed_on_two_files_is_one_note_and_two_diffs() {
     let mut lines = inv.notes[0].lines();
     let head = lines.next().unwrap_or_default();
     assert!(head.contains("changed 2 files"), "{head}");
-    assert!(head.contains("detected afterwards"), "{head}");
+    assert!(head.contains("by the command, not `edit`"), "{head}");
     assert!(
         !head.contains("a.txt"),
         "the count line carries no list: {head}"

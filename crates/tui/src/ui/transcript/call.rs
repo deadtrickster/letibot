@@ -174,8 +174,9 @@ pub(crate) struct DiffRows<'a> {
 }
 
 /// The rows a change detected after a command draws; rano draws an [`EditDiff`] only for an edit
-/// verb, the `under_a_panel` case. Folded, each file is one line naming what `/t` opens; open,
-/// each is drawn whole. The row's own text says how the change was obtained.
+/// verb, the `under_a_panel` case, so each file is drawn here by the row an `edit` is drawn by:
+/// the same diff, the same fold - its first rows and `… +N diff rows · /t unfolds it`, or all of
+/// them when open. A person who wrote the change with a command reads what an edit card says.
 pub(crate) fn detected_diff_rows(
     edits: &[letibot_transcript::ToolEditExcerpt],
     d: DiffRows<'_>,
@@ -192,33 +193,26 @@ pub(crate) fn detected_diff_rows(
     if edits.is_empty() {
         return out;
     }
-    let faint = |text: String| {
-        row_strings(
-            &[rano::agent::text::one(text, rano::style::Role::Faint)],
-            cfg.palette(),
-        )
-    };
     for (i, e) in edits.iter().enumerate() {
         // The panel already carries the first file when an edit verb drew it.
         if under_a_panel && i == 0 {
             continue;
         }
-        let d = edit_diff(e, width, cfg, diff_split);
-        let rows = d.rows_under(if i == 0 { target } else { "" });
-        if !fold.is_open() {
-            out.extend(faint(format!(
-                "  {} · +{} diff rows · /t unfolds it",
-                d.path,
-                rows.len()
-            )));
-            continue;
-        }
-        out.extend(
-            row_strings(&rows, cfg.palette())
-                .into_iter()
-                // The two columns rano's own `indent(l, 2)` puts in front of a real edit's rows.
-                .map(|l| format!("  {l}")),
-        );
+        // One file's block, drawn through the widget an edit call is drawn by so the two cannot
+        // drift: the header is the row's own, and only the diff under it is this file's.
+        let row = ToolRow {
+            // The row's own header names the command, so the diff keeps its name line - that is
+            // where the reader learns which file this is.
+            target: if i == 0 {
+                target.to_string()
+            } else {
+                String::new()
+            },
+            diff: Some(edit_diff(e, width, cfg, diff_split)),
+            fold: fold.into(),
+            ..ToolRow::new("edit", "", Outcome::Ok, Vec::new())
+        };
+        out.extend(row_strings(&row.lines(width + 2)[1..], cfg.palette()));
     }
     out
 }

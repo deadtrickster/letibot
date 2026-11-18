@@ -95,11 +95,12 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     )));
     a.apply(ServerFrame::Event(env_at(3, 2_000, lifted)));
 
-    // The card names the file before the row's body lands, folded like the row will be: a change
-    // that appeared only at the hand-over would be a long command finishing with nothing to read.
+    // The card carries the change before the row's body lands, drawn as an edit card draws its
+    // own: a change that appeared only at the hand-over would be a long command finishing with
+    // nothing to read.
     let live = a.screen(120, 40).join("\n");
     assert!(
-        live.contains("X.md · +") && live.contains("/t unfolds it"),
+        live.contains("X.md") && live.contains("+ three"),
         "the live card, before the row's body lands:\n{live}"
     );
 
@@ -110,8 +111,8 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     )));
     a.record_item("s.1", row);
 
-    // Folded, which is the row the operator was looking at: the note says how the change was
-    // obtained, once, and the file is one line naming what `/t` opens.
+    // Folded, which is the row the operator was looking at: the diff's own rows, as an edit card
+    // shows them, and the note that says how the change was obtained - once.
     assert_eq!(
         a.tools,
         Fold::Folded,
@@ -119,15 +120,15 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     );
     let folded = a.screen(120, 40).join("\n");
     assert!(
-        folded.contains("X.md · +") && folded.contains("/t unfolds it"),
-        "the file is named with the way to its diff:\n{folded}"
+        folded.contains("X.md") && folded.contains("@@ -1,2 +1,3 @@"),
+        "the diff's own name and hunk:\n{folded}"
     );
     assert!(
-        !folded.contains("+ three"),
-        "folded, the diff is not drawn:\n{folded}"
+        folded.contains("+ three"),
+        "folded keeps the change itself on the screen:\n{folded}"
     );
     assert_eq!(
-        folded.matches("detected afterwards").count(),
+        folded.matches("by the command, not `edit`").count(),
         1,
         "how it was obtained is said once:\n{folded}"
     );
@@ -145,16 +146,17 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
         "the hunk a diff draws and nothing else does:\n{open}"
     );
     assert_eq!(
-        open.matches("detected afterwards").count(),
+        open.matches("by the command, not `edit`").count(),
         1,
         "and still said once:\n{open}"
     );
 }
 
-/// Folded, a detected diff is one line with the count of what `/t` opens; open, it is drawn whole.
-/// No provenance line is drawn under it: the row's first note says that, once.
+/// A detected diff is drawn the way an edit card draws its own: folded, the change's first rows
+/// and the count of what `/t` opens; open, all of them. The one summary line this replaced said a
+/// diff existed and showed none of it, so a python edit and an `edit` call read as two things.
 #[test]
-fn a_detected_diff_is_folded_to_one_line_until_t() {
+fn a_detected_diff_is_drawn_as_the_edit_card_draws_one() {
     let after: String = (1..=24)
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
@@ -180,17 +182,43 @@ fn a_detected_diff_is_folded_to_one_line_until_t() {
                 target,
                 width: 116,
                 cfg: &cfg,
-                diff_split: true,
+                // Unified, so a row's text is its own and not padded to the panel's width.
+                diff_split: false,
                 fold,
                 under_a_panel: false,
             },
         )
     };
     let folded = rows(Fold::Folded);
-    assert_eq!(folded.len(), 1, "{folded:?}");
+    // The rows are the DIFF's own rows: the change under its hunk, indented as a card indents
+    // them, not a second rendering of the excerpt.
+    let all = crate::ui::edit_diff(&e, 116, &cfg, false).rows_under(target);
+    let drawn: Vec<String> = all.iter().map(|l| l.plain()).collect();
     assert!(
-        folded[0].contains("X.md · +") && folded[0].contains("diff rows · /t unfolds it"),
-        "the count of what the fold hid, and the way to it: {folded:?}"
+        folded.len() > 1 && folded.len() < drawn.len(),
+        "folded keeps some of the diff and not all of it: {} rows of {}: {folded:?}",
+        folded.len(),
+        drawn.len()
+    );
+    let kept = &folded[..folded.len() - 1];
+    for (got, want) in kept.iter().zip(&drawn) {
+        assert_eq!(
+            got.trim_end(),
+            format!("  {}", want.trim_end()),
+            "the diff's own row, folded"
+        );
+    }
+    assert_eq!(
+        kept.len(),
+        8,
+        "the card's own fold keeps the first rows: {kept:?}"
+    );
+    // The edit card's own seam, counting what it hid.
+    let seam = format!("… +{} diff rows · /t unfolds it", drawn.len() - 8);
+    assert_eq!(
+        folded.last().map(|l| l.trim()),
+        Some(seam.as_str()),
+        "the rows after the kept ones are counted: {folded:?}"
     );
 
     let open = rows(Fold::Open);
@@ -208,10 +236,10 @@ fn a_detected_diff_is_folded_to_one_line_until_t() {
     );
 }
 
-/// Two files changed by one command are two diffs on one row: one line each while folded, drawn
-/// whole when the fold is open, so a sweep that rewrote twenty files does not bury its command.
+/// Two files changed by one command are two diffs on one row, each drawn as an edit card draws
+/// its own, so a sweep that rewrote twenty files does not bury its command.
 #[test]
-fn two_changed_files_are_two_diffs_and_the_count_is_said() {
+fn two_changed_files_are_two_diffs_each_drawn_as_an_edit_card() {
     let one = |path: &str| letibot_transcript::ToolEditExcerpt {
         path: path.into(),
         created: false,
@@ -239,18 +267,20 @@ fn two_changed_files_are_two_diffs_and_the_count_is_said() {
             },
         )
     };
+    // Each file is its own block: a name line and the rows of its change, folded or open.
     let folded = rows(&edits, Fold::Folded);
-    assert_eq!(folded.len(), 2, "one line per file: {folded:?}");
+    let both = folded.join("\n");
     assert!(
-        folded[0].contains("a.txt · +") && folded[1].contains("b.txt · +"),
-        "each named with what it hides: {folded:?}"
+        folded[0].contains("a.txt") && folded.iter().any(|r| r.contains("b.txt")),
+        "each file names itself, since the header names the command: {folded:?}"
     );
-    assert!(
-        !folded.iter().any(|r| r.contains("TWO")),
-        "folded, no diff is drawn: {folded:?}"
+    assert_eq!(
+        both.matches("TWO").count(),
+        2,
+        "the change itself is drawn for each file: {both}"
     );
 
-    // And unfolded, each file's diff is drawn.
+    // And unfolded, each file's diff is drawn whole.
     let open = rows(&edits, Fold::Open);
     let both = open.join("\n");
     assert!(
@@ -262,26 +292,36 @@ fn two_changed_files_are_two_diffs_and_the_count_is_said() {
         2,
         "the change itself is drawn for each file: {both}"
     );
+    assert!(
+        !open.iter().any(|r| r.contains("diff rows")),
+        "nothing is elided when it is open: {open:?}"
+    );
+}
+
+/// A tool result as the runtime hands it over.
+fn result_item(
+    name: &str,
+    payload: &str,
+    edits: Vec<letibot_transcript::ToolEditExcerpt>,
+) -> TranscriptItem {
+    TranscriptItem::ToolResult {
+        call_id: "c1".into(),
+        name: name.into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: payload.into(),
+        edits,
+        origin: None,
+        media: None,
+        ran_ms: None,
+        decision: None,
+    }
 }
 
 /// A bash row as the runtime hands it over: the payload with its notes first, and its excerpts.
 fn bash_row(payload: &str, edits: Vec<letibot_transcript::ToolEditExcerpt>) -> App {
     let hub = Hub::new("s");
     hub.publish(testing::appended("s.1", "tool_result"));
-    hub.record_item(
-        "s.1",
-        TranscriptItem::ToolResult {
-            call_id: "c1".into(),
-            name: "bash".into(),
-            outcome: letibot_transcript::ToolOutcome::Ok,
-            payload: payload.into(),
-            edits,
-            origin: None,
-            media: None,
-            ran_ms: None,
-            decision: None,
-        },
-    );
+    hub.record_item("s.1", result_item("bash", payload, edits));
     let mut a = app();
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     a
@@ -316,31 +356,34 @@ fn a_checkout_there_and_back_draws_one_line_and_no_diff() {
     );
     assert!(!screen.contains("diff rows"), "no diff:\n{screen}");
     assert!(
-        !screen.contains("detected afterwards"),
-        "no provenance footer:\n{screen}"
+        !screen.contains("by the command, not `edit`"),
+        "a sweep that netted nothing says only its git line:\n{screen}"
     );
 }
 
-/// `sed -i` on two files: the note once, and two folded diffs.
+/// `sed -i` on two files: the note once, and two diffs drawn as edit cards.
 #[test]
-fn a_sed_on_two_files_draws_one_note_and_two_folded_diffs() {
+fn a_sed_on_two_files_draws_one_note_and_two_diffs() {
     let mut a = bash_row(
-        "[note] this command changed 2 files - diffs detected afterwards, not made by `edit`\n\
-         a.txt, b.txt\n",
+        "[note] this command changed 2 files - by the command, not `edit`\na.txt, b.txt\n",
         vec![excerpt("a.txt"), excerpt("b.txt")],
     );
     let screen = a.screen(120, 40).join("\n");
     assert_eq!(
-        screen.matches("detected afterwards").count(),
+        screen.matches("by the command, not `edit`").count(),
         1,
         "said once:\n{screen}"
     );
     assert_eq!(
-        screen.matches("diff rows · /t unfolds it").count(),
+        screen.matches("@@ -1,2 +1,2 @@").count(),
         2,
-        "two folded diffs:\n{screen}"
+        "both files' hunks are drawn:\n{screen}"
     );
-    assert!(!screen.contains("+ two"), "folded, not drawn:\n{screen}");
+    assert_eq!(
+        screen.matches("+ two").count(),
+        2,
+        "and both changes:\n{screen}"
+    );
     a.tools = Fold::Open;
     a.refold();
     let open = a.screen(120, 40).join("\n");
@@ -348,9 +391,9 @@ fn a_sed_on_two_files_draws_one_note_and_two_folded_diffs() {
     assert!(!open.contains("diff rows"), "open draws them:\n{open}");
 }
 
-/// A `git stash` that leaves the tree changed: the git line, and the net-changed file folded.
+/// A `git stash` that leaves the tree changed: the git line, and the net-changed file's diff.
 #[test]
-fn a_stash_that_leaves_the_tree_changed_draws_the_git_line_and_folds_the_net_change() {
+fn a_stash_that_leaves_the_tree_changed_draws_the_git_line_and_the_net_change() {
     let mut a = bash_row(
         "[note] git: stash · 1 file moved · net change: 1 file\na.txt\nSaved working directory\n",
         vec![excerpt("a.txt")],
@@ -360,10 +403,9 @@ fn a_stash_that_leaves_the_tree_changed_draws_the_git_line_and_folds_the_net_cha
         screen.contains("git: stash · 1 file moved · net change: 1 file"),
         "{screen}"
     );
-    assert_eq!(
-        screen.matches("a.txt · +").count(),
-        1,
-        "the net change, folded:\n{screen}"
+    assert!(
+        screen.contains("@@ -1,2 +1,2 @@") && screen.contains("+ two"),
+        "the net change, drawn as a card draws it:\n{screen}"
     );
-    assert!(!screen.contains("detected afterwards"), "{screen}");
+    assert!(!screen.contains("by the command, not `edit`"), "{screen}");
 }

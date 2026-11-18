@@ -262,17 +262,13 @@ fn changed_note(changed: &[String], drawn: usize) -> String {
             "this command changed {n} files, and no diff could be read back for any of them - \
              `git diff` is the one to read\n{list}"
         ),
-        (1, 1) => {
-            format!("this command changed `{list}` - diff detected afterwards, not made by `edit`")
-        }
+        (1, 1) => format!("this command changed `{list}` - by the command, not `edit`"),
         (d, n) if d == n => {
-            format!(
-                "this command changed {n} files - diffs detected afterwards, not made by `edit`\n{list}"
-            )
+            format!("this command changed {n} files - by the command, not `edit`\n{list}")
         }
         (d, n) => format!(
-            "this command changed {n} files - diffs detected afterwards for the first {d}, not made \
-             by `edit`; `git diff` is the one to read for the rest\n{list}"
+            "this command changed {n} files - by the command, not `edit`; {d} of them are drawn \
+             and `git diff` is the one to read for the rest\n{list}"
         ),
     }
 }
