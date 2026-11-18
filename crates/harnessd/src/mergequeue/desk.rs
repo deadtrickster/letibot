@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::registry::Registry;
@@ -12,6 +13,7 @@ use letibot_tokencore::store::{
     TargetHealth,
 };
 use letibot_tools::builtins::queue::QueueDesk;
+use letibot_tools::exec::diskio::Disks as _;
 use letibot_transcript::text::clip_chars;
 
 use super::gate::{self, now_ms};
@@ -434,11 +436,11 @@ fn every(store: &Store) -> Result<String, String> {
             Some(h) => plain_state(h.state.as_str()),
             None => "no target".into(),
         };
-        if let Some(g) = health.and_then(running_now) {
+        if let Ok(Some(g)) = store.live_gate(repo) {
             state.push_str(&format!(
                 " · step {} of {} · {}",
                 g.step.max(1),
-                g.of.max(1),
+                g.of_step.max(1),
                 dur_human(now.saturating_sub(g.started_ms))
             ));
         }
@@ -505,10 +507,12 @@ fn bounded(store: &Store, repo: &str) -> Result<String, String> {
         .filter(|m| m.state == MergeState::Landed && m.state_ms >= today)
         .count();
     let mut out = format!("the queue for {repo}\n");
+    let gate = running_gate(store, repo);
+    let gate_seen = gate.as_ref().map(|(g, machine)| (g, machine.as_str()));
     if healths.is_empty() {
         out.push_str("no target is gated here — the queue has not looked at this repository\n");
     }
-    out.push_str(&targets(&healths, Some(SHOWN_TAIL)));
+    out.push_str(&targets(&healths, Some(SHOWN_TAIL), gate_seen));
     out.push_str(&format!(
         "review queue: {}\n",
         counted(
@@ -531,7 +535,7 @@ fn bounded(store: &Store, repo: &str) -> Result<String, String> {
             "landed"
         )
     ));
-    let (lines, more) = first_rows(&reviews, &merges);
+    let (lines, more) = first_rows(&reviews, &merges, gate_seen);
     for line in lines {
         out.push_str(&line);
         out.push('\n');
@@ -594,7 +598,11 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
         .into_iter()
         .filter(|h| here(&h.repository))
         .collect();
-    let mut out = targets(&healths, None);
+    // What is gated, and what the machine running it says about itself - read once, so every line that
+    // mentions the gate mentions the same gate.
+    let gate = repository.and_then(|repo| running_gate(store, repo));
+    let gate_seen = gate.as_ref().map(|(g, machine)| (g, machine.as_str()));
+    let mut out = targets(&healths, None, gate_seen);
     let reviews = store.review_rows(None).map_err(|e| e.to_string())?;
     let open_reviews: Vec<&ReviewRow> = reviews
         .iter()
@@ -618,7 +626,7 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
         how_many(open_merges.len(), "row", "rows")
     ));
     for m in open_merges {
-        out.push_str(&merge_line(m, None));
+        out.push_str(&merge_line(m, None, gate_seen));
         out.push('\n');
     }
     let leases: Vec<QueueLease> = store
@@ -634,12 +642,22 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
 /// A repository's target, and the gate that failed on it - the whole tail in the full shape
 /// (`None`) the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what
 /// was cut. A target whose gate is running says what it is doing, on its own line
-fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
+fn targets(
+    healths: &[TargetHealth],
+    tail: Option<usize>,
+    gate: Option<(&LiveGate, &str)>,
+) -> String {
     let now = now_ms();
     let mut out = String::new();
     for h in healths {
-        let running = running_now(h)
-            .map(|g| format!(" · {}", gate_words(&g, now)))
+        // The tip's OWN gate, not a landing's: one repository runs one gate at a time, and the row's
+        // line is where a landing's is said. The health row is what says a gate is on this tip at all -
+        // a published row left by a worker that died is not a gate.
+        let running = gate
+            .filter(|(g, _)| {
+                h.state == HealthState::Gating && g.kind == "target" && g.target == h.target
+            })
+            .map(|(g, machine)| format!(" · {}", gate_said(g, now, machine)))
             .unwrap_or_default();
         out.push_str(&format!(
             "target `{}` in {}: {} at {}{}\n  {}\n",
@@ -675,25 +693,90 @@ fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
     out
 }
 
-/// The gate `h`'s target is running, if it is running one - the health row says whether a gate is on the
-/// tip, and the gate says which step. Two facts from two places, asked together so no caller can pair
-/// them wrongly.
-fn running_now(h: &TargetHealth) -> Option<gate::RunningGate> {
-    (h.state == HealthState::Gating)
-        .then(|| gate::running(&h.repository))
-        .flatten()
+/// The gate this repository is running - the published row and what the machine running it says about
+/// itself. `None` when nothing is gated here, which is the honest answer for a repository at rest.
+fn running_gate(store: &Store, repo: &str) -> Option<(LiveGate, String)> {
+    let gate = store.live_gate(repo).ok().flatten()?;
+    let machine = machine_facts(&gate);
+    Some((gate, machine))
 }
 
-/// The gate a target is running, in one clause - which step of how many, how long it has
-/// been on it, and whether its output is still moving.
-fn gate_words(g: &gate::RunningGate, now: u64) -> String {
-    format!(
-        "step {} of {} · {} · {}",
-        g.step.max(1),
-        g.of.max(1),
-        dur_human(now.saturating_sub(g.started_ms)),
-        tail_words(g, now)
-    )
+/// The machine a gate runs on, and - when this daemon is the one running it - whether its output is
+/// still moving, which no published row can carry.
+fn machine_facts(g: &LiveGate) -> String {
+    let mut said = machine_words(g);
+    if let Some(step) = gate::running(&g.repository) {
+        said.push_str(&format!(" · {}", tail_words(&step, now_ms())));
+    }
+    said
+}
+
+/// The load on the machine a gate runs on and the room left where its build goes. A local gate is read
+/// from this box's own files; a host's is one bounded ssh call, and a read that does not answer says so.
+fn machine_words(g: &LiveGate) -> String {
+    let host = g.host.strip_suffix(" (firecode)").unwrap_or(&g.host);
+    if host == "local" {
+        let load = letibot_tools::firecode::boot::LoadSample::read()
+            .map(|s| s.said())
+            .unwrap_or_else(|| "load not read".to_string());
+        let room = match letibot_tools::exec::diskio::HostDisks.space(Path::new(&g.dir)) {
+            Some(s) => format!("{} free at its build dir", bytes_human(s.free)),
+            None => "room left not read (its build dir is not there yet)".to_string(),
+        };
+        return format!("{load} · {room}");
+    }
+    match remote_facts(host, &g.dir) {
+        Ok(said) => said,
+        Err(why) => format!("load not read ({why})"),
+    }
+}
+
+/// How long a read of a gate host's own facts may take: one round trip over the connection the daemon
+/// already has open for it, and a host that does not answer in that is not worth a `status` call.
+const FACTS_BOUND: Duration = Duration::from_secs(10);
+
+/// A declared host's load and the room left at the gate's build dir, in ONE call that only reads. It
+/// reuses the daemon's `ControlMaster` for that host, so it is a round trip and not a handshake.
+fn remote_facts(host: &str, dir: &str) -> Result<String, String> {
+    let hosts = letibot_tools::remote::Hosts::load();
+    let Some(h) = hosts.get(host).cloned() else {
+        return Err(format!("`{host}` is not a declared host any more"));
+    };
+    let ssh =
+        letibot_tools::remote::Ssh::connect(h, None, letibot_tools::remote::Paths::from_env())?;
+    let dir = dir.replace('\'', "'\\''");
+    let script = format!(
+        "cat /proc/loadavg 2>/dev/null | cut -d' ' -f1,2,3; nproc 2>/dev/null; \
+         df -Pk '{dir}' 2>/dev/null | tail -1 | awk '{{print $4}}'"
+    );
+    let argv = ssh.argv(&ssh.remote_command(&script));
+    let out = match letibot_tools::rpc::run_bounded(ssh.program(), &argv, FACTS_BOUND) {
+        letibot_tools::rpc::Ended::Answered(out) => out,
+        letibot_tools::rpc::Ended::TimedOut => {
+            return Err("it did not answer in 10 s".to_string());
+        }
+        letibot_tools::rpc::Ended::Unstartable(why) => return Err(why),
+    };
+    let said = String::from_utf8_lossy(&out.stdout);
+    let field = |n: usize| said.lines().nth(n).map(str::trim).unwrap_or_default();
+    let load: String = field(0)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+        .unwrap_or_default();
+    let cores = field(1);
+    let free_kb = field(2).parse::<u64>().ok();
+    if load.is_empty() {
+        return Err(format!("`{host}` said nothing about its load"));
+    }
+    let mut words = format!("load {load} on {cores} cores");
+    if let Some(kb) = free_kb {
+        words.push_str(&format!(
+            " · {} free at its build dir",
+            bytes_human(kb.saturating_mul(1024))
+        ));
+    }
+    Ok(words)
 }
 
 /// Is the step's output moving? - answered from ONE read, because the log's own mtime is when its last
@@ -762,15 +845,21 @@ fn bytes_human(n: u64) -> String {
         format!("{n} B")
     } else if n < 1024 * 1024 {
         format!("{} KiB", n / 1024)
-    } else {
+    } else if n < 1024 * 1024 * 1024 {
         format!("{} MiB", n / (1024 * 1024))
+    } else {
+        format!("{:.1} GiB", n as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
 
 /// The rows a bounded answer prints, worst first - what is parked on a person, then what is running, then
 /// what waits; an operator's urgent entry before a subagent's, oldest first inside each. So what the
 /// count drops is the tail of the queue and nothing anybody must act on.
-fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize) {
+fn first_rows(
+    reviews: &[ReviewRow],
+    merges: &[MergeRow],
+    gate: Option<(&LiveGate, &str)>,
+) -> (Vec<String>, usize) {
     let mut lines: Vec<((u8, usize, u64), String)> = Vec::new();
     for r in reviews.iter().filter(|r| parked(r.state)) {
         let band = match r.state {
@@ -794,7 +883,7 @@ fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize
         };
         lines.push((
             (band, m.priority.rank(), m.state_ms),
-            merge_line(m, Some(SHOWN_EVIDENCE)),
+            merge_line(m, Some(SHOWN_EVIDENCE), gate),
         ));
     }
     lines.sort_by_key(|(rank, _)| *rank);
@@ -871,9 +960,14 @@ fn review_line(r: &ReviewRow, cap: Option<usize>) -> String {
 }
 
 /// One landing row as one line, the same shape one queue over.
-fn merge_line(m: &MergeRow, cap: Option<usize>) -> String {
+fn merge_line(m: &MergeRow, cap: Option<usize>, gate: Option<(&LiveGate, &str)>) -> String {
+    // A landing under the gate says what it is doing: the row alone can only say `gating`.
+    let running = gate
+        .filter(|(g, _)| m.state == MergeState::Gating && g.entries().contains(&m.id.as_str()))
+        .map(|(g, machine)| format!("\n      the gate: {}", gate_said(g, now_ms(), machine)))
+        .unwrap_or_default();
     format!(
-        "  `{}` {} `{}` → `{}`: {}",
+        "  `{}` {} `{}` → `{}`: {}{running}",
         m.id,
         plain_state(m.state.as_str()),
         m.branch,
@@ -1021,7 +1115,7 @@ mod tests {
     use super::*;
     use crate::mergequeue::serve::tests::{TempDir, commit, repo, sh};
     use letibot_tokencore::store::{
-        MergeGateOutcome, MergeGateStep, MergePriority, NewReview, ReviewKind, ReviewState,
+        MergeGateOutcome, MergeGateStep, MergePriority, Move, NewReview, ReviewKind, ReviewState,
         TargetHealth,
     };
     use std::sync::Mutex;
@@ -1229,6 +1323,169 @@ mod tests {
             workspace: workspace.to_path_buf(),
             registry: letibot_sessionlog::registry::Registry::new(),
         }
+    }
+
+    /// A gate as the worker publishes it: run 1 of it, on the step a fixture wants, in `dir`.
+    fn a_live_gate(
+        repo: &str,
+        kind: &str,
+        entry: &str,
+        dir: &str,
+        started_ms: u64,
+    ) -> letibot_tokencore::store::LiveGate {
+        letibot_tokencore::store::LiveGate {
+            repository: repo.into(),
+            run_id: format!("ec3cb01e8a6f-{started_ms}"),
+            kind: kind.into(),
+            target: "main".into(),
+            entry: entry.into(),
+            sha: "ec3cb01e8a6f4d2c9b1a".into(),
+            host: "local".into(),
+            dir: dir.into(),
+            step: 3,
+            of_step: 4,
+            command: "cargo test --offline --workspace --no-fail-fast".into(),
+            step_ms: started_ms,
+            started_ms,
+            stop_by: String::new(),
+            stop_why: String::new(),
+        }
+    }
+
+    /// A running gate says WHERE it runs, WHICH step and its command, how long it has been at it, and -
+    /// from the string the caller read off that machine - its load and the room left. The machine's own
+    /// read is faked here: that is what lets the shape be asserted without a host.
+    #[test]
+    fn a_running_gate_says_where_and_what_step_and_the_machines_own_facts() {
+        let gate = a_live_gate("/repo", "target", "", "/build/gate/repo-1f/target", 1_000);
+        let said = gate_said(
+            &gate,
+            185_000,
+            "load 1.40 on 24 cores · 41.2 GiB free at its build dir · tail moving (36 KiB)",
+        );
+        assert_eq!(
+            said,
+            "step 3 of 4 `cargo test --offline --workspace --no-fail-fast` · 3m04s so far · on \
+             local · load 1.40 on 24 cores · 41.2 GiB free at its build dir · tail moving (36 KiB)",
+            "the whole clause, in order"
+        );
+        // A gate waiting for the box's lock is on no step yet, and says so rather than `step 0 of 0`.
+        let mut waiting = gate.clone();
+        waiting.step = 0;
+        waiting.of_step = 0;
+        assert!(gate_said(&waiting, 61_000, "").starts_with("not on a step yet · 1m00s so far"));
+        // A firecode gate runs on a VM on that machine: the line says so in a word a reader knows.
+        waiting.host = "lab2x1 (firecode)".into();
+        assert!(gate_said(&waiting, 61_000, "").contains("on lab2x1, in a firecode VM"));
+    }
+
+    /// The machine's own facts: this box's files for a local gate, and a host that cannot be asked says
+    /// so rather than leaving the line short.
+    #[test]
+    fn the_machines_facts_are_read_locally_and_a_read_that_fails_says_so() {
+        let dir = TempDir::new("desk-machine");
+        let here = a_live_gate(
+            "/repo",
+            "target",
+            "",
+            &dir.0.display().to_string(),
+            now_ms(),
+        );
+        let said = machine_words(&here);
+        assert!(said.starts_with("load "), "this box's loadavg: {said}");
+        assert!(
+            said.contains("cores") && said.contains("free at its build dir"),
+            "and the room at the build dir: {said}"
+        );
+        // A host nobody declares (this test's box declares none) is a read that cannot be made.
+        let gone = a_live_gate("/repo", "target", "", "/build/gate/x/target", now_ms());
+        let gone = letibot_tokencore::store::LiveGate {
+            host: "a-host-nobody-declares".into(),
+            ..gone
+        };
+        let said = machine_words(&gone);
+        assert!(said.starts_with("load not read"), "{said}");
+        assert!(said.contains("not a declared host"), "why: {said}");
+    }
+
+    /// A landing under the gate says which step it is on and where - the row alone can only say
+    /// `the gate is running`, and that is the state a model most needs to act on.
+    #[test]
+    fn status_shows_the_gate_a_landing_row_is_under() {
+        let dir = TempDir::new("desk-landing-gate");
+        let mine = a_repo(&dir.0, "mine", None);
+        let db = dir.0.join("sessions.db");
+        let store = Store::open(&db).unwrap();
+        let (id, merge) = a_gating_row(&store, &mine);
+        store
+            .gate_began(&a_live_gate(
+                &mine,
+                "land",
+                &id,
+                &dir.0.display().to_string(),
+                now_ms().saturating_sub(60_000),
+            ))
+            .unwrap();
+        let desk = a_desk(&db, Path::new(&mine));
+
+        let said = desk.status(false, None).unwrap();
+        let at = said
+            .find(&format!("`{merge}`"))
+            .unwrap_or_else(|| panic!("the row's line: {said}"));
+        let row_line = &said[at..];
+        let row_line = row_line.lines().take(2).collect::<Vec<_>>().join("\n");
+        assert!(
+            row_line.contains("the gate is running") && row_line.contains("the gate: step 3 of 4"),
+            "the row and what its gate is doing: {row_line}"
+        );
+        assert!(row_line.contains(" on local"), "where it runs: {row_line}");
+    }
+
+    /// A merge row in `gating` for `repo`, born the way the queue makes one - answered with its review
+    /// id and its merge id.
+    fn a_gating_row(store: &Store, repo: &str) -> (String, String) {
+        a_review(store, repo, "r-gating", "accepted", 10);
+        store
+            .move_review(
+                "r-gating",
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new("reviewer:sub-1", "taken"),
+                11,
+            )
+            .unwrap();
+        let merge = "m-r-gating".to_string();
+        assert!(
+            store
+                .approve_review(
+                    "r-gating",
+                    &letibot_tokencore::store::Approval {
+                        expect: ReviewState::Reviewing,
+                        expect_owner: None,
+                        reviewed_sha: "ec3cb01e8a6f4d2c9b1a".into(),
+                        by: "reviewer:sub-1".into(),
+                        reasons: vec![],
+                        files: vec![],
+                        commands: vec![],
+                        why: "accepted".into(),
+                        merge_id: merge.clone(),
+                    },
+                    12,
+                )
+                .unwrap()
+        );
+        assert!(
+            store
+                .move_merge(
+                    &merge,
+                    MergeState::Queued,
+                    MergeState::Gating,
+                    &Move::new("test", "taken").set("owner", "test"),
+                    13,
+                )
+                .unwrap()
+        );
+        (merge.clone(), merge)
     }
 
     /// The default scope is the session's own repository - not nineteen sections of other people's
@@ -1559,16 +1816,19 @@ mod tests {
         }
     }
 
-    /// The gate's clause is the three facts a merge row's detail carries, in one line - which step of how
-    /// many, how long, and whether the output is moving. The exact words, so the two readers of this line
-    /// (a model's `status` and a person's eye) cannot drift apart.
+    /// The gate's clause is the facts a merge row's detail carries, in one line - where it runs, which
+    /// step of how many and its command, how long, and (from the caller) whether its output is moving.
+    /// The exact words, so the two readers of this line (a model's `status` and a person's eye) cannot
+    /// drift apart.
     #[test]
     fn a_running_gates_clause_names_the_step_the_clock_and_the_moving_tail() {
         let now = 1_000_000 + 372_000; // 6m12s in
         let g = a_gate(3, 4, 372_000, 36 * 1024, Some(2_000));
+        let live = a_live_gate("/repo", "target", "", "/w/target", 1_000_000);
         assert_eq!(
-            gate_words(&g, now),
-            "step 3 of 4 · 6m12s · tail moving (36 KiB)"
+            gate_said(&live, now, &tail_words(&g, now)),
+            "step 3 of 4 `cargo test --offline --workspace --no-fail-fast` · 6m12s so far · on \
+             local · tail moving (36 KiB)"
         );
         // A tail that has stood still is not called moving, and the two bands are the pane's own
         // minutes of silence is a build between crates, ten of them is a step going nowhere.
@@ -1620,6 +1880,17 @@ mod tests {
             gate_steps: vec![],
         };
         store.set_target_health(&health, "test").unwrap();
+        // The worker publishes the run; the desk reads it, not a thread of its own.
+        let started = now_ms().saturating_sub(3 * 60_000);
+        store
+            .gate_began(&a_live_gate(
+                &mine,
+                "target",
+                "",
+                &wt.display().to_string(),
+                started,
+            ))
+            .unwrap();
         let desk = a_desk(&db, Path::new(&mine));
 
         let said = desk.status(false, None).unwrap();
@@ -1627,27 +1898,33 @@ mod tests {
             .lines()
             .find(|l| l.starts_with("target `main`"))
             .unwrap_or_else(|| panic!("the target's line: {said}"));
+        // The state, the tip, the step and the command it is on, how long, and where.
         assert!(
             line.starts_with(&format!(
-                "target `main` in {mine}: the gate is running at ec3cb01e8a6f · step 3 of 4 · "
+                "target `main` in {mine}: the gate is running at ec3cb01e8a6f · step 3 of 4 \
+                 `cargo test --offline --workspace --no-fail-fast` · "
             )),
-            "the state, the tip and the step: {line}"
+            "the state, the tip, the step and its command: {line}"
         );
+        assert!(line.contains(" on local"), "where it runs: {line}");
+        // This box's own /proc and the room at the build dir are read for the line, so the numbers
+        // are not pinned here - only that the read was made.
+        assert!(line.contains("load ") && line.contains("cores"), "{line}");
         assert!(
             line.ends_with(" · tail moving (36 KiB)"),
             "and whether the output is moving: {line}"
         );
-        // A headline, not the story - the clause is bounded by its own words, so a long path is the
-        // only thing that can make this line long.
+        // A headline, not the story - the clause carries a step's COMMAND here, which is the one part
+        // that must not be cut (a truncated command is a wrong one), and this fixture's is long.
         let clause = line.split(": ").nth(1).unwrap_or_default();
         assert!(
-            clause.chars().count() < 100,
-            "the gate's clause is a headline: {clause:?}"
+            clause.chars().count() < 260,
+            "the gate's clause is still a headline: {clause:?}"
         );
         // And `repository:` prints it too - the third scope is the same target line, in full.
         let full = desk.status(false, Some(".")).unwrap();
         assert!(
-            full.contains("the gate is running at ec3cb01e8a6f · step 3 of 4 · ")
+            full.contains("the gate is running at ec3cb01e8a6f · step 3 of 4 ")
                 && full.contains("tail moving (36 KiB)"),
             "the named scope carries the gate as well: {full}"
         );
@@ -1686,6 +1963,15 @@ mod tests {
         std::fs::write(&log, "building\n").unwrap();
         gate::watch(&wt, &mine);
         gate::watch_step(&wt, "cargo test --offline --workspace", 3, 4, &log);
+        store
+            .gate_began(&a_live_gate(
+                &mine,
+                "target",
+                "",
+                &wt.display().to_string(),
+                now_ms(),
+            ))
+            .unwrap();
         store
             .set_target_health(
                 &TargetHealth {
