@@ -16,9 +16,10 @@ use letibot_harnessd::harness::{ChildTurns, serve_child_under, turned_back_for_i
 use letibot_harnessd::sessions::TodoNagClock;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
-use letibot_sessionlog::registry::Registry;
+use letibot_sessionlog::registry::{Registry, Work, WorkOrIdle};
 use letibot_tools::authorise::Speaker;
 use letibot_tools::exec::{ScopeKind, SpawnRequest};
+use letibot_transcript::Backgrounding;
 
 mod support;
 
@@ -133,15 +134,35 @@ fn a_job_that_ends_while_the_child_is_turned_back_wakes_it() {
         letibot_harnessd::modes::ModeStore::default();
     let registry = Registry::new();
     let hub: Arc<Hub> = registry.new_hub("s-child".to_string());
-    let mut sub = Harness::open_with_registry(&parts, cfg, hub.clone(), None, None, registry)
-        .expect("the child opens");
+    // The registry must HOLD the session it serves: a ring for one it does not hold is dropped, and
+    // this is the half `Sessions` does for a child before it serves it.
+    registry
+        .adopt(
+            Arc::clone(&hub),
+            "the child",
+            letibot_sessionlog::registry::SessionWiring {
+                workspace: dir.display().to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("the registry holds the session it serves");
+    let mut sub =
+        Harness::open_with_registry(&parts, cfg, hub.clone(), None, None, Arc::clone(&registry))
+            .expect("the child opens");
 
     let mut reply = sub
         .submit_as_a_normal_session(Speaker::Operator, "run the tests and hand off")
         .expect("the first turn answers");
     assert_eq!(reply.text, SAID[0], "the answer said over the job");
 
-    // A job that really runs here, in this child's own host.
+    // A job that really runs here, in this child's own host, and ends BY ITSELF: one this session
+    // kills is quiet by design (`watch_one` settles `killed by job_kill` with no push, because the
+    // `job_kill` result already told the model), so the only ending that owes a turn is the job's
+    // own. The marker is how this file decides when that happens. And it is watched - the half a
+    // `bash` call gets from `JobWatchSink` and a bare spawn does not, since a job nobody watches
+    // settles nowhere and no wake is ever owed.
+    let marker = scratch.join("the-job-may-end");
     let host = sub
         .runtime_handle()
         .backend
@@ -149,7 +170,7 @@ fn a_job_that_ends_while_the_child_is_turned_back_wakes_it() {
         .expect("a process host, which the gate above proved");
     let job = host
         .spawn(&SpawnRequest {
-            command: "sleep 300".into(),
+            command: format!("while [ ! -f '{}' ]; do sleep 0.2; done", marker.display()),
             slug: Some("tests".into()),
             cwd: ".".into(),
             scope: ScopeKind::Session,
@@ -161,6 +182,11 @@ fn a_job_that_ends_while_the_child_is_turned_back_wakes_it() {
             env_trailer: false,
         })
         .expect("the job starts");
+    let watching = sub
+        .job_watchers()
+        .expect("a session with a host watches what it starts");
+    watching.record_start(&job.0, &Backgrounding::Asked.phrasing(), 0);
+    watching.watch(job.0.clone());
 
     // The turn-back, on the REAL reading of this session's jobs.
     let mut turns = ChildTurns::new(&sub, "s-child", TodoNagClock::new());
@@ -186,12 +212,26 @@ fn a_job_that_ends_while_the_child_is_turned_back_wakes_it() {
             .expect("the child's thread starts")
     };
 
-    // The job ends. What must follow is a turn of the child's own: the settlement is rung on its
-    // queue and the loop takes it, which is the delivery a wake has always made.
-    host.kill_job(&job).expect("the job is killed");
+    // The job ends by itself now. What must follow is a turn of the child's own: the watcher queues
+    // the settlement and rings the daemon's bell, and the ring is served here because a test has no
+    // `Sessions` - the route `Sessions::wake` takes for a child on its own thread is
+    // `WakeRoute::ItsOwnReader`, which is the hub's own reader.
+    std::fs::write(&marker, b"go").expect("the marker the job is waiting for");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut rang = false;
     while std::time::Instant::now() < deadline && rounds.load(Ordering::SeqCst) < 3 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let look = std::time::Instant::now() + std::time::Duration::from_millis(20);
+        if let WorkOrIdle::Work(Work::Woken(id)) = registry.next_work_until(Some(look)) {
+            assert_eq!(
+                id, "s-child",
+                "a wake was rung for a session this test never opened"
+            );
+            rang = true;
+            assert!(
+                hub.wake_its_own_reader(),
+                "the child's reader took the wake its own settlement rang"
+            );
+        }
     }
     let turned = rounds.load(Ordering::SeqCst);
     hub.close();
@@ -199,7 +239,8 @@ fn a_job_that_ends_while_the_child_is_turned_back_wakes_it() {
     assert!(
         turned >= 3,
         "the job's exit woke no turn in the child that started it ({turned} turns, and the \
-         settlement's own is the third)"
+         settlement's own is the third; the settlement {})",
+        if rang { "did ring" } else { "never rang" }
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
