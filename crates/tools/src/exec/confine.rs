@@ -2874,6 +2874,18 @@ fn pieces_of(
                         arg(&mut a, secret.display().to_string());
                     }
                 }
+                // The session's config directory keeps the one public file readable, and any file
+                // the operator granted inside it — a host's identity file. Everything else in it
+                // stays under the empty tmpfs: `known_hosts` is public host keys and `ssh` reads it
+                // before it authenticates, so a view with the key and not it refuses the connection
+                // at the host-key check.
+                if p.ends_with(super::config_dir::CONFIG_REL) {
+                    for e in super::config_dir::readable(p, view.grants.iter().map(|g| g.path())) {
+                        arg(&mut a, "--ro-bind-try");
+                        arg(&mut a, e.display().to_string());
+                        arg(&mut a, e.display().to_string());
+                    }
+                }
                 // Read-only too, so a command cannot fill it and have the operator's own tools read
                 // what it left there.
                 arg(&mut a, "--remount-ro");

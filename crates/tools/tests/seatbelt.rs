@@ -7,9 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use letibot_tools::exec::confine::{
-    Confinement, Egress, HomeView, Mechanism, Prop, PropState, SealKind, TmpView, ViewSpec,
+    Confinement, Egress, Grant, HomeView, Mechanism, Prop, PropState, SealKind, TmpView, ViewSpec,
 };
 use letibot_tools::exec::seatbelt::{CANARY, Seatbelt};
+use letibot_tools::testing::write_stub;
 
 /// A fixture: a project, a fake home with a `.ssh` in it, and a scratch directory, all under
 /// one temporary directory, removed when the test ends.
@@ -217,6 +218,88 @@ fn the_deny_list_is_unreadable_even_though_the_home_is_a_writable_part_of_the_vi
     // the deny list does not win.
     let (rc, _) = run_in(&s, &cwd, &format!("cat \"$HOME/{CANARY}\""));
     assert_ne!(rc, 0, "the canary was readable");
+}
+
+/// The ssh pair, and why the config directory is masked with one hole. `ssh` reads the host keys
+/// BEFORE it authenticates, so a view that holds a host's identity file and not `known_hosts`
+/// refuses the connection at the host-key check with `Operation not permitted` and never reaches
+/// the key. The fixture's `ssh` is a stand-in that reads the two files in that order, so a failure
+/// names which half was missing.
+#[test]
+fn the_config_dir_gives_ssh_its_known_hosts_and_still_hides_the_identity_file() {
+    /// A `sandbox-exec` this process may start: a session that is already inside one cannot nest,
+    /// and that absence is said rather than measured as a failure (`LETIBOT_REQUIRE_APPARATUS`
+    /// turns it back into one).
+    const BOUNDARY: &str = "a sandbox-exec boundary this process is not already inside";
+    const FAKE_SSH: &str = "\
+#!/bin/sh
+# what ssh does before it authenticates: the host keys first, then the identity file
+[ -z \"$1\" ] && exit 0
+if ! /bin/cat \"$1\" >/dev/null 2>&1; then echo \"known_hosts: unreadable\"; exit 255; fi
+if ! /bin/cat \"$2\" >/dev/null 2>&1; then echo \"identity: unreadable\"; exit 255; fi
+echo OK
+";
+    let f = Fixture::new("config-dir");
+    let op = f.root.join("operator");
+    let config = op.join(".config/letibot");
+    let key = config.join("keys/lab2x1");
+    std::fs::create_dir_all(config.join("keys")).expect("the config dir");
+    std::fs::create_dir_all(f.root.join("bin")).expect("a bin");
+    std::fs::write(config.join("known_hosts"), "lab2x1 ssh-ed25519 AAAA\n").expect("host keys");
+    std::fs::write(&key, SECRET).expect("an identity file");
+    let ssh = f.root.join("bin/ssh");
+    write_stub(&ssh, FAKE_SSH);
+    // The session's view, with the host's identity file granted into it or not — the whole of the
+    // difference between the two runs.
+    let run = |grant: Option<&Path>| -> Option<(i32, String)> {
+        let mut view = ViewSpec::project_only(f.project())
+            .with_home(HomeView::Dir(op.clone()))
+            .with_tmp(TmpView::Session(f.root.join("tmp")));
+        if let Some(k) = grant {
+            view = view.granting(Grant::ReadOnly {
+                path: k.to_path_buf(),
+                why: "the host's own identity file, granted on a card".into(),
+            });
+        }
+        let s = match Seatbelt::probe_as(view, Egress::Denied, vec![], op.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("the config dir could not be measured on this box: {e}");
+                letibot_tokencore::apparatus::absent(BOUNDARY);
+                return None;
+            }
+        };
+        Some(run_in(
+            &s,
+            &f.project(),
+            &format!(
+                "{} {} {}",
+                ssh.display(),
+                config.join("known_hosts").display(),
+                key.display()
+            ),
+        ))
+    };
+    // A session holding the host's key: both halves read, and the stand-in gets to the key. This
+    // is the run that used to die on `known_hosts`.
+    let Some((rc, out)) = run(Some(&key)) else {
+        return;
+    };
+    assert_eq!(
+        rc, 0,
+        "the host keys were refused to a session that holds the key: {out}"
+    );
+    assert!(out.contains("OK"), "{out}");
+    // The inverse, and the reason the hole is one file: with no grant the host keys still read and
+    // the identity file does not, which is the secret half.
+    let (rc, out) = run(None).expect("the boundary measured once");
+    assert_ne!(rc, 0, "the identity file was readable with no grant: {out}");
+    assert!(
+        !out.contains("known_hosts: unreadable"),
+        "the host keys are public data and must read: {out}"
+    );
+    assert!(out.contains("identity: unreadable"), "{out}");
+    assert!(!out.contains(SECRET.trim()), "the key got out: {out}");
 }
 
 /// `[boundary] hide` reaches the profile: a path in the view's `masked` list is denied inside a

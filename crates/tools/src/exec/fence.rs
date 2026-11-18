@@ -35,6 +35,9 @@ pub struct FileFence {
     /// Refuse a read of what the flow rule calls a secret. A command reading one is asked; a file
     /// tool is `Access::Read`, skips the gate, and so has only this check.
     secrets: bool,
+    /// What a mask of the session's config directory leaves through: `known_hosts`, and the files
+    /// the operator granted inside it (see [`super::config_dir`]).
+    config_readable: Vec<PathBuf>,
 }
 
 impl FileFence {
@@ -73,6 +76,12 @@ impl FileFence {
                 .collect(),
             // A seat with no boundary has no list, and a refusal would claim one.
             secrets: !seat.masked.is_empty() || !view.wide,
+            config_readable: seat
+                .masked
+                .iter()
+                .find(|p| p.ends_with(super::config_dir::CONFIG_REL))
+                .map(|dir| super::config_dir::readable(dir, view.grants.iter().map(|g| g.path())))
+                .unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -119,6 +128,16 @@ impl FileFence {
                 }
             }
             return Some(self.store_sentence(path));
+        }
+        // The config directory is masked with one hole, and a file tool reads what a command reads:
+        // `known_hosts`, and a file the operator granted. A write is still refused.
+        if !write
+            && self
+                .config_readable
+                .iter()
+                .any(|r| path == r.as_path() || path.starts_with(r))
+        {
+            return None;
         }
         if write && let Some(hit) = self.protected.iter().find(|p| path.starts_with(p)) {
             return Some(format!(
