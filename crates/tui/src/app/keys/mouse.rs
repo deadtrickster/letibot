@@ -92,6 +92,12 @@ impl App {
         // same block that lights up under the pointer. See `App::stop_block`.
         let row = usize::from(y);
         let stop = hit.stop_at(row).or_else(|| {
+            // The conversation's rows are a stop each, so a row without one is not the card above
+            // it: two cards packed together have no blank between them, and reaching back made the
+            // lower card's rows open the upper card's diff.
+            if hit.target == Target::Conversation {
+                return None;
+            }
             // Except on the seam that counts what a panel could not draw: it is nobody's row, and a
             // block reaching across it would make a click on the count select the row above.
             if hit.target == Target::Surface(Surface::PluginPane)

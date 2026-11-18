@@ -310,11 +310,10 @@ impl App {
 
     /// What a click on terminal row `y` of the conversation acts on, in the click's own order.
     pub(crate) fn conversation_act(&self, hit: &Hit, y: u16) -> Option<ConvAct> {
-        let row = usize::from(y);
-        if let Some(k) = hit
-            .stop_at(row)
-            .or_else(|| self.stop_block(hit, row).map(|(s, _)| s))
-        {
+        // The row's OWN line, never the nearest card above it: a card's rows are a stop each, so a
+        // row without one is not a file card - and two cards packed together with no blank between
+        // them were one block, where a click on the lower opened the upper's diff.
+        if let Some(k) = hit.stop_at(usize::from(y)) {
             return Some(ConvAct::File(k));
         }
         if self.run_row_at(y) {
