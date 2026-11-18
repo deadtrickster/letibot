@@ -46,6 +46,67 @@ pub fn project_of_room(room: &str) -> Option<&str> {
         .filter(|k| crate::is_project_key(k))
 }
 
+/// The longest a nick may be, in bytes. A nick is read in a roster row beside a session's title.
+pub const NICK_MAX: usize = 24;
+/// How many numbered variants of a taken nick [`next_nick`] offers before it gives up.
+pub const NICK_TRIES: u32 = 99;
+
+/// A nick: the label a seat is drawn by, and display only. Lowercase letters, digits and `-`, at
+/// most [`NICK_MAX`], no edge `-`, and none of the three words or two prefixes that would make a
+/// label read as a name the room already means: `operator`, a bridge alias, `s-` (a session id) or
+/// `cc-` (a bridge's seat). A nick is never what anything is keyed on, so it needs no `@` or `:`.
+pub fn valid_nick(nick: &str) -> bool {
+    !nick.is_empty()
+        && nick.len() <= NICK_MAX
+        && nick != OPERATOR
+        && !nick.starts_with("s-")
+        && !nick.starts_with("cc-")
+        && !BRIDGE_ALIASES.contains(&nick)
+        && !nick.starts_with('-')
+        && !nick.ends_with('-')
+        && nick
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The nick to offer when `nick` is held: `db-fuzz-fable-2`, then `-3`, and when the wanted name is
+/// already numbered, the next number (`db-fuzz-fable-2` asks for `-3`, never `-2-2`). `held` answers
+/// whether a candidate is somebody's. `None` when [`NICK_TRIES`] numbers are all held.
+pub fn next_nick(nick: &str, held: impl Fn(&str) -> bool) -> Option<String> {
+    let (base, from) = split_number(nick);
+    for n in from.saturating_add(1)..=from.saturating_add(NICK_TRIES) {
+        let tail = format!("-{n}");
+        let room = NICK_MAX.saturating_sub(tail.len());
+        if room == 0 {
+            return None;
+        }
+        // A base cut to fit loses its tail, never the number that says which of them it is.
+        let head: String = base.chars().take(room).collect();
+        let candidate = format!("{}{tail}", head.trim_end_matches('-'));
+        if !held(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// A nick without a trailing `-<n>`, and that `n` - `1` when there is none, so the first number
+/// offered for a taken name is `-2`.
+fn split_number(nick: &str) -> (&str, u32) {
+    match nick.rsplit_once('-') {
+        Some((base, digits))
+            if !base.is_empty()
+                && !base.ends_with('-')
+                && !digits.is_empty()
+                && digits.len() <= 3
+                && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            (base, digits.parse().unwrap_or(1))
+        }
+        _ => (nick, 1),
+    }
+}
+
 /// A handle an external participant may use: lowercase letters, digits and `-`, at most 32, not
 /// starting with `s-` (a session id's prefix) and never the operator's name. One `@` is allowed,
 /// and one `:` after it (`cc@folder:name`).
@@ -1027,11 +1088,16 @@ pub struct RoomInfo {
 /// One participant in a room's roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
-    /// What the room calls this participant: a named session's handle, else its id.
+    /// What the room calls this participant: the nick it answers to, else its handle, else its id.
+    /// Display - a reader draws this and addresses nothing with it.
     pub name: String,
-    /// The principal's identity - a session's id - whatever `name` shows.
+    /// The principal's identity - a session's id, a bridge's name - whatever `name` shows.
     #[serde(default)]
     pub id: String,
+    /// The seat's stable id ([`crate::SeatId`]), which is what a wait, an ask and a cursor are
+    /// keyed on and what a model is told to address. Empty from a seat that has none yet.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seat_id: String,
     pub kind: Seat,
     /// Holding a connection to the coordinator now.
     pub connected: bool,

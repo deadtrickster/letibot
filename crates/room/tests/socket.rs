@@ -659,6 +659,8 @@ fn operator_hello(token: Option<String>, session: &str, seat: Seat) -> Request {
         token,
         share: false,
         family: None,
+        id: String::new(),
+        nick: String::new(),
     }
 }
 
