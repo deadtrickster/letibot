@@ -543,9 +543,12 @@ makes a directory in its own cgroup and removes it, then tries the same inside t
 | `cgroup=own-scope` | starts each step that carries the demand inside a transient delegated scope, and **keeps the demand** |
 | anything missing | runs nothing from **that step** on: the step is `not_run` and the verdict is `GateVerdict::Infra` (unjudged, Blocked) |
 
-The wrap is `( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c '<step>' )` inside the
-launcher's subshell: `systemd-run --scope` execs the command in place and answers with its exit status, so the
-pid file, the group kill and `$?` mean what they meant before. A probe that cannot answer changes **nothing**,
+The wrap is `( exec systemd-run --user --scope -p Delegate=yes -p CPUWeight=20 -p IOWeight=20 --quiet --
+bash -c '<step>' )` inside the launcher's subshell: `systemd-run --scope` execs the command in place and answers
+with its exit status, so the pid file, the group kill and `$?` mean what they meant before. The launcher is
+started `nice -n 10` and the scope is given a fifth of systemd's default CPU and IO weight, so a gate uses the
+host's idle cores and yields them the moment a session on that host wants one - a gate here once took a 32-core
+box to load 140. A probe that cannot answer changes **nothing**,
 because reading a failed probe as *absent* would block a machine that has everything. A wrapped step is said on
 the first row, in the gate's own words, so no classifier reads it (`setup::step_words` drops it).
 

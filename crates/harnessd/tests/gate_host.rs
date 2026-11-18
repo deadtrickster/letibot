@@ -721,7 +721,8 @@ fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
     let launcher = rig.launcher(0);
     assert!(
         launcher.contains(
-            "( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c \
+            "( exec systemd-run --user --scope -p Delegate=yes -p CPUWeight=20 -p IOWeight=20 \
+             --quiet -- bash -c \
              'LETIBOT_REQUIRE_APPARATUS=1 echo '\\''the demand stayed'\\''' )"
         ),
         "{launcher}"

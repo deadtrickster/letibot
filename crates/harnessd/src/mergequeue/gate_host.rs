@@ -21,6 +21,13 @@ pub const POLL_BOUND: Duration = Duration::from_secs(30);
 /// connection's `ControlMaster`: the same order as the local gate's 100 ms poll.
 pub const POLL_EVERY: Duration = Duration::from_millis(1000);
 
+/// The priority a gate step runs at: `nice` 10 and a fifth of systemd's default weight. A gate on a
+/// declared host once took a 32-core box to load 140 and every session there failed its cgroup join,
+/// so a step now uses idle cores and yields them the moment a session on that box wants one.
+pub const GATE_NICE: i32 = 10;
+pub const GATE_CPU_WEIGHT: u32 = 20;
+pub const GATE_IO_WEIGHT: u32 = 20;
+
 /// The wall clock on one arranging call (`mkdir`, a `git fetch`, a `git worktree`), on the
 /// transfer and on the kill. Each names what it bounds in the sentence it refuses with.
 const SETUP_BOUND: Duration = Duration::from_secs(120);
@@ -1051,11 +1058,13 @@ pub fn launcher_script(
     own_scope: bool,
 ) -> String {
     // A step that needs a cgroup of its own gets one from systemd, not from this daemon: a
-    // transient delegated scope is the one shape that is the step's alone. The subshell stays
-    // a subshell and the step stays the project's own text, quoted once
+    // transient delegated scope is the one shape that is the step's alone. The weights are the
+    // scope's, so a gate shares the box instead of taking it. The subshell stays a subshell and
+    // the step stays the project's own text, quoted once
     let run = if own_scope {
         format!(
-            "exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c {}",
+            "exec systemd-run --user --scope -p Delegate=yes -p CPUWeight={GATE_CPU_WEIGHT} \
+             -p IOWeight={GATE_IO_WEIGHT} --quiet -- bash -c {}",
             sq(step)
         )
     } else {
@@ -1076,12 +1085,14 @@ pub fn launcher_script(
 
 /// Start it and go - detached, `setsid` where the host has it (so its pid is its process group and
 /// [`kill_script`] reaches everything it forked), all three streams on `/dev/null` so the ssh call
-/// returns rather than waiting for the step.
+/// returns rather than waiting for the step. `nice` is on the launcher, so the step and everything
+/// it forks inherit the priority without the project's own text being rewritten.
 pub fn launch_script(script: &str, exit: &str) -> String {
     format!(
         "rm -f '{exit}'; \
-         if command -v setsid >/dev/null 2>&1; then setsid bash '{script}' </dev/null >/dev/null 2>&1 & \
-         else nohup bash '{script}' </dev/null >/dev/null 2>&1 & fi; echo started"
+         if command -v setsid >/dev/null 2>&1; then setsid nice -n {GATE_NICE} bash '{script}' \
+         </dev/null >/dev/null 2>&1 & \
+         else nohup nice -n {GATE_NICE} bash '{script}' </dev/null >/dev/null 2>&1 & fi; echo started"
     )
 }
 

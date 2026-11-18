@@ -136,8 +136,8 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
     );
     assert!(
         script.contains(
-            "( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c \
-             'LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace' ) > \
+            "( exec systemd-run --user --scope -p Delegate=yes -p CPUWeight=20 -p IOWeight=20 \
+             --quiet -- bash -c 'LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace' ) > \
              '/h/gate/x/run/step-0.out' 2>&1"
         ),
         "{script}"
@@ -157,6 +157,32 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
     assert!(
         quoted.contains("-- bash -c 'echo \"it'\\''s fine\"'"),
         "{quoted}"
+    );
+}
+
+/// A gate yields the box to the sessions on it: the launcher is started `nice -n 10`, and a step that
+/// is given a scope of its own also gives that scope a fifth of systemd's default CPU and IO weight.
+/// A gate on a declared host once took a 32-core box to load 140 and starved every session there.
+#[test]
+fn a_step_runs_below_the_boxs_own_work() {
+    assert_eq!(GATE_NICE, 10);
+    assert_eq!((GATE_CPU_WEIGHT, GATE_IO_WEIGHT), (20, 20));
+    // The scope keeps what it was for - `Delegate=yes`, the apparatus - and gains the weights.
+    let scoped = launcher_script("cargo test", "/t", "/c", "/p", "/o", "/e", true);
+    assert!(scoped.contains("-p CPUWeight=20"), "{scoped}");
+    assert!(scoped.contains("-p IOWeight=20"), "{scoped}");
+    assert!(scoped.contains("-p Delegate=yes"), "{scoped}");
+    // A step with no scope of its own has no cgroup to weight, and still runs nice'd: the priority is
+    // the launcher's, so the project's own step is never rewritten to carry it.
+    let bare = launcher_script("cargo test", "/t", "/c", "/p", "/o", "/e", false);
+    assert!(bare.contains("( cargo test )"), "{bare}");
+    assert!(
+        !bare.contains("Weight"),
+        "no scope, nothing to weight: {bare}"
+    );
+    assert!(
+        launch_script("/h/run/step-0.sh", "/h/run/step-0.exit").contains("nice -n 10"),
+        "{bare}"
     );
 }
 
@@ -274,16 +300,17 @@ fn the_probe_makes_a_directory_and_tries_a_delegated_scope_before_it_says_no() {
     );
 }
 
-/// A start is detached and a kill is a group kill with the local gate's numbers.
+/// A start is detached and a kill is a group kill with the local gate's numbers - and the launcher is
+/// nice'd on the way in, so the step and everything it forks run below the box's own work.
 #[test]
 fn the_start_is_detached_and_the_kill_is_a_group_kill() {
     let start = launch_script("/h/run/step-0.sh", "/h/run/step-0.exit");
     assert!(
-        start.contains("setsid bash '/h/run/step-0.sh' </dev/null >/dev/null 2>&1 &"),
+        start.contains("setsid nice -n 10 bash '/h/run/step-0.sh' </dev/null >/dev/null 2>&1 &"),
         "{start}"
     );
     assert!(
-        start.contains("nohup bash '/h/run/step-0.sh'"),
+        start.contains("nohup nice -n 10 bash '/h/run/step-0.sh'"),
         "a host without setsid still outlives the call: {start}"
     );
     assert!(start.starts_with("rm -f '/h/run/step-0.exit'"), "{start}");
