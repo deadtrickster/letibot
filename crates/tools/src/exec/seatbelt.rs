@@ -455,8 +455,8 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     s.push_str("\n; --- denied AFTER the allows above, so a grant cannot undo them ---\n");
     // The store is the one deny with a hole: its data is readable (never writable) and its
     // secrets are neither, so it is rendered by `store` rather than as a plain subpath. The
-    // session's config directory is the second: masked whole, with `known_hosts` and whatever the
-    // operator granted inside it left readable (see `config_dir`).
+    // session's config directory is the second: masked whole, with `known_hosts`, `keys/` and
+    // whatever the operator granted inside it left readable (see `config_dir`).
     let config = l.operator_home.join(super::config_dir::CONFIG_REL);
     let plain: Vec<&PathBuf> = l
         .deny
@@ -481,8 +481,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
         ));
     }
     if l.deny.contains(&config) {
-        // Only reads are carved out; a write to anything here is refused, `known_hosts` included,
-        // because letibot never writes it (`ssh-keyscan >>` is the operator's own command).
+        // Only reads are carved out; a write to anything here is refused, the host keys and the
+        // identity keys included, because letibot never writes either (`ssh-keyscan >>` and `ssh-keygen`
+        // are the operator's own commands).
         let readable = super::config_dir::readable(&config, view.grants.iter().map(|g| g.path()));
         s.push_str(&format!(
             "(deny file-write* file-issue-extension (subpath \"{0}\"))\n\
@@ -1409,13 +1410,15 @@ mod tests {
         );
     }
 
-    /// The config directory is masked with one hole: `known_hosts` reads (public host keys — what
-    /// `ssh` opens before it authenticates), a file the operator granted inside it reads, and
-    /// everything else in it stays denied — the keys, the providers file, the seed. The plain
-    /// subpath deny is what used to refuse `known_hosts` with `Operation not permitted`, so its
-    /// absence is the assertion.
+    /// The config directory is masked with one hole, and the hole is the ssh pair: `known_hosts`
+    /// reads (public host keys — what `ssh` opens before it authenticates) and `keys/` reads (the
+    /// fleet keys the operator put there for sessions to use), so a session reaches a declared host
+    /// without a card. A file the operator granted reads through the same hole, and everything else
+    /// in the directory stays denied — the providers file, the seed, the plain spelling of the
+    /// directory itself. The plain subpath deny is what used to refuse `known_hosts` with `Operation
+    /// not permitted`, so its absence is the assertion.
     #[test]
-    fn the_config_directory_denies_everything_but_known_hosts_and_a_granted_file() {
+    fn the_config_directory_denies_everything_but_the_ssh_pair_and_a_granted_file() {
         let mut l = layout();
         let dir = PathBuf::from("/Users/x/.config/letibot");
         l.deny.push(dir.clone());
@@ -1429,7 +1432,7 @@ mod tests {
             !p.contains(&plain),
             "the directory with no hole was rendered as a plain deny:\n{p}"
         );
-        for hole in ["known_hosts", "keys/lab2x1"] {
+        for hole in ["known_hosts", "keys", "keys/lab2x1"] {
             let rule = format!("(require-not (subpath \"{}/{hole}\"))", dir.display());
             assert!(p.contains(&rule), "{rule} is not in\n{p}");
         }
@@ -1440,14 +1443,20 @@ mod tests {
             )),
             "the hole is for reads only:\n{p}"
         );
-        // And a view that granted nothing inside it leaves only the one file through.
+        // And a view that granted nothing inside it leaves the pair through, and no more.
         let bare = render_profile(
             &ViewSpec::project_only("/Users/x/proj"),
             &Egress::Denied,
             &l,
         );
+        for hole in ["known_hosts", "keys"] {
+            let rule = format!("(require-not (subpath \"{}/{hole}\"))", dir.display());
+            assert!(bare.contains(&rule), "{rule} is not in\n{bare}");
+        }
         assert!(
-            !bare.contains("keys/lab2x1") && !bare.contains(&plain),
+            !bare.contains("keys/lab2x1")
+                && !bare.contains("providers.toml")
+                && !bare.contains(&plain),
             "{bare}"
         );
     }

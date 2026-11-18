@@ -35,8 +35,8 @@ pub struct FileFence {
     /// Refuse a read of what the flow rule calls a secret. A command reading one is asked; a file
     /// tool is `Access::Read`, skips the gate, and so has only this check.
     secrets: bool,
-    /// What a mask of the session's config directory leaves through: `known_hosts`, and the files
-    /// the operator granted inside it (see [`super::config_dir`]).
+    /// What a mask of the session's config directory leaves through: the ssh pair — `known_hosts`
+    /// and `keys/` — and the files the operator granted inside it (see [`super::config_dir`]).
     config_readable: Vec<PathBuf>,
 }
 
@@ -130,7 +130,7 @@ impl FileFence {
             return Some(self.store_sentence(path));
         }
         // The config directory is masked with one hole, and a file tool reads what a command reads:
-        // `known_hosts`, and a file the operator granted. A write is still refused.
+        // `known_hosts`, `keys/`, and a file the operator granted. A write is still refused.
         if !write
             && self
                 .config_readable

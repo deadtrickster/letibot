@@ -2874,11 +2874,10 @@ fn pieces_of(
                         arg(&mut a, secret.display().to_string());
                     }
                 }
-                // The session's config directory keeps the one public file readable, and any file
-                // the operator granted inside it — a host's identity file. Everything else in it
-                // stays under the empty tmpfs: `known_hosts` is public host keys and `ssh` reads it
-                // before it authenticates, so a view with the key and not it refuses the connection
-                // at the host-key check.
+                // The session's config directory keeps the ssh pair readable — the host keys, which
+                // `ssh` opens before it authenticates, and `keys/`, the identity files the operator
+                // put there for this — and any file granted inside it. Everything else in it stays
+                // under the empty tmpfs, the providers file and the seed included.
                 if p.ends_with(super::config_dir::CONFIG_REL) {
                     for e in super::config_dir::readable(p, view.grants.iter().map(|g| g.path())) {
                         arg(&mut a, "--ro-bind-try");

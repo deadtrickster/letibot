@@ -1107,13 +1107,18 @@ MEASURED at open, so it cannot be a second list that drifts from the shell's, an
   read-only grant is denied while the read is not.
 - The letibot store is the daemon's and every session's, so it is denied except this session's own
   `sessions/<id>/` — where its plugins live, and the session is the one that writes them.
-- `~/.config/letibot` is denied whole, with ONE hole: `known_hosts`, which holds other machines'
-  host public keys and is what `ssh` opens before it authenticates, so a view with an identity file
-  and not this one refuses the connection at the host-key check and never reads the key. A path the
-  operator granted inside the directory (a host's identity file, from a card or `--grant-ro`) reads
-  through the same hole; `keys/`, `providers.toml`, `permission.json` and `leticode.toml` do not.
-  The rule is `crates/tools/src/exec/config_dir.rs`, a list of what reads rather than of what does
-  not, so a file added to the directory later cannot fall into it.
+- `~/.config/letibot` is denied whole, with ONE hole, and the hole is the ssh pair: `known_hosts`,
+  which holds other machines' host public keys, and `keys/`, the per-host identity files the
+  operator put there for letibot's own ssh to present. `ssh` opens the host keys before it
+  authenticates and loads the identity file after, so a view holding one half and not the other
+  refuses the connection at whichever it reached first — `hostkeys_find_by_key_hostfile … Operation
+  not permitted`, or `Load key … Operation not permitted` and then `Permission denied (publickey)` —
+  and never reaches the far machine; that is why the two are one rule and not two. The operator's
+  own `~/.ssh` is a deny of its own and stays masked from every seat, and a path the operator
+  granted inside the directory (from a card or `--grant-ro`) reads through the same hole;
+  `providers.toml`, `permission.json`, `leticode.toml`, `hosts.toml` and the seed do not, and no
+  write lands in any of it. The rule is `crates/tools/src/exec/config_dir.rs`, a list of what reads
+  rather than of what does not, so a file added to the directory later cannot fall into it.
 - A refusal is the sentence a command's absence note gives, and it names the key that would change
   the answer: `[boundary] hide` with the file and line that wrote it, `grants_ro`/`grants_rw` for a
   path outside a tight view, or the fact that no key reaches a credential store or the store itself.

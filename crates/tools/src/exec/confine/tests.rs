@@ -354,13 +354,14 @@ fn the_masked_store_mounts_its_data_read_only_and_covers_its_secrets() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The masked config directory keeps the one public file readable, and a file the operator
-/// granted inside it, and nothing else: `keys/` stays under the empty tmpfs unless that very file
-/// was granted. This is what a session running `ssh` needs — `ssh` opens the host keys before it
-/// authenticates, so a view with the identity file and no `known_hosts` refuses the connection at
-/// the host-key check with `Operation not permitted` and never reads the key.
+/// The masked config directory keeps the ssh pair readable — the host keys and the directory of
+/// identity files the operator put there for this — and a file granted inside it, and nothing
+/// else: the providers file stays under the empty tmpfs. This is what a session running `ssh`
+/// needs. `ssh` opens the host keys before it authenticates and loads the identity file after,
+/// with `Load key …` if that second read fails, so a view missing either half never reaches the
+/// far machine.
 #[test]
-fn the_masked_config_dir_mounts_known_hosts_and_a_granted_key_and_denies_the_rest() {
+fn the_masked_config_dir_mounts_the_ssh_pair_and_a_granted_key_and_denies_the_rest() {
     let dir = std::env::temp_dir().join(format!("letibot-config-dir-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let home = dir.join("home");
@@ -371,6 +372,7 @@ fn the_masked_config_dir_mounts_known_hosts_and_a_granted_key_and_denies_the_res
     for f in [config.join("known_hosts"), key.clone()] {
         std::fs::write(&f, "").expect("a config file");
     }
+    std::fs::write(config.join("providers.toml"), "").expect("the providers file");
     let argv = |view: &ViewSpec| {
         build_argv_with(
             Path::new("/usr/bin/bwrap"),
@@ -395,6 +397,7 @@ fn the_masked_config_dir_mounts_known_hosts_and_a_granted_key_and_denies_the_res
     let joined = argv(&granted);
     let c = config.display().to_string();
     let known = format!("--ro-bind-try {c}/known_hosts {c}/known_hosts");
+    let keys = format!("--ro-bind-try {c}/keys {c}/keys");
     let identity = format!("--ro-bind-try {c}/keys/lab2x1 {c}/keys/lab2x1");
     let remount = format!("--remount-ro {c}");
     let at = |needle: &str| {
@@ -406,16 +409,16 @@ fn the_masked_config_dir_mounts_known_hosts_and_a_granted_key_and_denies_the_res
     assert!(at(&known) < at(&remount), "{joined}");
     assert!(at(&identity) < at(&remount), "{joined}");
 
-    // The inverse: with no grant, the key is not mounted at all and only `known_hosts` is. A
-    // session that holds the public file and not the identity file fails on the key, which is the
-    // secret half.
+    // No grant at all: the pair is still bound, because a session reaches a declared host without
+    // a card now — and the providers file is not, which is the other half of the rule.
     let bare = ViewSpec::project_only(dir.join("project"))
         .with_home(HomeView::Dir(home))
         .wide()
         .masking([config]);
     let joined = argv(&bare);
     assert!(joined.contains(&known), "{joined}");
-    assert!(!joined.contains("keys/lab2x1"), "{joined}");
+    assert!(joined.contains(&keys), "{joined}");
+    assert!(!joined.contains("providers.toml"), "{joined}");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -470,14 +473,20 @@ fn the_wide_seats_masks_are_the_list_the_macos_seat_denies() {
         Session::Detached,
     );
     let joined = argv.join(" ");
+    // Every entry is emptied and then remounted read-only, with the config directory's own hole
+    // (`known_hosts`, `keys/`) bound into the tmpfs between the two — which is why the pair is
+    // asked for by position rather than as adjacent words.
+    let at = |needle: &str| {
+        joined
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} is missing: {joined}"))
+    };
     for p in &want {
         let p = p.display().to_string();
-        // The mask may leave public holes (`known_hosts`) between the tmpfs and its remount.
-        let tmpfs = joined.find(&format!("--tmpfs {p} "));
-        let ro = joined.find(&format!("--remount-ro {p}"));
         assert!(
-            matches!((tmpfs, ro), (Some(t), Some(r)) if t < r),
-            "{p} is on the macOS deny list and not masked here: {joined}"
+            at(&format!("--tmpfs {p} ")) < at(&format!("--remount-ro {p}")),
+            "{p} is on the macOS deny list and not masked here, or not remounted read-only \
+             after what the mask leaves through: {joined}"
         );
     }
     std::fs::remove_dir_all(&dir).ok();
