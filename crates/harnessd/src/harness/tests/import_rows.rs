@@ -36,6 +36,7 @@ fn a_run_of_tool_results_read_from_a_foreign_conversation_is_one_user_turn() {
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(dir.0.join("sessions.db"));
     cfg.session_id = "import-batch".into();
+    at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     cfg.provider = Some(crate::config::ProviderConfig {
         name: "deepseek".into(),

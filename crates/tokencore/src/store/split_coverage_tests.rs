@@ -233,6 +233,7 @@ const EXERCISED: &[&str] = &[
     "session_marks",
     "set_session_mode",
     "session_mode",
+    "session_mode_at",
     "put_process",
     "process",
     "processes_of",
@@ -506,6 +507,7 @@ fn every_project_method_runs_on_a_split_set() {
     assert!(s.session_marks("s1").unwrap().is_some());
     s.set_session_mode("s1", "allow-all", None).unwrap();
     assert!(s.session_mode("s1").unwrap().is_some());
+    assert!(s.session_mode_at("s1").unwrap().is_some());
 
     s.put_process(&ProcessRecord::starting("s1", "j7", None, 42))
         .unwrap();

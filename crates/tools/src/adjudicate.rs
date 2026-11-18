@@ -3475,7 +3475,10 @@ impl Gate for AdjudicatedGate {
         // 2. The `never` rows, overridable by none. Only a call that can WRITE is judged by its
         // spelling, or a read of the repository's own HEAD is refused in every mode.
         // `never_hit` asks it of the spelling and [`ssh_resolution_hit`] of the resolved path.
-        let refused = matches!(access, Access::Write | Access::Exec)
+        // A point that admits everything has no list: the operator confirmed this box and its own
+        // ssh material is theirs to use. `Tier::Blocked` above still holds - that is a flow rule.
+        let lists_hold = !self.mode.admits_everything();
+        let refused = (lists_hold && matches!(access, Access::Write | Access::Exec))
             .then(|| {
                 never_hit(call.args).or_else(|| {
                     never_hit_resolved(
@@ -3492,6 +3495,9 @@ impl Gate for AdjudicatedGate {
                 )
             });
         let refused = refused.or_else(|| {
+            if !lists_hold {
+                return None;
+            }
             let home = self.surroundings.home.as_deref()?;
             let real = ssh_resolution_hit(call, std::path::Path::new(home))?;
             Some(crate::remote::dot_ssh_refusal(
@@ -3649,10 +3655,15 @@ impl Gate for AdjudicatedGate {
 
         // 6. The point this session sits at. It governs `Tier::MayApprove` and nothing else, so
         //    this arm cannot widen what a point may not. Exec is excepted unless the mode follows
-        //    it, and `ran_unread` widens nothing: an unreadable exec asks where a readable one does.
-        //    A look that may not ask (`admit_unasked`) is admitted here only as a read: a read is
-        //    what every point admits, and a plugin's tool carries an access its own layer declared.
-        if (access != Access::Exec || self.exec_follows_mode)
+        //    it, `ran_unread` widens nothing (an unreadable exec asks where a readable one does),
+        //    and a look that may not ask (`admit_unasked`) is admitted here only as a read - a
+        //    plugin's tool carries an access its own layer declared.
+        if (access != Access::Exec
+            || self.exec_follows_mode
+            // At a point that admits everything exec follows too, whatever substrate was built to
+            // follow it: a session moved to `/mode allow-all` mid-run must stop asking as well.
+            // A review-queue seat is the exception - its limits ARE its narrowing.
+            || (self.mode.admits_everything() && !self.reviewer_limits))
             && self.mode.admits_unasked(&req.tier, access)
             && (!self.unasked || access == Access::Read)
         {

@@ -727,10 +727,25 @@ impl Harness {
             let mut store = parts.mode_store.write().unwrap();
             store.refresh();
             let store = &*store;
-            // The session's own point first - the one it was put at, which a restart or
-            // a reseat must bring back whatever the project row says now. The operator:
-            // *"and again peerdb allow-all lost after restart/reseat"*.
-            let own = store.session(&cfg.session_id);
+            // The session's own point - the one it was put at, which a restart or a reseat must
+            // bring back. The operator: *"and again peerdb allow-all lost after restart/reseat"*.
+            // Unless the PROJECT's row was written after it: that is their later word for the
+            // project, and a session that came back wider than its own project is the same bug
+            // with the two rows the other way round. Both rows carry `set_at` for this comparison.
+            let mut superseded = None;
+            let own = match store.session_at(&cfg.session_id) {
+                Some((m, when, at)) if cfg.parent_session_id.is_none() => {
+                    match store.project_set_at(&cfg.workspace) {
+                        Some(project_at) if project_at > at => {
+                            superseded = Some(m.name);
+                            None
+                        }
+                        _ => Some((m, when)),
+                    }
+                }
+                Some((m, when, _)) => Some((m, when)),
+                None => None,
+            };
             // A child's ceiling is its parent's point: live when the parent is open in this daemon,
             // else the one its rows give. Its own row counts only when no wider than that; the
             // seat's clamp comes later, where the seat's supplies exist.
@@ -769,6 +784,15 @@ impl Harness {
                 let before = cfg.mode.name;
                 cfg.mode = store.for_project(&cfg.workspace);
                 mode_source = "project store".into();
+                if let Some(old) = &superseded {
+                    notes.push(format!(
+                        "mode is `{}` for {} (from the project store): that row was written after \
+                         this session's own (`{old}`), so the newer one wins. A restart brings back \
+                         the project's point, not the one this session last held.",
+                        cfg.mode.name,
+                        cfg.workspace.display()
+                    ));
+                }
                 // And the recorded consent, when the row names the point that needs one: the
                 // operator's answer is in the store so a restart stops throwing it away, and it is
                 // DISCLOSED here, because a point that came back silently is the failure.
@@ -816,6 +840,22 @@ impl Harness {
                     every `[boundary]` or `[perimeter]` hide are refused to them, and what else \
                     they reach is the level's. What a file tool reads it can copy into the \
                     transcript. `docs/boundary-and-adjudication.md` §4k has the long form."
+            .to_string();
+        eprintln!("letibot: {said}");
+        hub.warn(UNCONFINED_SESSION, said);
+    }
+
+    /// A session at a point that admits everything says what it runs on: no boundary at all, on
+    /// this box, because the operator selected that. Same warning code as the other whole-host
+    /// session, because it is the same fact and a person reads one class of line for it.
+    fn say_unbounded(hub: &Arc<Hub>) {
+        let said = "this session runs UNCONFINED: `allow-all` builds no boundary at all - no \
+                    bubblewrap, no Seatbelt, no fence on the file tools. Its commands run as this \
+                    user over the whole host, with this home, this environment and this network, \
+                    exactly as your own shell does. What still holds is not a permission: every \
+                    command runs in a cgroup of its own, so it can be killed and its memory is \
+                    accounted, and a secret copied into the transcript is still refused. \
+                    `docs/boundary-and-adjudication.md` §4e has the long form."
             .to_string();
         eprintln!("letibot: {said}");
         hub.warn(UNCONFINED_SESSION, said);
@@ -1032,6 +1072,15 @@ impl Harness {
             }
             None => None,
         };
+        // A point that admits everything runs with NO boundary here - no bubblewrap, no fence on
+        // the file tools - because that is what the operator selected. Not inside a VM (the VM is
+        // the boundary), not over ssh (that host's own probe decides), and not for a review-queue
+        // seat, whose clone IS its boundary and whose gate already refuses what leaves it.
+        let unbounded =
+            cfg.mode.admits_everything() && !in_vm && remote.is_none() && !is_review_seat(cfg);
+        // `unconfined` is "rooted at the whole host", which is exactly this. Set here rather than
+        // read from the flag because a point resolved out of the store may be the one asking.
+        cfg.unconfined |= unbounded;
         // A session opening on a workspace that is gone says so, by that name: every backend below
         // roots itself there and would otherwise fail with a bare ENOENT, or with a paragraph
         // blaming the cgroup and bwrap first.
@@ -1101,7 +1150,7 @@ impl Harness {
             // `SshBackend::place` below, which probes the host.
             HostBackend::new(&cfg.workspace)
                 .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
-        } else if let Some((b, seat_of)) = Self::wide_seat(cfg, hub, may_exec)? {
+        } else if !unbounded && let Some((b, seat_of)) = Self::wide_seat(cfg, hub, may_exec)? {
             seat = Some(seat_of);
             b
         } else if cfg.unconfined {
@@ -1111,13 +1160,21 @@ impl Harness {
             whole_host = true;
             // Said by the top-level session; a child inherits the same state. A boundary asked for
             // and refused, and a shell withheld for want of a cgroup, have each said so already.
-            if cfg.parent_session_id.is_none() && !(cfg.allow_bash && may_exec) && !withheld {
-                Self::say_no_boundary(hub);
+            if cfg.parent_session_id.is_none() {
+                if unbounded {
+                    Self::say_unbounded(hub);
+                } else if !(cfg.allow_bash && may_exec) && !withheld {
+                    Self::say_no_boundary(hub);
+                }
             }
             // The file tools are still this session's, so they are held to its perimeter -
             // what `read`, `write`, `edit`, `grep` and `glob` reach is the view its commands would
             // have had, taken from the table rather than from a substrate nothing asked to build.
-            seat = Some(Self::fence_seat(cfg)?);
+            // At a point that admits everything there is no fence either: a fence is a boundary
+            // under another name, and the operator selected a session with none.
+            if !unbounded {
+                seat = Some(Self::fence_seat(cfg)?);
+            }
             if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
             } else if may_write {

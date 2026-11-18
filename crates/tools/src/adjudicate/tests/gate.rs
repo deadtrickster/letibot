@@ -95,13 +95,17 @@ fn the_never_write_list_outranks_the_widest_point_on_this_box() {
 }
 
 /// The list is about what a write leaves behind. Judged on spelling alone it also refused READS,
-/// so `read .git/HEAD` and `cat ./.git/config` came back `denied` at every point including
-/// allow-all, and a session could not look at its own repository.
+/// so `read .git/HEAD` and `cat ./.git/config` came back `denied` at every point, and a session
+/// could not look at its own repository.
+///
+/// `writes allowed` and not `allow-all`: a point that admits everything has no list at all
+/// (2026-11-18 - the operator's "allow-all really is allow all"), and the rule this test is about
+/// is the spelling, so it is asserted where the list still holds.
 #[test]
 fn the_never_write_list_judges_a_write_and_not_a_read() {
     let mut g = AdjudicatedGate::closed()
         .with_surroundings(pinned())
-        .with_mode(crate::mode::Mode::ALLOW_ALL_HERE);
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED);
 
     // A file tool's read: the argument names the store, and nothing is written into it.
     let head = json!({"path": "/w/.git/HEAD"});
@@ -142,6 +146,58 @@ fn the_never_write_list_judges_a_write_and_not_a_read() {
     );
     let said = g.log.last().expect("a row").decision.basis.clone();
     assert!(said.contains("never-write list"), "{said}");
+}
+
+/// A point that admits everything has no list: the operator's own `.ssh`, the repository's `.git`
+/// and a link into either are theirs to write and to read, because that is the shell they asked
+/// for. Layer A's flow rule is a different rule and still refuses a secret copied into the
+/// transcript - `Blocked` is not a list and no point moves it.
+#[test]
+fn allow_all_has_no_never_write_list() {
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_mode(crate::mode::Mode::ALLOW_ALL_HERE);
+
+    for (name, args, access) in [
+        (
+            "write",
+            json!({"path": "/w/.git/config", "content": "[core]\n"}),
+            Access::Write,
+        ),
+        (
+            "write",
+            json!({"path": "/home/dead/.ssh/authorized_keys", "content": "x"}),
+            Access::Write,
+        ),
+        (
+            "bash",
+            json!({"command": "echo x > ./.git/config"}),
+            Access::Exec,
+        ),
+        ("bash", json!({"command": "cat ./.git/HEAD"}), Access::Read),
+    ] {
+        let called = GateCall {
+            access,
+            ..call(name, &args)
+        };
+        assert!(
+            matches!(g.admit(&called), GateDecision::Admit),
+            "`{name}` {args} was refused at allow-all: {:?}",
+            g.log.last().map(|r| r.decision.basis.clone())
+        );
+        assert_eq!(
+            g.log.last().map(|r| r.decision.by.as_str()),
+            Some("gate:mode"),
+            "{name}"
+        );
+    }
+
+    // The one refusal that survives: a key whose bytes would land in the transcript.
+    let key = json!({"command": "cat /home/dead/.ssh/id_ed25519"});
+    assert!(
+        !matches!(g.admit(&bash(&key)), GateDecision::Admit),
+        "a secret copied into the transcript is layer A's refusal, not a permission"
+    );
 }
 
 /// opencode's `permission` config governs the gate before the mode: `deny`
@@ -766,7 +822,7 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
     surroundings.home = Some(home.display().to_string());
     surroundings.workspace = Some(ws.display().to_string());
     let ws_s = ws.display().to_string();
-    let mut g = gate(surroundings, crate::mode::Mode::ALLOW_ALL);
+    let mut g = gate(surroundings, crate::mode::Mode::WRITES_ALLOWED);
     // The name is not itself a key name: `id_ed25519` would be refused one step earlier as a
     // disclosure, which is a different rule. What is under test is the path a link lands in.
     for (name, args) in [

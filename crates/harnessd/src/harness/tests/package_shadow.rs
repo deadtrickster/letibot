@@ -68,6 +68,7 @@ fn opened_by(tag: &str, identity: &str) -> (bool, bool) {
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(dir.0.join("sessions.db"));
     cfg.session_id = id.clone();
+    at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     cfg.shadow = crate::shadow::config::ShadowConfig::from_lines(
         letibot_provider::keys::ShadowLines {

@@ -67,6 +67,7 @@ fn byte_vocab_config(dir: &Scratch, id: &str) -> Config {
     cfg.store = Some(dir.0.join("sessions.db"));
     cfg.session_id = id.into();
     cfg.vocab_gguf = None;
+    at_always_ask(&mut cfg);
     cfg.provider = Some(crate::config::ProviderConfig {
         name: "deepseek".into(),
         model: Some("not-called".into()),

@@ -33,6 +33,13 @@ fn user(text: &str) -> TranscriptItem {
     }
 }
 
+/// The point a fixture opens at when the test is not about the point. A project nobody configured
+/// is `automode` since 2026-11-18, and opening a session there needs an authorisation oracle:
+/// each test below is about something else, so it stands where it always did.
+fn at_always_ask(cfg: &mut Config) {
+    cfg.mode = letibot_tools::mode::Mode::ALWAYS_ASK;
+}
+
 mod auto_reseat;
 mod card_fixtures;
 mod cheap_wake;
@@ -73,5 +80,6 @@ mod shadow_during;
 mod shadow_turn_end;
 mod steer_door;
 mod store_writes;
+mod unbounded;
 mod usage_notice;
 mod workspace;

@@ -84,6 +84,7 @@ fn open_pinned(dir: &Scratch, id: &str, system: Option<&str>, pins: &[&str]) -> 
     cfg.store = Some(dir.0.join("sessions.db"));
     cfg.session_id = id.into();
     cfg.vocab_gguf = None;
+    at_always_ask(&mut cfg);
     if let Some(system) = system {
         cfg.system = system.into();
     }

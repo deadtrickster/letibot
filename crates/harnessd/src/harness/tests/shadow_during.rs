@@ -113,6 +113,7 @@ fn a_session(
     let mut cfg = Config::for_this_box(&dir);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.session_id = format!("s-during-{tag}");
+    at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     if child {
         cfg.parent_session_id = Some("s-parent".into());

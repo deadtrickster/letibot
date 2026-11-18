@@ -290,7 +290,18 @@ that cannot be done. `allow-all` requires a confinement because on a bare host i
 `OperatorConsented` and no confinement to require; it is deliberately **not** in `Mode::NAMED` - a
 point that stands for a person's confirmation must not be selectable by a string - and the
 confirmation is recorded with the project and the session, so it survives a restart and is read aloud
-at every startup. `Mode::UNSEEN_PROJECT` is `always-ask`.
+at every startup. `Mode::UNSEEN_PROJECT` is `automode`: a project root with no row is judged by the
+model, not put to a person. On a box with no oracle that point cannot be carried and the open
+**refuses by name**, naming `[gatekeeper] endpoint` and `--oracle` - it does not fall back to
+`always-ask`. `--mode always-ask` is how a session is opened where no model may answer.
+
+At either `allow-all` the substrate is the point, not a setting under it: no bubblewrap, no Seatbelt,
+no fence on the file tools, this home, this environment and this network - the operator's own shell.
+What still holds is not a permission: every command runs in a cgroup of its own (so it can be killed
+and its memory is accounted), `Tier::Blocked` still refuses a secret copied into the transcript, and a
+`permission` config that denies still refuses. A child of such a session carries the same point and
+the same substrate; only a parent that starts it narrower - an `access:` downgrade, a tighter `--mode`
+- gives it less.
 
 | prerequisite | what it is | how to attach it |
 |---|---|---|
@@ -310,7 +321,7 @@ selectable and refuse honestly, the way retrieval is `INERT` rather than absent:
 as "this build cannot do that".
 
 One durable mapping of **project root -> point name**, listable and disclosed at startup, with an
-unseen directory at `always-ask`. This replaces a `(project, tool, intent class)` grant store: a
+unseen directory at `automode`. This replaces a `(project, tool, intent class)` grant store: a
 per-project point is one value a person can hold in their head and audit. `allow once` survives as an
 answer to a prompt - it is a reply, not a policy.
 
@@ -1290,11 +1301,11 @@ results and never between a call and its result.
 What still asks: `curl`, `cargo fetch`, `npm install` and `ssh host` (egress, and the boundary would
 deny it, so the card is where a wider view is decided); `git push` (the same, plus
 `version_control_publish`); `gh …` (the credential tier); `sudo`, a delete outside the project and a
-host never seen (the always-ask list, unchanged at every point); a command naming a path outside the
-checkout (the region test); and **anything on an unconfined host**, where no boundary means the
-per-command ruling is the only defence there is. The macOS host shell, an unconfined Linux host and a
-probe that did not answer are all that last row: `AdjudicatedGate::with_boundary(None, refusal)` is the
-whole of that state, and none of this fires.
+host never seen (the always-ask list, which holds at every point but `allow-all`); a command naming
+a path outside the checkout (the region test); and **anything on an unconfined host**, where no
+boundary means the per-command ruling is the only defence there is. The macOS host shell, an
+unconfined Linux host and a probe that did not answer are all that last row:
+`AdjudicatedGate::with_boundary(None, refusal)` is the whole of that state, and none of this fires.
 
 `writes-allowed` only, which is the ruling's own sentence: `allow-all` already admits exec unasked by
 its own definition, and `automode`/`automode-edits` still ask because at those points the question is

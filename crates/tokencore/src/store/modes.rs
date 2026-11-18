@@ -37,20 +37,24 @@ pub struct ProjectMode {
     pub root: String,
     pub mode: String,
     pub consented_at: Option<String>,
+    /// Unix ms when the row was last written. A restart compares it with a session's own row:
+    /// the later of the two is the operator's latest word.
+    pub set_at: i64,
 }
 
 impl Store {
     /// Every project's row, by root.
     pub fn project_modes(&self) -> Result<Vec<ProjectMode>> {
         let conn = self.conn();
-        let mut st =
-            conn.prepare("SELECT root, mode, consented_at FROM project_mode ORDER BY root")?;
+        let mut st = conn
+            .prepare("SELECT root, mode, consented_at, set_at FROM project_mode ORDER BY root")?;
         let rows = st
             .query_map([], |r| {
                 Ok(ProjectMode {
                     root: r.get(0)?,
                     mode: r.get(1)?,
                     consented_at: r.get(2)?,
+                    set_at: r.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -97,11 +101,22 @@ impl Store {
     /// The point this session was put at, and the answer that opened it, if it was put anywhere.
     pub fn session_mode(&self, session_id: &str) -> Result<Option<(String, Option<String>)>> {
         Ok(self
+            .session_mode_at(session_id)?
+            .map(|(mode, when, _)| (mode, when)))
+    }
+
+    /// [`Store::session_mode`], with the moment the row was written: a restart compares it with the
+    /// project's row so a project moved afterwards is not overruled by a point the session kept.
+    pub fn session_mode_at(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, Option<String>, i64)>> {
+        Ok(self
             .at("session_mode")
             .query_row(
-                "SELECT mode, consented_at FROM session_mode WHERE session_id = ?1",
+                "SELECT mode, consented_at, set_at FROM session_mode WHERE session_id = ?1",
                 params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?)
     }

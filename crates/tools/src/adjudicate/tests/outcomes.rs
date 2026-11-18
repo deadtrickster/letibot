@@ -886,6 +886,61 @@ fn an_unreadable_command_runs_at_allow_all_and_is_still_refused_elsewhere() {
     }
 }
 
+/// `allow-all` follows exec whatever the substrate was built to follow: a session that opens at a
+/// narrower point and is moved to `/mode allow-all` mid-run must stop asking too, and the gate does
+/// not get rebuilt at a move. A review-queue seat is the exception its limits are: its exec still
+/// asks outside its clone.
+#[test]
+fn a_point_that_admits_everything_follows_exec_without_the_substrate_flag() {
+    use crate::mode::Mode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let asked = std::sync::Arc::new(AtomicUsize::new(0));
+    let a = asked.clone();
+    let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        move |req: &AdjudicationRequest| {
+            a.fetch_add(1, Ordering::Relaxed);
+            Some(AdjudicationDecision::selected(
+                req,
+                "deny_and_tell",
+                "human:test",
+                "not now",
+            ))
+        },
+    )))
+    .with_mode(Mode::ALLOW_ALL_HERE)
+    .with_exec_follows_mode(false)
+    .with_surroundings(pinned());
+    let cmd = json!({ "command": "cargo test --offline -p letibot-tools" });
+    assert_eq!(g.admit(&bash(&cmd)), GateDecision::Admit);
+    assert_eq!(asked.load(Ordering::Relaxed), 0, "nothing was consulted");
+    assert_eq!(g.log[0].decision.by, "gate:mode");
+
+    // The same point on a review-queue seat: the limits are the narrowing, so it still asks.
+    let mut reviewer = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        |req: &AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(
+                req,
+                "deny_and_tell",
+                "human:test",
+                "not now",
+            ))
+        },
+    )))
+    .with_mode(Mode::ALLOW_ALL_HERE)
+    .with_reviewer_limits(true)
+    .with_surroundings(pinned());
+    assert!(
+        !matches!(
+            reviewer.admit(&bash(&json!({ "command": "git push origin HEAD" }))),
+            GateDecision::Admit
+        ),
+        "a reviewer's limits narrow the point it stands at"
+    );
+}
+
 /// `Grant::covers` refuses an unresolved action before it looks at coverage, so what this pins is
 /// that the gate carries `resolved` on its own rather than deriving it from the verdict: a version
 /// that derived it would let one `cat` cover every later `cat $ANYTHING`.
@@ -1091,7 +1146,9 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
             log[0].request.baseline
         );
     }
-    // The point is the operator's: a narrower one asks, and a seat without the limits is unchanged.
+    // The point is the operator's, and it is the whole answer at a seat with no limits: a narrower
+    // point asks, while a seat at `allow-all` admits exec itself (2026-11-18 - allow-all really is
+    // allow all, so the reviewer's limits are the only narrowing left on a review seat).
     let (admitted, asked, _) = runs(Mode::WRITES_ALLOWED, true, "python3 /tmp/probe.py");
     assert!(
         !admitted && asked == 1,
@@ -1099,8 +1156,8 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
     );
     let (admitted, asked, _) = runs(Mode::ALLOW_ALL_HERE, false, "python3 /tmp/probe.py");
     assert!(
-        !admitted && asked == 1,
-        "a confined seat without limits asks"
+        admitted && asked == 0,
+        "the point admits exec at a seat whose limits are off"
     );
 }
 

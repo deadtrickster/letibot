@@ -363,9 +363,10 @@ impl Mode {
                   action.",
     };
 
-    /// Everything is admitted, nothing asks. Only sane inside a boundary that makes the
-    /// action structural: on a bare host this is opencode's `bypassPermissions` posture,
-    /// and the `Confinement` prerequisite is what refuses it there.
+    /// Everything is admitted, nothing asks, and nothing confines: this is the operator's own
+    /// shell. Only sane where the action is structural - inside a VM, or on their box with their
+    /// word for it ([`Mode::ALLOW_ALL_HERE`]) - and the `Confinement` prerequisite is what refuses
+    /// it on a bare host they have not confirmed.
     pub const ALLOW_ALL: Mode = Mode {
         name: "allow-all",
         role: "coder",
@@ -384,7 +385,9 @@ impl Mode {
 
     /// `allow-all` on a box with no boundary, which the operator consented to: the boundary
     /// is `OperatorConsented` and there is no confinement to require. It is not in
-    /// [`Mode::NAMED`], so only a head that asked the operator first selects it.
+    /// [`Mode::NAMED`], so only a head that asked the operator first selects it. The tools run
+    /// with no boundary at all - no bubblewrap and no fence on the file tools - which is what
+    /// the confirmation buys; the cgroup a command still gets is job tracking, not a permission.
     pub const ALLOW_ALL_HERE: Mode = Mode {
         name: "allow-all (this box, consented)",
         role: "coder",
@@ -396,11 +399,13 @@ impl Mode {
         boundary: Boundary::OperatorConsented,
         requires: &[Prereq::WritableBackend],
         summary: "write, exec and network all go through without asking, the always-ask \
-                  list included — on this box, with nothing confining it, because the \
-                  operator confirmed it. Only a secret leaving the box is still refused. \
-                  The confirmation is RECORDED with the project and the session, in the \
-                  session store, so it survives a restart and a reseat and is read aloud at \
-                  every startup; `/mode <other>` takes it back and forgets the answer.",
+                  list included — on this box, with NOTHING confining it: no bubblewrap, no \
+                  fence on the file tools, and your own home, environment and network, exactly \
+                  as your own shell. Only a secret copied into the transcript is still refused, \
+                  and a command still runs in a cgroup of its own so it can be killed. The \
+                  operator confirmed it, and that confirmation is RECORDED, with the project and \
+                  the session, in the session store: it survives a restart and a reseat and is \
+                  read aloud at every startup; `/mode <other>` takes it back and forgets it.",
     };
 
     /// The named points, in widening order - the order a banner lists them in and an
@@ -651,10 +656,11 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-/// What an unseen project starts at. Not read-only and not writes-allowed: the operator
-/// is asked about everything that is not a read, and moving off it is one act recorded
-/// per project.
-pub const UNSEEN_PROJECT: Mode = Mode::ALWAYS_ASK;
+/// What an unseen project starts at, and what a project whose row was removed goes back to: the
+/// model answers within its earned scope, so a box nobody configured still runs unattended work.
+/// A box with no oracle cannot carry it and says so by name ([`Mode::check`]) rather than falling
+/// back to `always-ask` - see `docs/boundary-and-adjudication.md` §4e.
+pub const UNSEEN_PROJECT: Mode = Mode::AUTO;
 
 #[cfg(test)]
 mod tests;
