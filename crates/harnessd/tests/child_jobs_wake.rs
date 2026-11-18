@@ -11,7 +11,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use letibot_harnessd::config::{Config, ProviderConfig};
+use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::harness::{ChildTurns, serve_child_under, turned_back_for_its_jobs};
 use letibot_harnessd::sessions::TodoNagClock;
 use letibot_harnessd::{Dialect, Harness, Parts};
@@ -124,6 +124,9 @@ fn a_job_that_ends_while_the_child_is_turned_back_wakes_it() {
     cfg.context_window = None;
     cfg.store = Some(scratch.join("sessions.db"));
     cfg.session_id = "s-child".into();
+    // A seat that runs commands: the default seat is read-only and has no process host to spawn in.
+    cfg.seat = Seat::Leticode;
+    cfg.allow_bash = true;
     cfg.permission = Vec::new();
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no model file");
     *parts.mode_store.write().unwrap_or_else(|e| e.into_inner()) =
