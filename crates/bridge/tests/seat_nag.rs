@@ -5,7 +5,7 @@
 //! The waiter is the real binary, as the plugin's monitor runs it; the bridge is in this process.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Once, mpsc};
 use std::time::{Duration, Instant};
 
@@ -92,8 +92,13 @@ fn seat(store: &Path) -> seat_nag::Nag {
 /// Every other fact - the handle, the runtime directory - is inherited, because it is the one this
 /// process's bridge is using.
 fn waiter(store: &Path, folder: &Path, timeout: Duration) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_letibot-mcp"))
-        .arg("todo-wait")
+    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-mcp"));
+    // testenv strips every `LETIBOT_*` door; the seat's name is the one this process's bridge
+    // answers to, so it is handed over by name rather than inherited.
+    if let Ok(name) = std::env::var(letibot_bridge::rooms::NAME_ENV) {
+        cmd.env(letibot_bridge::rooms::NAME_ENV, name);
+    }
+    cmd.arg("todo-wait")
         .arg("--timeout")
         .arg(format!("{}s", timeout.as_secs()))
         .current_dir(folder)
@@ -151,7 +156,8 @@ fn finish(mut child: Child, patience: Duration) -> Said {
 /// Block until the waiter holds the seat, so the check cannot come due before anybody waits on it:
 /// the fixture decides that order, not the scheduler.
 fn awaiting(nag: &seat_nag::Nag) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // An upper bound, not a measure: a loaded gate box took 10 s to start the waiter.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !nag.claimed() {
         assert!(
             Instant::now() < deadline,
