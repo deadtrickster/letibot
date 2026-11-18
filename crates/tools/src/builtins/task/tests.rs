@@ -1422,6 +1422,9 @@ fn task_and_task_start_schemas_name_model_and_wake() {
         let names = s.param_names();
         assert!(names.contains(&"model"), "{}: {names:?}", s.name);
         assert!(names.contains(&"wake"), "{}: {names:?}", s.name);
+        // A parent briefing work in ANOTHER repository has to be able to say where the child
+        // works: a child born in the parent's project sees none of its own files.
+        assert!(names.contains(&"worktree"), "{}: {names:?}", s.name);
         assert!(
             s.description.contains(crate::builtins::DELIVERED),
             "{} says how the answer arrives the one way: {}",
@@ -1429,6 +1432,121 @@ fn task_and_task_start_schemas_name_model_and_wake() {
             s.description
         );
     }
+}
+
+/// A `task` that names a `worktree` starts the child THERE: the runner is asked to arrange a tree
+/// at that path, not to start the child in the parent's workspace. And the answer names the path,
+/// the branch and the base, so a parent who asked for another repository's tree can check it.
+#[test]
+fn a_task_with_a_worktree_starts_the_child_there() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    struct Recorded(Arc<std::sync::Mutex<Vec<WorktreeSpec>>>);
+    impl TaskRunner for Recorded {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Err("the child was started in the parent's workspace".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn start_worktree(
+            &self,
+            _p: &str,
+            _s: &TaskSpec,
+            w: &WorktreeSpec,
+        ) -> Result<WorktreeHandle, String> {
+            self.0.lock().unwrap().push(w.clone());
+            Ok(WorktreeHandle {
+                handle: "sub-1".into(),
+                placement: WorktreePlacement {
+                    path: w.path.clone().unwrap_or_default(),
+                    branch: w.branch.clone().unwrap_or_else(|| "main".into()),
+                    base_sha: "cafe0000".into(),
+                    main_tree: false,
+                },
+            })
+        }
+    }
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runner: Arc<dyn TaskRunner> = Arc::new(Recorded(Arc::clone(&seen)));
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskTool::new(runner))).unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let r = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task".into(),
+            arguments: r#"{"prompt": "fix the fuzzer", "worktree": "/build/tmp/pg-fuzz-wt",
+                           "repository": "/home/dead/Projects/dbtest/pg-fuzz",
+                           "branch": "fuzz-fix"}"#
+                .into(),
+        },
+        &mut sink,
+    );
+    assert!(
+        matches!(
+            r.outcome,
+            letibot_transcript::ToolOutcome::Backgrounded { .. }
+        ),
+        "{:?}: {}",
+        r.outcome,
+        r.payload
+    );
+    let asked = seen.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "the runner arranges exactly one tree");
+    assert_eq!(
+        asked[0].path.as_deref(),
+        Some("/build/tmp/pg-fuzz-wt"),
+        "the child is placed where the caller said, not in the parent's project"
+    );
+    assert_eq!(
+        asked[0].repo.as_deref(),
+        Some("/home/dead/Projects/dbtest/pg-fuzz")
+    );
+    assert_eq!(asked[0].branch.as_deref(), Some("fuzz-fix"));
+    assert!(
+        r.payload.contains("/build/tmp/pg-fuzz-wt") && r.payload.contains("fuzz-fix"),
+        "the answer names where the child works: {}",
+        r.payload
+    );
+}
+
+/// `repository` and `branch` name the tree a `worktree` is cut from: without one there is nothing
+/// to cut, and a spawn that ignored them would leave the child in the parent's project while the
+/// caller believed otherwise.
+#[test]
+fn a_repository_without_a_worktree_is_refused_before_anything_is_spawned() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    let runner: Arc<dyn TaskRunner> = Arc::new(NoTaskRunner);
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskTool::new(runner))).unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let r = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task".into(),
+            arguments: r#"{"prompt": "fix the fuzzer", "repository": "/repo"}"#.into(),
+        },
+        &mut sink,
+    );
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+        "{:?}",
+        r.outcome
+    );
+    assert!(r.payload.contains("worktree"), "{}", r.payload);
 }
 
 /// A named slug that cannot name a directory and a branch is refused: `/`,

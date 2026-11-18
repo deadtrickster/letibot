@@ -144,6 +144,96 @@ fn porcelain(dir: &Path) -> String {
     git(dir, &["status", "--porcelain"])
 }
 
+/// A parent session seated in `cfg.workspace`, with the session registry its children land in.
+fn parent_harness(parts: &Parts, cfg: &Config) -> Harness {
+    let registry = Registry::new();
+    let hub = registry.new_hub(PARENT.to_string());
+    registry
+        .adopt(
+            hub.clone(),
+            PARENT.to_string(),
+            SessionWiring {
+                model: cfg.model.clone(),
+                dialect: "qwen".into(),
+                endpoint: "http://127.0.0.1:1".into(),
+                workspace: cfg.workspace.display().to_string(),
+            },
+            None,
+        )
+        .expect("the parent is in the registry");
+    Harness::open_with_registry(parts, cfg.clone(), hub, None, None, registry)
+        .expect("the parent opens")
+}
+
+/// A parent whose WORK is in another repository starts the child in that repository's tree: a
+/// `task` with `worktree` cuts the tree from `repository` on `branch`, so the child's own project is
+/// that tree and not the parent's. A child born in the parent's project saw none of its own files.
+#[test]
+fn a_task_whose_work_is_in_another_repository_places_the_child_there() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        // Said out loud, so a green run does not read as one that measured this.
+        letibot_tokencore::apparatus::absent(
+            "a vocabulary GGUF (`LETIBOT_VOCAB_GGUF`, or `$HOME/models/…`)",
+        );
+        return;
+    };
+    let dir = Scratch::new("other-repository", false);
+    let cfg = config(&dir.repo(), PARENT);
+    let parts = parts_for(&cfg);
+    // A second repository beside the parent's, which the parent is not in.
+    let other = dir.root.join("pg-fuzz");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    letibot_tools::testing::repo_config(&other);
+    std::fs::write(other.join("lib.rs"), "fn f() {}\n").unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "base"]);
+    let at = dir.root.join("leakidx-wt");
+
+    let parent = parent_harness(&parts, &cfg);
+    let started = call(
+        &parent,
+        "task",
+        serde_json::json!({
+            "prompt": "fix the fuzzer",
+            "worktree": at.display().to_string(),
+            "repository": other.display().to_string(),
+            "branch": "fuzz-fix",
+        }),
+    );
+    assert!(
+        matches!(
+            started.outcome,
+            letibot_transcript::ToolOutcome::Backgrounded { .. }
+        ),
+        "the child was not placed: {:?} {}",
+        started.outcome,
+        started.payload
+    );
+    assert!(at.is_dir(), "the tree was not created at the named path");
+    assert!(
+        git(&other, &["worktree", "list"]).contains("leakidx-wt"),
+        "the tree is a worktree of the repository the caller named"
+    );
+    assert_eq!(
+        git(&at, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "fuzz-fix",
+        "the branch the caller named"
+    );
+    // The parent's own repository gained nothing: the child is not in the parent's tree.
+    assert!(
+        !git(&dir.repo(), &["worktree", "list"]).contains("leakidx-wt"),
+        "the tree was cut from the parent's repository"
+    );
+    assert!(
+        started.payload.contains(&at.display().to_string()) && started.payload.contains("fuzz-fix"),
+        "the answer says where the child works: {}",
+        started.payload
+    );
+    let _ = parent.stop_children();
+    assert!(parent.wait_for_children(std::time::Duration::from_secs(30)));
+}
+
 /// The worktree is the branch and nothing else: clean, no `.cargo/` written - and the child's
 /// build-cache pair points at the main tree's `target/`.
 #[test]

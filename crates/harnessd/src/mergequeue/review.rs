@@ -1394,6 +1394,8 @@ fn open_fix_branch(
         base: Some(r.head_sha.clone()),
         main_tree: false,
         repo: Some(r.repository.clone()),
+        path: None,
+        branch: None,
     };
     match p.runner.start_worktree(&brief, &spec, &wt) {
         Ok(h) => {
