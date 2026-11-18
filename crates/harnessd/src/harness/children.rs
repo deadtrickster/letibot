@@ -36,11 +36,7 @@ impl Harness {
     /// lists them: whether this session may be parked, and whether a VM child's turn may end.
     /// Not `running_jobs`, which is the plan-check's question about a board's rows.
     pub fn live_jobs(&self) -> usize {
-        self.runtime
-            .backend
-            .processes()
-            .map(|p| p.jobs().iter().filter(|j| j.state.is_running()).count())
-            .unwrap_or(0)
+        self.open_jobs().len()
     }
 
     /// Wait until every subagent in this tree has left its own thread, up to `timeout`; `true` when they
@@ -900,6 +896,133 @@ pub(crate) fn hold_is_over(hold: ChildHold, children: usize, jobs: usize, owed: 
     match hold {
         ChildHold::Children => children == 0,
         ChildHold::Jobs => jobs == 0 && !owed,
+    }
+}
+
+/// How many times one child's ending turn is turned back for the jobs it started: the plan
+/// check's own bound, one. The same notice is news once, and after that a third insistence is a
+/// model call spent saying what the answer already says - so the answer goes up naming them.
+pub const JOBS_TURN_BACKS: u32 = 1;
+
+/// One job as every sentence about a child's jobs names it: `` `tests · j41` (`cargo test
+/// --release`, 4m12s) `` - the handle, what it runs, and how long it has run. One function because
+/// the held row, the turn-back and the answer name the same job and must not spell it three ways.
+pub fn open_job_clause(j: &letibot_tools::exec::JobView) -> String {
+    let command: String = j
+        .command
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect();
+    format!(
+        "`{}` (`{command}`, {})",
+        j.label(),
+        human_secs(j.elapsed.as_millis() as u64)
+    )
+}
+
+/// The running jobs as one phrase, or `None` when nothing is running: the list every sentence
+/// below is built from, so the three of them cannot disagree about what is open.
+pub fn open_jobs_clause(jobs: &[letibot_tools::exec::JobView]) -> Option<String> {
+    (!jobs.is_empty()).then(|| {
+        jobs.iter()
+            .map(open_job_clause)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+/// The message a child is turned back with, or `None` when nothing it started is still running:
+/// each job named, and the two ways out - wait on it, or end it.
+pub fn jobs_open_notice(jobs: &[letibot_tools::exec::JobView]) -> Option<String> {
+    let list = open_jobs_clause(jobs)?;
+    Some(format!(
+        "[subagent jobs] this turn ended with {} background job(s) it started still running: \
+         {list}. Answer again once the work is done with: `job_wait` each one - it returns at \
+         once, and its completion is delivered to you - or `job_kill` it if the work is not worth \
+         waiting for. A job left running is work nobody is told about.",
+        jobs.len()
+    ))
+}
+
+/// Whether this ending is turned back, and with what: the budget and the metronome in one place.
+/// A notice the child has already had is not said twice, and once [`JOBS_TURN_BACKS`] is spent
+/// the answer stands - [`open_jobs_answer_line`] is what carries them then.
+pub fn turn_back_for_jobs(
+    jobs: &[letibot_tools::exec::JobView],
+    left: &mut u32,
+    told: &mut Option<String>,
+) -> Option<String> {
+    let notice = jobs_open_notice(jobs)?;
+    if *left == 0 || told.as_deref() == Some(notice.as_str()) {
+        return None;
+    }
+    *left -= 1;
+    *told = Some(notice.clone());
+    Some(notice)
+}
+
+/// The line a child's answer carries when jobs it started are still running - the bound spent, or
+/// a job it started in its turned-back turn: the parent is told which work the answer leaves behind.
+pub fn open_jobs_answer_line(jobs: &[letibot_tools::exec::JobView]) -> Option<String> {
+    let list = open_jobs_clause(jobs)?;
+    Some(format!(
+        "[subagent jobs] {} job(s) this child started were still running when it answered: {list}. \
+         Nothing has reported their ending - wait on them or kill them yourself if the work matters.",
+        jobs.len()
+    ))
+}
+
+/// The row a parent reads for a child that answered and is held for the jobs it started, or `None`
+/// when it holds nothing. The state is `held`, so the head draws the row and names the jobs on it.
+pub fn held_said(jobs: &[letibot_tools::exec::JobView]) -> Option<String> {
+    open_jobs_clause(jobs).map(|list| format!("answered - held for {list}"))
+}
+
+/// The newest thing the child said, which is its answer after a hold or a turn-back: an empty row
+/// is a turn that only called tools, and it is not a newer answer than the one before it.
+pub fn newest_answer(sub: &Harness) -> Option<String> {
+    sub.items().iter().rev().find_map(|i| match i {
+        TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// A child that ended its turn over jobs it started is turned back AT ONCE, at every placement:
+/// the turn is [`jobs_open_notice`], and the child answers again once it has waited on them or
+/// killed them. `reply`'s text becomes that newer answer, which is the one that goes up.
+/// `running` is where the open jobs are read from - the session's own process host in production,
+/// and a planted list in a test, which is the only way the schedule can be driven without one.
+pub fn turned_back_for_its_jobs(
+    sub: &mut Harness,
+    turns: &mut ChildTurns,
+    title: &str,
+    reply: &mut Reply,
+    running: &dyn Fn(&Harness) -> Vec<letibot_tools::exec::JobView>,
+    publish: &dyn Fn(&str, &str),
+) {
+    let mut left = JOBS_TURN_BACKS;
+    let mut told: Option<String> = None;
+    loop {
+        let jobs = running(sub);
+        let Some(notice) = turn_back_for_jobs(&jobs, &mut left, &mut told) else {
+            break;
+        };
+        let list = open_jobs_clause(&jobs).unwrap_or_default();
+        publish(
+            "running",
+            &format!("{title} — answered, and turned back for the job(s) it started: {list}"),
+        );
+        let out = crate::turn_tail::run_turn(sub, turns, crate::turn_tail::Door::Jobs, |h| {
+            h.jobs_open_turn(&notice, &jobs)
+        });
+        if let Some(Ok(newer)) = out
+            && !newer.text.trim().is_empty()
+        {
+            reply.text = newer.text;
+        }
     }
 }
 
@@ -4295,25 +4418,28 @@ impl HarnessTaskRunner {
                 &mut turns,
                 Some(ChildHold::Children),
             );
-            if let Some(newest) = sub.items().iter().rev().find_map(|i| match i {
-                TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
-                    Some(text.clone())
-                }
-                _ => None,
-            }) {
+            if let Some(newest) = newest_answer(&sub) {
                 reply.text = newest;
             }
         }
+        // A turn that ended over a job it started is not this child's answer, at ANY placement: it
+        // is turned back once with the job named, at once, and answers again once it has waited on
+        // it or killed it. A host child would otherwise report done while its work still runs.
+        turned_back_for_its_jobs(
+            &mut sub,
+            &mut turns,
+            &title,
+            &mut reply,
+            &|h: &Harness| h.open_jobs(),
+            &|state, said| publish(state, said, None),
+        );
         // A VM goes down with this turn, so the turn may not end over a job still running in it:
         // the VM is held, the child woken with each job's exit, and it goes when nothing is left -
         // before the "done" row, so the head never draws a finish it then retracts.
         if placement != Placement::Host && sub.live_jobs() > 0 {
             publish(
-                "running",
-                &format!(
-                    "{title} — answered, and holding its VM open until the jobs it backgrounded \
-                     have ended"
-                ),
+                "held",
+                held_said(&sub.open_jobs()).as_deref().unwrap_or_default(),
                 None,
             );
             let _ = serve_child_with(
@@ -4323,14 +4449,15 @@ impl HarnessTaskRunner {
                 &mut turns,
                 Some(ChildHold::Jobs),
             );
-            if let Some(newest) = sub.items().iter().rev().find_map(|i| match i {
-                TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
-                    Some(text.clone())
-                }
-                _ => None,
-            }) {
+            if let Some(newest) = newest_answer(&sub) {
                 reply.text = newest;
             }
+        }
+        // The bound is the plan check's, so a child that keeps ending over its jobs is not turned
+        // back for ever: what is still running goes up IN the answer, where the parent acts on it.
+        if let Some(said) = open_jobs_answer_line(&sub.open_jobs()) {
+            reply.text.push_str("\n\n");
+            reply.text.push_str(&said);
         }
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();

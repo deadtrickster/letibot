@@ -27,6 +27,9 @@ pub enum Door {
     /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words
     /// because the sentence names the AGE of the oldest row and so changes at every delivery.
     Census,
+    /// The turn a child owes for the jobs it started and left running: not a nag, so it touches
+    /// no clock, and not a settlement, so it settles nothing.
+    Jobs,
     /// The turn after the operator's own `!` line.
     OperatorShell,
     /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
@@ -48,6 +51,7 @@ impl Door {
             Door::Wake => "wake",
             Door::Nag(_) => "nag",
             Door::Census => "census",
+            Door::Jobs => "jobs",
             Door::OperatorShell => "bang",
             Door::Reseat => "reseat",
             Door::Fallback => "fallback",
