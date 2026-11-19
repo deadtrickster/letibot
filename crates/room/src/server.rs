@@ -4714,7 +4714,14 @@ impl Server {
                     _ => return,
                 };
                 // A nick that is not a label is no label: the name it speaks as is drawn instead.
-                let seat_nick = if crate::chat::valid_nick(&seat_nick) {
+                // And a label **another** live seat already answers to is dropped rather than taken:
+                // the hello is not the place to argue about a name, and its own `nick` frame is.
+                let mine = crate::SeatId::parse(&seat_id)
+                    .map(|i| i.to_string())
+                    .unwrap_or_default();
+                let seat_nick = if crate::chat::valid_nick(&seat_nick)
+                    && me.nick_holder(&seat_nick, &mine).is_none()
+                {
                     seat_nick
                 } else {
                     String::new()
