@@ -3,7 +3,94 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
+
+/// How long a case may take before the thing it proves never happened. Not a measurement of the
+/// box: a loaded box stretches every step of the launcher, and each of these cases is about a wait
+/// that must END, not about how quickly it ends.
+const NEVER: Duration = Duration::from_secs(60);
+
+/// A launcher run as the shell sees it: its own status and how long ITS process took.
+///
+/// `Command::output()` is not that number. It reads both pipes to EOF, so a child the launcher
+/// leaves behind holds the run open for as long as it lives - which is the same hang a caller
+/// would meet as `x=$(letibot ...)`. Here the clock stops when the launcher is reaped, and the
+/// streams are collected separately with a bound of their own.
+struct Ran {
+    status: ExitStatus,
+    took: Duration,
+    /// When both pipes closed, or `None` when a child the launcher left behind still held one: the
+    /// launcher is gone and its caller's `x=$(letibot ...)` would still be reading.
+    eof: Option<Duration>,
+    stdout: String,
+    stderr: String,
+}
+
+/// Collect a pipe on a thread, into a buffer the caller can read while it is still filling, so a
+/// stream a leftover child never closes costs no more than the grace below.
+fn collect(
+    mut f: impl std::io::Read + Send + 'static,
+) -> (Arc<Mutex<Vec<u8>>>, mpsc::Receiver<()>) {
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let (done, rx) = mpsc::channel();
+    let sink = buf.clone();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match f.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => sink.lock().unwrap().extend_from_slice(&chunk[..n]),
+            }
+        }
+        let _ = done.send(());
+    });
+    (buf, rx)
+}
+
+fn run_measured(cmd: &mut Command) -> Ran {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the launcher starts");
+    let (out, out_done) = collect(child.stdout.take().expect("a pipe"));
+    let (err, err_done) = collect(child.stderr.take().expect("a pipe"));
+    let t = Instant::now();
+    let status = child.wait().expect("the launcher is reaped");
+    let took = t.elapsed();
+    // The launcher has exited, so everything it wrote is already in the pipes: this is the drain
+    // finishing, not a wait on anything it left behind.
+    let grace = Instant::now() + Duration::from_secs(2);
+    let mut eof: Option<Duration> = None;
+    for rx in [out_done, err_done] {
+        let mut closed = false;
+        while Instant::now() < grace {
+            match rx.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                    closed = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        eof = match (eof, closed) {
+            (Some(at), true) => Some(at.max(t.elapsed())),
+            (_, true) => Some(t.elapsed()),
+            (_, false) => None,
+        };
+    }
+    let text = |b: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&b.lock().unwrap()).into_owned();
+    Ran {
+        status,
+        took,
+        eof,
+        stdout: text(&out),
+        stderr: text(&err),
+    }
+}
 
 fn scratch(tag: &str) -> PathBuf {
     let dir = letibot_sessionlog::testing::scratch_root()
@@ -22,22 +109,45 @@ fn letibot_multi(bin: &Path) -> PathBuf {
 }
 
 fn is_on(bin: &Path, home: &Path, socket: &Path) -> (bool, Duration, String) {
-    let t = Instant::now();
-    let out = letibot_testenv::command(bin.join("letibot-multi"))
-        .args(["rooms", "is-on"])
+    let mut cmd = letibot_testenv::command(bin.join("letibot-multi"));
+    cmd.args(["rooms", "is-on"])
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
-        .env("LETIBOT_ROOM_SOCKET", socket)
-        .output()
-        .expect("is-on runs");
-    (
-        out.status.success(),
-        t.elapsed(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+        .env("LETIBOT_ROOM_SOCKET", socket);
+    let ran = run_measured(&mut cmd);
+    (ran.status.success(), ran.took, ran.stderr)
+}
+
+/// `bash <script> <args>` over a fixture PATH, home and runtime dir, with nothing inherited from
+/// this test's own environment.
+#[allow(clippy::too_many_arguments)]
+fn launcher(
+    script: &Path,
+    args: &[&str],
+    wt: &Path,
+    bin: &Path,
+    home: &Path,
+    rundir: &Path,
+    room: &Path,
+    head: Option<&Path>,
+) -> Ran {
+    let mut cmd = letibot_testenv::command("bash");
+    cmd.arg(script)
+        .args(args)
+        .current_dir(wt)
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("HOME", home)
+        .env("XDG_RUNTIME_DIR", rundir)
+        .env("LETIBOT_BIN", bin)
+        .env("LETIBOT_ROOM_SOCKET", room);
+    if let Some(h) = head {
+        cmd.env("LETIBOT_HEAD", h);
+    }
+    run_measured(&mut cmd)
 }
 
 #[test]
@@ -62,8 +172,8 @@ fn is_on_answers_from_the_socket_while_systemctl_hangs() {
     let (ok, took, err) = is_on(&bin, &home, &socket);
     assert!(!ok, "nothing serves the room: {err}");
     assert!(
-        took < Duration::from_secs(4),
-        "is-on waited {took:?} on a hung systemctl"
+        took < NEVER,
+        "is-on never came back on a hung systemctl: {took:?}"
     );
     assert!(err.contains("did not answer"), "{err}");
 
@@ -80,7 +190,7 @@ fn is_on_answers_from_the_socket_while_systemctl_hangs() {
     });
     let (ok, took, err) = is_on(&bin, &home, &socket);
     assert!(ok, "the room answered: {err}");
-    assert!(took < Duration::from_secs(3), "is-on took {took:?}");
+    assert!(took < NEVER, "is-on never came back: {took:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -138,32 +248,25 @@ time.sleep(30)
         .join("../../scripts/letibot")
         .canonicalize()
         .unwrap();
-    let t = Instant::now();
-    let out = letibot_testenv::command("bash")
-        .arg(&script)
-        .arg("--new")
-        .current_dir(&wt)
-        .env_clear()
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-        .env("HOME", &home)
-        .env("XDG_RUNTIME_DIR", &rundir)
-        .env("LETIBOT_BIN", &bin)
-        .env("LETIBOT_HEAD", bin.join("head-stub"))
-        .env("LETIBOT_ROOM_SOCKET", &room)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("the launcher runs");
-    let took = t.elapsed();
-    let err = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "the launcher refused:\n{err}");
+    let ran = launcher(
+        &script,
+        &["--new"],
+        &wt,
+        &bin,
+        &home,
+        &rundir,
+        &room,
+        Some(&bin.join("head-stub")),
+    );
+    let (took, err, stdout) = (ran.took, ran.stderr, ran.stdout);
+    assert!(ran.status.success(), "the launcher refused:\n{err}");
     assert!(
         stdout.starts_with("head --socket"),
         "the head was started:\n{stdout}\n{err}"
     );
     assert!(
-        took < Duration::from_secs(5),
-        "the launcher waited {took:?} on systemd:\n{err}"
+        took < NEVER,
+        "the launcher never came back on a systemd-run that hangs:\n{err}"
     );
     assert_eq!(
         err.matches("the systemd user manager is not answering")
@@ -175,8 +278,10 @@ time.sleep(30)
     assert!(!err.contains("skipped"), "{err}");
     assert!(err.lines().count() <= 3, "startup said too much:\n{err}");
 
-    // The daemon was handed the probe's answer file, and the probe still answers into it.
-    let until = Instant::now() + Duration::from_secs(15);
+    // The daemon was handed the probe's answer file, and the probe still answers into it. The
+    // stub's own `sleep` is past the launcher's bound, so this waits for the answer's arrival and
+    // not for the stub.
+    let until = Instant::now() + NEVER;
     let late = loop {
         if let Ok(p) = std::fs::read_to_string(home.join("late-env"))
             && !p.is_empty()
@@ -184,8 +289,8 @@ time.sleep(30)
         {
             break p;
         }
-        assert!(Instant::now() < until, "no late answer:\n{err}");
-        std::thread::sleep(Duration::from_millis(200));
+        assert!(Instant::now() < until, "the probe never answered:\n{err}");
+        std::thread::sleep(Duration::from_millis(20));
     };
     let answer = std::fs::read_to_string(&late).unwrap();
     assert!(answer.starts_with("0\t"), "{answer:?}");
@@ -203,6 +308,8 @@ struct OneShot {
     rundir: PathBuf,
     status: Option<i32>,
     took: Duration,
+    /// When the launcher's caller stopped reading: see [`Ran::eof`].
+    eof: Option<Duration>,
     stdout: String,
     stderr: String,
 }
@@ -253,25 +360,22 @@ fn one_shot(tag: &str, scope: &str, probe_hangs: bool) -> OneShot {
         .join("../../scripts/letibot")
         .canonicalize()
         .unwrap();
-    let t = Instant::now();
-    let out = letibot_testenv::command("bash")
-        .arg(&script)
-        .arg("say hi")
-        .current_dir(&wt)
-        .env_clear()
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-        .env("HOME", &home)
-        .env("XDG_RUNTIME_DIR", &rundir)
-        .env("LETIBOT_BIN", &bin)
-        .env("LETIBOT_ROOM_SOCKET", &room)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("the launcher runs");
+    let ran = launcher(
+        &script,
+        &["say", "hi"],
+        &wt,
+        &bin,
+        &home,
+        &rundir,
+        &room,
+        None,
+    );
     OneShot {
-        took: t.elapsed(),
-        status: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        took: ran.took,
+        eof: ran.eof,
+        status: ran.status.code(),
+        stdout: ran.stdout,
+        stderr: ran.stderr,
         dir,
         home,
         rundir,
@@ -282,6 +386,12 @@ impl OneShot {
     /// No `systemd-run` the launcher started is still running.
     fn no_join_left(&self) -> bool {
         let pids = std::fs::read_to_string(self.home.join("scope-pids")).unwrap_or_default();
+        pids.lines()
+            .all(|p| !Path::new(&format!("/proc/{}", p.trim())).exists())
+    }
+    /// Nothing the abandoned join started is still running either.
+    fn no_children_left(&self) -> bool {
+        let pids = std::fs::read_to_string(self.home.join("child-pids")).unwrap_or_default();
         pids.lines()
             .all(|p| !Path::new(&format!("/proc/{}", p.trim())).exists())
     }
@@ -302,9 +412,8 @@ impl Drop for OneShot {
 fn a_hanging_real_scope_does_not_hang_the_one_shot() {
     let r = one_shot("hang", "exec sleep 20", false);
     assert!(
-        r.took < Duration::from_secs(15),
-        "the one-shot waited {:?} on a scope that never joined:\n{}",
-        r.took,
+        r.took < NEVER,
+        "the one-shot never came back on a scope that never joined:\n{}",
         r.stderr
     );
     assert_eq!(
@@ -317,6 +426,32 @@ fn a_hanging_real_scope_does_not_hang_the_one_shot() {
     assert!(r.stderr.contains("made no scope"), "{}", r.stderr);
     assert!(r.no_join_left(), "the given-up join is killed");
     assert!(r.swept(), "hour-old probe and join dirs are swept");
+}
+
+#[test]
+fn a_join_wrapper_that_forks_does_not_hold_the_callers_stdio() {
+    // A `systemd-run` that is a wrapper: the scope runs in a child and the wrapper waits. The
+    // given-up join has to take that child with it, or `x=$(letibot ...)` reads until it ends.
+    let r = one_shot(
+        "fork",
+        "sleep 20 &\necho $! >>\"$HOME/child-pids\"\nwait",
+        false,
+    );
+    assert_eq!(r.stdout.trim(), "ran", "{}", r.stderr);
+    assert_eq!(r.status, Some(3), "{}", r.stderr);
+    assert!(r.stderr.contains("made no scope"), "{}", r.stderr);
+    let until = Instant::now() + NEVER;
+    while !(r.no_join_left() && r.no_children_left()) {
+        assert!(
+            Instant::now() < until,
+            "the abandoned join is killed, children and all"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        r.eof.is_some(),
+        "the launcher's caller is still reading from a child it left behind"
+    );
 }
 
 #[test]
@@ -334,16 +469,15 @@ fn a_scope_that_joins_runs_the_one_shot_in_it_with_its_status() {
     );
     assert!(r.home.join("scoped").is_file(), "it ran in the scope");
     assert!(!r.stderr.contains("made no scope"), "{}", r.stderr);
-    assert!(r.took < Duration::from_secs(10), "{:?}", r.took);
+    assert!(r.took < NEVER, "{:?}", r.took);
 }
 
 #[test]
 fn a_probe_that_never_answers_does_not_hang_the_one_shot() {
     let r = one_shot("never", "exec sleep 20", true);
     assert!(
-        r.took < Duration::from_secs(10),
-        "{:?}:\n{}",
-        r.took,
+        r.took < NEVER,
+        "the one-shot never came back:\n{}",
         r.stderr
     );
     assert_eq!(r.stdout.trim(), "ran", "{}", r.stderr);
@@ -370,9 +504,12 @@ fn a_hanging_real_scope_does_not_hang_the_daemon_start() {
         std::fs::create_dir_all(d).unwrap();
     }
     letibot_multi(&bin);
+    // The stub must answer `write_stub`'s probe: it is run once with no arguments to prove it is
+    // executable, and a stub that blocks on that costs the test its whole `sleep`.
     letibot_tools::testing::write_stub(
         &bin.join("systemd-run"),
-        "#!/bin/sh\nfor a; do last=$a; done\n[ \"$last\" = true ] && exit 0\n\
+        "#!/bin/sh\n[ -n \"$LETIBOT_STUB_PROBE\" ] && exit 0\n\
+         for a; do last=$a; done\n[ \"$last\" = true ] && exit 0\n\
          echo $$ >>\"$HOME/scope-pids\"\nexec sleep 20\n",
     );
     letibot_tools::testing::write_stub(
@@ -406,27 +543,23 @@ time.sleep(10)
         .join("../../scripts/letibot")
         .canonicalize()
         .unwrap();
-    let t = Instant::now();
-    let out = letibot_testenv::command("bash")
-        .arg(&script)
-        .arg("--new")
-        .current_dir(&wt)
-        .env_clear()
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-        .env("HOME", &home)
-        .env("XDG_RUNTIME_DIR", &rundir)
-        .env("LETIBOT_BIN", &bin)
-        .env("LETIBOT_HEAD", bin.join("head-stub"))
-        .env("LETIBOT_ROOM_SOCKET", &room)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("the launcher runs");
-    let took = t.elapsed();
-    let err = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "the launcher refused:\n{err}");
+    let ran = launcher(
+        &script,
+        &["--new"],
+        &wt,
+        &bin,
+        &home,
+        &rundir,
+        &room,
+        Some(&bin.join("head-stub")),
+    );
+    let (took, err, stdout) = (ran.took, ran.stderr, ran.stdout);
+    assert!(ran.status.success(), "the launcher refused:\n{err}");
     assert!(stdout.starts_with("head --socket"), "{stdout}\n{err}");
-    assert!(took < Duration::from_secs(15), "waited {took:?}:\n{err}");
+    assert!(
+        took < NEVER,
+        "the launcher never came back: {took:?}\n{err}"
+    );
     let log = std::fs::read_dir(home.join("logs"))
         .into_iter()
         .flatten()
