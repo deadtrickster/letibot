@@ -61,12 +61,7 @@ fn a_pgid_file_naming_someone_elses_process_signals_nothing() {
         .arg(&wrapped)
         .spawn()
         .unwrap();
-    for _ in 0..100 {
-        if real.exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    crate::testing::wait_until("the wrapper to write its group", || real.exists());
     let pid: u32 = std::fs::read_to_string(&real)
         .expect("the wrapper wrote its group")
         .trim()
@@ -74,10 +69,7 @@ fn a_pgid_file_naming_someone_elses_process_signals_nothing() {
         .unwrap();
     sh(&cancel_script(&real.display().to_string()));
     let _ = leader.wait();
-    let gone = (0..50).any(|_| {
-        std::thread::sleep(Duration::from_millis(20));
-        !alive(pid)
-    });
+    let gone = crate::testing::wait_within(Duration::from_secs(1), || !alive(pid));
     let _ = sh(&format!("kill -KILL -{pid} 2>/dev/null"));
     assert!(gone, "the wrapper's own group was not ended");
     std::fs::remove_dir_all(&dir).ok();
