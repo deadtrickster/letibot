@@ -78,6 +78,19 @@ fn the_rsync_invocation_carries_the_key_the_deletes_and_the_two_exclusions() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The files one far-side step keeps, as the launcher and the poll name them, on a tick short
+/// enough to watch a real one.
+fn files(tick: Tick) -> Files {
+    Files {
+        launcher: "/h/gate/x/run/step-0.sh".to_string(),
+        pid: "/h/gate/x/run/step-0.pid".to_string(),
+        out: "/h/gate/x/run/step-0.out".to_string(),
+        exit: "/h/gate/x/run/step-0.exit".to_string(),
+        beat: "/h/gate/x/run/step-0.beat".to_string(),
+        tick,
+    }
+}
+
 /// The launcher, as a value: the step's own text lands in a file (so it needs no quoting), the subshell
 /// is a subshell, and the build cache is the host's, outside the tree.
 #[test]
@@ -86,9 +99,7 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
         "cargo test --workspace -- --nocapture",
         "/h/gate/x/tree",
         "/h/gate/x/target",
-        "/h/gate/x/run/step-0.pid",
-        "/h/gate/x/run/step-0.out",
-        "/h/gate/x/run/step-0.exit",
+        &files(Tick::default()),
         false,
     );
     assert!(
@@ -110,7 +121,13 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
         "{script}"
     );
     // A step containing a quote of its own is written verbatim: nothing is spliced or escaped.
-    let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e", false);
+    let quoted = launcher_script(
+        "echo \"it's fine\"",
+        "/t",
+        "/c",
+        &files(Tick::default()),
+        false,
+    );
     assert!(quoted.contains("( echo \"it's fine\" )"), "{quoted}");
     // And the step keeps no core dump, whatever the host's own limit is: a step the gate kills for
     // size is not a crash anybody is owed a report about.
@@ -129,9 +146,7 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
         "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace",
         "/h/gate/x/tree",
         "/h/gate/x/target",
-        "/h/gate/x/run/step-0.pid",
-        "/h/gate/x/run/step-0.out",
-        "/h/gate/x/run/step-0.exit",
+        &files(Tick::default()),
         true,
     );
     assert!(
@@ -153,7 +168,13 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
         "{script}"
     );
     // A quote in the step survives the extra layer: `sq` leaves and re-enters the quoting.
-    let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e", true);
+    let quoted = launcher_script(
+        "echo \"it's fine\"",
+        "/t",
+        "/c",
+        &files(Tick::default()),
+        true,
+    );
     assert!(
         quoted.contains("-- bash -c 'echo \"it'\\''s fine\"'"),
         "{quoted}"
@@ -168,13 +189,13 @@ fn a_step_runs_below_the_boxs_own_work() {
     assert_eq!(GATE_NICE, 10);
     assert_eq!((GATE_CPU_WEIGHT, GATE_IO_WEIGHT), (20, 20));
     // The scope keeps what it was for - `Delegate=yes`, the apparatus - and gains the weights.
-    let scoped = launcher_script("cargo test", "/t", "/c", "/p", "/o", "/e", true);
+    let scoped = launcher_script("cargo test", "/t", "/c", &files(Tick::default()), true);
     assert!(scoped.contains("-p CPUWeight=20"), "{scoped}");
     assert!(scoped.contains("-p IOWeight=20"), "{scoped}");
     assert!(scoped.contains("-p Delegate=yes"), "{scoped}");
     // A step with no scope of its own has no cgroup to weight, and still runs nice'd: the priority is
     // the launcher's, so the project's own step is never rewritten to carry it.
-    let bare = launcher_script("cargo test", "/t", "/c", "/p", "/o", "/e", false);
+    let bare = launcher_script("cargo test", "/t", "/c", &files(Tick::default()), false);
     assert!(bare.contains("( cargo test )"), "{bare}");
     assert!(
         !bare.contains("Weight"),
@@ -328,13 +349,15 @@ fn the_start_is_detached_and_the_kill_is_a_group_kill() {
 /// that finished from a step that was killed.
 #[test]
 fn the_poll_reads_the_status_before_the_pid_and_leads_with_its_marker() {
-    let poll = poll_script(
-        "@@letibot-gate-1-0@@",
-        "/h/run/step-0.pid",
-        "/h/run/step-0.exit",
-        "/h/run/step-0.out",
-        4096,
-    );
+    let polled = Files {
+        launcher: "/h/run/step-0.sh".to_string(),
+        pid: "/h/run/step-0.pid".to_string(),
+        out: "/h/run/step-0.out".to_string(),
+        exit: "/h/run/step-0.exit".to_string(),
+        beat: "/h/run/step-0.beat".to_string(),
+        tick: Tick::default(),
+    };
+    let poll = poll_script("@@letibot-gate-1-0@@", &polled, 4096);
     let exit_at = poll
         .find("if [ -f '/h/run/step-0.exit' ]")
         .expect("the status");

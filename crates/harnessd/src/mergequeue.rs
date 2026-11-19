@@ -19,7 +19,7 @@ pub mod explain;
 pub mod gate;
 pub mod gate_firecode;
 pub mod gate_host;
-pub mod gate_orphans;
+pub mod gate_tick;
 pub mod git;
 pub mod lease;
 pub mod listen;

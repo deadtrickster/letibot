@@ -16,6 +16,16 @@ install step.
 - The first step that fails parks the branch. The row names the step and carries its output.
 - A gate on this machine first takes the box's gate lock, the one `scripts/gate-at.sh` takes
   (`/build/gate.lock`, or `LETIBOT_GATE_LOCK`), and holds it to its last step.
+- The daemon pokes a step every 5 s and the step's own launcher watches for the pokes. A step that
+  is not poked for four of them (20 s) ends itself, with its whole process group: however the
+  daemon went - a stop, a crash, `SIGKILL`, a box that rebooted or slept - the step goes with it,
+  and nothing is left for the next daemon to find. Nothing calls back the other way, so a gate
+  machine with no egress (an AWS cluster driven from a laptop) is watched the same way. The poke
+  rides the poll that fetches the step's output, so a step on a declared host is asked once every
+  5 s and not every second.
+- Nothing is written down about a running step and nothing reaps one: the watchdog is the whole
+  of it (`crates/harnessd/src/mergequeue/gate_tick.rs`), and the record-and-reaper that used to
+  catch a dead daemon's step (`mergequeue/gate_orphans.rs`) is gone.
 - One deadline covers the whole run, not each step, counted from when the lock is held: thirty
   minutes, or `[queue] gate_deadline_minutes`. Past it the step in flight is killed with its
   process group and the row is `timed_out`.
