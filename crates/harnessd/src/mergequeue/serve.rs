@@ -260,10 +260,10 @@ pub struct RepoQueue {
     /// The process table the in-use rules read: `/proc` in a daemon, a fixture in a test. Whether
     /// a tree is in use must not depend on what another program on the box is doing.
     proc_root: PathBuf,
-    /// Each kept tree's proof, with the branch head, target head and tree `HEAD` it was made
-    /// against: a pass proves a kept tree again only when one of the three moved. Proving every
-    /// kept row's commits on every two-second pass spawned hundreds of `git` a pass, without end.
-    proven: std::sync::Mutex<std::collections::HashMap<(String, String, String), Heads>>,
+    /// Each kept row's proof, with the branch head, target head and tree `HEAD` it was made
+    /// against: a pass proves a kept tree again only when one of the three moved. Keyed by row,
+    /// since a merge row and its review row share one tree and each owes its own note.
+    proven: std::sync::Mutex<std::collections::HashMap<String, Heads>>,
     /// How many trees the sweep has proved, for the test that a quiet pass proves none.
     proofs: std::sync::atomic::AtomicUsize,
 }
@@ -1683,7 +1683,7 @@ impl RepoQueue {
                 .proven
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .get(&tree)
+                .get(&settled)
                 .is_some_and(|was| *was == now_heads);
         if unmoved {
             return Ok(());
@@ -1701,10 +1701,10 @@ impl RepoQueue {
             match &found.kept {
                 // A live session or process is a fact about now, not about commits: asked again.
                 Some((kind, _)) if *kind != "live" => {
-                    proven.insert(tree, now_heads);
+                    proven.insert(settled.clone(), now_heads);
                 }
                 _ => {
-                    proven.remove(&tree);
+                    proven.remove(&settled);
                 }
             }
         }
