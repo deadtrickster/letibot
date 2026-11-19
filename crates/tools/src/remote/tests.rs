@@ -61,12 +61,13 @@ fn a_pgid_file_naming_someone_elses_process_signals_nothing() {
         .arg(&wrapped)
         .spawn()
         .unwrap();
-    crate::testing::wait_until("the wrapper to write its group", || real.exists());
-    let pid: u32 = std::fs::read_to_string(&real)
-        .expect("the wrapper wrote its group")
-        .trim()
-        .parse()
-        .unwrap();
+    // The value, not the file's existence: a wrapper that has just created its group file has not
+    // necessarily written a number into it yet, and reading it twice would be two observations.
+    let pid: u32 = crate::testing::wait_for("the wrapper's group to be readable", || {
+        std::fs::read_to_string(&real)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    });
     sh(&cancel_script(&real.display().to_string()));
     let _ = leader.wait();
     let gone = crate::testing::wait_within(Duration::from_secs(1), || !alive(pid));
