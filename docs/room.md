@@ -966,6 +966,16 @@ never a random suffix), and a name whose holder is gone is free. A rename is sai
 the seat is in. A session's default label is the slug of its title, which is also the handle it is
 addressed by; a bridge's is the handle `cc@<folder>:<name>` it speaks as.
 
+**What is still a name.** The id is minted, on the wire and in the roster, and what the coordinator
+holds a label by - but three things still key on the name a connection speaks as, and lead 70
+leaves them for the next pass: `to`/`dm to`/`room_ask` (a model names a seat by name, not yet by id,
+and a name in a `to` is not yet refused with the id it would have meant), a todo wait's
+`{"kind":"todo","seat":…}` and an ask's `by_me`/`of_me` (stored rows hold the handle they were
+given, so nothing stored was migrated), and the inbox cursor (`who.session`, so a bridge that
+reconnects under another *name* while keeping its id keeps its label and its roster row but not its
+cursor). The head draws `Presence.name`, which is the label, so a nick reaches the screen already;
+history's "current nick with the then-name beside it" is not built.
+
 Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
 `$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,
 for a linked worktree) or the nick the working folder was given (kept under the data dir's
