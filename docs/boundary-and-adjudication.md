@@ -1251,7 +1251,10 @@ something is missing.
 
 A point whose grants are `Once` has no session rung, and an answer naming one is refused as an
 option the request did not offer: once means once, so the answer settles the call it was given
-for. On a host with no boundary a call that runs project code
+for. The rung names the programs the grant is keyed on - the one that does the work, or every
+program a compound line runs except the ones that only change the shell (`cd`, `export`) - and
+`Grant::covers` admits a later call only when every program THAT call runs is one of them. On a
+host with no boundary a call that runs project code
 offers neither standing rung, and the note says why (R98). Three other ladders are the same shape with
 their own nouns: `view_grant_options` (read it, read and write it, no - read-only first, where Enter
 lands; a WRITE refusal offers read-and-write first and no read-only rung at all, because the session
