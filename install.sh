@@ -277,9 +277,9 @@ require_host_runtime() {
   built for glibc — they cannot run here whatever is installed. (A musl system
   such as Alpine is the usual case.) Build from source instead:
       LETIBOT_FROM_SOURCE=1 sh install.sh
-  which needs git, Rust and a C compiler — and a built llama.cpp checkout only for
-  local models (LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB); without one it is a cloud-only
-  build. Nothing has been downloaded or copied."
+  which needs git, Rust and a C compiler, and a built llama.cpp checkout only for a
+  LOCAL model: with LETIBOT_LOCAL set, also name LETIBOT_LLAMA_DIR and
+  LETIBOT_LLAMA_LIB. Nothing has been downloaded or copied."
   fi
   case "$plan" in
     cloud | prebuilt) want=$HOST_LIBS_CLOUD ;;
