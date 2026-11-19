@@ -2,7 +2,7 @@
 //! window) or stopped, since a fixed age cannot tell a fuzz campaign from a wedged `sleep`. Each
 //! test runs in a real cgroup because the check reads the kernel's `cpu.stat`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_tools::exec::{
     DEAD_KILL, DEADLINE_KILL, HostProcesses, JobId, JobState, ProcessHost, ScopeKind, SpawnRequest,
