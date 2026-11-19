@@ -8,8 +8,13 @@ use std::time::Duration;
 
 const ANNOUNCED: &str = "I'll run the parser tests next and report back.";
 
+/// The shape measured on db-fuzz's `s-1792687430252160872`: a turn that opens by naming the work
+/// it is doing next, with no future tense in it, and stops there.
+const ANNOUNCED_IN_PROGRESS: &str =
+    "Resuming the two entries. The plpgsql entry I can do properly here";
+
 /// A model that always answers with the same announcement.
-struct Says;
+struct Says(&'static str);
 
 impl letibot_backend::MessagesBackend for Says {
     fn caps(&self) -> letibot_backend::BackendCaps {
@@ -30,7 +35,7 @@ impl letibot_backend::MessagesBackend for Says {
         _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
     ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
         Ok(letibot_backend::Completion {
-            text: ANNOUNCED.into(),
+            text: self.0.into(),
             reasoning: String::new(),
             tool_calls: Vec::new(),
             finish: letibot_backend::Finish::Stop,
@@ -72,6 +77,16 @@ impl shadow::record::Recorder for Rows {
 /// A harness with the regex prose nudge on and a shadow whose turn_end model answers `reply`, and
 /// the channel its wake rings on.
 fn a_session(tag: &str, reply: &'static str) -> (Harness, mpsc::Receiver<()>, Arc<Rows>) {
+    a_session_saying(tag, ANNOUNCED, Some(reply))
+}
+
+/// The same, with the model's own words chosen and the shadow optional: `None` is a box with no
+/// shadow job at all, which is the session the model-free half has to carry.
+fn a_session_saying(
+    tag: &str,
+    says: &'static str,
+    reply: Option<&'static str>,
+) -> (Harness, mpsc::Receiver<()>, Arc<Rows>) {
     let dir = letibot_sessionlog::testing::scratch_root()
         .join(format!("shadow-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -82,19 +97,24 @@ fn a_session(tag: &str, reply: &'static str) -> (Harness, mpsc::Receiver<()>, Ar
     at_always_ask(&mut cfg);
     cfg.vocab_gguf = None;
     cfg.intent_prose = true;
-    cfg.shadow = shadow::config::ShadowConfig::from_lines(
-        letibot_provider::keys::ShadowLines {
-            enabled: vec!["turn_end".into()],
-            ..Default::default()
-        },
-        "local".into(),
-    )
-    .unwrap();
+    if reply.is_some() {
+        cfg.shadow = shadow::config::ShadowConfig::from_lines(
+            letibot_provider::keys::ShadowLines {
+                enabled: vec!["turn_end".into()],
+                ..Default::default()
+            },
+            "local".into(),
+        )
+        .unwrap();
+    }
     let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
     let mut h = Harness::open(&parts, cfg.clone(), Hub::new(&cfg.session_id)).expect("opens");
-    h.provider = Some(Box::new(Says));
+    h.provider = Some(Box::new(Says(says)));
     let rows = Arc::new(Rows::default());
     let (tx, rx) = mpsc::channel();
+    let Some(reply) = reply else {
+        return (h, rx, rows);
+    };
     let tx = Mutex::new(tx);
     let events: shadow::Events = Default::default();
     let ev = events.clone();
@@ -250,6 +270,57 @@ fn the_watched_sessions_brief_carries_its_shadow() {
     );
 }
 
+/// The db-fuzz shape with the shadow on: a turn that announces in the progressive form is judged
+/// by the job, and its owed verdict is what reaches the model.
+#[test]
+fn an_announcement_in_progress_is_reminded_by_the_shadow() {
+    let (mut h, rang, rows) = a_session_saying(
+        "progress",
+        ANNOUNCED_IN_PROGRESS,
+        Some(r#"{"verdict":"owed","promise":"Resuming the two entries."}"#),
+    );
+    h.submit_operator("carry on with db-fuzz")
+        .expect("a turn runs");
+    assert!(!said(&h, "[shadow]"), "the turn ends without waiting");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    h.wake()
+        .expect("the wake runs")
+        .expect("the reminder is a turn");
+    assert!(
+        said(
+            &h,
+            "[shadow] You said \"Resuming the two entries.\" and the turn ended there."
+        ),
+        "{:?}",
+        h.session.items
+    );
+    let titles = rows.0.lock().unwrap();
+    assert!(
+        titles.iter().any(|t| t.starts_with("turn_end · owed")),
+        "{titles:?}"
+    );
+}
+
+/// And with no shadow at all, the model-free half is what raises it: the same announcement is
+/// nudged on the session's own words, which is the path a session with no `[shadow]` takes.
+#[test]
+fn an_announcement_in_progress_is_nudged_with_no_shadow() {
+    let (mut h, _rang, _rows) = a_session_saying("progress-noshadow", ANNOUNCED_IN_PROGRESS, None);
+    let reply = h
+        .submit_operator("carry on with db-fuzz")
+        .expect("a turn runs");
+    assert!(
+        reply.rounds >= 2,
+        "the announcement was not nudged: {reply:?}"
+    );
+    assert!(
+        said(&h, "Resuming the two entries") && said(&h, "do it, or say why not"),
+        "{:?}",
+        h.session.items
+    );
+}
+
 /// A shadow's own record takes no turn: opened in a head, it is read, never talked to.
 #[test]
 fn a_shadow_seat_refuses_a_prompt() {
@@ -265,7 +336,7 @@ fn a_shadow_seat_refuses_a_prompt() {
     cfg.seat = crate::config::Seat::Shadow;
     let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
     let mut h = Harness::open(&parts, cfg.clone(), Hub::new(&cfg.session_id)).expect("opens");
-    h.provider = Some(Box::new(Says));
+    h.provider = Some(Box::new(Says(ANNOUNCED)));
     let err = h.submit_operator("hello").expect_err("refused");
     assert!(err.to_string().contains("read-only"), "{err}");
     assert!(!said(&h, ANNOUNCED), "no model turn ran");

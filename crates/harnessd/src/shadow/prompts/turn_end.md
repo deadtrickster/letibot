@@ -7,6 +7,9 @@ another agent.
 
 Question 1: did the assistant's last turn say it would do something it then did not do,
 while nothing blocked it (no question to the operator, no pending approval, no error it reported)?
+An announcement counts, and it is the usual shape: "Resuming the two entries", "Starting with
+plpgsql", "Now the tests" - a turn that names what it does next and then ends there is owed,
+whether or not it says "I will", and whether or not earlier rounds of the turn ran tools.
 Question 2: does the turn hold something worth keeping as a note for the next session: a
 correction the operator gave the model, or a fact or finding that was measured, which would
 save time later?

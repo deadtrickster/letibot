@@ -701,9 +701,13 @@ mod turn_end_acting {
             );
         }
         let stale = Outcome::Stale { judged: 1, now: 2 };
-        assert_eq!(
-            turn_end::decide(&stale, Some("regex line"), false, false, id).0,
-            Act::Nothing
+        let (act, said) = turn_end::decide(&stale, Some("regex line"), false, false, id);
+        assert_eq!(act, Act::Nothing);
+        // Dropped, and not in silence: a reader of a reminder that never came needs the row.
+        let said = said.expect("a stale verdict says why nothing went out");
+        assert!(
+            said.contains("judged #1") && said.contains("now at #2"),
+            "{said}"
         );
         let (act, said) = turn_end::decide(&owed(), Some("regex line"), true, false, id);
         assert_eq!(act, Act::Nothing, "one reminder per operator message");

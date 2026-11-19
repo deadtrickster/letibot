@@ -209,8 +209,19 @@ pub fn decide(
         Outcome::Failed(_) => fallback("failed"),
         Outcome::Paused => fallback("paused"),
         Outcome::Verdict(_) => fallback("a verdict of the wrong job"),
-        // The session moved on: whatever came next answers the turn better than a late nudge.
-        Outcome::Stale { .. } | Outcome::Superseded => (Act::Nothing, None),
+        // The session moved on: whatever came next answers the turn better than a late nudge. Said
+        // in the shadow's own record rather than dropped in silence, because "asked, answered, and
+        // nothing came of it" is the fact a reader of a missed reminder has to be able to find.
+        Outcome::Stale { judged, now } => (
+            Act::Nothing,
+            Some(format!(
+                "turn_end · stale: judged #{judged} and the session is now at #{now}; nothing goes out"
+            )),
+        ),
+        Outcome::Superseded => (
+            Act::Nothing,
+            Some("turn_end · superseded by a newer check; nothing goes out".into()),
+        ),
     }
 }
 
