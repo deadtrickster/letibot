@@ -1099,14 +1099,14 @@ impl Server {
                     events: Vec::new(),
                 };
             }
+            // The same seat reconnecting without asking to share: the room's list is what a name is
+            // held by, and a socket whose coordinator is gone cannot be noticed from the client's
+            // side. Ended only once this Hello has passed every other refusal, so a misaddressed
+            // frame cannot knock out the connection that is working.
+            let mut replaces = false;
             match self.hello_name_door(seat, who, *share, id) {
                 NameDoor::Admit => {}
-                // The same seat reconnecting without asking to share: the room's list is what a
-                // name is held by, and a socket whose coordinator is gone cannot be noticed from
-                // the client's side. The new connection takes the name.
-                NameDoor::Replace => {
-                    self.end_name(&who.session, "the same seat reconnected on its own name")
-                }
+                NameDoor::Replace => replaces = true,
                 NameDoor::Refuse(response) => {
                     return Answer {
                         response: *response,
@@ -1143,6 +1143,9 @@ impl Server {
                     response: Response::Bye { why },
                     events: Vec::new(),
                 };
+            }
+            if replaces {
+                self.end_name(&who.session, "the same seat reconnected on its own name");
             }
         }
         // A seat's facts, kept under the connection's own name: a daemon reports only its own, and
