@@ -63,12 +63,15 @@ struct Granted {
     writable: bool,
 }
 
+/// The one reader of the granted roots: what the boundary's view holds, read when it is asked.
+type Reader = Arc<dyn Fn() -> Vec<(PathBuf, bool)> + Send + Sync>;
+
 /// The roots the operator granted into this session's view, READ AT ASK TIME. The measured view
 /// is the one authority for what a session may reach beyond its workspace - the boundary binds
 /// these and the file fence denies by the same list - so this reader is not a second source: a
 /// grant answered mid-session counts from its answer on, and a revoked one stops at once.
 #[derive(Clone, Default)]
-pub struct GrantedRoots(Option<Arc<dyn Fn() -> Vec<(PathBuf, bool)> + Send + Sync>>);
+pub struct GrantedRoots(Option<Reader>);
 
 impl GrantedRoots {
     /// A fixed set: a backend with no view, or a test.
