@@ -62,6 +62,7 @@ pub mod facts;
 pub mod footprint;
 pub mod github;
 pub mod grants;
+pub mod guard_via;
 pub mod harness;
 pub mod httphead;
 pub mod instruments;

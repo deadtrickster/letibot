@@ -539,6 +539,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(ms) = gk.budget_ms {
             cfg.oracle_budget = std::time::Duration::from_millis(ms);
         }
+        // Which of the two guards answers a card. Refused by name rather than falling back to a
+        // spelling the operator did not write.
+        if let Some(v) = gk.via.as_deref().filter(|v| !v.trim().is_empty()) {
+            cfg.oracle_via = Some(crate::guard_via::Via::parse(v).ok_or_else(|| {
+                format!(
+                    "[gatekeeper] via = {v} is not one of {} in {}",
+                    letibot_provider::keys::GUARD_VIA.join(", "),
+                    letibot_provider::keys::config_file().display()
+                )
+            })?);
+        }
     }
     // Prompts and slash verbs in one ordered list. `--prompt` could run turns headlessly
     // and nothing could change the session between them, so the one thing worth testing about

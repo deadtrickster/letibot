@@ -1,14 +1,17 @@
 //! The permission job as layer B: an `AuthorisationOracle` behind `ModelAdjudicator`, so a shadow
-//! answer has the gate's brief, its trail, its scope and its corpus row. It answers reads
-//! only, past the shadow's read denylist, while `answer_reads` is on and the breaker is armed.
+//! answer has the gate's brief, its trail, its scope and its corpus row. It answers the stages the
+//! operator promoted (`[shadow] answers`) - reads past the shadow's denylist, writes inside the
+//! workspace, exec inside it - while the breaker is armed, and never the always-ask list.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 use std::time::Duration;
 
 use letibot_tools::adjudicate::{
-    AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice, Tier,
+    AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, EffectScope,
+    ModelAdvice, Tier,
 };
 use letibot_tools::authorise::{
     AuthorisationOracle, ModelBrief, OracleAnswer, OracleScope, UnsureKind, Widening,
@@ -16,6 +19,8 @@ use letibot_tools::authorise::{
 use letibot_tools::intent::Intent;
 
 use super::Job;
+use super::config::Stage;
+use super::guard::Call;
 use super::permission::{Answering, Cell};
 use super::runner::Outcome;
 use super::verdict::{Decision, Shown, Verdict};
@@ -23,24 +28,66 @@ use super::verdict::{Decision, Shown, Verdict};
 /// The line an oracle brief opens with, so the permission prompt knows which question it is.
 pub const QUESTION: &str = "question: did the operator ask for this?";
 
-/// The stage-1 scope: reads that land outside the project at most, never off the box.
-pub fn stage_one_scope() -> OracleScope {
+/// The scope the stages in force earn. `reads` reaches outside the project at most; writes and
+/// exec never leave it, which [`stage_of`] enforces one call at a time because a scope carries one
+/// reach for every intent.
+pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
+    let mut intents: BTreeSet<Intent> = BTreeSet::new();
+    let mut reach = EffectScope::HostProject;
+    for stage in stages {
+        match stage {
+            Stage::Reads => {
+                intents.extend([Intent::Inspect, Intent::ReadFile]);
+                reach = reach.max(EffectScope::HostOther);
+            }
+            Stage::WorkspaceWrites => {
+                intents.extend([Intent::Inspect, Intent::ReadFile, Intent::WriteFile]);
+            }
+            Stage::Exec => {
+                intents.extend([
+                    Intent::Inspect,
+                    Intent::ReadFile,
+                    Intent::WriteFile,
+                    Intent::ExecuteCode,
+                    Intent::Destroy,
+                ]);
+            }
+        }
+    }
     OracleScope::earned(
-        [Intent::Inspect, Intent::ReadFile].into_iter().collect(),
-        letibot_tools::adjudicate::EffectScope::HostOther,
-        "R316 stage 1: reads past the shadow's read denylist, promoted by `[shadow] \
-         answer_reads = true` and measured by `letibot shadow replay --job permission`",
+        intents,
+        reach,
+        format!(
+            "R316 stages {}: reads past the shadow's read denylist, writes and exec inside the \
+             workspace, promoted by `[shadow] answers` and measured by `letibot shadow replay \
+             --job permission`",
+            stages
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     )
 }
 
-/// Why `req` is outside stage 1, or `Ok`: may-approve (the one always-ask predicate is the tier),
-/// a resolved read, and every path it names past [`super::guard::read_passes`].
-pub fn stage_one(req: &AdjudicationRequest, home: &Path, workspace: &Path) -> Result<(), String> {
-    if !matches!(req.tier, Tier::MayApprove) {
-        return Err(format!(
-            "the tier is {}, which the operator decides",
-            req.tier.as_str()
-        ));
+/// The stage a call belongs to, or why no stage answers it. A call is one stage's: the narrowest
+/// that covers every intent it carries, and a stage the operator promoted is checked by the caller.
+/// Tier, resolution, a secret flow and a path that leaves the reach are refusals here, so the
+/// person is asked without the model being consulted.
+pub fn stage_of(req: &AdjudicationRequest, home: &Path, workspace: &Path) -> Result<Stage, String> {
+    match &req.tier {
+        Tier::MayApprove => {}
+        Tier::AlwaysAsk { rule, .. } => {
+            return Err(format!(
+                "`{rule}` is on the always-ask list, which is the operator's whatever stages are on"
+            ));
+        }
+        other => {
+            return Err(format!(
+                "the tier is {}, which the operator decides",
+                other.as_str()
+            ));
+        }
     }
     let reading = req
         .reading
@@ -49,18 +96,48 @@ pub fn stage_one(req: &AdjudicationRequest, home: &Path, workspace: &Path) -> Re
     if !reading.resolved {
         return Err("layer A could not read the call".into());
     }
-    if reading.intents.is_empty()
-        || !reading
-            .intents
-            .iter()
-            .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile))
-    {
-        return Err("not a read".into());
+    if let Some(flow) = reading.flows.first() {
+        return Err(format!(
+            "it moves a secret out of {} - credentials are never a stage's",
+            flow.store
+        ));
+    }
+    if reading.intents.is_empty() {
+        return Err("layer A found no intent, so there is nothing to answer".into());
+    }
+    let stage = stage_for(&reading.intents)?;
+    // Reach is per call because the scope carries one reach for every intent it holds.
+    let allowed = match stage {
+        Stage::Reads => EffectScope::HostOther,
+        _ => EffectScope::HostProject,
+    };
+    if req.class.scope > allowed {
+        return Err(format!(
+            "it lands on `{}`, and stage `{}` reaches `{}`",
+            req.class.scope.as_str(),
+            stage.as_str(),
+            allowed.as_str()
+        ));
+    }
+    let call = Call {
+        tool: req.tool.clone(),
+        args: req.arguments.clone(),
+        cwd: workspace.to_path_buf(),
+        workspace: workspace.to_path_buf(),
+        home: home.to_path_buf(),
+    };
+    if stage != Stage::Reads {
+        // The lexical screen a shadow allow meets anyway: privilege, a push, a write, a redirect
+        // or a file-tool path outside the workspace, and the key store.
+        super::guard::allow_passes(&call)?;
     }
     for s in &reading.scoped {
         let t = s.target.trim();
-        if t.is_empty() {
-            continue;
+        if t.is_empty() || t == letibot_tools::intent::UNRESOLVED_TARGET {
+            return Err(format!(
+                "{} names no path this build can place",
+                s.intent.as_str()
+            ));
         }
         let p = Path::new(t);
         let abs = if p.is_absolute() {
@@ -68,29 +145,67 @@ pub fn stage_one(req: &AdjudicationRequest, home: &Path, workspace: &Path) -> Re
         } else {
             workspace.join(p)
         };
+        // A secret store is no stage's, and this is the lexical half of that rule. Where a write
+        // or an exec LANDS past the workspace is the class's answer above and
+        // `allow_passes`'s below; a program's own path is not a place the call reaches.
         super::guard::read_passes(&abs.to_string_lossy(), home)?;
     }
-    Ok(())
+    Ok(stage)
+}
+
+/// The narrowest stage that covers every intent the call carries.
+fn stage_for(intents: &BTreeSet<Intent>) -> Result<Stage, String> {
+    let within = |allowed: &[Intent]| intents.iter().all(|i| allowed.contains(i));
+    let reads = [Intent::Inspect, Intent::ReadFile];
+    if within(&reads) {
+        return Ok(Stage::Reads);
+    }
+    let writes = [Intent::Inspect, Intent::ReadFile, Intent::WriteFile];
+    if within(&writes) {
+        return Ok(Stage::WorkspaceWrites);
+    }
+    let exec = [
+        Intent::Inspect,
+        Intent::ReadFile,
+        Intent::WriteFile,
+        Intent::ExecuteCode,
+        Intent::Destroy,
+    ];
+    if within(&exec) {
+        return Ok(Stage::Exec);
+    }
+    Err(format!(
+        "it carries {}, and no stage answers that",
+        intents
+            .iter()
+            .map(|i| i.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    ))
 }
 
 /// `shadow:<judge>`: who a shadow decision is by, so the ledger and the corpus tell it apart.
 fn shadow_by(cell: &Cell) -> String {
-    let label = cell
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|(s, _)| s.label(Job::Permission));
     format!(
         "{}{}",
         letibot_tools::grant_ledger::SHADOW_BY,
-        label.unwrap_or_else(|| "permission".into())
+        judge_of(cell).unwrap_or_else(|| "permission".into())
     )
+}
+
+/// The model the permission job runs on, as the shadow was built with it.
+fn judge_of(cell: &Cell) -> Option<String> {
+    cell.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|(s, _)| s.label(Job::Permission))
 }
 
 /// The shadow's permission job, asked the oracle's one question under its own 2.5s deadline.
 pub struct ShadowOracle {
     pub cell: Cell,
     pub answering: Arc<Answering>,
+    pub stages: BTreeSet<Stage>,
 }
 
 impl ShadowOracle {
@@ -106,7 +221,7 @@ impl AuthorisationOracle for ShadowOracle {
     fn authorised(&self, brief: &mut ModelBrief) -> OracleAnswer {
         if !self.answering.is_on() {
             return Self::unsure(
-                "the shadow is observe-only: answer_reads is off or its breaker tripped",
+                "the shadow is observe-only: no stage is on, or its breaker tripped",
                 UnsureKind::CouldNotDecide,
             );
         }
@@ -179,7 +294,7 @@ impl AuthorisationOracle for ShadowOracle {
     }
 
     fn scope(&self) -> OracleScope {
-        stage_one_scope()
+        stage_scope(&self.stages)
     }
 
     fn budget(&self) -> Duration {
@@ -187,12 +302,13 @@ impl AuthorisationOracle for ShadowOracle {
     }
 }
 
-/// `ModelAdjudicator` over [`ShadowOracle`], asked only about stage-1 calls. Anything else
-/// escalates to the person without the shadow being asked.
+/// `ModelAdjudicator` over [`ShadowOracle`], asked only about calls inside a promoted stage.
+/// Anything else escalates to the person without the shadow being asked.
 pub struct ShadowAdjudicator {
     model: letibot_tools::ModelAdjudicator,
     cell: Cell,
     answering: Arc<Answering>,
+    stages: BTreeSet<Stage>,
     home: PathBuf,
     workspace: PathBuf,
     /// A grant the shadow gave is kept where `/shadow revoke` finds it: a daemon with a store.
@@ -206,6 +322,7 @@ impl ShadowAdjudicator {
     pub fn new(
         cell: Cell,
         answering: Arc<Answering>,
+        stages: BTreeSet<Stage>,
         home: PathBuf,
         workspace: PathBuf,
         revocable: bool,
@@ -213,9 +330,10 @@ impl ShadowAdjudicator {
         let oracle = ShadowOracle {
             cell: cell.clone(),
             answering: answering.clone(),
+            stages: stages.clone(),
         };
         ShadowAdjudicator {
-            // The reading always travels on a stage-1 ask; without one it never gets here.
+            // The reading always travels on a stage ask; without one it never gets here.
             model: letibot_tools::ModelAdjudicator::new(Box::new(oracle), |_| {
                 letibot_tools::intent::Baseline::of_paths(
                     [],
@@ -226,6 +344,7 @@ impl ShadowAdjudicator {
             }),
             cell,
             answering,
+            stages,
             home,
             workspace,
             revocable,
@@ -248,14 +367,34 @@ impl ShadowAdjudicator {
             grant_at: None,
         }
     }
+
+    /// What the card says about who answered: the model and the stage, because a person reading
+    /// "allowed" has to know how far the shadow's authority reached for it.
+    fn said(&self, d: &mut AdjudicationDecision, stage: Stage) {
+        let Some(label) = judge_of(&self.cell) else {
+            return;
+        };
+        d.basis = match &d.outcome {
+            DecisionOutcome::Selected { option_id } if option_id == "allow_once" => format!(
+                "allowed by the shadow ({label}, {}): {}",
+                stage.as_str(),
+                d.basis
+            ),
+            _ => d.basis.clone(),
+        };
+    }
 }
 
-/// The path of a view read: arguments that are one `path` and nothing else.
-fn view_path(req: &AdjudicationRequest) -> Option<String> {
-    let o = req.arguments.as_object()?;
-    (o.len() == 1)
-        .then(|| o.get("path")?.as_str().map(str::to_string))
-        .flatten()
+/// The one thing this call is about, as the breaker's shape key and the card's target: the single
+/// `path` argument of a file tool, else the request's own target.
+fn target_of(req: &AdjudicationRequest) -> String {
+    if let Some(o) = req.arguments.as_object()
+        && o.len() == 1
+        && let Some(p) = o.get("path").and_then(|p| p.as_str())
+    {
+        return p.to_string();
+    }
+    req.target.clone()
 }
 
 impl Adjudicator for ShadowAdjudicator {
@@ -263,7 +402,9 @@ impl Adjudicator for ShadowAdjudicator {
         if !self.answering.is_on() {
             return self.escalate(
                 req,
-                "the shadow is observe-only: answer_reads is off or its breaker tripped".into(),
+                "the shadow is observe-only: no stage is on, or its breaker tripped \
+                 (`/shadow arm` re-arms it)"
+                    .into(),
             );
         }
         if !self.revocable {
@@ -272,27 +413,54 @@ impl Adjudicator for ShadowAdjudicator {
                 "no store, so a grant the shadow gave could not be revoked".into(),
             );
         }
-        if let Err(why) = stage_one(req, &self.home, &self.workspace) {
-            return self.escalate(req, format!("outside the shadow's stage-1 scope: {why}"));
+        let stage = match stage_of(req, &self.home, &self.workspace) {
+            Ok(s) => s,
+            Err(why) => return self.escalate(req, format!("the shadow does not answer it: {why}")),
+        };
+        if !self.stages.contains(&stage) {
+            return self.escalate(
+                req,
+                format!(
+                    "`{}` is not a stage the shadow answers (it answers {})",
+                    stage.as_str(),
+                    self.stages
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
         }
         self.skipped.store(false, Ordering::SeqCst);
-        let d = self.model.decide(req);
+        let mut d = self.model.decide(req);
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = self.model.last_advice();
-        if let Some(path) = view_path(req) {
-            match &d.outcome {
-                DecisionOutcome::Selected { option_id } if option_id == "allow_once" => self
-                    .answering
-                    .granted_read(&req.id, &req.session_id, &path, &d.basis),
-                _ => self.answering.asked_read(&req.id, &path),
+        self.said(&mut d, stage);
+        let target = target_of(req);
+        match &d.outcome {
+            DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
+                self.answering.granted(
+                    &req.id,
+                    &req.session_id,
+                    stage,
+                    &target,
+                    judge_of(&self.cell).as_deref().unwrap_or("permission"),
+                    &d.basis,
+                )
             }
+            _ => self.answering.asked(&req.id, stage, &target),
         }
         d
     }
 
     fn describe(&self) -> String {
         format!(
-            "{} Stage 1 only: reads past the shadow's read denylist.",
-            self.model.describe()
+            "{} Stages: {}. Never the always-ask list, and never a path outside them.",
+            self.model.describe(),
+            self.stages
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     }
 

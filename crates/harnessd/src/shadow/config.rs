@@ -5,7 +5,33 @@ use std::path::Path;
 
 use super::Job;
 
-/// The shadow's configuration. The default is every job off.
+/// A class of call the permission job may answer for the operator, in the order they are
+/// promoted. `reads` is the one that reaches outside the workspace; the other two never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stage {
+    Reads,
+    WorkspaceWrites,
+    Exec,
+}
+
+impl Stage {
+    pub const ALL: [Stage; 3] = [Stage::Reads, Stage::WorkspaceWrites, Stage::Exec];
+
+    /// The spelling `[shadow] answers` uses, and the card's.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Stage::Reads => "reads",
+            Stage::WorkspaceWrites => "workspace_writes",
+            Stage::Exec => "exec",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Stage> {
+        Stage::ALL.into_iter().find(|x| x.as_str() == s.trim())
+    }
+}
+
+/// The shadow's configuration. The default is every job off, and no stage.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShadowConfig {
     enabled: BTreeSet<Job>,
@@ -19,9 +45,9 @@ pub struct ShadowConfig {
     stateless: bool,
     /// Every Nth persistent question is also asked statelessly; 0 is never.
     fresh_every: u32,
-    /// `answer_reads = true` turns it on; unset is off. Turning it on promotes the job from
-    /// observing to acting, so it is the operator's act, never a side effect of `enabled`.
-    answer_reads_on: bool,
+    /// The stages the permission job answers for. Empty is observe-only, which is the default:
+    /// promoting a stage is the operator's act, never a side effect of `enabled`.
+    stages: BTreeSet<Stage>,
 }
 
 /// How often a persistent question is checked against a fresh call when the file does not say.
@@ -41,8 +67,8 @@ impl ShadowConfig {
         ShadowConfig::from_lines(lines, default)
     }
 
-    /// The reader's lines, typed. The reader already refused unknown jobs; this is the second
-    /// check for a caller that built lines by hand.
+    /// The reader's lines, typed. The reader already refused unknown jobs and stages; this is the
+    /// second check for a caller that built lines by hand.
     pub fn from_lines(
         lines: letibot_provider::keys::ShadowLines,
         default: String,
@@ -52,7 +78,7 @@ impl ShadowConfig {
             default,
             stateless: lines.mode.as_deref() == Some("stateless"),
             fresh_every: lines.fresh_every.unwrap_or(FRESH_EVERY),
-            answer_reads_on: lines.answer_reads == Some(true),
+            stages: stages_of(&lines)?,
             ..ShadowConfig::default()
         };
         if let Some(m) = lines.mode.as_deref()
@@ -80,15 +106,45 @@ impl ShadowConfig {
         !self.stateless
     }
 
-    /// Whether the permission job answers a relayed read-only view ask for the operator.
-    /// Only with the permission job on and `answer_reads = true`.
+    /// Whether the permission job answers `stage`. Only with the permission job on, and only for
+    /// a stage the operator promoted.
+    pub fn answers(&self, stage: Stage) -> bool {
+        self.is_on(Job::Permission) && self.stages.contains(&stage)
+    }
+
+    /// Whether the permission job answers anything at all: a stage is on.
+    pub fn answers_anything(&self) -> bool {
+        self.is_on(Job::Permission) && !self.stages.is_empty()
+    }
+
+    /// Whether the permission job answers a relayed read-only view ask for the operator. The
+    /// stage-1 switch, kept as its own name because the relay asks exactly this question.
     pub fn answers_reads(&self) -> bool {
-        self.is_on(Job::Permission) && self.answer_reads_on
+        self.answers(Stage::Reads)
+    }
+
+    /// The stages in force, for the card and the startup disclosure.
+    pub fn stages(&self) -> impl Iterator<Item = Stage> + '_ {
+        self.stages.iter().copied()
+    }
+
+    /// Whether any stage is on, whatever the job switch: what a disclosure reads.
+    pub fn stages_on(&self) -> bool {
+        !self.stages.is_empty()
     }
 
     /// For a test or a caller that sets the switch in code.
     pub fn with_answer_reads(mut self, on: bool) -> ShadowConfig {
-        self.answer_reads_on = on;
+        self.stages.clear();
+        if on {
+            self.stages.insert(Stage::Reads);
+        }
+        self
+    }
+
+    /// For a test or a caller that promotes stages in code.
+    pub fn with_stages(mut self, stages: impl IntoIterator<Item = Stage>) -> ShadowConfig {
+        self.stages = stages.into_iter().collect();
         self
     }
 
@@ -136,9 +192,22 @@ impl ShadowConfig {
             })
             .collect();
         if self.is_on(Job::Permission) {
-            out.push(match self.answers_reads() {
-                true => "answer_reads: on, relayed read-only view asks".to_string(),
-                false => "answer_reads: off".to_string(),
+            // The model that answers, and every stage it answers: the operator reads this and
+            // decides whether the stages in force are the ones they promoted.
+            out.push(match self.stages.is_empty() {
+                true => format!(
+                    "answers: none - the permission job observes, and {} would decide",
+                    self.model_line(Job::Permission, watched)
+                ),
+                false => format!(
+                    "answers: {} - {} decides, allow or ask, never deny",
+                    self.stages
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    self.model_line(Job::Permission, watched)
+                ),
             });
         }
         out.push(match self.persistent() {
@@ -150,4 +219,34 @@ impl ShadowConfig {
         });
         out
     }
+}
+
+/// `[shadow] answers`, with `answer_reads = true` as the old spelling of `["reads"]`. Both
+/// written is one setting twice, refused by name rather than silently preferring one.
+fn stages_of(lines: &letibot_provider::keys::ShadowLines) -> Result<BTreeSet<Stage>, String> {
+    if lines.answers.is_some() && lines.answer_reads.is_some() {
+        return Err(
+            "[shadow] `answers` and `answer_reads` are one setting written twice: write \
+             `answers = [\"reads\"]` and drop `answer_reads`"
+                .into(),
+        );
+    }
+    let mut out = BTreeSet::new();
+    for name in lines.answers.iter().flatten() {
+        let s = Stage::parse(name).ok_or_else(|| {
+            format!(
+                "[shadow] answers names `{name}`, and the stages are {}",
+                Stage::ALL
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        out.insert(s);
+    }
+    if lines.answer_reads == Some(true) {
+        out.insert(Stage::Reads);
+    }
+    Ok(out)
 }
