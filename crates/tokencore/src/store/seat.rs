@@ -89,6 +89,21 @@ impl Store {
         Ok(())
     }
 
+    /// File the board written under `from` under `to`, and only when `to` has none: a seat that has
+    /// changed the name it writes by is one board, and the one it wrote before is not lost. `false`
+    /// when there was nothing under `from`, or `to` already had a board of its own.
+    pub fn move_seat_board(&self, from: &str, to: &str) -> Result<bool> {
+        if from == to || self.seat_board(to)?.is_some() {
+            return Ok(false);
+        }
+        let moved = self.exec(
+            "UPDATE seat_todo SET seat = ?2 WHERE seat = ?1
+             AND NOT EXISTS (SELECT 1 FROM seat_todo WHERE seat = ?2)",
+            params![from, to],
+        )?;
+        Ok(moved > 0)
+    }
+
     /// The seat's board as a ROW that is there, not `[]` for a seat that never wrote one: another
     /// board's `todo` wait is freed by a row it names being gone, so a seat with no board must not
     /// read as a seat whose board is empty.
@@ -227,6 +242,33 @@ mod tests {
             1,
             "one seat's write never reaches another's board"
         );
+    }
+
+    /// A seat that starts writing under another name - its id instead of the handle it speaks as -
+    /// keeps the board it wrote, and never takes one another seat already has.
+    #[test]
+    fn a_board_moves_to_the_name_its_seat_writes_under_now() {
+        let s = Store::open_in_memory().unwrap();
+        let row = row("collect the package");
+        s.put_seat_todos("cc@proj", std::slice::from_ref(&row))
+            .unwrap();
+        assert!(s.move_seat_board("cc@proj", "lab2x1/cc-1").unwrap());
+        assert_eq!(
+            s.seat_board("lab2x1/cc-1").unwrap(),
+            Some(vec![row.clone()])
+        );
+        assert_eq!(
+            s.seat_board("cc@proj").unwrap(),
+            None,
+            "the old key is gone"
+        );
+        // Nothing to move, so nothing happens; and a key that already has a board is not taken.
+        assert!(!s.move_seat_board("cc@proj", "lab2x1/cc-1").unwrap());
+        s.put_seat_todos("cc@other", std::slice::from_ref(&row))
+            .unwrap();
+        s.put_seat_todos("lab2x1/cc-2", &[]).unwrap();
+        assert!(!s.move_seat_board("cc@other", "lab2x1/cc-2").unwrap());
+        assert_eq!(s.seat_todos("cc@other").unwrap().len(), 1, "not moved");
     }
 
     /// Every seat's board comes back by handle, so a head that asks once draws all of them: the

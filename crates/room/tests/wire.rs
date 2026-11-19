@@ -25,6 +25,8 @@ fn every_frame_round_trips_through_json() {
             token: None,
             share: false,
             family: None,
+            id: "lab2x1/s-a".to_string(),
+            nick: "adb".to_string(),
         },
         Request::Post {
             id: "r1".to_string(),
@@ -163,6 +165,8 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             token: None,
             share: false,
             family: None,
+            id: String::new(),
+            nick: String::new(),
         },
         1_000,
     );
@@ -196,6 +200,8 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             token: None,
             share: false,
             family: None,
+            id: String::new(),
+            nick: String::new(),
         },
         1_001,
     ) {
@@ -216,6 +222,8 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             token: None,
             share: false,
             family: None,
+            id: String::new(),
+            nick: String::new(),
         },
         1_002,
     ) {

@@ -46,6 +46,67 @@ pub fn project_of_room(room: &str) -> Option<&str> {
         .filter(|k| crate::is_project_key(k))
 }
 
+/// The longest a nick may be, in bytes. A nick is read in a roster row beside a session's title.
+pub const NICK_MAX: usize = 24;
+/// How many numbered variants of a taken nick [`next_nick`] offers before it gives up.
+pub const NICK_TRIES: u32 = 99;
+
+/// A nick: the label a seat is drawn by, and display only. Lowercase letters, digits and `-`, at
+/// most [`NICK_MAX`], no edge `-`, and none of the three words or two prefixes that would make a
+/// label read as a name the room already means: `operator`, a bridge alias, `s-` (a session id) or
+/// `cc-` (a bridge's seat). A nick is never what anything is keyed on, so it needs no `@` or `:`.
+pub fn valid_nick(nick: &str) -> bool {
+    !nick.is_empty()
+        && nick.len() <= NICK_MAX
+        && nick != OPERATOR
+        && !nick.starts_with("s-")
+        && !nick.starts_with("cc-")
+        && !BRIDGE_ALIASES.contains(&nick)
+        && !nick.starts_with('-')
+        && !nick.ends_with('-')
+        && nick
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The nick to offer when `nick` is held: `db-fuzz-fable-2`, then `-3`, and when the wanted name is
+/// already numbered, the next number (`db-fuzz-fable-2` asks for `-3`, never `-2-2`). `held` answers
+/// whether a candidate is somebody's. `None` when [`NICK_TRIES`] numbers are all held.
+pub fn next_nick(nick: &str, held: impl Fn(&str) -> bool) -> Option<String> {
+    let (base, from) = split_number(nick);
+    for n in from.saturating_add(1)..=from.saturating_add(NICK_TRIES) {
+        let tail = format!("-{n}");
+        let room = NICK_MAX.saturating_sub(tail.len());
+        if room == 0 {
+            return None;
+        }
+        // A base cut to fit loses its tail, never the number that says which of them it is.
+        let head: String = base.chars().take(room).collect();
+        let candidate = format!("{}{tail}", head.trim_end_matches('-'));
+        if !held(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// A nick without a trailing `-<n>`, and that `n` - `1` when there is none, so the first number
+/// offered for a taken name is `-2`.
+fn split_number(nick: &str) -> (&str, u32) {
+    match nick.rsplit_once('-') {
+        Some((base, digits))
+            if !base.is_empty()
+                && !base.ends_with('-')
+                && !digits.is_empty()
+                && digits.len() <= 3
+                && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            (base, digits.parse().unwrap_or(1))
+        }
+        _ => (nick, 1),
+    }
+}
+
 /// A handle an external participant may use: lowercase letters, digits and `-`, at most 32, not
 /// starting with `s-` (a session id's prefix) and never the operator's name. One `@` is allowed,
 /// and one `:` after it (`cc@folder:name`).
@@ -174,6 +235,11 @@ pub const SAY: &str = "say";
 /// The ref kind a dm to another project's queue seat carries when it relays an operator's
 /// message: its id is that message's seq. Only the room writes it.
 pub const RELAYS: &str = "relays";
+
+/// The ref kind that says which label the author was drawn by when it posted: its id is that
+/// label. A seat is renamed and its id never moves, so this is the only place an old line's
+/// then-name survives; a message without it is one whose author names itself.
+pub const NICK: &str = "nick";
 
 /// The roster scope that lists the box's queue seats. They are in no room, so this is no room.
 pub const SEATS: &str = "seats";
@@ -304,6 +370,21 @@ pub fn with_say_ref(kind: crate::SayKind, refs: &[Ref]) -> Result<Vec<Ref>, crat
     Ok(out)
 }
 
+/// The refs a post carries once the room records the label its author was drawn by. The room's
+/// own, so a caller's [`NICK`] ref is dropped rather than trusted; a line already at [`MAX_REFS`]
+/// keeps the caller's refs and loses only this one, which is a reader's convenience.
+pub fn with_nick_ref(label: &str, refs: &[Ref]) -> Vec<Ref> {
+    let mut out: Vec<Ref> = refs.iter().filter(|r| r.kind != NICK).cloned().collect();
+    let label = label.trim();
+    if !label.is_empty() && label.len() <= MAX_REF_ID && out.len() < MAX_REFS {
+        out.push(Ref {
+            kind: NICK.to_string(),
+            id: label.to_string(),
+        });
+    }
+    out
+}
+
 impl Message {
     /// The message as one plain line: `#seq [room] author -> to: text (todo t-7)`. A newline inside
     /// the text becomes a quoted line, so no line of a peer's words can pass for a header.
@@ -325,10 +406,19 @@ impl Message {
         )
     }
 
-    /// The refs a rendering shows: every one but the [`SAY`] ref, which is not a row the message
-    /// points at but the kind its header's flags already say.
+    /// The refs a rendering shows: every one but the [`SAY`] and [`NICK`] refs, which are not rows
+    /// the message points at but what its header already says - the kind it asks, and its author.
     pub fn rows_refs(&self) -> impl Iterator<Item = &Ref> {
-        self.refs.iter().filter(|r| r.kind != SAY)
+        self.refs.iter().filter(|r| r.kind != SAY && r.kind != NICK)
+    }
+
+    /// The label the author was drawn by when it posted: what a reader who knew the seat under
+    /// another label is told. `None` for a message written while its author names itself.
+    pub fn nick(&self) -> Option<&str> {
+        self.refs
+            .iter()
+            .find(|r| r.kind == NICK && !r.id.trim().is_empty())
+            .map(|r| r.id.trim())
     }
 
     /// What this line asks of its readers. A message with no kind ref is an ordinary post.
@@ -1027,11 +1117,16 @@ pub struct RoomInfo {
 /// One participant in a room's roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
-    /// What the room calls this participant: a named session's handle, else its id.
+    /// What the room calls this participant: the nick it answers to, else its handle, else its id.
+    /// Display - a reader draws this and addresses nothing with it.
     pub name: String,
-    /// The principal's identity - a session's id - whatever `name` shows.
+    /// The principal's identity - a session's id, a bridge's name - whatever `name` shows.
     #[serde(default)]
     pub id: String,
+    /// The seat's stable id ([`crate::SeatId`]), which is what a wait, an ask and a cursor are
+    /// keyed on and what a model is told to address. Empty from a seat that has none yet.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seat_id: String,
     pub kind: Seat,
     /// Holding a connection to the coordinator now.
     pub connected: bool,
@@ -1307,6 +1402,20 @@ pub struct Chat {
     /// When each archived room was put out of sight, by room id. A room with no entry is in the
     /// list. The host room never gets one.
     archived: BTreeMap<String, u64>,
+    /// This box's half of a seat id, when the chat is kept in a store: what a cursor or seen mark
+    /// written before the split (a bare `s-…`) is read as, so an older store's keys become seat ids
+    /// on load and the next snapshot writes them that way. Empty for a chat in memory only.
+    host: String,
+}
+
+/// The key a stored cursor or seen mark is filed under. A session id (`s-...`) is its seat's, so a
+/// store written before a cursor was keyed by the seat reads as the seat it always was; a bridge's
+/// handle is not derivable from anything here and stays as it is until the room adopts it.
+fn seat_key(host: &str, name: &str) -> String {
+    if host.is_empty() || !name.starts_with("s-") {
+        return name.to_string();
+    }
+    crate::SeatId::of_session(host, name).to_string()
 }
 
 fn ring_bytes(ring: &VecDeque<Message>) -> usize {
@@ -1322,6 +1431,7 @@ impl Chat {
     /// appended. An unreadable line is skipped and said; a missing file is an empty chat.
     pub fn open(path: &Path) -> Chat {
         let mut c = Chat::new();
+        c.host = crate::id::seat_host(path.parent().unwrap_or(std::path::Path::new(".")));
         let state = state_path(path);
         let segs = segments(path);
         let kept = std::fs::metadata(&state).map(|m| m.len()).unwrap_or(0);
@@ -1381,11 +1491,11 @@ impl Chat {
         match r {
             Record::Msg { .. } => {}
             Record::Cursor { name, seq } => {
-                let cur = self.cursors.entry(name).or_insert(0);
+                let cur = self.cursors.entry(seat_key(&self.host, &name)).or_insert(0);
                 *cur = (*cur).max(seq);
             }
             Record::Seen { name, seq } => {
-                let s = self.seen.entry(name).or_insert(0);
+                let s = self.seen.entry(seat_key(&self.host, &name)).or_insert(0);
                 *s = (*s).max(seq);
             }
             // An old store's `Dropped` says its ring lost messages through `seq`, and the file
@@ -1773,7 +1883,7 @@ impl Chat {
             || refs.iter().any(|r| {
                 !matches!(
                     r.kind.as_str(),
-                    "todo" | "queue" | "ask" | EVIDENCE | SAY | RELAYS
+                    "todo" | "queue" | "ask" | EVIDENCE | SAY | RELAYS | NICK
                 ) || r.id.trim().is_empty()
                     || r.id.len() > MAX_REF_ID
             })
@@ -2300,50 +2410,57 @@ impl Chat {
         rows.into_iter().cloned().collect()
     }
 
-    /// Start `name`'s inbox at the head of the log if it has none: a reader hears what happens next.
-    pub fn arm(&mut self, name: &str) {
+    /// Start `id`'s inbox at the head of the log if it has none: a reader hears what happens next.
+    /// `id` is the seat's id, not the label it is drawn by: a cursor outlives a rename, so every
+    /// method here that keys durable state takes the id and nothing else.
+    pub fn arm(&mut self, id: &str) {
         let head = self.next;
-        if !self.cursors.contains_key(name) {
-            self.cursors.insert(name.to_string(), head);
+        if !self.cursors.contains_key(id) {
+            self.cursors.insert(id.to_string(), head);
             self.write(&[Record::Cursor {
-                name: name.to_string(),
+                name: id.to_string(),
                 seq: head,
             }]);
         }
     }
 
-    pub fn cursor(&self, name: &str) -> u64 {
-        self.cursors.get(name).copied().unwrap_or(self.next)
+    /// Where `id`'s cursor stands.
+    pub fn cursor(&self, id: &str) -> u64 {
+        self.cursors.get(id).copied().unwrap_or(self.next)
     }
 
-    /// Move `name`'s cursor forward. It never moves back and never past the head.
-    pub fn ack(&mut self, name: &str, seq: u64) -> u64 {
+    /// Move `id`'s cursor forward. It never moves back and never past the head.
+    pub fn ack(&mut self, id: &str, seq: u64) -> u64 {
         let head = self.next;
-        let before = self.cursors.get(name).copied();
-        let c = self.cursors.entry(name.to_string()).or_insert(head);
+        let before = self.cursors.get(id).copied();
+        let c = self.cursors.entry(id.to_string()).or_insert(head);
         *c = (*c).max(seq.min(head));
         let now = *c;
         if before != Some(now) {
             self.write(&[Record::Cursor {
-                name: name.to_string(),
+                name: id.to_string(),
                 seq: now,
             }]);
         }
         now
     }
 
-    /// What `name` missed: visible messages after its cursor that pass `attention`, oldest first, up
+    /// What `id` missed: visible messages after its cursor that pass `attention`, oldest first, up
     /// to `limit`, plus how many visible ones were left out. Moves nothing.
+    /// Two arguments because they answer two questions: `id` is whose cursor is read - a seat keeps
+    /// it across a rename - and `name` is how that seat is addressed in the text (`to`, a mention),
+    /// which is the label and moves when the seat takes another.
     /// `family` is the name a suffixed bridge also answers to: its mail counts under this cursor.
     pub fn inbox(
         &self,
+        id: &str,
         name: &str,
         family: Option<&str>,
         attention: Attention,
         limit: usize,
         see: impl Fn(&Message) -> bool,
     ) -> (Vec<Message>, u64) {
-        let cursor = self.cursor(name);
+        let cursor = self.cursor(id);
         let attends = |m: &Message| {
             m.attends(name, attention) || family.is_some_and(|f| m.attends(f, attention))
         };
@@ -2364,6 +2481,42 @@ impl Chat {
             }
         }
         (rows, skipped)
+    }
+
+    /// File what the store holds under `name` under the seat `id`: a bridge's cursor was written
+    /// under the handle it spoke as, and the id is the seat that handle was. Nothing is moved onto a
+    /// key that already has one, and the rewrite is written, so the next start reads the seat.
+    pub fn adopt(&mut self, name: &str, id: &str) -> bool {
+        if name == id || name.is_empty() || id.is_empty() {
+            return false;
+        }
+        let mut moved = false;
+        if !self.cursors.contains_key(id)
+            && let Some(seq) = self.cursors.remove(name)
+        {
+            self.cursors.insert(id.to_string(), seq);
+            moved = true;
+        }
+        if !self.seen.contains_key(id)
+            && let Some(seq) = self.seen.remove(name)
+        {
+            self.seen.insert(id.to_string(), seq);
+            moved = true;
+        }
+        if moved {
+            let mut records = vec![Record::Cursor {
+                name: id.to_string(),
+                seq: self.cursor(id),
+            }];
+            if let Some(seq) = self.seen(id) {
+                records.push(Record::Seen {
+                    name: id.to_string(),
+                    seq,
+                });
+            }
+            self.write(&records);
+        }
+        moved
     }
 
     /// The file chat is kept in, `None` for a chat in memory only.
@@ -2449,25 +2602,25 @@ impl Chat {
         self.guests.clone()
     }
 
-    /// Note that `name` was connected while `seq` was said. Memory only, until [`Chat::keep_seen`].
-    pub fn mark_seen(&mut self, name: &str, seq: u64) {
-        let s = self.seen.entry(name.to_string()).or_insert(0);
+    /// Note that `id` was connected while `seq` was said. Memory only, until [`Chat::keep_seen`].
+    pub fn mark_seen(&mut self, id: &str, seq: u64) {
+        let s = self.seen.entry(id.to_string()).or_insert(0);
         *s = (*s).max(seq);
     }
 
-    /// Write `name`'s seen mark, so a restart knows where its gap began.
-    pub fn keep_seen(&mut self, name: &str) {
-        if let Some(seq) = self.seen.get(name).copied() {
+    /// Write `id`'s seen mark, so a restart knows where its gap began.
+    pub fn keep_seen(&mut self, id: &str) {
+        if let Some(seq) = self.seen.get(id).copied() {
             self.write(&[Record::Seen {
-                name: name.to_string(),
+                name: id.to_string(),
                 seq,
             }]);
         }
     }
 
-    /// The newest `seq` `name` was connected for, `None` for a member never seen.
-    pub fn seen(&self, name: &str) -> Option<u64> {
-        self.seen.get(name).copied()
+    /// The newest `seq` the seat `id` was connected for, `None` for a member never seen.
+    pub fn seen(&self, id: &str) -> Option<u64> {
+        self.seen.get(id).copied()
     }
 
     /// What `name` missed, for [`summarise`]: visible messages of others after `since` (a `seq`) or,
@@ -2494,9 +2647,10 @@ impl Chat {
         all
     }
 
-    /// Messages after `name`'s cursor that are not its own and that it may see - a room's unread.
-    pub fn unread(&self, name: &str, room: &str, see: impl Fn(&Message) -> bool) -> u64 {
-        let cursor = self.cursor(name);
+    /// Messages after `id`'s cursor that are not its own (by `name`) and that it may see - a room's
+    /// unread. Two arguments for the two questions `inbox` takes them for.
+    pub fn unread(&self, id: &str, name: &str, room: &str, see: impl Fn(&Message) -> bool) -> u64 {
+        let cursor = self.cursor(id);
         self.rings
             .get(room)
             .into_iter()
@@ -3147,11 +3301,11 @@ mod tests {
         c.arm("s-me");
         say(&mut c, "1", HOST_ROOM, "s-a", Seat::Session, "chatter");
         say(&mut c, "2", HOST_ROOM, "s-a", Seat::Session, "hey @s-me");
-        let (rows, skipped) = c.inbox("s-me", None, Attention::ToMe, 50, |_| true);
+        let (rows, skipped) = c.inbox("s-me", "s-me", None, Attention::ToMe, 50, |_| true);
         assert_eq!((rows.len(), skipped), (1, 1));
         assert_eq!(c.cursor("s-me"), 0, "the inbox moves nothing");
         c.ack("s-me", 2);
-        let (rows, skipped) = c.inbox("s-me", None, Attention::All, 50, |_| true);
+        let (rows, skipped) = c.inbox("s-me", "s-me", None, Attention::All, 50, |_| true);
         assert_eq!((rows.len(), skipped), (0, 0));
         assert_eq!(c.ack("s-me", 1), 2, "a cursor never moves back");
         assert_eq!(c.ack("s-me", 99), 2, "nor past the head");
@@ -3204,7 +3358,7 @@ mod tests {
         say(&mut c, "1", HOST_ROOM, "s-a", Seat::Session, "old");
         c.arm("s-new");
         assert_eq!(c.cursor("s-new"), 1);
-        let (rows, _) = c.inbox("s-new", None, Attention::All, 50, |_| true);
+        let (rows, _) = c.inbox("s-new", "s-new", None, Attention::All, 50, |_| true);
         assert!(rows.is_empty());
     }
 }
@@ -3666,9 +3820,19 @@ mod store_tests {
             "\n",
         );
         std::fs::write(&p, old).expect("an old store");
+        // The store wrote this cursor under the bare session id; a cursor belongs to the SEAT, so
+        // it is read back as the seat's id and the next snapshot writes it that way.
+        let seat = format!(
+            "{}/s-a",
+            crate::id::seat_host(p.parent().expect("a scratch directory"))
+        );
         let mut c = Chat::open(&p);
         assert_eq!(c.head(), 1);
-        assert_eq!(c.cursor("s-a"), 1, "the old file's own state is live");
+        assert_eq!(
+            c.cursor(&seat),
+            1,
+            "the old file's own state is live, under the seat"
+        );
         let next = say(
             &mut c,
             "2",
@@ -3686,7 +3850,16 @@ mod store_tests {
         );
         let again = Chat::open(&p);
         assert_eq!(again.head(), 2);
-        assert_eq!(again.cursor("s-a"), 1, "and it comes back from the state");
+        assert_eq!(
+            again.cursor(&seat),
+            1,
+            "and it comes back from the state, still the seat's"
+        );
+        let state_text = std::fs::read_to_string(state_path(&p)).expect("the state file");
+        assert!(
+            state_text.contains(&seat) && !state_text.contains(r#""name":"s-a""#),
+            "the snapshot writes the seat, not the bare id: {state_text}"
+        );
         let rows = again.read(HOST_ROOM, 0, None, None, None, |_| true).rows;
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0].text, "said before the split");

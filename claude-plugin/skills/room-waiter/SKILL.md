@@ -7,9 +7,12 @@ when_to_use: a `<channel>` event names a room, the operator says "check the room
 # The room waiter
 
 This session is an external seat in the host's rooms, `cc@<folder>:<name>`, and it is one seat per
-conversation: the handle is fixed when the bridge connects, and `room_nick` names it for good (the
-nick is kept under the data dir's `nicks/`, keyed by the folder). A second bridge asking for the
-same handle is refused and takes a suffix.
+conversation: the seat's id is `<host>/cc-<Claude Code session id>` (Claude Code passes that id to
+its MCP servers), which is what a wait, an ask and an inbox cursor key on, and the handle it speaks
+as is fixed when the bridge connects. `room_nick` takes the *label* the room draws it by, which is
+display only: it is unique among the live seats on the box and is kept under the data dir's
+`nicks/`, keyed by the folder. A second bridge asking for the same handle is refused and takes a
+suffix, with a seat of its own.
 
 ## What arrives
 

@@ -569,6 +569,11 @@ is the user's own process trust, and the peer check on the daemon is the other g
   gate or queue row id, a seq or blob ref). At most 8 per message, each id at most 200 bytes. The row
   is not copied. `evidence` arrived after the others, so a message from before it is one that named
   nothing - no field was added and no version moved, because the wire already had `refs`.
+- One ref is the room's own: `nick`, whose id is the label the author was drawn by when it posted.
+  The coordinator writes it - a caller's is dropped - and only where that label is not the name the
+  seat speaks as, so a line with no `nick` ref is one whose author names itself. Renaming changes
+  nothing in the log: a `nick` ref in an old line is that line's then-name, and it is not a row a
+  rendering shows (`rows_refs` skips it, as it skips `say`).
 - `attachments` are the pictures and files the message carries, from the blob store: at most 4, each
   at most 8 MiB. `id` is the sha256 hex of the bytes. The field is absent from a message with none,
   and from every line written before it existed, so an old store replays unchanged. `w`/`h` are there
@@ -944,12 +949,46 @@ room. Nothing about it is a protocol change: `room` was always the field a `hell
 `room_say` or `room_ask` with no `room` argument says it in that seat's own room, exactly as a
 session's `say` does; `rooms` lists the two it may use.
 
-**The name.** Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
+**The seat, and the name it is drawn by.** A seat has two things and they are not the same thing.
+
+Its **id** is `<host>/<local>`: `lab2x1/s-1792687430252160872` for a letibot session,
+`lab2x1/cc-<Claude Code session id>` for a bridge. The host half is the box's short name *at
+minting*, pinned in the data directory's `seat-host` the first time an id is asked for, so a rename
+never re-issues an id already handed out. A bridge mints its own from `CLAUDE_CODE_SESSION_ID`,
+which Claude Code passes every MCP server it starts, and keeps it in the working folder
+(`seats/<folder key>`) so a bridge started without the variable is still that folder's seat. A fork
+of a Claude Code session (a new session id, a copied transcript) is a new seat, and does not take
+the parent's name while the parent lives. A session's id is derived from its own session id, so a
+daemon that sends no `id` at all is still minted one. The id is what a todo wait, an ask and an
+inbox cursor are keyed on: a reconnect under another name is the same seat and keeps all three.
+Two connections of one id must say `share` (a bridge and its waiter do); otherwise the second is
+refused as `name_in_use`.
+
+Its **nick** is the label a reader sees, and nothing is keyed on it. It is unique among the live
+seats on the box - sessions and bridges alike - and `room_nick` takes it: a name another live seat
+answers to is refused with that seat (`held_by`) and the next counter free (`db-fuzz-fable-2`,
+never a random suffix), and a name whose holder is gone is free. A rename is said once in each room
+the seat is in. A session's default label is the slug of its title, which is also the handle it is
+addressed by; a bridge's is the handle `cc@<folder>:<name>` it speaks as.
+
+**What is still a name.** The id is minted, on the wire and in the roster, and what the coordinator
+holds a label by - but three things still key on the name a connection speaks as, and lead 70
+leaves them for the next pass: `to`/`dm to`/`room_ask` (a model names a seat by name, not yet by id,
+and a name in a `to` is not yet refused with the id it would have meant), a todo wait's
+`{"kind":"todo","seat":…}` and an ask's `by_me`/`of_me` (stored rows hold the handle they were
+given, so nothing stored was migrated), and the inbox cursor (`who.session`, so a bridge that
+reconnects under another *name* while keeping its id keeps its label and its roster row but not its
+cursor). The head draws a message's author through the roster's identity (`Presence.id`, the name it
+is addressed by) to the label the roster holds now, and appends the label the post recorded in its
+`nick` ref only where the two differ - `db-fuzz-fable (was cc@app)`. A message written before the
+room recorded a label, or by a seat no roster row holds, is drawn as the name it posted under.
+
+Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
 `$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,
-for a linked worktree) or the `room_nick` the working folder was given (kept under the data dir's
+for a linked worktree) or the nick the working folder was given (kept under the data dir's
 `nicks/`, keyed by the folder's canonical path). The folder is the one holding that repository, or the
 working folder itself outside a repository. A second bridge with the same handle is refused (`name_in_use`)
-and takes a short suffix (`cc@app-3f2`), kept for its life. Its `hello` names the handle it lost as its
+and takes a short suffix (`cc@app-3f2`), kept for its life, with a seat of its own. Its `hello` names the handle it lost as its
 `family`: mail to `cc@app` is pushed to `cc@app-3f2` too, counts in its own inbox under its own cursor,
 and still reaches it when `cc@app` is gone. A family must be the handle's own prefix before `-<suffix>`,
 or it is ignored. One Claude Code session can run two bridges (a user-scope `leticode` server and the
@@ -985,6 +1024,7 @@ Tools:
 | `room_asks` | - | the asks between this seat and the other sessions: `of_me` (owed an answer) and `by_me`, with `state` and `lines` |
 | `room_answer` | `{ask, text}` | answers the ask: a thread reply in its room, and the asker's row is released |
 | `room_decline` | `{ask, text}` | declines it, saying why. A different outcome from an answer, and the asker's row reads which |
+| `room_nick` | `{nick}` | the label the room draws this seat by, beside its id. Refused while a live seat answers to it, with whose it is and the next counter free (`db-fuzz-fable-2`). The plugin's `/leticode:nick` calls it |
 
 **Being asked.** A Claude Code seat has no board, so an ask of it is nagged by the channel push of the
 question plus the operator's card when it is gone - and settled by `room_answer` or `room_decline`, which

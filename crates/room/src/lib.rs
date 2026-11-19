@@ -7,6 +7,7 @@ pub mod budget;
 pub mod chat;
 pub mod claim;
 pub mod client;
+pub mod id;
 pub mod item;
 pub mod lease;
 pub mod own;
@@ -24,10 +25,11 @@ pub use agent::{AgentLedger, TagAgent};
 pub use blob::Blobs;
 pub use chat::{
     ASK_SETTLED_KEEP_MS, AskState, AskView, Attachment, Attention, Chat, DM_ROOM, EVIDENCE,
-    HOST_ROOM, History, MAX_ATTACHMENTS, MAX_TEXT, Message, OPERATOR, Presence, RELAYS, RING, Ref,
-    RoomInfo, SEATS, Seat, claims_operator, is_member_handle, project_room, valid_handle,
+    HOST_ROOM, History, MAX_ATTACHMENTS, MAX_TEXT, Message, NICK, OPERATOR, Presence, RELAYS, RING,
+    Ref, RoomInfo, SEATS, Seat, claims_operator, is_member_handle, project_room, valid_handle,
 };
 pub use claim::{Checked, Fact, StateClaim, Verdict, check, sha_in, state_claim, unbacked};
+pub use id::{SeatId, short_name};
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{
     Acquired, COORDINATOR_LEASE_TTL_MS, CoordinatorLease, Held, Holder, LEASE_BEAT_EVERY_MS,

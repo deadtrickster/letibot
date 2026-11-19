@@ -93,6 +93,13 @@ struct Live {
 struct Shared {
     path: PathBuf,
     speaker: Speaker,
+    /// The seat's stable id and its label, as the `Hello` carries them - empty until a caller says
+    /// ([`Client::with_seat`]). A client that says neither is the seat its name always was.
+    seat_id: Mutex<String>,
+    nick: Mutex<String>,
+    /// One more connection of a seat that is already connected - a bridge and its waiter. An id is
+    /// one seat, so the second connection must say it is sharing rather than claiming it again.
+    share: bool,
     /// The room this client believes it is reaching. It rides on every `Hello`, including a
     /// reconnect's: a session moved to another box must not keep talking to the one it opened on.
     room: String,
@@ -172,7 +179,53 @@ impl Client {
         seat: crate::chat::Seat,
         wake: Wake,
     ) -> Result<Client, ClientError> {
-        let client = Client {
+        Self::build(path, speaker, room, seat, wake).dial()
+    }
+
+    /// [`Client::connect_as`] for a seat that knows what it is: its stable id ([`crate::SeatId`])
+    /// and the label it is drawn by. The two go on the `Hello` itself, and every reconnect after it.
+    pub fn connect_seated(
+        path: impl Into<PathBuf>,
+        speaker: Speaker,
+        room: impl Into<String>,
+        seat: crate::chat::Seat,
+        id: impl Into<String>,
+        nick: impl Into<String>,
+        wake: Wake,
+    ) -> Result<Client, ClientError> {
+        let client = Self::build(path, speaker, room, seat, wake);
+        client.with_seat(id, nick);
+        client.dial()
+    }
+
+    /// One more connection of a seat another connection already holds, saying so: the `Hello`'s
+    /// `share`. A second bridge of one Claude Code session is this - and so is a bridge's waiter.
+    pub fn connect_shared(
+        path: impl Into<PathBuf>,
+        speaker: Speaker,
+        room: impl Into<String>,
+        seat: crate::chat::Seat,
+        id: impl Into<String>,
+        wake: Wake,
+    ) -> Result<Client, ClientError> {
+        let client = Self::build(path, speaker, room, seat, wake);
+        client.with_seat(id, "");
+        let mut shared = client;
+        Arc::get_mut(&mut shared.inner)
+            .expect("the only reference")
+            .share = true;
+        shared.dial()
+    }
+
+    /// The client, before it has dialled: what a caller sets its seat on.
+    fn build(
+        path: impl Into<PathBuf>,
+        speaker: Speaker,
+        room: impl Into<String>,
+        seat: crate::chat::Seat,
+        wake: Wake,
+    ) -> Client {
+        Client {
             inner: Arc::new(Shared {
                 path: path.into(),
                 speaker,
@@ -181,16 +234,32 @@ impl Client {
                 seat,
                 chat: Mutex::new(Chatty::default()),
                 live: Mutex::new(None),
+                seat_id: Mutex::new(String::new()),
+                nick: Mutex::new(String::new()),
+                share: false,
                 generation: std::sync::atomic::AtomicU64::new(0),
                 call: Mutex::new(()),
                 waiting: Mutex::new(None),
                 welcome: Mutex::new(Welcome::default()),
                 why: Mutex::new(None),
             }),
-        };
-        client.open()?;
-        client.spawn_redial();
-        Ok(client)
+        }
+    }
+
+    /// Dial, say `hello`, and start the redial thread.
+    fn dial(self) -> Result<Client, ClientError> {
+        self.open()?;
+        self.spawn_redial();
+        Ok(self)
+    }
+
+    /// Say the seat this client is, before it connects: its stable id ([`crate::SeatId`]) and the
+    /// label it is drawn by. Both ride every `Hello`, including a reconnect's - which is the whole
+    /// point of the id: a bridge that reconnects under a new name is still the same seat, and what it
+    /// missed is still its own. A client that says neither is the seat its name always was.
+    pub fn with_seat(&self, id: impl Into<String>, nick: impl Into<String>) {
+        *self.inner.seat_id.lock().expect("the seat lock") = id.into();
+        *self.inner.nick.lock().expect("the nick lock") = nick.into();
     }
 
     /// Reopen a dropped connection in the background, backing off while the room is away, so pushed
@@ -372,8 +441,10 @@ impl Client {
             room: self.inner.room.clone(),
             seat: self.inner.seat,
             token: operator_token(&self.inner.path),
-            share: false,
+            share: self.inner.share,
             family: None,
+            id: self.inner.seat_id.lock().expect("the seat lock").clone(),
+            nick: self.inner.nick.lock().expect("the nick lock").clone(),
         };
         write_frame(&mut writer, &hello)?;
         let first = read_frame(&mut reader)

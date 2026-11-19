@@ -100,6 +100,18 @@ pub(crate) struct Msg {
     pub text: String,
 }
 
+impl Msg {
+    /// The label the author was drawn by when it posted, which the room records as a `nick` ref.
+    /// `None` for a message written while its author names itself, and for every line older than
+    /// the ref - neither is drawn with a name it was not posted under.
+    pub(crate) fn nick(&self) -> Option<&str> {
+        self.refs
+            .iter()
+            .find(|r| r.kind == "nick" && !r.id.trim().is_empty())
+            .map(|r| r.id.trim())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub(crate) struct Member {
     pub name: String,
@@ -336,6 +348,17 @@ pub(crate) struct RoomsView {
 }
 
 impl RoomsView {
+    /// The label the roster holds for a principal, looked up by the identity it is authored by and
+    /// never by the label itself: that is what makes a renamed seat read under its new name. `None`
+    /// where no row carries the principal, where the row's name is only its identity again, and for
+    /// a roster from a coordinator that sends no identity - those rows keep the older rules.
+    pub(crate) fn roster_label(&self, handle: &str) -> Option<String> {
+        self.roster.values().flatten().find_map(|m| {
+            (!m.id.is_empty() && m.id == handle && !m.name.is_empty() && m.name != m.id)
+                .then(|| m.name.clone())
+        })
+    }
+
     /// The scorecard as text, every sender and every kind.
     pub(crate) fn signals_report(&self) -> String {
         let Some(c) = &self.signals else {
@@ -957,7 +980,7 @@ impl App {
                 Some(_) => format!("#{}", self.rooms.room_label(id)),
                 None => id.clone(),
             },
-            Chan::Dm(p) => format!("dm with {p}"),
+            Chan::Dm(p) => format!("dm with {}", self.rooms_display_name(p)),
             Chan::Session(id) => self.session_label(id),
         }
     }
