@@ -241,6 +241,48 @@ fn a_reply_quotes_the_message_it_answers() {
     );
 }
 
+/// A seat is drawn as the label it holds now, and a line it posted under an older one says which:
+/// `db-fuzz-fable (was cc@app)`. A line with no `nick` ref is not given a name it never had.
+#[test]
+fn a_renamed_seat_is_drawn_by_its_label_and_says_what_it_posted_under() {
+    let nick = |then: &str| {
+        vec![letibot_plugin::pane::ChatRef {
+            kind: letibot_plugin::pane::NICK.into(),
+            id: then.into(),
+        }]
+    };
+    let mut renamed = msg(1, NOW - 600_000, "cc@app", "the cache key is warm");
+    renamed.refs = nick("db-fuzz-fable");
+    let never = msg(2, NOW, "cc@app", "posted before the room had labels");
+    let mut chat = feed(vec![renamed, never]);
+    chat.names.insert("cc@app".into(), "db-fuzz-2".into());
+    let s = drawn(&chat);
+    assert_eq!(
+        entry(&s, 1)["head"][0]["text"],
+        json!("db-fuzz-2 (was db-fuzz-fable)"),
+        "{s}"
+    );
+    assert_eq!(entry(&s, 2)["head"][0]["text"], json!("db-fuzz-2"), "{s}");
+    // And a quote of that line names it the same way: one speaker, one spelling in a frame.
+    let mut answer = msg(3, NOW + 60_000, "cc@app", "yes");
+    answer.thread = Some(1);
+    let mut chat = feed(vec![
+        {
+            let mut m = msg(1, NOW - 600_000, "cc@app", "the cache key is warm");
+            m.refs = nick("db-fuzz-fable");
+            m
+        },
+        answer,
+    ]);
+    chat.names.insert("cc@app".into(), "db-fuzz-2".into());
+    let s = drawn(&chat);
+    assert_eq!(
+        entry(&s, 3)["quote"],
+        json!("↳ 1 db-fuzz-2 (was db-fuzz-fable): the cache key is warm"),
+        "{s}"
+    );
+}
+
 /// A system line. A todo or a queue row is one quiet row: no header, no hue, and its refs bracketed
 /// and escaped so the markdown renderer draws them.
 #[test]

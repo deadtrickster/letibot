@@ -608,6 +608,22 @@ pub struct ChatMessage {
     pub text: String,
 }
 
+/// The ref kind that says which label a post's author was drawn by when it wrote: its `id` is that
+/// label. The room's writer spells it too (`chat::NICK`), and both readers of a message - this head
+/// and the built-in chat layer - need the same word, so it lives beside the feed.
+pub const NICK: &str = "nick";
+
+impl ChatMessage {
+    /// The label the author was drawn by when it posted, for a line a renamed seat wrote. `None` for
+    /// a message whose author names itself, and for every line older than the ref.
+    pub fn nick(&self) -> Option<&str> {
+        self.refs
+            .iter()
+            .find(|r| r.kind == NICK && !r.id.trim().is_empty())
+            .map(|r| r.id.trim())
+    }
+}
+
 /// A pointer from a message to a row another part of letibot owns - a todo, a queue row.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChatRef {

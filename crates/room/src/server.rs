@@ -975,13 +975,16 @@ impl Server {
         holding
     }
 
-    /// How many sessions are connected now - the pane's *is anybody here*, and the number a
-    /// test reads instead of sleeping.
-    /// The newest chat `seq` `name` is marked as having seen, `None` for a member never seen.
+    /// The newest chat `seq` `name` is marked as having seen, `None` for a member never seen. The
+    /// cursor is the SEAT's, so a name is resolved first: a session's mark is kept under the id that
+    /// outlives a rename, and a caller holding the name it speaks as must still find it.
     pub fn seen(&self, name: &str) -> Option<u64> {
-        self.inner.chat.lock().expect("the chat lock").seen(name)
+        let id = self.principal_of(name);
+        self.inner.chat.lock().expect("the chat lock").seen(&id)
     }
 
+    /// How many sessions are connected now - the pane's *is anybody here*, and the number a test
+    /// reads instead of sleeping.
     pub fn connections(&self) -> usize {
         self.inner.conns.lock().expect("the connections lock").len()
     }
