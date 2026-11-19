@@ -1,11 +1,12 @@
 //! The deadline is enforced by the host, not by the thread that runs the command: a deadline inside
 //! `bash`'s wait loop is inside the thing it guards. Each test spawns a run and never waits on it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_tools::exec::{
     DEADLINE_KILL, HostProcesses, JobState, ProcessHost, ScopeKind, SpawnRequest,
 };
+use letibot_tools::testing::{PATIENCE, wait_for, wait_until, wait_within};
 
 /// A foreground run of `command`, in this host's turn scope. `tty` decides whether the run gets its own
 /// terminal, which matters: a run with `/dev/null` on stdin gets EOF at once and exits, a different
@@ -31,13 +32,9 @@ fn spawn(host: &HostProcesses, command: &str, tty: bool) -> letibot_tools::exec:
 /// deadline is the only thing that can end it, and this is only how long the test waits to see
 /// that it did.
 fn settled(host: &HostProcesses, id: &letibot_tools::exec::JobId) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if host.job(id).map(|v| !v.state.is_running()).unwrap_or(true) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the run to settle", || {
+        host.job(id).map(|v| !v.state.is_running()).unwrap_or(true)
+    });
 }
 
 /// The firing, once the watchdog has written it: a second read rather than the same one, because the
@@ -45,15 +42,10 @@ fn settled(host: &HostProcesses, id: &letibot_tools::exec::JobId) {
 fn firing(
     host: &HostProcesses,
     id: &letibot_tools::exec::JobId,
-) -> Option<letibot_tools::exec::DeadlineFired> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if let Some(f) = host.deadlines_fired().into_iter().find(|f| &f.job == id) {
-            return Some(f);
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    None
+) -> letibot_tools::exec::DeadlineFired {
+    wait_for("the watchdog's record of having fired", || {
+        host.deadlines_fired().into_iter().find(|f| &f.job == id)
+    })
 }
 
 /// The cgroup's members, read off the world rather than off the record the kill left: a record
@@ -110,14 +102,7 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
     let id = spawn(&host, "sleep 300", false);
 
     // Presence first, so the absence below is a measurement and not a boot window.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut seen = false;
-    while Instant::now() < deadline && !seen {
-        seen = !members(&host, &id).is_empty();
-        if !seen {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
+    let seen = wait_within(PATIENCE, || !members(&host, &id).is_empty());
     assert!(
         seen,
         "the run never appeared in its cgroup, so nothing can be concluded"
@@ -156,7 +141,6 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
         "the cgroup still holds {left:?} thirty seconds after the deadline"
     );
     // The cgroup is empty, but the exit is observed by a poll: a loaded box reaps late.
-    let gone_by = std::time::Instant::now() + Duration::from_secs(30);
     for p in &pids {
         let dead = || {
             std::fs::metadata(format!("/proc/{p}")).is_err()
@@ -164,15 +148,15 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
                     .map(|s| s.contains(") Z "))
                     .unwrap_or(true)
         };
-        while !dead() && std::time::Instant::now() < gone_by {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(dead(), "pid {p} is still alive after its deadline");
+        assert!(
+            wait_within(PATIENCE, dead),
+            "pid {p} is still alive after its deadline"
+        );
     }
 
     // The firing is a record, so the claim can be checked afterwards, and it carries the same
     // reap a `job_kill` leaves: that makes it a fact about a cgroup, not a claim about one.
-    let fired = firing(&host, &id).expect("the deadline left no record of having fired");
+    let fired = firing(&host, &id);
     assert!(
         fired.reaping.mechanism == letibot_tools::exec::HOST_KILL,
         "the deadline must end the run by its cgroup, which is the mechanism that does not \
@@ -216,21 +200,10 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
     // Presence, and the right presence: the wrapper joins its cgroup first and `su` `exec`s into
     // it a moment later, so the wait is for a process this uid may not look at, which is the
     // fact the test is about.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut pids = Vec::new();
-    let mut unlookable = false;
-    while Instant::now() < deadline && !unlookable {
-        pids = members(&host, &id);
-        unlookable = pids.iter().any(|p| !may_look_at(*p));
-        if !unlookable {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-    assert!(
-        unlookable,
-        "this test is about a process the daemon may not look at and the tree never had \
-         one: {pids:?} — without it this is measuring a different shape"
-    );
+    wait_until("a member this uid may not look at", || {
+        let pids = members(&host, &id);
+        pids.iter().any(|p| !may_look_at(*p))
+    });
 
     host.arm_deadline(&id, Duration::from_millis(400));
     settled(&host, &id);
@@ -258,14 +231,8 @@ fn a_run_ended_by_the_daemon_stopping_says_so() {
     let Some(host) = host() else { return };
     let id = spawn(&host, "sleep 300", false);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut seen = false;
-    while Instant::now() < deadline && !seen {
-        seen = !members(&host, &id).is_empty();
-        if !seen {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
+    // Presence first, so what follows is about a run that exists.
+    let seen = wait_within(PATIENCE, || !members(&host, &id).is_empty());
     assert!(seen, "the run never appeared in its cgroup");
 
     let ended = host.end_running("the daemon stopping");

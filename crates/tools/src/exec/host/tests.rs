@@ -11,6 +11,8 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
 
 use super::*;
 
+use crate::testing::{PATIENCE, wait_until, wait_within};
+
 /// The join's rule, pure: thirty seconds because a saturated box schedules the wrapper late, a poll
 /// that backs off rather than adding to the load it waits for, and a refusal that names the load -
 /// at five seconds with the box at 140, every command on it failed instead.
@@ -182,11 +184,7 @@ fn a_job_whose_cpu_and_output_never_move_is_ended_as_dead() {
     let scope = a_scope(&tree, "j-dead", 100);
     let job = a_job(&scope);
     liveness.watch(Arc::clone(&job));
-    let until = Instant::now() + Duration::from_secs(10);
-    while job.state().is_running() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!job.state().is_running(), "the dead check never fired");
+    wait_until("the dead check to fire", || !job.state().is_running());
     match job.state() {
         JobState::Killed { by } => assert_eq!(by, DEAD_KILL),
         other => panic!("a dead job must say so: {}", other.word()),
@@ -252,7 +250,8 @@ fn a_job_that_burns_cpu_or_keeps_printing_is_never_ended() {
     assert!(liveness.ended().is_empty(), "nothing was ended");
     assert!(tree.ended.lock().unwrap().is_empty());
     // The control: the same scans end both once their signals stop for a whole window, so the
-    // green above is the signals' doing and not a check that never fires.
+    // green above is the signals' doing and not a check that never fires. A window has to pass, so
+    // this is the one wait in the test that is a duration by nature.
     std::thread::sleep(window + Duration::from_millis(50));
     liveness.scan(tree.as_ref(), window);
     assert!(!burning.state().is_running(), "a still clock is dead");
@@ -326,10 +325,9 @@ fn the_dead_checks_warning_comes_once_and_is_taken_once() {
     liveness.set_window(Some(window));
     let job = a_job(&a_scope(&tree, "j-warn", 100));
     liveness.watch(Arc::clone(&job));
-    let until = Instant::now() + Duration::from_secs(10);
-    while liveness.warnings().is_empty() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the warning about a silent job", || {
+        !liveness.warnings().is_empty()
+    });
     let warnings = liveness.warnings();
     assert_eq!(warnings.len(), 1, "one warning per job: {warnings:?}");
     assert_eq!(warnings[0].job, job.id);
@@ -366,6 +364,8 @@ fn a_bounded_job_and_a_host_with_the_check_off_are_left_alone() {
     liveness.set_window(None);
     let unwatched = a_job(&a_scope(&tree, "j-nobody", 100));
     liveness.watch(Arc::clone(&unwatched));
+    // A negative check, so it needs a beat: the check is off and this job is spared, and the wait
+    // is the chance for either to be ended wrongly.
     std::thread::sleep(Duration::from_millis(1200));
     assert!(
         bounded.state().is_running(),
@@ -413,39 +413,29 @@ fn a_dropped_host_takes_its_deadline_thread_with_it() {
     // Ours is among the threads that appeared; other tests may have added their own. A thread
     // names itself once it runs, so a loaded box can show it a moment after the spawn.
     let mut started: Vec<String> = Vec::new();
-    let named_by = Instant::now() + Duration::from_secs(5);
-    while started.is_empty() && Instant::now() < named_by {
+    let named = wait_within(PATIENCE, || {
         started = deadline_threads().difference(&before).cloned().collect();
-        if started.is_empty() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
+        !started.is_empty() || cfg!(not(target_os = "linux"))
+    });
     assert!(
-        !started.is_empty() || cfg!(not(target_os = "linux")),
+        named || cfg!(not(target_os = "linux")),
         "a host starts a watchdog"
     );
     drop(h);
-    let until = Instant::now() + Duration::from_secs(10);
-    while weak.upgrade().is_some() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        weak.upgrade().is_none(),
-        "**the watchdog outlived its host** — the thread still holds the deadlines, so it is \
-             still running, and one is left behind per HostProcesses for the process's life"
-    );
+    wait_until("the watchdog to end with its host", || {
+        weak.upgrade().is_none()
+    });
     // And by tid: the thread is gone from the process. (Threads other tests started in the
     // same window may still be alive, so this asserts that not every new one survived.)
-    let until = Instant::now() + Duration::from_secs(10);
     let alive = |started: &[String]| {
         let now = deadline_threads();
         started.iter().filter(|t| now.contains(*t)).count()
     };
-    while !started.is_empty() && alive(&started) == started.len() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let ended = wait_within(PATIENCE, || {
+        started.is_empty() || alive(&started) < started.len()
+    });
     assert!(
-        started.is_empty() || alive(&started) < started.len(),
+        ended,
         "no deadline thread ended after its host was dropped: {started:?}"
     );
 }
@@ -460,10 +450,9 @@ fn a_dropped_host_takes_its_dead_check_with_it() {
     let h = HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
     let weak = Arc::downgrade(&h.liveness);
     drop(h);
-    let until = Instant::now() + Duration::from_secs(10);
-    while weak.upgrade().is_some() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the dead check to end with its host", || {
+        weak.upgrade().is_none()
+    });
     assert!(
         weak.upgrade().is_none(),
         "**the dead check outlived its host** — the thread still holds it, so it keeps waking \
@@ -726,10 +715,9 @@ fn a_job_that_forks_past_its_process_cap_is_ended_while_its_neighbour_survives()
     );
     // What the kernel does when a loop forks past the cap, and the whole of what a watcher can see.
     std::fs::write(scope.join("pids.events"), "max 1\n").unwrap();
-    let until = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < until && h.job(&looped).expect("the row").state.is_running() {
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_until("the looped job past its process cap to end", || {
+        !h.job(&looped).expect("the row").state.is_running()
+    });
     let ended = h.job(&looped).expect("the row");
     assert!(
         !ended.state.is_running(),
@@ -849,12 +837,12 @@ fn settled_captures_are_held_to_a_budget_and_the_oldest_go_first() {
         })
         .collect();
     let running = spawn("head -c 1000 /dev/zero; sleep 30");
-    let until = Instant::now() + Duration::from_secs(10);
-    while h.output(&running, 0, 4096).map(|o| o.retained).unwrap_or(0) < 1000
-        && Instant::now() < until
-    {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the first 1000 bytes", || {
+        h.output(&running, 0, 4096)
+            .map(|o| o.retained)
+            .unwrap_or(0)
+            >= 1000
+    });
 
     h.release_settled_captures(2500);
     let held = |id: &JobId| h.output(id, 0, 4096).expect("the row stays").retained;
@@ -1115,10 +1103,9 @@ fn a_promotion_does_not_truncate_the_file_a_background_job_already_has() {
             env_trailer: false,
         })
         .expect("a cgroup v2 tree was measured above");
-    let until = Instant::now() + Duration::from_secs(10);
-    while h.output(&id, 0, 64).map(|o| o.retained).unwrap_or(0) == 0 && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the run's first byte", || {
+        h.output(&id, 0, 64).map(|o| o.retained).unwrap_or(0) > 0
+    });
     let before = h
         .job(&id)
         .and_then(|v| v.output_file)
@@ -1181,10 +1168,7 @@ fn a_job_killed_before_it_ends_leaves_no_join_token_behind() {
         })
         .expect("a run starts");
     let token = super::join_token(&id);
-    let until = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < until && !token.exists() {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the wrapper's join token", || token.exists());
     assert!(
         token.exists(),
         "the wrapper must have written its token, or this measures nothing: {}",
@@ -1193,10 +1177,7 @@ fn a_job_killed_before_it_ends_leaves_no_join_token_behind() {
 
     let _ = h.kill_job_as(&id, "the test asking");
     // The waiter joins the drains, finds the job already settled and returns on that arm.
-    let until = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < until && token.exists() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the evidence to go", || !token.exists());
     assert!(
         !token.exists(),
         "a killed job left its evidence in $TMPDIR: {}",
@@ -1712,7 +1693,8 @@ fn a_job_with_no_readable_identity_is_refused_rather_than_settled_dead() {
         "a job nothing can identify was taken back anyway, so its watcher will settle a live \
              process Dead: {refused:?}"
     );
-    // And nothing is left behind wearing its handle, for a reader to believe.
+    // And nothing is left behind wearing its handle, for a reader to believe. A negative check, so
+    // it needs a beat: the spawn's own bookkeeping must have had its chance to write a row.
     std::thread::sleep(Duration::from_millis(700));
     assert!(
         h.job(&JobId("h-blind".into())).is_none(),
@@ -2092,12 +2074,7 @@ fn listener(tag: &str) -> (std::process::Child, u16) {
         .stdout(Stdio::null())
         .spawn()
         .expect("python3");
-    for _ in 0..100 {
-        if listener_pid(port).is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_until("the port's listener", || listener_pid(port).is_some());
     (child, port)
 }
 
