@@ -3108,6 +3108,36 @@ impl Harness {
                 mode_source = format!("{mode_source}, fallen back");
                 notes.push(said);
             }
+            // And the same for the DEFAULT, which is nobody's word: a project nobody configured
+            // opens at `automode`, and a box with no oracle would otherwise refuse to open at all -
+            // a session that never starts, on every folder, until somebody writes a row that says
+            // what the absent one meant. It opens at the nearest point it can carry and says so in
+            // one line. A stored row or a flag is a person's word and still refuses (`/mode
+            // automode` says on the spot what is missing).
+            if cfg.parent_session_id.is_none()
+                && mode_source == FLAG_SOURCE
+                && cfg.mode.name == letibot_tools::mode::UNSEEN_PROJECT.name
+                && cfg.mode.check(&have, seats).is_err()
+            {
+                let fallback = cfg.mode.inherited_by(&have, seats, cfg.seat.as_str());
+                let missing: Vec<&str> = cfg
+                    .mode
+                    .requires_given(seats)
+                    .into_iter()
+                    .filter(|p| !have.contains(p))
+                    .map(|p| p.as_str())
+                    .collect();
+                notes.push(format!(
+                    "mode is `{}`: this box cannot carry `{}`, the default for a project nobody \
+                     configured (missing {}), so the session opens at the nearest point it can. \
+                     `/mode automode` says what to attach.",
+                    fallback.mode().name,
+                    cfg.mode.name,
+                    missing.join(", ")
+                ));
+                cfg.mode = fallback.mode();
+                mode_source = format!("{mode_source}, fallen back");
+            }
             if let Err(why) = cfg.mode.check(&have, seats) {
                 return Err(HarnessError::Setup(why));
             }

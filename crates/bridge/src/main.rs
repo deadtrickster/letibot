@@ -190,6 +190,9 @@ fn serve() -> i32 {
     if bridge.stream_rooms() {
         let reporting = std::sync::Arc::downgrade(&bridge);
         std::thread::spawn(move || {
+            if let Some(bridge) = reporting.upgrade() {
+                bridge.say_what_im_on();
+            }
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(30));
                 let Some(bridge) = reporting.upgrade() else {

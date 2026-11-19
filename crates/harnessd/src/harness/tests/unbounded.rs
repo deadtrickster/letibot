@@ -316,20 +316,47 @@ fn an_unseen_project_opens_at_automode_on_a_box_with_an_oracle() {
     assert!(!h.config().unconfined, "automode is not allow-all");
 }
 
-/// And the refusing half: a box with no oracle refuses the point BY NAME rather than opening at a
-/// weaker one, and the sentence says what to attach. This is the box a fresh install is.
+/// And the default that cannot be met: a box with no oracle opens at the nearest point it can carry
+/// and says so in one line, rather than refusing to open every session in every folder that has no
+/// mode row. A point somebody ASKED for is the test below.
 #[test]
-fn an_unseen_project_on_a_box_with_no_oracle_refuses_by_name() {
+fn an_unseen_project_on_a_box_with_no_oracle_opens_at_the_nearest_point_and_says_so() {
     let dir = Scratch::new("auto-no-oracle");
     let cfg = bare(&dir, "s-no-oracle");
     let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
-    let said = match Harness::open(&parts, cfg, Hub::new("s-no-oracle")) {
-        Ok(h) => panic!(
-            "a box with no oracle opened at `{}`: the docs say refuse by name",
-            h.config().mode.name
-        ),
-        Err(e) => e.to_string(),
-    };
+    let h = Harness::open(&parts, cfg, Hub::new("s-no-oracle"))
+        .expect("a default nobody asked for must not stop the session opening");
+    assert_eq!(
+        h.config().mode.name,
+        letibot_tools::mode::Mode::ALWAYS_ASK.name,
+        "`automode` with no oracle is `always-ask`"
+    );
+    // One line, on the session, saying which point it is at and why - the operator reads it where
+    // the banner is, not in a log nobody opened.
+    let said = h
+        .open_notes()
+        .iter()
+        .find(|n| n.contains("automode"))
+        .unwrap_or_else(|| panic!("nothing said about the fallback: {:?}", h.open_notes()));
+    assert!(said.contains("always-ask"), "{said}");
+    assert!(said.contains("oracle"), "{said}");
+    assert!(said.contains("/mode automode"), "{said}");
+}
+
+/// The refusing half: a point somebody ASKED for with no oracle to stand on refuses by name rather
+/// than being quietly replaced, and the sentence says what to attach. This is `/mode automode`, the
+/// operator's own word.
+#[test]
+fn an_explicit_automode_on_a_box_with_no_oracle_still_refuses_by_name() {
+    let dir = Scratch::new("explicit-no-oracle");
+    let cfg = bare(&dir, "s-explicit");
+    let mut cfg = cfg;
+    cfg.mode = letibot_tools::mode::Mode::ALWAYS_ASK;
+    let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
+    let mut h = Harness::open(&parts, cfg, Hub::new("s-explicit")).expect("always-ask opens");
+    let said = h
+        .set_mode(letibot_tools::mode::Mode::AUTO)
+        .expect_err("`/mode automode` has no oracle to stand on");
     assert!(said.contains("authorisation oracle"), "{said}");
     assert!(
         said.contains("[gatekeeper]"),
@@ -338,5 +365,10 @@ fn an_unseen_project_on_a_box_with_no_oracle_refuses_by_name() {
     assert!(
         said.contains("refuses rather than opening at a weaker mode"),
         "{said}"
+    );
+    assert_eq!(
+        h.config().mode.name,
+        letibot_tools::mode::Mode::ALWAYS_ASK.name,
+        "a refused move leaves the session where it was"
     );
 }

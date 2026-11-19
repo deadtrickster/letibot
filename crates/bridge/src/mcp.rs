@@ -101,9 +101,8 @@ fn read_loop<R: BufRead, W: Write>(
                             eprintln!("letibot-mcp: {why}");
                             let _ = said.send(crate::seat::notice(&seat, "room", why));
                         }));
-                    // What this seat is on: a Claude Code bridge has no daemon, so nothing else
-                    // tells the room its repository, branch and row.
-                    bridge.say_what_im_on();
+                    // What this seat is on is said by the reporter `main` starts, off this thread: a
+                    // room that is wedged must not hold the first notification a client sends.
                     // Every pushed line goes through the folder's `push_channel` layer: the client
                     // gets the rule's answer, in its words when it has better ones. A silenced line
                     // was still seen, so it is taken and the cursor moves past it.
