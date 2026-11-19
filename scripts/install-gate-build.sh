@@ -15,10 +15,21 @@
 # until the next landing replaces it.
 #
 # The names are read from the built tree's `install.sh` (`BINARIES=`), never restated.
-#
 # Copy beside, then rename: `cp` over a running executable fails with `Text file busy`, and a
 # rename keeps running processes on their inode. `$$` in the temp name keeps two gates apart.
 set -eu
+
+# Does this binary link llama.cpp? `otool -L` on a Mac, `readelf` on Linux (which is what the
+# gate runs on), and `ldd` for a box with no binutils.
+links_llama() {
+  if command -v otool >/dev/null 2>&1; then
+    otool -L "$1" 2>/dev/null | grep -q libllama
+  elif command -v readelf >/dev/null 2>&1; then
+    readelf -d "$1" 2>/dev/null | grep -q 'NEEDED.*libllama'
+  else
+    ldd "$1" 2>/dev/null | grep -q libllama
+  fi
+}
 
 here=$(pwd -P)
 
@@ -53,9 +64,9 @@ esac
 built=$target/release
 if [ ! -d "$built" ]; then
   echo "install-gate-build: nothing was built at $built." >&2
-  echo "  The step before this one is \`cargo build --release --bins\`, and it writes into" >&2
-  echo "  \$CARGO_TARGET_DIR/release. A gate whose install step runs without it has nothing" >&2
-  echo "  to install, and installing nothing quietly is the defect this script exists for." >&2
+  echo "  The step before this one is \`cargo build --release --bins --features local\`, and it" >&2
+  echo "  writes into \$CARGO_TARGET_DIR/release. A gate whose install step runs without it has" >&2
+  echo "  nothing to install, and installing nothing quietly is the defect this script exists for." >&2
   exit 1
 fi
 
@@ -84,6 +95,21 @@ for name in harnessd letibot-tui; do
 done
 
 mkdir -p "$dest"
+# **A cloud-only daemon must not silently replace a local one.** A plain `cargo build` is
+# cloud-only now, so a gate step that lost its `--features local` would install a daemon with no
+# llama.cpp over a box that serves local models, and nothing would say so until a session asked
+# for one. Refused here, where the two binaries are both in hand.
+if [ -x "$dest/harnessd" ] && [ -x "$built/harnessd" ] &&
+  [ -z "${LETIBOT_ALLOW_CLOUD_DAEMON:-}" ] &&
+  links_llama "$dest/harnessd" && ! links_llama "$built/harnessd"; then
+  echo "install-gate-build: $built/harnessd links no llama.cpp, and the installed" >&2
+  echo "  $dest/harnessd does. This is the box's local-model daemon, so installing this" >&2
+  echo "  build would take local models away from every session here." >&2
+  echo "  The gate's build step is \`cargo build --release --bins --features local\` for that" >&2
+  echo "  reason (AGENTS.md, Merge gate). To install a cloud-only daemon on purpose:" >&2
+  echo "    LETIBOT_ALLOW_CLOUD_DAEMON=1 sh scripts/install-gate-build.sh" >&2
+  exit 1
+fi
 installed=""
 skipped=""
 for name in $bins; do

@@ -74,13 +74,17 @@ The `AGENTS.md` section is the definition. By hand, on this box:
 ```sh
 sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
-sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings
-LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
-cargo build --release --bins
+sh scripts/clippy-gate.sh --workspace --all-targets --features local -- -D warnings
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast --features local -- --nocapture
+cargo build --release --bins --features local
 sh scripts/check-dist-names.sh --built
 ```
 
-- Name both llama.cpp variables on anything that builds: `LETIBOT_LLAMA_DIR` and
+- **`--features local` is not optional on this box.** `local` is off by default, because it is
+  llama.cpp and the default install is cloud-only; this box serves local models, so every step names
+  it. `install-gate-build.sh` refuses to install a cloud-only `harnessd` over a local one, so a step
+  that loses the flag is a red gate rather than a daemon with no local models.
+- Name both llama.cpp variables on anything that builds a LOCAL build: `LETIBOT_LLAMA_DIR` and
   `LETIBOT_LLAMA_LIB`. Each `build.rs` bakes the llama.cpp it found into an rpath that cargo does not
   track, so a worktree keeps linking the first one. A run of vocabulary failures is usually this.
 - `scripts/clippy-gate.sh`, not `cargo clippy`. Cargo's fingerprint ignores the arguments after
