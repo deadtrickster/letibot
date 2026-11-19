@@ -9,7 +9,7 @@ use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_sessionlog::server::{ServerHandle, peer_socket_path, serve_registry_rooted};
-use letibot_sessionlog::testing::FOREIGN_TREE;
+use letibot_sessionlog::testing::{FOREIGN_TREE, wait_for};
 use letibot_sessionlog::wire::FrameReader;
 
 /// How long one answer may take.
@@ -103,14 +103,9 @@ fn a_process_spawned_by_a_foreign_parent_is_refused_operator_doors() {
     client
         .prompt(0, "the operator said to push")
         .expect("the frame is written");
-    let deadline = Instant::now() + PATIENCE;
-    let cmd = loop {
-        if let Some(cmd) = registry.get("s").and_then(|h| h.try_steering_command()) {
-            break cmd;
-        }
-        assert!(Instant::now() < deadline, "the prompt was never queued");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let cmd = wait_for("the prompt to be queued", || {
+        registry.get("s").and_then(|h| h.try_steering_command())
+    });
     assert_eq!(
         cmd.peer().as_deref(),
         Some("helper"),

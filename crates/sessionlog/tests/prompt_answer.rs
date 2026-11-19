@@ -9,6 +9,7 @@ use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::{PromptDriver, Registry, SessionWiring};
 use letibot_sessionlog::server::{ServerHandle, serve_registry};
+use letibot_sessionlog::testing::{PATIENCE, wait_within};
 use letibot_sessionlog::{SessionEvent, send_line};
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
@@ -364,14 +365,8 @@ fn the_verb_is_a_whole_word_and_the_bare_verb_is_an_enter() {
 
 /// Wait for `n` lines to reach the recorder, and hand back what it got.
 fn wait_for_sent(driver: &Arc<Recorder>, n: usize) -> Vec<(Option<String>, String)> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let got = driver.sent.lock().unwrap().clone();
-        if got.len() >= n || Instant::now() >= deadline {
-            return got;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_within(PATIENCE, || driver.sent.lock().unwrap().len() >= n);
+    driver.sent.lock().unwrap().clone()
 }
 
 /// Wait for the first event on this connection matching `want`.
@@ -379,7 +374,7 @@ fn wait_for_event(
     rx: &std::sync::mpsc::Receiver<Inbound>,
     want: impl Fn(&SessionEvent) -> bool,
 ) -> SessionEvent {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(200)) else {
             continue;

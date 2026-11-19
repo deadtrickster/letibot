@@ -4,16 +4,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::hub::{Hub, QueuedCommand};
 use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::server::{ServerHandle, serve};
+use letibot_sessionlog::testing::wait_for;
 use letibot_transcript::{Speaker, TranscriptItem};
-
-/// How long the daemon may take to queue the command the head sent.
-const PATIENCE: Duration = Duration::from_secs(30);
 
 fn socket_path(tag: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
@@ -36,17 +33,9 @@ fn start(tag: &str) -> (Arc<Hub>, ServerHandle, PathBuf) {
 /// The next command the daemon queued, waited for: the head's prompt goes over a socket, so the
 /// queue is filled by another thread.
 fn next_command(hub: &Hub) -> QueuedCommand {
-    let deadline = Instant::now() + PATIENCE;
-    loop {
-        if let Some(cmd) = hub.try_steering_command() {
-            return cmd;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the daemon never queued the prompt"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_for("the daemon to queue the prompt", || {
+        hub.try_steering_command()
+    })
 }
 
 fn attach(tag: &str, kind: &str, identity: &str, from: Option<&str>) -> QueuedCommand {

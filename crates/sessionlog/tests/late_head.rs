@@ -18,9 +18,6 @@ use std::os::unix::net::UnixStream;
 
 const DELTAS: usize = 2_000;
 const END: &str = "END-OF-PRODUCTION";
-/// How long a wait for a frame or for a condition may take, and never a rate: this box is shared,
-/// so what a socket round trip costs here is the box's fact and not the head's.
-const PATIENCE: Duration = Duration::from_secs(60);
 /// How quiet a channel must be before this file calls it finished. A detector, and short enough
 /// that a test which ends by going quiet does not pay for it.
 const QUIET: Duration = Duration::from_secs(2);
@@ -207,18 +204,14 @@ fn the_producer_is_never_slowed_by_a_head_that_stops_reading() {
         // Read exactly the Hello, then stop reading entirely.
         let mut r = FrameReader::new(stream);
         let _: ServerFrame = r.read().unwrap();
-        while !s2.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("the stalled head's test to finish", || {
+            s2.load(Ordering::Relaxed)
+        });
         drop(r);
     });
 
-    // Give it time to attach.
-    let t0 = Instant::now();
-    while hub.attached_heads() == 0 && t0.elapsed() < PATIENCE {
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(hub.attached_heads(), 1);
+    // A head that has attached, not a pause that stands in for one.
+    wait_until("the stalled head to attach", || hub.attached_heads() == 1);
 
     let started = Instant::now();
     hub.publish(turn_started("t1"));
@@ -257,11 +250,7 @@ fn every_head_detaching_mid_turn_changes_nothing() {
     drop(client);
     let _ = t.join();
 
-    let t0 = Instant::now();
-    while hub.attached_heads() > 0 && t0.elapsed() < PATIENCE {
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(hub.attached_heads(), 0);
+    wait_until("the head to detach", || hub.attached_heads() == 0);
 
     // Twenty minutes of build, or twenty deltas. Either way it carries on.
     for i in 0..20 {

@@ -5,12 +5,13 @@
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use letibot_sessionlog::hub::CommandKind;
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, RoomChatSeat, SessionWiring};
 use letibot_sessionlog::server::serve_conn;
+use letibot_sessionlog::testing::{PATIENCE, wait_until, wait_within};
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use serde_json::{Value, json};
 
@@ -55,17 +56,6 @@ fn attach(registry: &Arc<Registry>) -> (FrameWriter<UnixStream>, FrameReader<Uni
     (w, r)
 }
 
-fn wait_for(what: &str, mut probe: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if probe() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("timed out waiting for {what}");
-}
-
 /// A chat answer that takes longer than the test is willing to wait for the interrupt: the
 /// interrupt is read and queued while the answer is still being computed, and the reply for the
 /// ask arrives afterwards. Before the worker, the reader loop itself sat in the ask.
@@ -79,16 +69,21 @@ fn a_slow_chat_answer_does_not_stop_the_reader_loop() {
     let seat = {
         let started = Arc::clone(&ask_started);
         let heads = Arc::clone(&asked);
+        // The answer is not finished until the test has seen the interrupt: what this test is
+        // about is which of the two came first, not how long a round trip took.
+        let (may_answer, answer_now) = std::sync::mpsc::channel::<()>();
+        let answer_now = Arc::new(Mutex::new(answer_now));
         let ask = Arc::new(move |head: &str, _op: Value| {
             heads.lock().unwrap().push(head.to_string());
             started.store(true, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(600));
+            let _ = answer_now.lock().unwrap().recv();
             json!({"type": "rooms", "rows": []})
         });
         let left = Arc::clone(&gone);
         let gone = Arc::new(move |head: &str| left.lock().unwrap().push(head.to_string()));
-        RoomChatSeat::new(ask, gone)
+        (RoomChatSeat::new(ask, gone), may_answer)
     };
+    let (seat, may_answer) = seat;
     registry.set_room_chat(seat);
     let hub = registry.get("s-1").expect("the session");
     let (mut w, mut r) = attach(&registry);
@@ -98,7 +93,7 @@ fn a_slow_chat_answer_does_not_stop_the_reader_loop() {
         op: json!({"type": "rooms"}),
     })
     .expect("ask");
-    wait_for("the ask to start", || ask_started.load(Ordering::SeqCst));
+    wait_until("the ask to start", || ask_started.load(Ordering::SeqCst));
 
     // An Interrupt sent while the chat answer is still being computed: it must reach the hub's
     // command queue well inside the ask's own window, because the reader loop kept reading.
@@ -108,25 +103,20 @@ fn a_slow_chat_answer_does_not_stop_the_reader_loop() {
         reason: "the operator changed their mind".into(),
     })
     .expect("interrupt");
-    let queued_by = Instant::now() + Duration::from_millis(300);
-    let mut interrupt = false;
-    while Instant::now() < queued_by {
-        if let Some(c) = hub.try_command()
-            && matches!(c.kind, CommandKind::Interrupt { .. })
-        {
-            interrupt = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let interrupted = wait_within(PATIENCE, || {
+        hub.try_command()
+            .is_some_and(|c| matches!(c.kind, CommandKind::Interrupt { .. }))
+    });
     assert!(
-        interrupt,
+        interrupted,
         "the interrupt was not read while the chat answer was still being computed"
     );
+    // The answer is only now allowed to finish, so the reply below is the one sent after it.
+    let _ = may_answer.send(());
 
     // The chat reply still arrives, under its own request id.
     let mut replied = false;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
         if matches!(
             r.read::<ServerFrame>().expect("a frame"),
@@ -146,7 +136,7 @@ fn a_slow_chat_answer_does_not_stop_the_reader_loop() {
     // loop by exactly its last reply, and `gone` is its exit path.
     drop(w);
     drop(r);
-    wait_for("the head to be retired", || {
+    wait_until("the head to be retired", || {
         !gone.lock().unwrap().is_empty()
     });
     assert_eq!(gone.lock().unwrap()[0], heads[0]);

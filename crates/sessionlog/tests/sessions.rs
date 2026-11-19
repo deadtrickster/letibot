@@ -590,14 +590,13 @@ fn one_worker_serving_two_sessions_takes_them_in_the_order_they_were_prompted() 
     b_head.prompt(0, "for b").unwrap();
     // Wait for it to land before sending the second, so the assertion is about the
     // registry's ordering and not about two sockets racing.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while reg.get("b").unwrap().head_seq() < 2 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("b's prompt to land", || {
+        reg.get("b").unwrap().head_seq() >= 2
+    });
     a_head.prompt(0, "for a").unwrap();
-    while reg.get("a").unwrap().head_seq() < 2 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("a's prompt to land", || {
+        reg.get("a").unwrap().head_seq() >= 2
+    });
 
     let (first, _) = reg.next_command().expect("a command");
     let (second, _) = reg.next_command().expect("a command");
@@ -653,11 +652,7 @@ fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
     );
 
     // The registry closes, and it does not wait for the queue.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !reg.is_closed() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(reg.is_closed(), "the stop did not reach the registry");
+    wait_until("the stop to reach the registry", || reg.is_closed());
 
     // And the other head was told who did it, while the hub was still up.
     let seen = until(&rx2, |f| {

@@ -245,11 +245,17 @@ fn a_run_the_stop_ends_is_named_before_the_hubs_close() {
     r.create("s-1", "", SessionWiring::default()).unwrap();
     let hub = r.get("s-1").expect("the session is held");
     let head = hub.attach("tui", "dead", Caps::default(), 0);
-    // The pure half says what is running; the ender takes a beat over it and says nothing.
+    // The pure half says what is running; the ender says when it is inside, so the second caller
+    // below arrives while it is there rather than after a guess at how long it takes.
+    let inside = Arc::new(std::sync::atomic::AtomicBool::new(false));
     r.name_runs("s-1", Arc::new(|| vec!["`/bin/cat` (`j1`)".to_string()]));
+    let here = Arc::clone(&inside);
     r.watch_runs(
         "s-1",
-        Arc::new(|| std::thread::sleep(std::time::Duration::from_millis(200))),
+        Arc::new(move || {
+            here.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(200))
+        }),
     );
 
     // A head's writer thread, from the schema's own side: a loop that stops at the first
@@ -278,7 +284,9 @@ fn a_run_the_stop_ends_is_named_before_the_hubs_close() {
     let loser = {
         let r = Arc::clone(&r);
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            crate::testing::wait_until("the other caller to be inside the ender", || {
+                inside.load(std::sync::atomic::Ordering::SeqCst)
+            });
             r.close();
         })
     };
@@ -850,8 +858,14 @@ fn closing_wakes_a_worker_that_is_blocked_on_the_bell() {
     let r = reg();
     r.create("s-a", "", SessionWiring::default()).unwrap();
     let r2 = r.clone();
-    let t = std::thread::spawn(move || r2.next_command());
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    // The worker says it is starting, so the close comes after it is on the bell and not after a
+    // pause that stands in for one.
+    let (began, starting) = std::sync::mpsc::channel();
+    let t = std::thread::spawn(move || {
+        began.send(()).unwrap();
+        r2.next_command()
+    });
+    starting.recv().unwrap();
     r.close();
     assert!(t.join().unwrap().is_none());
 }

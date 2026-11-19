@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use letibot_sessionlog::event::{SessionEvent, TodoBy};
 use letibot_sessionlog::protocol::{ClientFrame, PROTOCOL_VERSION, PromptDelivery, ServerFrame};
-use letibot_sessionlog::testing::wire_corpus;
+use letibot_sessionlog::testing::{wait_until, wire_corpus};
 use letibot_sessionlog::view::TurnState;
 use letibot_transcript::{Speaker, TranscriptItem};
 
@@ -211,12 +211,7 @@ fn a_head_attaches_to_the_corpus_server_and_reads_the_snapshot() {
         let sock = sock.clone();
         std::thread::spawn(move || wire_corpus::serve_for_an_older_head(&sock, 3_000))
     };
-    for _ in 0..50 {
-        if sock.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    wait_until("the corpus server's socket", || sock.exists());
     let (_head, hello, _reader) =
         HeadClient::attach(&sock, "s", 0, "tui", "wire-head", Caps::default())
             .expect("the corpus server takes an attach");
