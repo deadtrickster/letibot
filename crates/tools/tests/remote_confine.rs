@@ -393,19 +393,20 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         "--tmpfs /var/tmp",
         // The project, read-write, at its own path.
         &format!("--bind {} {}", b.worktree_path(), b.worktree_path()),
-        // The operator's toolchain, read-only, and the one file a commit needs.
+        // The operator's toolchain, read-only, and the one file a commit needs. `-try`, because a
+        // grant names a path that may not be there and one absent dotfile must not fail the argv.
         &format!(
-            "--ro-bind {}/.cargo {}/.cargo",
+            "--ro-bind-try {}/.cargo {}/.cargo",
             rig.home.display(),
             rig.home.display()
         ),
         &format!(
-            "--ro-bind {}/.rustup {}/.rustup",
+            "--ro-bind-try {}/.rustup {}/.rustup",
             rig.home.display(),
             rig.home.display()
         ),
         &format!(
-            "--ro-bind {}/.gitconfig {}/.gitconfig",
+            "--ro-bind-try {}/.gitconfig {}/.gitconfig",
             rig.home.display(),
             rig.home.display()
         ),
@@ -421,7 +422,7 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         // do not exist there. The mirror the checkout is a worktree of is writable, because without it `git`
         // inside the view has no repository.
         &format!(
-            "--bind {0}/letibot-remote/the-repo.git {0}/letibot-remote/the-repo.git",
+            "--bind-try {0}/letibot-remote/the-repo.git {0}/letibot-remote/the-repo.git",
             std::fs::canonicalize(&rig.home)
                 .unwrap_or_else(|_| rig.home.clone())
                 .display()
@@ -1046,7 +1047,7 @@ fn granted(path: &str, write: bool) -> HostGrant {
 /// The per-command bwrap argv that bound `path`, if any: the view is the argv, since the fake helper
 /// implements no mount at all.
 fn the_call_binding(rig: &Rig, path: &Path) -> Option<String> {
-    let bind = format!("--bind {} {}", path.display(), path.display());
+    let bind = format!("--bind-try {} {}", path.display(), path.display());
     rig.bwrap_calls().into_iter().find(|c| c.contains(&bind))
 }
 
@@ -1083,7 +1084,7 @@ fn the_operators_grants_reach_the_view_on_the_host() {
     let tmpfs = at("/run").expect("`/run` is emptied here");
     let bound = argv
         .windows(2)
-        .position(|w| w[0] == "--bind" && w[1] == there.display().to_string())
+        .position(|w| w[0] == "--bind-try" && w[1] == there.display().to_string())
         .expect("the grant is bound");
     assert!(
         bound > tmpfs,

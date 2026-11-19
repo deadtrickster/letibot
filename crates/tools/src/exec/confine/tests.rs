@@ -666,7 +666,7 @@ fn a_grant_reaches_a_store_and_the_store_is_masked_and_the_toolchain_is_not() {
     let joined = argv.join(" ");
     let granted = cargo.display().to_string();
     assert!(
-        joined.contains(&format!("--ro-bind {granted} {granted}")),
+        joined.contains(&format!("--ro-bind-try {granted} {granted}")),
         "the toolchain is bound read-only: {joined}"
     );
     let store = cargo.join("credentials.toml").display().to_string();
@@ -1017,7 +1017,7 @@ fn a_grant_under_run_binds_over_the_fresh_tmpfs_and_is_there_under_both_spelling
     assert_eq!(argv[tmpfs - 1], "--tmpfs", "{argv:?}");
     let bound = argv
         .windows(3)
-        .position(|w| w[0] == "--bind" && w[1] == "/run/docker.sock")
+        .position(|w| w[0] == "--bind-try" && w[1] == "/run/docker.sock")
         .expect("the grant is bound");
     assert!(
         bound > tmpfs,
@@ -1049,7 +1049,7 @@ fn a_grant_under_run_binds_over_the_fresh_tmpfs_and_is_there_under_both_spelling
     };
     let mounted_at_run = |argv: &[String]| {
         argv.windows(3).any(|w| {
-            w[0] == "--bind" && w[1] == "/var/run/docker.sock" && w[2] == "/run/docker.sock"
+            w[0] == "--bind-try" && w[1] == "/var/run/docker.sock" && w[2] == "/run/docker.sock"
         })
     };
     let other_argv = build_argv(Path::new("/usr/bin/bwrap"), &other, &Egress::Denied, &plan);
@@ -1585,6 +1585,71 @@ fn a_helper_setup_failure_is_not_reported_as_the_commands_answer() {
             .is_none()
     );
     assert!(b.launcher_failure("").is_none());
+}
+
+#[test]
+fn every_bind_in_a_wide_view_has_a_source_that_is_there() {
+    // bwrap refuses the whole argv when a bind's SOURCE is missing, so one dotfile the operator
+    // does not have would stop the session from opening: nothing may be bound from itself.
+    use crate::exec::seat;
+    let dir = std::env::temp_dir().join(format!("letibot-missdot-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("operator");
+    std::fs::create_dir_all(&home).expect("a bare home");
+    std::fs::create_dir_all(dir.join("project")).expect("a project");
+    for rel in crate::secrets::SEAT_READ_ONLY {
+        assert!(
+            !home.join(rel).exists(),
+            "the fixture home is meant to be bare"
+        );
+    }
+    let wide = seat::seat_for_level(
+        seat::Level::Wide,
+        &crate::mode::Mode::WRITES_ALLOWED,
+        "this machine",
+        &[] as &[&str],
+        &home,
+        None,
+    );
+    let mut view = ViewSpec::project_only(dir.join("project"))
+        .with_home(HomeView::Dir(home.clone()))
+        .wide()
+        .masking(wide.masked.iter().cloned());
+    for p in seat::wide_protected(&home) {
+        view = view.protecting(p);
+    }
+    // `[boundary]` naming a dotfile of the operator's own that this home does not have: an
+    // operator whose `leticode.toml` grants `~/.gitconfig` meets it whenever the daemon's home is
+    // not theirs, which is what a gate's fixture home is.
+    view = view.granting(Grant::ReadOnly {
+        path: home.join(".gitconfig"),
+        why: "the identity a commit is recorded under".into(),
+    });
+    let argv = build_argv_with(
+        Path::new("/usr/bin/bwrap"),
+        &view,
+        &Egress::Denied,
+        &ConfinePlan {
+            cwd: &dir,
+            env: &[],
+        },
+        Session::Detached,
+    );
+    for i in 0..argv.len() {
+        // `--ro-bind-try` is the one form bwrap tolerates a missing source for.
+        if !matches!(argv[i].as_str(), "--ro-bind" | "--bind" | "--dev-bind") {
+            continue;
+        }
+        let source = Path::new(&argv[i + 1]);
+        assert!(
+            source.exists(),
+            "{} {:?} has no source: {}",
+            argv[i],
+            source,
+            argv.join(" ")
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

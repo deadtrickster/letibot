@@ -1069,7 +1069,7 @@ mod tests {
         )
         .join(" ");
         let bind = argv
-            .find(&format!("--ro-bind {0} {0}", data.display()))
+            .find(&format!("--ro-bind-try {0} {0}", data.display()))
             .expect("bound");
         let mask = argv
             .find(&format!("--tmpfs {}", data.join("private").display()))

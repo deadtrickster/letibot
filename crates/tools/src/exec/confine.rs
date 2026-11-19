@@ -2848,21 +2848,25 @@ fn pieces_of(
     }
 
     for g in &view.grants {
+        // `-try`, because a grant names a path that may not be there: an operator's `~/.gitconfig`
+        // on a box whose home is a fixture one, a toolchain a build removed. bwrap refuses the
+        // WHOLE argv when a source is missing, so one absent dotfile would stop the session from
+        // opening at all.
         match g {
             Grant::ReadOnly { path, .. } => {
-                arg(&mut a, "--ro-bind");
+                arg(&mut a, "--ro-bind-try");
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, mount_point(path).display().to_string());
             }
             Grant::ReadWrite { path, .. } => {
-                arg(&mut a, "--bind");
+                arg(&mut a, "--bind-try");
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, mount_point(path).display().to_string());
             }
             Grant::AgentSocket { path, .. } => {
                 // Bound at a fixed path so `SSH_AUTH_SOCK` inside does not carry the
                 // operator's `/run/user/<uid>/...` out into the transcript.
-                arg(&mut a, "--bind");
+                arg(&mut a, "--bind-try");
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, AGENT_SOCKET);
             }
