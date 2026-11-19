@@ -5770,8 +5770,8 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_thirteen() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 13);
+    fn the_room_speaks_protocol_fourteen() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 14);
         // And the refusal names which side is older, in both directions.
         assert_eq!(
             crate::wire::protocol_refusal(11),
@@ -5780,7 +5780,7 @@ mod tests {
         );
         let old = crate::wire::protocol_refusal(10).expect("10 is too old");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(14).expect("14 is not 13");
+        let new = crate::wire::protocol_refusal(15).expect("15 is not 14");
         assert!(new.contains("this room is the older"), "{new}");
         assert_eq!(crate::wire::protocol_refusal(12), None, "12 is served too");
         assert!(
