@@ -2736,6 +2736,9 @@ pub struct Baseline {
     /// The stage that names a grant over this command: the program doing the work, which is not the
     /// last program in the line, since a grant keyed on a trailing `export` is one nobody can read.
     pub grant_program: Option<String>,
+    /// Every program the action runs, in the order the line names them and without repeats, so a
+    /// grant taken over a compound line can name all of them and no other.
+    pub programs: Vec<String>,
     /// The weight of [`Baseline::grant_program`]'s stage, so a later stage can win only
     /// by doing more. Not read outside this module.
     grant_program_weight: Option<u8>,
@@ -2831,6 +2834,7 @@ impl Baseline {
             command: None,
             resolved: n.is_resolved(),
             grant_program: None,
+            programs: Vec::new(),
             grant_program_weight: None,
             intents: BTreeSet::new(),
             regions: BTreeSet::new(),
@@ -3220,6 +3224,7 @@ impl Baseline {
             // is keyed on `crate::adjudicate::NO_PROGRAM`, which matches nothing a
             // command produces.
             grant_program: None,
+            programs: Vec::new(),
             grant_program_weight: None,
             // Not a shell command, so there is no grammar to have resolved or not: the
             // paths came from the caller as literals. `true` is the honest answer:
@@ -3408,11 +3413,21 @@ impl Baseline {
         // Which stage would a person name if they answered "stop asking me about this"? Asked here
         // because this pass has the stage's own intents, and a second reader of the program table would
         // be a second answer to what a stage does.
+        let named = identity.as_deref().unwrap_or(&program);
+        // Every program the call runs, but not the ones that only change the shell: a grant keyed
+        // on the `cd` that moved it or the `export` that set a variable is one nobody can read.
+        // `permission::sets_shell_state` is the same answer `naming_weight` below ranks by.
+        if stage.program_name().is_some()
+            && !crate::permission::sets_shell_state(&program)
+            && !self.programs.iter().any(|p| p == named)
+        {
+            self.programs.push(named.to_string());
+        }
         name_stage(
             &mut self.grant_program,
             &mut self.grant_program_weight,
             &program,
-            identity.as_deref().unwrap_or(&program),
+            named,
             stage,
         );
 
@@ -3915,6 +3930,13 @@ impl Baseline {
         self.scoped.extend(inner.scoped.iter().cloned());
         if self.authenticating.is_none() {
             self.authenticating = inner.authenticating.clone();
+        }
+        // A body this call runs is a program this call runs: `sh -c 'a; b'` answers for `sh`,
+        // `a` and `b`, and a grant over it covers none of them alone.
+        for p in &inner.programs {
+            if !self.programs.iter().any(|mine| mine == p) {
+                self.programs.push(p.clone());
+            }
         }
         // Two ways a folded action can be partially unreadable: `NotRun` means the body was refused,
         // `!resolved` means it was read and its unknowns widened. Both owe the reader the same

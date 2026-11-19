@@ -776,3 +776,57 @@ fn set_mode_to_always_ask_forgets_approved_shapes() {
     let _ = g.admit(&bash_at(&again, "s#3"));
     assert_eq!(asked.load(Ordering::Relaxed), 2);
 }
+
+/// A compound line is one card and several programs: the session rung names every one of them, and
+/// the grant it writes covers a later call only when every program that call runs is among them.
+#[test]
+fn a_grant_over_a_compound_line_names_every_program_and_covers_only_those() {
+    use std::sync::atomic::Ordering;
+    let (asked, g) = counting("allow_session");
+    let mut g = g.with_mode(crate::mode::Mode::WRITES_ALLOWED);
+    let compound = json!({"command": "cat /etc/hosts; ip neigh; head -3 /etc/hostname"});
+
+    // The label the card draws, read off the request the gate builds for the change.
+    let req = g.request_for(&bash_at(&compound, "s#0"));
+    let rung = req
+        .options
+        .iter()
+        .find(|o| o.id == "allow_session")
+        .expect("the session rung");
+    assert!(
+        rung.label.contains("cat, ip, head"),
+        "the rung names the first program only: {:?}",
+        rung.label
+    );
+
+    assert!(matches!(
+        g.admit(&bash_at(&compound, "s#1")),
+        GateDecision::Admit
+    ));
+    assert_eq!(asked.load(Ordering::Relaxed), 1);
+
+    // One of the three, alone, is covered: it is a program this grant names.
+    let one = json!({"command": "head -1 /etc/hostname"});
+    assert!(matches!(
+        g.admit(&bash_at(&one, "s#2")),
+        GateDecision::Admit
+    ));
+    assert_eq!(
+        asked.load(Ordering::Relaxed),
+        1,
+        "`head` alone was asked again"
+    );
+    assert_eq!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:session-grant")
+    );
+
+    // A program the card never named is not covered, however it was spelled.
+    let other = json!({"command": "sort /etc/hostname"});
+    let _ = g.admit(&bash_at(&other, "s#3"));
+    assert_eq!(
+        asked.load(Ordering::Relaxed),
+        2,
+        "a grant over `cat, ip, head` covered `sort`"
+    );
+}

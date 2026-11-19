@@ -32,6 +32,14 @@ pub struct Coverage {
     pub intents: BTreeSet<Intent>,
 }
 
+/// The programs a grant key names: one, or a compound call's list (see
+/// [`crate::adjudicate::PROGRAM_SEP`]).
+fn programs(key: &str) -> impl Iterator<Item = &str> {
+    key.split(crate::adjudicate::PROGRAM_SEP)
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+}
+
 impl Coverage {
     /// How it reads to a person: *"git - reads and writes inside the project, NOT code
     /// execution."*
@@ -180,14 +188,20 @@ impl Grant {
             Tier::AlwaysAsk { .. } => return Err(NotCovered::AlwaysAsk),
             Tier::Auto | Tier::MayApprove => {}
         }
-        let hit = self.coverage.iter().any(|c| {
-            c.program == program
-                && c.class == class
-                // The intents must be a subset of what was granted. The class catches
-                // most of it; this catches the rest, because two calls can share a class
-                // and differ in what they do - exactly what a vehicle flag adds.
-                && intents.is_subset(&c.intents)
-        });
+        // Every program the call runs must be one the grant names: a grant taken while `cat`,
+        // `ip` and `nmcli` were on the card covered those three, and a bare `cat` is not a hole
+        // in it. A call that names no program matches nothing, as it always did.
+        let runs: Vec<&str> = programs(program).collect();
+        let hit = !runs.is_empty()
+            && self.coverage.iter().any(|c| {
+                let granted: Vec<&str> = programs(&c.program).collect();
+                c.class == class
+                    // The intents must be a subset of what was granted. The class catches
+                    // most of it; this catches the rest, because two calls can share a class
+                    // and differ in what they do - exactly what a vehicle flag adds.
+                    && intents.is_subset(&c.intents)
+                    && runs.iter().all(|p| granted.contains(p))
+            });
         if hit {
             Ok(())
         } else {

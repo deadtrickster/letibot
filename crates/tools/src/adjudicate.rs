@@ -1381,15 +1381,21 @@ fn turn_seq(turn_id: &str) -> Option<u64> {
 /// into an option would put a placeholder where a noun belongs.
 pub const NO_PROGRAM: &str = "<tool>";
 
-/// What a grant is keyed on: the program doing the work, as the shell will run it. It reads
-/// [`crate::intent::Baseline::grant_program`], chosen where every stage is read, so a grant
-/// names the program that works rather than `export` or `head`. [`NO_PROGRAM`] with no command.
+/// What a grant is keyed on: every program the call runs, as the shell will run them, in the order
+/// the line names them. One program is its own name, and a compound line is the list, because a
+/// grant taken while `cat`, `ip` and `nmcli` were on the card covered those and not `cat` alone.
+/// [`NO_PROGRAM`] with no command.
 fn grant_program(baseline: &crate::intent::Baseline) -> String {
-    baseline
-        .grant_program
-        .clone()
-        .unwrap_or_else(|| NO_PROGRAM.to_string())
+    match baseline.programs.as_slice() {
+        [] => NO_PROGRAM.to_string(),
+        [one] => one.clone(),
+        many => many.join(PROGRAM_SEP),
+    }
 }
+
+/// What separates a compound call's programs in a grant's key and on the card. A program whose
+/// name somehow held it would only fail to match its own grant, which asks again.
+pub const PROGRAM_SEP: &str = ", ";
 
 /// The refuse-list, evaluated before any adjudicator and overridable by none of them. The stores are
 /// [`crate::secrets::STORES`], which the read-side list and the macOS seat's fence read too, so no copy
