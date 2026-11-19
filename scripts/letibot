@@ -373,6 +373,22 @@ scope_run() { # scope_run UNIT-STEM
 # is bounded too; past the bound the scope is given up and the command runs without one.
 SCOPE_JOIN_SECONDS=5
 SCOPE_PID=""
+# The leader alone is not the tree: a `systemd-run` that is a wrapper (a shim on PATH, a script)
+# starts the scope in a child, and killing the wrapper leaves that child holding THIS caller's
+# stdout and stderr - which turns `x=$(letibot ...)` into a wait for a stub's own `sleep`. Children
+# die first, while their parent is still alive to be found by ppid; the leader dies last.
+scope_kill_tree() { # scope_kill_tree PID
+  local pid=$1 kids i=0
+  while [ "$i" -lt 10 ]; do
+    kids="$(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$pid" '$2 == p { print $1 }')"
+    [ -n "$kids" ] || break
+    for k in $kids; do
+      kill -KILL "$k" 2>/dev/null || true
+    done
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
 # scope_join COMMAND [ARGS...] -- start COMMAND in the scope SCOPE_RUN names. 0 with SCOPE_PID
 # once it is in, 1 after the join was given up and killed. Whoever makes the gate directory
 # first decides a join that lands at the bound, so the command never runs twice.
@@ -387,7 +403,7 @@ scope_join() {
     i=$((i + 1))
   done
   if mkdir "$gate" 2>/dev/null; then
-    kill -KILL "$SCOPE_PID" 2>/dev/null || true
+    scope_kill_tree "$SCOPE_PID"
     wait "$SCOPE_PID" 2>/dev/null || true
     rmdir "$gate" 2>/dev/null || true
     SCOPE_PID=""
