@@ -1782,3 +1782,113 @@ fn gate_step_env_is_isolated() {
         "HOME is under the run's scratch: {said}"
     );
 }
+
+/// Wait for `path` to hold the pids the step named, and read them. A step that never said where it
+/// is has its owner's own output said back, rather than a bare timeout.
+fn pids_in(path: &Path, log: &Path) -> Vec<u32> {
+    let until = Instant::now() + Duration::from_secs(120);
+    loop {
+        let said = std::fs::read_to_string(path).unwrap_or_default();
+        let pids: Vec<u32> = said
+            .split_whitespace()
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        if pids.len() >= 2 {
+            return pids;
+        }
+        assert!(
+            Instant::now() < until,
+            "the step never said where it is: {said:?}; its owner said {}",
+            std::fs::read_to_string(log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A step whose daemon is `SIGKILL`ed ends itself: nothing is left for the next daemon, and there is
+/// no record to leave it, because the step's own launcher watches the pokes - a daemon that stops
+/// poking is a daemon that is gone, however it went. The owner here is a second run of this test
+/// binary, killed the way a kernel kills a daemon.
+#[test]
+fn a_step_whose_owner_is_sigkilled_leaves_no_orphan() {
+    const CHILD: &str = "LETIBOT_TEST_GATE_ORPHAN_CHILD";
+    const DIR: &str = "LETIBOT_TEST_GATE_ORPHAN_DIR";
+    let dir = std::env::temp_dir().join(format!("letibot-gate-orphan-{}", std::process::id()));
+    if std::env::var_os(CHILD).is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the fixture");
+        let mut owner =
+            std::process::Command::new(std::env::current_exe().expect("this test binary"))
+                .args([
+                    "mergequeue::gate::tests::a_step_whose_owner_is_sigkilled_leaves_no_orphan",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env(DIR, &dir)
+                .stdout(Stdio::from(
+                    std::fs::File::create(dir.join("owner.log")).expect("the owner's log"),
+                ))
+                .stderr(Stdio::from(
+                    std::fs::File::create(dir.join("owner.err")).expect("the owner's log"),
+                ))
+                .spawn()
+                .expect("the owner run");
+        // The step says where it is: the group's leader first, then a grandchild that must go too.
+        let pids = pids_in(&dir.join("step.pids"), &dir.join("owner.log"));
+        let pgid = pids[0];
+        // SAFETY: a pid this test spawned, and the signal is what a crashed daemon gets.
+        unsafe {
+            libc::kill(owner.id() as i32, libc::SIGKILL);
+        }
+        owner.wait().expect("the owner's end");
+        let window = Duration::from_millis(TICK_MS * 4);
+        assert!(
+            crate::mergequeue::gate_tick::probe::gone_within(
+                pgid,
+                window + Duration::from_secs(30)
+            ),
+            "the step outlived its daemon: {:?} still in group {pgid}",
+            crate::mergequeue::gate_tick::probe::in_group(pgid)
+        );
+        for pid in &pids {
+            assert!(
+                !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                "pid {pid} survived its daemon"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    // The owner: a gate step that would run for five minutes, on a tick short enough that the test
+    // waits a window and not the real twenty seconds.
+    let dir = PathBuf::from(std::env::var_os(DIR).expect("the fixture's directory"));
+    let wt = dir.join("landing");
+    std::fs::create_dir_all(&wt).expect("the landing tree");
+    let stop = AtomicBool::new(false);
+    let alive = || true;
+    let ctl = GateControl {
+        deadline: Instant::now() + Duration::from_secs(600),
+        budget: Duration::from_secs(600),
+        stop: &stop,
+        alive: &alive,
+    };
+    let pids = dir.join("step.pids");
+    let step = format!(
+        "echo $$ > '{}'; sleep 300 & echo $! >> '{}'; wait",
+        pids.display(),
+        pids.display()
+    );
+    let run = run_with_tick(
+        &wt,
+        &[step],
+        &ctl,
+        Ask::Uncapped,
+        &Tick::new(Duration::from_millis(TICK_MS), 4),
+    );
+    panic!("the owner was not killed, and its step ended: {run:#?}");
+}
+
+/// The tick this test's owner is poked on - long enough that a spawn and a file write fit inside
+/// one, short enough that a window is four tenths of a second.
+const TICK_MS: u64 = 100;

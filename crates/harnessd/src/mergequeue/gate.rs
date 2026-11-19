@@ -14,6 +14,7 @@ use letibot_tools::exec::memory::{Amount, Ask, Meminfo};
 use letibot_tools::exec::{MemoryUse, SiblingScope, join_script};
 use letibot_transcript::text::bytes_head;
 
+use super::gate_tick::{self, Tick};
 use super::git;
 
 /// Thirty minutes. A gate that is still running then is killed and
@@ -914,7 +915,20 @@ pub fn run_with_memory(
     ctl: &GateControl,
     memory: Ask,
 ) -> GateRun {
-    run_steps(worktree, steps, ctl, memory, &|s| s.to_string(), true)
+    run_with_tick(worktree, steps, ctl, memory, &Tick::default())
+}
+
+/// [`run_with_memory`] on a tick of the caller's choosing. The daemon pokes each step every
+/// `tick.every` and a step that is not poked for `tick.miss` of them ends itself, so a test can
+/// prove that with a tenth of a second rather than the real twenty.
+pub fn run_with_tick(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    tick: &Tick,
+) -> GateRun {
+    run_steps(worktree, steps, ctl, memory, &|s| s.to_string(), true, tick)
 }
 
 /// [`run_with_memory`] where `launch` turns a step into the command line the shell runs: the row,
@@ -928,7 +942,15 @@ pub fn run_with_launcher(
     launch: &dyn Fn(&str) -> String,
 ) -> GateRun {
     // The launcher starts a VM, which needs the daemon's HOME; the VM is the step's boundary.
-    run_steps(worktree, steps, ctl, memory, launch, false)
+    run_steps(
+        worktree,
+        steps,
+        ctl,
+        memory,
+        launch,
+        false,
+        &Tick::default(),
+    )
 }
 
 fn run_steps(
@@ -938,6 +960,7 @@ fn run_steps(
     memory: Ask,
     launch: &dyn Fn(&str) -> String,
     isolate: bool,
+    tick: &Tick,
 ) -> GateRun {
     // The cap is resolved once and used twice: the cgroup the step joins is capped with it and the
     // build's parallelism is bounded by it ([`StepEnv`]), so a step is never judged by two numbers.
@@ -960,6 +983,7 @@ fn run_steps(
         ctl,
         place: &place,
         isolate,
+        tick: *tick,
     };
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
@@ -1215,6 +1239,9 @@ struct Bound<'a> {
     place: &'a Placement,
     /// Run each step under [`GATE_ENV_SCRIPT`]. Off only for a launcher that is its own boundary.
     isolate: bool,
+    /// How often each step is poked, and how long it may go unpoked before its own watchdog ends
+    /// it - see [`gate_tick`].
+    tick: Tick,
 }
 
 /// `scripts/gate-env.sh`, the clean step environment `scripts/gate-at.sh` also uses: compiled in,
@@ -1242,6 +1269,7 @@ fn run_step(
         ctl,
         place,
         isolate,
+        tick,
     } = *bound;
     let env = StepEnv::for_run(worktree, scratch, cap);
     let log = match tempfile_in(worktree) {
@@ -1278,12 +1306,18 @@ fn run_step(
     // The host-owned evidence that the join happened (`join_script`'s `$2`): a file the step's
     // own output cannot write.
     let joined = log.with_extension("joined");
+    // Where this daemon's pokes land. Primed before the spawn, so a harnessd that dies between the
+    // spawn and its first poke leaves a step that knows it: its watchdog owes four ticks, not a
+    // file that was never there.
+    let beat = gate_tick::beat_beside(&log);
+    let _ = std::fs::write(&beat, b"0\n");
+    let command = gate_tick::watched(command, &beat, &tick);
     let mut inner: Vec<std::ffi::OsString> = Vec::new();
     if isolate {
         inner.extend(["sh", "-c", GATE_ENV_SCRIPT, "letibot-gate-env"].map(Into::into));
         inner.push(scratch.join(GATE_ENV_DIR).into());
     }
-    inner.extend(["sh", "-c", command].map(Into::into));
+    inner.extend(["sh", "-c", command.as_str()].map(Into::into));
     let mut cmd = Command::new("sh");
     match &scope {
         Some(s) => cmd
@@ -1317,14 +1351,10 @@ fn run_step(
         }
     };
     let pgid = child.id() as i32;
-    let _record = super::gate_orphans::write(
-        &super::gate_orphans::dir(),
-        child.id(),
-        worktree,
-        step,
-        scope.as_ref().map(|s| s.path()),
-    );
     let kill = |child: &mut std::process::Child| kill_group(pgid, child, scope.as_ref());
+    // The first poke lands with the spawn, so the window the watchdog counts starts now and not a
+    // tick from now. A step whose owner is killed here is ended by the watchdog a window later.
+    let _ = gate_tick::poke(&beat);
     let mut last_beat = Instant::now();
     let end = loop {
         match child.try_wait() {
@@ -1355,8 +1385,11 @@ fn run_step(
             kill(&mut child);
             break StepEnd::Stopped(read_excerpt(&log), "the daemon is stopping".into());
         }
-        if last_beat.elapsed() >= Duration::from_secs(5) {
+        if last_beat.elapsed() >= tick.every {
             last_beat = Instant::now();
+            // The poke is what tells the step's watchdog this daemon is here, and the same round
+            // asks the lease: the 100 ms sleep below waits on a child and is nobody's round trip.
+            let _ = gate_tick::poke(&beat);
             if !(ctl.alive)() {
                 kill(&mut child);
                 break StepEnd::Stopped(
@@ -1369,6 +1402,7 @@ fn run_step(
     };
     let _ = std::fs::remove_file(&log);
     let _ = std::fs::remove_file(&joined);
+    let _ = std::fs::remove_file(&beat);
     // Read BEFORE the close, which removes the files the kernel counts in.
     let (memory, leftover) = match scope {
         Some(s) => (

@@ -12,14 +12,13 @@ use super::gate::{
     Done, GateControl, GateRun, GateVerdict, Judged, StepEnd, StepExit, StepMemory,
     apparatus_absent_words, assemble, clause_of, judge, many, now_ms, read_excerpt, tempfile_in,
 };
+use super::gate_tick::{self, Tick};
 use super::git;
 
-/// How long one poll may take - and this is the HEALTH question, not the step's deadline
-pub const POLL_BOUND: Duration = Duration::from_secs(30);
-
-/// How often a running step is asked how it is - one ssh round trip, a few milliseconds over the
-/// connection's `ControlMaster`: the same order as the local gate's 100 ms poll.
-pub const POLL_EVERY: Duration = Duration::from_millis(1000);
+/// How long one poll may take - and this is the HEALTH question, not the step's deadline. It is
+/// shorter than the tick's window on purpose: a poll that is still in flight is a daemon that is
+/// here, and one that outlived the window would be read by the step's watchdog as a dead one.
+pub const POLL_BOUND: Duration = Duration::from_secs(10);
 
 /// The priority a gate step runs at: `nice` 10 and a fifth of systemd's default weight. A gate on a
 /// declared host once took a 32-core box to load 140 and every session there failed its cgroup join,
@@ -357,7 +356,23 @@ struct Remote {
     /// gate writes tens of gigabytes, and a machine with 6 GiB left is where a link fails with `Bus
     /// error`.
     free_kb: Option<u64>,
+    /// The tick this gate's steps are poked on - the default here, a short one in a test.
+    tick: Tick,
     seq: AtomicU64,
+}
+
+/// The files one step keeps on the machine that runs it, and the tick its watchdog watches on. One
+/// value, because the launcher writes all of them and every poll reads most of them.
+#[derive(Debug, Clone)]
+pub struct Files {
+    pub launcher: String,
+    /// The launcher's pid, which is its process group wherever the host has `setsid`.
+    pub pid: String,
+    pub out: String,
+    pub exit: String,
+    /// Where the daemon's pokes land, and what the step's watchdog reads them from.
+    pub beat: String,
+    pub tick: Tick,
 }
 
 impl Remote {
@@ -418,6 +433,7 @@ impl Remote {
             run,
             cold,
             free_kb,
+            tick: Tick::default(),
             ssh,
             name: name.to_string(),
             local: worktree.to_path_buf(),
@@ -438,17 +454,16 @@ impl Remote {
 
     // -- the far side's file names, one per step ------------------------------------------------
 
-    fn launcher_path(&self, n: usize) -> String {
-        format!("{}/step-{n}.sh", self.run)
-    }
-    fn out_path(&self, n: usize) -> String {
-        format!("{}/step-{n}.out", self.run)
-    }
-    fn pid_path(&self, n: usize) -> String {
-        format!("{}/step-{n}.pid", self.run)
-    }
-    fn exit_path(&self, n: usize) -> String {
-        format!("{}/step-{n}.exit", self.run)
+    fn files(&self, n: usize) -> Files {
+        let run = self.run.as_str();
+        Files {
+            launcher: format!("{run}/step-{n}.sh"),
+            pid: format!("{run}/step-{n}.pid"),
+            out: format!("{run}/step-{n}.out"),
+            exit: format!("{run}/step-{n}.exit"),
+            beat: format!("{run}/step-{n}.beat"),
+            tick: self.tick,
+        }
     }
     /// The marker a poll's answer leads with - unique per run and step, so the step's own output cannot
     /// be mistaken for it and a login shell's chatter is skipped rather than parsed.
@@ -742,7 +757,7 @@ impl Remote {
         let tag = format!("{}-refused", self.tag(n));
         let script = format!(
             "echo '{tag}'; cat '{}.refused' 2>/dev/null; true",
-            self.out_path(n)
+            self.files(n).out
         );
         match self.call("reading the step's refusals", &script, SETUP_BOUND) {
             Ok(said) => said
@@ -761,16 +776,9 @@ impl Remote {
         log: &Path,
         ctl: &GateControl,
     ) -> StepEnd {
-        let launcher = launcher_script(
-            step,
-            &self.tree,
-            &self.target,
-            &self.pid_path(n),
-            &self.out_path(n),
-            &self.exit_path(n),
-            own_scope,
-        );
-        let script = self.launcher_path(n);
+        let files = self.files(n);
+        let launcher = launcher_script(step, &self.tree, &self.target, &files, own_scope);
+        let script = files.launcher.clone();
         if let Err(why) = self.feed(
             &format!("writing `{step}`'s launcher on {}", self.name),
             &format!("cat > '{script}'"),
@@ -781,13 +789,15 @@ impl Remote {
         }
         if let Err(why) = self.call(
             &format!("starting `{step}` on {}", self.name),
-            &launch_script(&script, &self.exit_path(n)),
+            &launch_script(&script, &files.exit),
             SETUP_BOUND,
         ) {
             return StepEnd::Infra(why);
         }
         let mut offset: u64 = 0;
-        let mut last_beat = Instant::now();
+        // When this daemon last asked the repository's lease holder whether it is still one. The
+        // step's own liveness is not this clock: that is the poke every tick, inside the poll.
+        let mut last_lease = Instant::now();
         // A poll that was not answered is a question to ask again, not a step to kill: what a miss says
         // is *the machine was busy*, and what ends a step is its own deadline.
         let mut missed: u32 = 0;
@@ -807,8 +817,8 @@ impl Remote {
                 self.kill(n);
                 return StepEnd::Stopped(read_excerpt(log), "the daemon is stopping".into());
             }
-            if last_beat.elapsed() >= Duration::from_secs(5) {
-                last_beat = Instant::now();
+            if last_lease.elapsed() >= Duration::from_secs(5) {
+                last_lease = Instant::now();
                 if !(ctl.alive)() {
                     self.kill(n);
                     return StepEnd::Stopped(
@@ -856,22 +866,18 @@ impl Remote {
                     last_miss = miss.why;
                 }
             }
-            std::thread::sleep(POLL_EVERY);
+            std::thread::sleep(files.tick.every);
         }
     }
 
     /// How the step is, and whatever it has written since `offset` - one round trip, so a
-    /// step's progress and its state cannot disagree about which moment they describe. `within`
-    /// is [`POLL_BOUND`] or what is left of the gate, whichever is less
+    /// step's progress and its state cannot disagree about which moment they describe. The round
+    /// trip IS the poke: the far side bumps the beat before it answers, so a daemon that stops
+    /// asking is a daemon the step's own watchdog ends. `within` is [`POLL_BOUND`] or what is left
+    /// of the gate, whichever is less
     fn poll(&self, n: usize, offset: u64, within: Duration) -> Result<Poll, Missed> {
         let tag = self.tag(n);
-        let script = poll_script(
-            &tag,
-            &self.pid_path(n),
-            &self.exit_path(n),
-            &self.out_path(n),
-            offset,
-        );
+        let script = poll_script(&tag, &self.files(n), offset);
         let argv = self.ssh.argv(&self.ssh.remote_command(&script));
         let what = format!("asking how `{}` is doing", self.name);
         let answer = run_poll(&what, &self.name, self.ssh.program(), &argv, within)?;
@@ -906,7 +912,7 @@ impl Remote {
     /// discipline, one machine over. `kill -TERM -<pid>` is the group because the launcher is
     /// `setsid`'d
     fn kill(&self, n: usize) {
-        let script = kill_script(&self.pid_path(n));
+        let script = kill_script(&self.files(n).pid);
         let _ = self.call(
             &format!("ending the gate's step on {}", self.name),
             &script,
@@ -1047,16 +1053,25 @@ fn ended(code: i32, tail: String) -> StepEnd {
 
 /// The launcher - one file per step, sent over the connection's stdin and never spliced into an
 /// argv, so the step's text needs no quoting. `( … )` is a subshell, not `{ … }`. `ulimit -c 0`
-/// covers the step and everything it forks: a step the gate kills for size dumps no core.
+/// covers the step and everything it forks: a step the gate kills for size dumps no core. The last
+/// thing it starts is the watchdog ([`gate_tick::watchdog_script`]), so a step whose daemon stops
+/// poking it - a crash, a `SIGKILL`, a box that went to sleep - ends itself.
 pub fn launcher_script(
     step: &str,
     tree: &str,
     target: &str,
-    pid: &str,
-    out: &str,
-    exit: &str,
+    files: &Files,
     own_scope: bool,
 ) -> String {
+    let Files {
+        pid,
+        out,
+        exit,
+        beat,
+        tick,
+        ..
+    } = files;
+    let watchdog = gate_tick::watchdog_script(beat, tick);
     // A step that needs a cgroup of its own gets one from systemd, not from this daemon: a
     // transient delegated scope is the one shape that is the step's alone. The weights are the
     // scope's, so a gate shares the box instead of taking it. The subshell stays a subshell and
@@ -1078,6 +1093,8 @@ pub fn launcher_script(
          export CARGO_TARGET_DIR='{target}'\n\
          rm -f '{out}.refused'\n\
          export LETIBOT_APPARATUS_REFUSALS='{out}.refused'\n\
+         printf '0\\n' > '{beat}'\n\
+         {watchdog} &\n\
          ( {run} ) > '{out}' 2>&1\n\
          echo $? > '{exit}'\n"
     )
@@ -1097,14 +1114,25 @@ pub fn launch_script(script: &str, exit: &str) -> String {
 }
 
 /// How the step is, and what it has written since `offset` - the marker first, so a login
-/// shell's own chatter is skipped, and the bytes after it are the step's, untouched.
-pub fn poll_script(tag: &str, pid: &str, exit: &str, out: &str, offset: u64) -> String {
+/// shell's own chatter is skipped, and the bytes after it are the step's, untouched. The poke is
+/// the FIRST thing it does, because the round trip that fetches the output is also the one that
+/// says the daemon is still here.
+pub fn poll_script(tag: &str, files: &Files, offset: u64) -> String {
+    let Files {
+        pid,
+        out,
+        exit,
+        beat,
+        ..
+    } = files;
     format!(
-        "e=; if [ -f '{exit}' ]; then e=$(cat '{exit}' 2>/dev/null); fi; \
+        "{}; \
+         e=; if [ -f '{exit}' ]; then e=$(cat '{exit}' 2>/dev/null); fi; \
          a=no; if [ -f '{pid}' ]; then p=$(cat '{pid}' 2>/dev/null); \
          [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null && a=yes; fi; \
          printf '{tag} %s %s\\n' \"$a\" \"$e\"; \
          tail -c +{} '{out}' 2>/dev/null",
+        gate_tick::poke_script(beat),
         offset + 1
     )
 }

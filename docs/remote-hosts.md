@@ -498,11 +498,13 @@ So what a cold host gate costs is COMPILATION; `COLD` is asked of the host *befo
 touches `target/`, so it says whether THIS gate makes the cache, and the transport is a couple of seconds.
 
 **Two clocks, and they are not the same number.** The step's is `[queue]`'s `gate_deadline`, thirty minutes
-unless set, and it is the only thing that may end a step. One poll's is `POLL_BOUND`, thirty seconds: it asks
+unless set, and it is the only thing that may end a step. One poll's is `POLL_BOUND`, ten seconds: it asks
 *can this machine fork a shell and answer*, and on a box whose own build holds every core the answer can take
 many seconds. So **a poll that is not answered is asked again, not a verdict**: the question is idempotent
 (`tail -c +<offset>`), a miss says *the machine was busy*, and only the step's own deadline - or a poll that
-reaches no machine at all - may end a step.
+reaches no machine at all - may end a step. The bound is inside the tick's window on purpose: a poll still in
+flight is a daemon that is here, and one that outlived 4 ticks of 5 s would be read by the step's watchdog as
+a dead daemon.
 
 **A gate that could not run is not a verdict about the code.** `GateVerdict::Infra` - a host that did not
 answer, a key that is not installed, a tree that would not arrive - writes the target back to **`gating`**
@@ -512,11 +514,16 @@ cannot be made) and it stops both queues. A branch whose own landing gate could 
 same way, so a host that is down costs the queue a minute per attempt rather than a `/queue restart`. The one
 `Infra` that stays `blocked` is a step killed at the gate's memory cap, because that step RAN.
 
-Each step is started **detached, under `setsid`, with a pid file**, and polled once a second: one round trip
-answers both *how is it* and *what has it written since*, so the log arrives at the same local path the local
-gate writes (`$TMPDIR/letibot-gate/…`). At the deadline, on the daemon's stop, or when the lease goes, the far
-side's whole process group gets `SIGTERM`, five seconds, then `SIGKILL`; a far-side `timeout` is deliberately
-NOT used, because its exit status would be one more number to tell apart from the step's own.
+Each step is started **detached, under `setsid`, with a pid file and a beat file**, and polled once every 5 s:
+one round trip answers both *how is it* and *what has it written since*, so the log arrives at the same local
+path the local gate writes (`$TMPDIR/letibot-gate/…`). That round trip is also the POKE: the poll bumps a
+counter in the step's beat file before it answers, and the step's own launcher holds a watchdog that ends the
+step's whole process group (`kill -TERM 0`, five seconds, `kill -KILL 0`) after 4 unpoked ticks - 20 s. However
+this daemon goes - a stop, a crash, `SIGKILL`, a box that slept - the step ends itself, and nothing is left on
+that machine for the next daemon; there is no record and no reaper (`mergequeue/gate_tick.rs`). At the deadline,
+on the daemon's stop, or when the lease goes, the far side's whole process group gets `SIGTERM`, five seconds,
+then `SIGKILL`; a far-side `timeout` is deliberately NOT used, because its exit status would be one more number
+to tell apart from the step's own.
 
 **A shell reports *my child was killed by signal n* as `128 + n`**, and a `137` read as a code would make a
 step killed by `SIGKILL` a RED branch instead of an unjudged one, so `exit_of` decodes 129-192 as signals.
