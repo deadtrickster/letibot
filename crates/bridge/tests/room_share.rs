@@ -1,5 +1,6 @@
-//! The bridge and its `room-wait` waiter share one name on a real coordinator, while a second
-//! independent bridge in the same folder still gets a suffixed one.
+//! The bridge and its `room-wait` waiter are one seat on a real coordinator - two connections of one
+//! name and one id, so a reply is said from the seat that was addressed - while a second SEAT in the
+//! same folder (another Claude Code session) still gets a suffixed one.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use letibot_room::server::Server;
 use letibot_room::{Event, Request, Room, Seat, Speaker, room_name};
 
 #[test]
-fn the_waiter_joins_its_bridge_and_a_second_bridge_is_suffixed() {
+fn the_waiter_joins_its_bridge_and_a_second_seat_is_suffixed() {
     // SAFETY: first thing in the only test of this file, before the handle is read.
     unsafe { std::env::set_var(rooms::NAME_ENV, "cc@letibot") };
     let dir = std::env::temp_dir().join(format!("letibot-room-share-{}", std::process::id()));
@@ -61,9 +62,11 @@ fn the_waiter_joins_its_bridge_and_a_second_bridge_is_suffixed() {
     assert_eq!(code, 0, "{said}");
     assert!(said.contains("disk is free"), "{said}");
 
-    // Two independent bridges still may not share: the second takes a suffixed name.
+    // A second SEAT of the same folder - the other Claude Code session - is a different id, and the
+    // name one seat speaks as is not one it may take: it asks for a suffix instead.
     let other = RoomLink::at(server.path());
-    other.ensure().expect("the second bridge connects");
+    other.as_seat("lab2x1/cc-ffff0000");
+    other.ensure().expect("the second seat connects");
     assert_ne!(rooms::handle(), "cc@letibot");
     assert!(rooms::handle().starts_with("cc@letibot-"));
     assert_eq!(rooms::family().as_deref(), Some("cc@letibot"));

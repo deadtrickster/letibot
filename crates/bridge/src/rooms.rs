@@ -924,6 +924,13 @@ impl RoomLink {
         }
     }
 
+    /// A seat of this connection's own, rather than the process's: a second Claude Code session in
+    /// one folder is a second seat, and a test is the only caller that can mint one without a
+    /// second process.
+    pub fn as_seat(&self, id: impl Into<String>) {
+        self.set_seat(id.into());
+    }
+
     /// The seat this connection is, as its `Hello` says it: the process's, unless a twin had to
     /// take one of its own.
     pub fn seat(&self) -> String {
