@@ -248,6 +248,9 @@ struct Inner {
     /// This box's half of every seat id it hands out, pinned in the data directory by
     /// [`crate::id::seat_host`] - or what a test set. An id is minted nowhere else.
     seat_host: Mutex<String>,
+    /// The seat id behind each name that has connected, by that name: what [`Server::principal_of`]
+    /// answers for a bridge, whose id nothing in the room could derive. Bounded like the cursors.
+    ids_of: Mutex<BTreeMap<String, String>>,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -378,6 +381,7 @@ impl Server {
                 inherited,
                 accept: Mutex::new(None),
                 nicks: Mutex::new(BTreeMap::new()),
+                ids_of: Mutex::new(BTreeMap::new()),
                 // The data directory is the socket's own: `seat_host` pins this box's half of
                 // every id it hands out there, once, and reads it back after a rename.
                 seat_host: Mutex::new(crate::id::seat_host(
@@ -801,7 +805,7 @@ impl Server {
             // The room keeps a cursor and a missed-count per principal, and a connection may name
             // itself anything: a fresh name every time would grow both maps without end. Past the
             // bound the connection is told so, with the number, rather than the maps growing.
-            if let Some(why) = self.principal_refusal(&who.session) {
+            if let Some(why) = self.principal_refusal(&self.principal_of(&who.session)) {
                 return Answer {
                     response: Response::Bye { why },
                     events: Vec::new(),
@@ -910,7 +914,7 @@ impl Server {
                 // The gap this session just came back from, taken as the `Hello` is answered:
                 // the frame that says *you are connected* is the only one that can say *and here
                 // is what happened while you were not*.
-                let was = self.take_missed(&who.session);
+                let was = self.take_missed(&self.principal_of(&who.session));
                 *missed = was.count;
                 *missed_since_ms = was.since_ms;
             }
@@ -1513,7 +1517,14 @@ impl Server {
         // A name is worth keeping for if the room can still deliver to it: somebody who answers now,
         // or a session the room has a cursor for that has simply gone quiet. Without the second
         // half, the message naming a session while it restarts would be the one it never hears.
-        let armed = self.inner.armed.lock().expect("the armed lock").clone();
+        let armed: BTreeSet<String> = self
+            .inner
+            .armed
+            .lock()
+            .expect("the armed lock")
+            .iter()
+            .map(|name| self.principal_of(name))
+            .collect();
         for who in named {
             if who == message.author || !(self.is_known(&who) || armed.contains(&who)) {
                 continue;
@@ -1574,11 +1585,12 @@ impl Server {
     /// room for the rest. The log is the record, so the per-member backlog is dropped here, and a
     /// member seen before is told only what followed its last mark.
     fn deliver_pending(&self, conn: &Conn, session: &str) {
+        let id = self.principal_of(session);
         self.inner
             .pending
             .lock()
             .expect("the pending lock")
-            .remove(session);
+            .remove(&id);
         // The operator reads the whole log with `read`; a digest is for an agent's context.
         if conn.seat == Seat::Operator {
             return;
@@ -1586,7 +1598,7 @@ impl Server {
         let now = now_ms();
         let (seen, head, rows, asks_to_me) = {
             let chat = self.inner.chat.lock().expect("the chat lock");
-            let seen = chat.seen(session);
+            let seen = chat.seen(&id);
             let rows = chat.missed(
                 session,
                 seen,
@@ -1664,8 +1676,8 @@ impl Server {
         // A session acks the digest when its model takes it; until then a reconnect says it again.
         if conn.seat != Seat::Session {
             let mut chat = self.inner.chat.lock().expect("the chat lock");
-            chat.mark_seen(session, head);
-            chat.keep_seen(session);
+            chat.mark_seen(&id, head);
+            chat.keep_seen(&id);
         }
     }
 
@@ -1983,6 +1995,26 @@ impl Server {
             .into_iter()
             .find(|c| c.who.session == name)
             .map(|c| c.seat(&self.seat_host()))
+    }
+
+    /// The key a seat's own durable state is filed under: its seat id, which outlives a rename.
+    /// A session's is derivable from its name; a bridge's is what its `Hello` said, remembered by
+    /// the name it spoke as, because a name on its own says nothing about the seat behind it.
+    pub fn principal_of(&self, name: &str) -> String {
+        if let Some(id) = self
+            .inner
+            .ids_of
+            .lock()
+            .expect("the ids lock")
+            .get(name)
+            .filter(|id| !id.is_empty())
+        {
+            return id.clone();
+        }
+        if name.starts_with("s-") {
+            return crate::SeatId::of_session(&self.seat_host(), name).to_string();
+        }
+        name.to_string()
     }
 
     /// The label the room holds for a seat: the nick it was given, else the name it is drawn by.
@@ -2755,7 +2787,7 @@ impl Server {
                             kind: if key.is_empty() { "host" } else { "project" }.into(),
                             members: self.roster_rows(&id).len() as u64,
                             last_seq: chat.last_in(&id),
-                            unread: chat.unread(name, name, &id, |_| true),
+                            unread: chat.unread(&self.principal_of(name), name, &id, |_| true),
                             archived_ms: chat.archived_ms(&id),
                             project: key,
                             id,
@@ -3081,9 +3113,10 @@ impl Server {
                 after,
             } => {
                 let handles = self.handles();
+                let id = self.principal_of(name);
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let (rows, skipped) = chat.inbox(
-                    name,
+                    &id,
                     name,
                     self.family(name).as_deref(),
                     *attention,
@@ -3093,7 +3126,7 @@ impl Server {
                 Response::Inbox {
                     rows: rows.into_iter().map(|m| self.shown(m, &handles)).collect(),
                     skipped,
-                    cursor: chat.cursor(name),
+                    cursor: chat.cursor(&id),
                     head: chat.head(),
                 }
             }
@@ -3152,14 +3185,15 @@ impl Server {
             Request::ArchiveRoom { room } => self.archive_room(project, seat, room, true, now),
             Request::UnarchiveRoom { room } => self.archive_room(project, seat, room, false, now),
             Request::Ack { seq } => {
+                let id = self.principal_of(name);
                 let mut chat = self.inner.chat.lock().expect("the chat lock");
                 // A session's ack is also its seen mark (see `append_and_push`).
                 if seat == Seat::Session {
-                    chat.mark_seen(name, *seq);
-                    chat.keep_seen(name);
+                    chat.mark_seen(&id, *seq);
+                    chat.keep_seen(&id);
                 }
                 Response::Acked {
-                    cursor: chat.ack(name, *seq),
+                    cursor: chat.ack(&id, *seq),
                 }
             }
             Request::Nick { id, nick } => self.take_nick(project, seat, name, id, nick, now),
@@ -4791,18 +4825,30 @@ impl Server {
                     .lock()
                     .expect("the gone-since lock")
                     .remove(&speaker.session);
-                me.inner
-                    .chat
-                    .lock()
-                    .expect("the chat lock")
-                    .arm(&speaker.session);
+                // A seat's cursor is keyed by its id, and its id is what its `Hello` said: a
+                // reconnect under another label comes back to the cursor it left.
+                if !seat_id.is_empty() {
+                    me.inner
+                        .ids_of
+                        .lock()
+                        .expect("the ids lock")
+                        .insert(speaker.session.clone(), seat_id.clone());
+                }
+                let principal = me.principal_of(&speaker.session);
+                {
+                    let mut chat = me.inner.chat.lock().expect("the chat lock");
+                    chat.arm(&principal);
+                    // A store written before cursors were keyed by the seat holds this bridge's
+                    // handle: the handle is the seat that is connecting now, so its cursor moves.
+                    chat.adopt(&speaker.session, &principal);
+                }
                 // What the bound in `principal_refusal` is counted over: the names this room has a
                 // cursor for. A name is added once and never twice, so the count is principals.
                 me.inner
                     .armed
                     .lock()
                     .expect("the armed lock")
-                    .insert(speaker.session.clone());
+                    .insert(principal.clone());
                 if seat == Seat::External {
                     me.inner
                         .externals
@@ -4868,7 +4914,7 @@ impl Server {
                     .chat
                     .lock()
                     .expect("the chat lock")
-                    .keep_seen(&speaker.session);
+                    .keep_seen(&me.principal_of(&speaker.session));
                 me.inner
                     .conns
                     .lock()
@@ -5047,6 +5093,8 @@ impl Server {
 
     /// One event was addressed to a session that is not here - see [`Server::route`].
     fn count_missed(&self, session: &str, now: u64) {
+        let session = self.principal_of(session);
+        let session = session.as_str();
         let mut missed = self.inner.missed.lock().expect("the missed lock");
         if !missed.contains_key(session) {
             let max = self.inner.principals.load(Ordering::SeqCst);
