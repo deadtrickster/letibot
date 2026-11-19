@@ -879,13 +879,45 @@ fn progressive_promise(sentence: &str) -> bool {
         }
 }
 
+/// Gerunds that announce what the work IS: "Resuming the two entries." No `now` marks these, and
+/// the general shape - a verb in progress - is also how a report opens ("Fixing X was easy."), so
+/// the list is curated and it reads only the sentence that OPENS the answer.
+const ANNOUNCING: &[&str] = &[
+    "resuming ",
+    "continuing ",
+    "carrying on ",
+    "picking up ",
+    "picking back up ",
+    "working on ",
+];
+
+/// Finite forms that make an opening gerund a report about the past rather than an announcement:
+/// "Resuming the entries was the easy part."
+const REPORTING: &[&str] = &[
+    " was ", " were ", " is ", " are ", " took ", " had ", " went ", " seemed ", " became ",
+    " needed ", " turned ",
+];
+
+/// Whether this sentence opens an answer by naming the work it is doing next.
+fn announces(sentence: &str) -> bool {
+    let lower = sentence.trim_start().to_lowercase();
+    if !ANNOUNCING.iter().any(|o| lower.starts_with(o)) {
+        return false;
+    }
+    let head = lower.split(':').next().unwrap_or(&lower);
+    !REPORTING.iter().any(|r| head.contains(r))
+}
+
 /// Future-tense first-person sentences in the assistant's text, a heuristic every caller labels
-/// as one. Fenced code is skipped, openers are first-person only, the result is capped, and text
-/// ending on a question yields nothing, since it waits for the reader.
+/// as one. Fenced code is skipped, openers are first-person only or the answer's own announcement,
+/// the result is capped, and text ending on a question yields nothing, since it waits for the reader.
 pub fn commitments(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut fenced = false;
     let mut last = String::new();
+    // The answer's own opening is where a model names what it does next without a future tense:
+    // "Resuming the two entries. The plpgsql entry I can do properly here".
+    let mut opening = true;
     for line in text.lines() {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
@@ -896,8 +928,10 @@ pub fn commitments(text: &str) -> Vec<String> {
             continue;
         }
         for sentence in split_sentences(line) {
+            let starts_the_answer = opening;
             if sentence.chars().any(char::is_alphanumeric) {
                 last = sentence.to_string();
+                opening = false;
             }
             if sentence.ends_with('?') || out.len() >= MAX_COMMITMENTS {
                 continue;
@@ -907,6 +941,7 @@ pub fn commitments(text: &str) -> Vec<String> {
                 lower = lower.replace(n, "");
             }
             let hit = progressive_promise(sentence)
+                || (starts_the_answer && announces(sentence))
                 || OPENERS.iter().any(|o| {
                     lower.starts_with(o) || lower.contains(&format!(". {o}")) || {
                         // Mid-sentence after a conjunction, which is where the
@@ -1266,8 +1301,34 @@ mod tests {
             "The changes:\n- `a.rs`: the parser\n- `b.rs`: the lexer",
             "Here is the fix:\n```\nlet x = 1;\n```",
             "I'll be honest: it was the lexer all along. Do you want the details?",
+            // The announcing verbs are read only where they OPEN the answer.
+            "The tree is clean. Resuming the two entries.",
+            "Resuming the entries was the easy part: the sql was already there.",
         ] {
             assert_eq!(commitments(line), Vec::<String>::new(), "{line}");
         }
+    }
+
+    /// A turn that opens by naming the work it is doing next and stops there is a commitment with
+    /// no future tense in it: the shape measured on db-fuzz's `s-1792687430252160872`, which ended
+    /// on "Resuming the two entries" with no tool call after it and no reminder.
+    #[test]
+    fn an_announcement_that_opens_the_answer_is_a_commitment() {
+        let said = "Resuming the two entries. The plpgsql entry I can do properly here";
+        assert_eq!(
+            commitments(said),
+            vec!["Resuming the two entries.".to_string()],
+            "the announcement was read as a report, so no reminder could be raised"
+        );
+        // And the turn boundary raises it with the model-free half alone, which is the path a
+        // session with no shadow has: the last round said what it does next and called nothing.
+        let (l, mut sink) = ledger_with_encoder();
+        for e in finished("turn_1", "c1", "read", true) {
+            sink.emit(e);
+        }
+        let end = l.reconcile_round("turn_1", said, true);
+        let steer = end.steering().expect("the announcement owed a reminder");
+        assert!(steer.contains("Resuming the two entries"), "{steer}");
+        assert!(steer.contains("do it, or say why not"), "{steer}");
     }
 }
