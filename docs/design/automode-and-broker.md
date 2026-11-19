@@ -363,13 +363,41 @@ also holds nothing real.
 
 ### What is built
 
-On main: `ShadowOracle` behind `ModelAdjudicator` (`crates/harnessd/src/shadow/oracle.rs:91-185`),
-its scope fixed at stage 1 (`stage_one_scope`, `oracle.rs:27`, returned by `scope()` at
-`oracle.rs:181`), the stage-1 screen (`stage_one`, `oracle.rs:38`), ALLOW must cite operator
-words (`oracle.rs:153`, `authorise.rs:166`), `read_passes` (`crates/harnessd/src/shadow/guard.rs:149`),
-`answer_reads` off by default (`crates/harnessd/src/shadow/config.rs:24`). B3, B2, B4, B6 and
-R337 are on main under rebased commits. B5 (R325) is on `b5-fence`. The `TODO.md` statuses for
-R322, R324 and R337 say "not landed" and are stale.
+`ShadowOracle` behind `ModelAdjudicator` (`crates/harnessd/src/shadow/oracle.rs`), its scope
+from the stages in force (`stage_scope`), the stage screen (`stage_of`: the tier, the reading,
+a secret flow and the reach), ALLOW must cite operator words (`authorise.rs:166`), and the two
+lexical screens `read_passes` / `allow_passes` (`crates/harnessd/src/shadow/guard.rs`). B3, B2,
+B4, B6 and R337 are on main under rebased commits. B5 (R325) is on `b5-fence`. The `TODO.md`
+statuses for R322, R324 and R337 say "not landed" and are stale.
+
+### What the operator turns on
+
+The shadow answers a card only for the stages they promote, one list in providers.toml:
+
+```toml
+[shadow]
+enabled = ["permission"]
+permission = "deepseek/deepseek-flash"   # any provider: this is what answers
+answers = ["reads", "workspace_writes", "exec"]
+
+[gatekeeper]
+endpoint = "127.0.0.1:8081"              # the local guard, when the box has one
+via = "both"                            # the endpoint first, the shadow when it is down
+```
+
+`answers` replaces `answer_reads`, which still works and means `["reads"]`. Each stage is the
+operator's own act, and what stays with them never moves: the always-ask list (destruction
+outside the project, raising privilege, credentials), any secret path, anything past the
+stage's reach, and every `ask`, timeout and void the model gives back. Two disagreements - a
+revoke, or a later No to a shape the shadow granted - stop answering until `/shadow arm`, and
+the trip is kept in the store. Every answer is a row on the session naming the model and the
+stage, and the card's own line reads *allowed by the shadow (deepseek, exec)*.
+
+`[gatekeeper] via` decides which guard answers: `endpoint` is the local guard exactly as
+before, `shadow` is the permission job alone, and `both` - the default when both are configured
+- asks the endpoint first and the shadow when the endpoint does not answer at all (a refused
+connection or a timeout). That is the box whose GPU is down: automode keeps working on a
+provider the operator already pays for instead of asking them every card.
 
 ### Stages, prerequisites, gates
 
