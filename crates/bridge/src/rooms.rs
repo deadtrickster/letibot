@@ -357,10 +357,6 @@ pub fn seat() -> String {
         .clone()
 }
 
-fn set_seat(id: String) {
-    *seat_cell().lock().unwrap_or_else(|e| e.into_inner()) = id;
-}
-
 /// A seat of this process alone, for the second bridge of a folder whose id is already held: it is
 /// not kept, because the folder's id is the first bridge's and a twin must not take it back.
 fn fresh_seat() -> String {
@@ -825,6 +821,10 @@ struct Inner {
     instance: Mutex<Option<u64>>,
     /// A welcome has named this bridge, so its name no longer changes.
     named: Mutex<bool>,
+    /// The seat THIS connection is. It starts as the process's - one `letibot-mcp` is one Claude
+    /// Code session - and turns into a seat of its own only when a second link of the same process
+    /// has to take a suffixed name: a twin must not change the seat the first link speaks as.
+    seat: Mutex<String>,
     /// What the coordinator's welcome said it speaks, so a frame it cannot decode is refused here
     /// rather than written and answered with a close.
     protocol: Mutex<Option<u16>>,
@@ -882,6 +882,7 @@ impl RoomLink {
                 untaken: AtomicBool::new(false),
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
+                seat: Mutex::new(seat()),
                 protocol: Mutex::new(None),
                 twins: std::sync::atomic::AtomicU8::new(0),
                 share: AtomicBool::new(false),
@@ -895,6 +896,21 @@ impl RoomLink {
     /// bridge) instead of being refused as a duplicate.
     pub fn share_name(&self) {
         self.inner.share.store(true, Ordering::SeqCst);
+    }
+
+    /// The seat this connection is, as its `Hello` says it: the process's, unless a twin had to
+    /// take one of its own.
+    pub fn seat(&self) -> String {
+        self.inner
+            .seat
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// A seat of this connection's own, which the link already connected keeps its own of.
+    fn set_seat(&self, id: String) {
+        *self.inner.seat.lock().unwrap_or_else(|e| e.into_inner()) = id;
     }
 
     /// The coordinator start the last welcome named.
@@ -1003,7 +1019,7 @@ impl RoomLink {
             "seat": "external",
             "share": self.inner.share.load(Ordering::SeqCst),
             "family": family(),
-            "id": seat(),
+            "id": self.seat(),
             // The label, when the folder has taken one: display only, and the room refuses a name
             // a live seat already answers to rather than letting two seats be drawn alike.
             "nick": read_nick(&data_dir(), &cwd()).unwrap_or_default(),
@@ -1038,8 +1054,9 @@ impl RoomLink {
             set_family(Some(family_for(&asked)));
             set_handle(suffixed(&asked, fresh_salt(u32::from(tried))));
             // A second bridge of a folder is a second seat: it must not answer to the first one's
-            // id, or a wait keyed on that id would wake whichever of them the room saw last.
-            set_seat(fresh_seat());
+            // id, or a wait keyed on that id would wake whichever of them the room saw last. The
+            // seat is this link's, so the link that already connected keeps the one it speaks as.
+            self.set_seat(fresh_seat());
             return self.open();
         }
         match first["type"].as_str() {
@@ -1132,7 +1149,7 @@ impl RoomLink {
             "type": "nick",
             "nick": nick,
             "previous": reply["previous"],
-            "seat": seat(),
+            "seat": self.seat(),
             "handle": first,
         }))
     }
