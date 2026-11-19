@@ -8,7 +8,10 @@ repository.workspace = true
 build = "build.rs"
 
 [features]
-default = ["local"]
+# **A plain `cargo build` is CLOUD-ONLY.** `local` is llama.cpp's tokenizer, the only dependency here
+# that needs a C++ toolchain, so it is opt-in: a box that serves local models passes `--features
+# local` (install.sh with LETIBOT_LOCAL=1, the release's `-local` asset, this box's gate).
+default = []
 # A local model: llama.cpp's tokenizer, so token ids can be sent to a llama-server.
 local = ["dep:letibot-llama", "letibot-sessionlog/local", "letibot-turn/local"]
 
@@ -19,9 +22,9 @@ letibot-dialect.workspace = true
 letibot-dialect-glm.workspace = true
 letibot-dialect-qwen.workspace = true
 letibot-tokencore.workspace = true
-# The GGUF vocabulary, for a daemon that runs a LOCAL model. Behind `local` (on by
-# default) because it is the one dependency that needs llama.cpp to build; without it the
-# daemon serves cloud providers only, and the build needs nothing but Rust.
+# The GGUF vocabulary, for a daemon that runs a LOCAL model. Behind `local` (opt-in) because it
+# is the one dependency that needs llama.cpp to build; without it the daemon serves cloud
+# providers only, and the build needs nothing but Rust.
 letibot-llama = { workspace = true, optional = true }
 letibot-backend.workspace = true
 letibot-turn.workspace = true
@@ -110,6 +113,7 @@ path = "src/bin/letibot-m1.rs"
 
 [[test]]
 name = "reprefill_feasibility"
+# The gate passes `--features local`, which is the only build that carries it now.
 required-features = ["local"]
 
 [dev-dependencies]

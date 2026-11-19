@@ -20,8 +20,9 @@ name = "letibot-multi"
 path = "src/main.rs"
 
 [features]
-default = ["local"]
-# Forwarded to harnessd: see its `local` feature.
+# Cloud-only unless asked, so a plain `cargo build` of this binary installs on a box with no
+# llama.cpp. Forwarded to harnessd: see its `local` feature for why the default is empty.
+default = []
 local = ["letibot-harnessd/local"]
 
 [dependencies]
