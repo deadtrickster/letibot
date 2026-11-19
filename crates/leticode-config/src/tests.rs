@@ -1982,6 +1982,86 @@ fn a_queue_mute_unions_across_the_levels() {
     assert_eq!(merged.stuck_after_seconds(), Some(60));
 }
 
+/// `[peering]`: the box peers on the cookie alone, the user file says where, and a project may opt
+/// out of being introduced - and neither level may write the other's key.
+#[test]
+fn a_peering_table_is_the_boxs_and_an_introduction_is_the_projects() {
+    let dir = project_dir("peering");
+    let user = write_file(
+        &sub(&dir, "user"),
+        "[peering]\nport = 47100\ngroup = \"239.255.41.7\"\ngroup_port = 47311\n",
+    );
+    let project = write_file(&sub(&dir, "project"), "[peering]\nintroduce = false\n");
+    let merged = LeticodeConfig::load_as(&user, Level::User)
+        .unwrap()
+        .overridden_by(&LeticodeConfig::load(&project).unwrap());
+    assert!(
+        merged.peering.peers(),
+        "a cookie is enough unless the box said no"
+    );
+    assert!(!merged.peering.introduces(), "the project opted out");
+    assert_eq!(merged.peering.port, Some(47100));
+    assert_eq!(merged.peering.group.as_deref(), Some("239.255.41.7"));
+    assert_eq!(merged.peering.group_port, Some(47311));
+
+    // A box the operator turned off stays off whatever a project says, and a project that says
+    // nothing is introduced: the two levels own different keys.
+    let user = write_file(&sub(&dir, "off"), "[peering]\nenabled = false\n");
+    let project = write_file(&sub(&dir, "on"), "[peering]\nintroduce = true\n");
+    let merged = LeticodeConfig::load_as(&user, Level::User)
+        .unwrap()
+        .overridden_by(&LeticodeConfig::load(&project).unwrap());
+    assert!(!merged.peering.peers());
+    let silent = write_file(&sub(&dir, "silent"), "");
+    let merged = LeticodeConfig::load_as(&user, Level::User)
+        .unwrap()
+        .overridden_by(&LeticodeConfig::load(&silent).unwrap());
+    assert!(merged.peering.introduces(), "an absent key is in");
+}
+
+#[test]
+fn a_peering_key_in_the_wrong_file_is_refused_by_name() {
+    let dir = project_dir("peering_wrong");
+    for (tag, text, user, want) in [
+        (
+            "port_in_a_project",
+            "[peering]\nport = 47100\n",
+            false,
+            "is the box's, not this project's",
+        ),
+        (
+            "introduce_in_the_user_file",
+            "[peering]\nintroduce = false\n",
+            true,
+            "is a project's key",
+        ),
+        (
+            "group_not_an_address",
+            "[peering]\ngroup = \"the lan\"\n",
+            true,
+            "IPv4 multicast address",
+        ),
+        (
+            "unknown_key",
+            "[peering]\ncookie = \"hunter2\"\n",
+            true,
+            "`cookie` is not a key",
+        ),
+        (
+            "port_not_a_number",
+            "[peering]\ngroup_port = \"soon\"\n",
+            true,
+            "whole number between 1 and 65535",
+        ),
+    ] {
+        let path = write_file(&sub(&dir, tag), text);
+        let level = if user { Level::User } else { Level::Project };
+        let err = LeticodeConfig::load_as(&path, level).expect_err(tag);
+        assert!(err.contains(want), "{tag}: {err}");
+        assert!(err.contains("leticode.toml:2:"), "{tag}: {err}");
+    }
+}
+
 /// A floor above the ceiling is a ladder with no room in it, refused by name.
 #[test]
 fn a_nag_floor_above_the_repeat_cap_is_refused() {

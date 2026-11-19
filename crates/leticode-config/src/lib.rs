@@ -483,6 +483,9 @@ pub struct LeticodeConfig {
     pub queue: QueueKeys,
     /// The `[room]` table: the model the room's tie-breaker arbitrates on.
     pub room: RoomKeys,
+    /// The `[peering]` table: whether this box peers with the other boxes on its LAN, and whether
+    /// this project is introduced to the same repository elsewhere. See [`PeeringKeys`].
+    pub peering: PeeringKeys,
     /// The `[ui]` table: head layout switches. See [`UiKeys`].
     pub ui: UiKeys,
     /// The `[sessions]` table. See [`SessionKeys`].
@@ -2447,6 +2450,40 @@ pub struct SessionKeys {
     pub auto_reseat: Option<bool>,
 }
 
+/// `[peering]` in a `leticode.toml`: whether this box's room coordinator links to the other boxes
+/// on its LAN, and what a project of this box does about being introduced to the same repository
+/// elsewhere.
+///
+/// The two levels own different keys on purpose. Whether a box peers, and on what port, is the
+/// OPERATOR's and lives in the user file: a cloned repository must not be able to open a port on
+/// the box that reads it. Whether a repository is introduced is the PROJECT's, because only the
+/// project knows what its seats are working on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeeringKeys {
+    /// `false` keeps a box that has a cookie file from peering at all. `None` is on.
+    pub enabled: Option<bool>,
+    /// The TCP port links arrive at; `None` lets the kernel pick one.
+    pub port: Option<u16>,
+    /// The multicast group the beacons go to.
+    pub group: Option<String>,
+    /// The UDP port the beacons go to, which every box on one LAN shares.
+    pub group_port: Option<u16>,
+    /// `false` opts THIS project out of introductions, in both directions. `None` is in.
+    pub introduce: Option<bool>,
+}
+
+impl PeeringKeys {
+    /// Is a cookie enough to peer? The user file's answer, and on unless it said `false`.
+    pub fn peers(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    /// Is this project introduced to its repository elsewhere? On unless it said `false`.
+    pub fn introduces(&self) -> bool {
+        self.introduce.unwrap_or(true)
+    }
+}
+
 /// What a spawn over the running-children cap does: wait for a slot, or fail with a sentence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhenFull {
@@ -2565,6 +2602,81 @@ fn session_keys(
                 })?);
             }
             other => return Err(format!("{from}: [sessions] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
+fn peering_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<PeeringKeys, String> {
+    let keys = if user {
+        "the keys are `enabled` (true or false), `port` (the TCP port links arrive at), `group` \
+         (an IPv4 multicast address) and `group_port` (the UDP port the beacons go to)"
+    } else {
+        "the key is `introduce` (true or false): whether this project is introduced to the same \
+         repository on another box"
+    };
+    let table = table_at(value, path, text, "peering", keys)?;
+    let mut out = PeeringKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        let bool_at = |v: &toml::Value, what: &str| -> Result<bool, String> {
+            v.as_bool().ok_or_else(|| {
+                format!(
+                    "{from}: [peering] {what} is true or false, not {}",
+                    kind_of(v)
+                )
+            })
+        };
+        let port_at = |v: &toml::Value, what: &str| -> Result<u16, String> {
+            let n = v.as_integer().ok_or_else(|| {
+                format!(
+                    "{from}: [peering] {what} is a whole number between 1 and 65535, not {}",
+                    kind_of(v)
+                )
+            })?;
+            u16::try_from(n).ok().filter(|p| *p > 0).ok_or_else(|| {
+                format!("{from}: [peering] {what} is a whole number between 1 and 65535, not {n}")
+            })
+        };
+        match (key.as_str(), user) {
+            ("enabled", true) => out.enabled = Some(bool_at(v, "enabled")?),
+            ("port", true) => out.port = Some(port_at(v, "port")?),
+            ("group_port", true) => out.group_port = Some(port_at(v, "group_port")?),
+            ("group", true) => {
+                let text = v.as_str().map(str::trim).unwrap_or("");
+                if text.parse::<std::net::Ipv4Addr>().is_err() {
+                    return Err(format!(
+                        "{from}: [peering] group is an IPv4 multicast address as a string \
+                         (\"239.255.41.7\"), not {}",
+                        kind_of(v)
+                    ));
+                }
+                out.group = Some(text.to_string());
+            }
+            ("introduce", false) => out.introduce = Some(bool_at(v, "introduce")?),
+            // The levels own different keys, and a key in the wrong file is refused by name
+            // rather than read: a project file that could open a port is a repository deciding
+            // what this box does on its LAN.
+            ("introduce", true) => {
+                return Err(format!(
+                    "{from}: [peering] introduce is a project's key, not the user file's - it opts \
+                     one repository out, and this file names no repository. Write it in the \
+                     project's own leticode.toml"
+                ));
+            }
+            (other @ ("enabled" | "port" | "group" | "group_port"), false) => {
+                return Err(format!(
+                    "{from}: [peering] `{other}` is the box's, not this project's: whether this box \
+                     peers and on what port is the user file's to say. The project's key is \
+                     `introduce`"
+                ));
+            }
+            (other, _) => return Err(format!("{from}: [peering] `{other}` is not a key; {keys}")),
         }
     }
     Ok(out)
@@ -3024,6 +3136,10 @@ impl LeticodeConfig {
                 Some(v) => room_keys(v, path, text, level == Level::User)?,
                 None => RoomKeys::default(),
             },
+            peering: match &file.peering {
+                Some(v) => peering_keys(v, path, text, level == Level::User)?,
+                None => PeeringKeys::default(),
+            },
             ui: match &file.ui {
                 Some(v) => ui_keys(v, path, text, level == Level::User)?,
                 None => UiKeys::default(),
@@ -3315,6 +3431,15 @@ impl LeticodeConfig {
                     .room
                     .held_quiet_seconds
                     .or(self.room.held_quiet_seconds),
+            },
+            // The box's settings are the user file's and the repository's is the project's, so
+            // each level keeps what it alone may write.
+            peering: PeeringKeys {
+                enabled: self.peering.enabled,
+                port: self.peering.port,
+                group: self.peering.group.clone(),
+                group_port: self.peering.group_port,
+                introduce: other.peering.introduce,
             },
             ui: UiKeys {
                 rooms_sidebar: other.ui.rooms_sidebar.or(self.ui.rooms_sidebar),
@@ -3618,6 +3743,9 @@ struct LeticodeConfigFile {
     /// The `[room]` table, see [`RoomKeys`].
     #[serde(default)]
     room: Option<toml::Value>,
+    /// The `[peering]` table, see [`PeeringKeys`].
+    #[serde(default)]
+    peering: Option<toml::Value>,
     /// The `[ui]` table, see [`UiKeys`].
     #[serde(default)]
     ui: Option<toml::Value>,

@@ -16,7 +16,13 @@ fn load_text(text: &str) -> Result<LeticodeConfig, String> {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("leticode.toml");
     std::fs::write(&path, text).unwrap();
-    let out = LeticodeConfig::load_as(&path, Level::User);
+    // A table may own a key at one level only (`[peering] introduce` is a project's), and the
+    // example document is one table's keys - so a refusal at the user level is tried at the
+    // project's before it is a failure, and the first refusal is what is reported.
+    let out = match LeticodeConfig::load_as(&path, Level::User) {
+        Ok(config) => Ok(config),
+        Err(why) => LeticodeConfig::load_as(&path, Level::Project).map_err(|_| why),
+    };
     let _ = std::fs::remove_dir_all(&dir);
     out
 }

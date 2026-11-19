@@ -289,6 +289,18 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "peering",
+            note: "Two boxes' room coordinators link over one LAN on a shared cookie file (`~/.config/letibot/cookie`, mode 0600). No cookie file means no peering at all. The box's keys are the user file's; `introduce` is the project's.",
+            needs: "",
+            keys: &[
+                k("enabled", "bool", "true", U, "false keeps a box that has a cookie from peering at all", "false"),
+                k("port", "int 1..65535", "the kernel's choice", U, "TCP port links between coordinators arrive at", "47100"),
+                k("group", "IPv4 address", "239.255.41.7", U, "multicast group the beacons go to", "\"239.255.41.7\""),
+                k("group_port", "int 1..65535", "47311", U, "UDP port the beacons go to, shared by every box on the LAN", "47311"),
+                k("introduce", "bool", "true", P, "false keeps this project's seats from being introduced to the same repository on another box", "false"),
+            ],
+        },
+        Table {
             path: "queue",
             note: "The merge queue reads the project file only, except the three census keys.",
             needs: "",

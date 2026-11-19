@@ -243,6 +243,18 @@ The idle plan-check clock.
 | `tie_breaker` | string | deepseek/deepseek-flash | both, project wins | model that arbitrates the room's items |
 | `held_quiet_seconds` | int >= 1 | 600 | both, project wins | how long held room lines wait for their digest turn |
 
+## `[peering]`
+
+Two boxes' room coordinators link over one LAN on a shared cookie file (`~/.config/letibot/cookie`, mode 0600). No cookie file means no peering at all. The box's keys are the user file's; `introduce` is the project's.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `enabled` | bool | true | user only | false keeps a box that has a cookie from peering at all |
+| `port` | int 1..65535 | the kernel's choice | user only | TCP port links between coordinators arrive at |
+| `group` | IPv4 address | 239.255.41.7 | user only | multicast group the beacons go to |
+| `group_port` | int 1..65535 | 47311 | user only | UDP port the beacons go to, shared by every box on the LAN |
+| `introduce` | bool | true | project only | false keeps this project's seats from being introduced to the same repository on another box |
+
 ## `[queue]`
 
 The merge queue reads the project file only, except the three census keys.
