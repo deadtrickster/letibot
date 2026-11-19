@@ -100,8 +100,9 @@ fn top(session: &str, handle: &str) -> letibot_room::Member {
     }
 }
 
-fn roster(server: &Server, who: &Seated, room: &str) -> Vec<String> {
-    let _ = who;
+/// Every seat in a room, drawn as a reader sees it: `nick [seat id]`. The room's own answer, so a
+/// test asserts what a head would print rather than a second rendering of the same rows.
+fn roster(server: &Server, room: &str) -> Vec<String> {
     server
         .roster_rows(room)
         .into_iter()
@@ -136,9 +137,9 @@ fn a_seat_keeps_its_id_and_takes_its_label() {
     );
     // Drawn by the name it speaks as, until it takes a label.
     assert!(
-        roster(&server, &bridge, HOST_ROOM).contains(&"cc@app [lab2x1/cc-2e4a9c1b]".to_string()),
+        roster(&server, HOST_ROOM).contains(&"cc@app [lab2x1/cc-2e4a9c1b]".to_string()),
         "{:?}",
-        roster(&server, &bridge, HOST_ROOM)
+        roster(&server, HOST_ROOM)
     );
     match bridge.nick("db-fuzz-fable") {
         Response::Nicked { id, nick, previous } => {
@@ -149,10 +150,9 @@ fn a_seat_keeps_its_id_and_takes_its_label() {
         other => panic!("a free nick is granted: {other:?}"),
     }
     assert!(
-        roster(&server, &bridge, HOST_ROOM)
-            .contains(&"db-fuzz-fable [lab2x1/cc-2e4a9c1b]".to_string()),
+        roster(&server, HOST_ROOM).contains(&"db-fuzz-fable [lab2x1/cc-2e4a9c1b]".to_string()),
         "{:?}",
-        roster(&server, &bridge, HOST_ROOM)
+        roster(&server, HOST_ROOM)
     );
     // Said once in the room it is in - a reader that saw the old label has no other way to learn.
     let rows = bridge.call(Request::Read {
@@ -272,7 +272,7 @@ fn a_hello_does_not_take_a_label_another_live_seat_answers_to() {
         Seat::External,
         "",
     );
-    let rows = roster(&server, &second, HOST_ROOM);
+    let rows = roster(&server, HOST_ROOM);
     assert!(
         rows.contains(&"cc@other [lab2x1/cc-7777]".to_string()),
         "drawn by the name it speaks as: {rows:?}"
@@ -326,7 +326,7 @@ fn a_sessions_own_name_is_held_as_well() {
         other => panic!("{other:?}"),
     }
     // And the roster names the session's seat by the pinned host, not by `uname`.
-    let rows = roster(&server, &bridge, &project_room(A));
+    let rows = roster(&server, &project_room(A));
     assert!(
         rows.iter().any(|r| r == "db-fuzz-fable [lab2x1/s-a]"),
         "{rows:?}"
