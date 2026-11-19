@@ -6564,7 +6564,9 @@ mod tests {
             tag: "ram".into(),
             body: "8 GB".into(),
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // The bell arrives on the poster's connection thread, so wait for it rather than guess: a
+        // loaded box must not trip this, and a room that never routed still ends here.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while std::time::Instant::now() < deadline && heard.lock().unwrap().is_empty() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

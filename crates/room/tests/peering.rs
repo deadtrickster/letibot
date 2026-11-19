@@ -19,6 +19,10 @@ use letibot_room::peer::{
 use letibot_room::server::Server;
 use letibot_room::{Event, Message, Refused, Request, Response, Room, Seat, Speaker};
 
+mod support;
+
+use support::{PATIENCE, TICK, wait_until};
+
 const COOKIE: &str = "a word only this LAN knows";
 const A: &str = "aaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbb";
@@ -50,9 +54,8 @@ impl Drop for Box {
     fn drop(&mut self) {
         self.server.stop();
         self.peer.stop();
-        // The peer's threads notice a stop flag; the socket file and the directory go with the
-        // test rather than with a later one.
-        std::thread::sleep(Duration::from_millis(20));
+        // The peer's threads notice a stop flag; unlinking the directory under them is safe, and a
+        // test that wants the socket gone waits for it rather than sleeping here.
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -100,19 +103,17 @@ impl Box {
     }
 
     fn wait_link(&self, host: &str) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if self.peer.alive(host) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        let deadline = Instant::now() + PATIENCE;
+        while !self.peer.alive(host) {
+            assert!(
+                Instant::now() < deadline,
+                "{} never linked to {host}: refusals {:?}, away {:?}",
+                self.peer.host(),
+                self.peer.refusals(),
+                self.peer.away()
+            );
+            std::thread::sleep(TICK);
         }
-        panic!(
-            "{} never linked to {host}: refusals {:?}, away {:?}",
-            self.peer.host(),
-            self.peer.refusals(),
-            self.peer.away()
-        );
     }
 }
 
@@ -290,8 +291,11 @@ fn a_box_that_does_not_know_the_cookie_is_refused_by_its_name() {
     )
     .expect("a peer");
     peer_a.connect_at(peer_b.addr());
-    // Long enough for a handshake that would succeed at once, twice over.
-    std::thread::sleep(Duration::from_millis(400));
+    // A handshake that would succeed at once is answered by the refusal: waiting for the refusal
+    // is the later fact, and the two links are what must NOT exist.
+    wait_until("the wrong cookie's refusal to be recorded", || {
+        !peer_a.refusals().is_empty()
+    });
     assert!(!peer_a.alive("lab2"), "a wrong cookie linked anyway");
     assert!(!peer_b.alive("lab1"), "the answerer went up anyway");
     // The refusal names the box that claimed to be a peer, and says nothing of the cookie.
@@ -352,10 +356,7 @@ fn a_link_that_misses_its_ticks_marks_that_box_away_and_hearing_it_again_brings_
     // The far box goes: its links close, and the ticks it owed nobody answers.
     b.peer.stop();
     drop(b);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && a.peer.alive("lab2") {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("a silent box's link to end", || !a.peer.alive("lab2"));
     assert!(!a.peer.alive("lab2"), "a silent box stayed linked");
     assert_eq!(a.peer.away(), vec!["lab2".to_string()]);
     assert!(
@@ -435,7 +436,11 @@ fn seats_on_one_repository_are_introduced_once_and_shown_in_the_roster() {
         "main",
         "the queue's regate",
     ));
-    std::thread::sleep(Duration::from_millis(400));
+    // The later fact is the profile itself arriving; an introduction said about it would be pushed
+    // before that, so what the seat was told after it is the whole of the check.
+    wait_until("the new task line to reach this box's mesh", || {
+        a.peer.seat("lab2/s-b1").map(|s| s.task).as_deref() == Some("the queue's regate")
+    });
     let again = mine.pushed(400);
     assert!(
         !again.iter().any(|m| m.text.contains(INTRO_B)),
@@ -541,22 +546,15 @@ fn a_box_that_comes_back_with_an_unchanged_seat_list_has_its_seats_marked_here_a
     first.say(&PeerFrame::Profiles {
         seats: vec![theirs.clone()],
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline && !a.peer.alive("lab2") {
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(TICK);
     }
     assert!(a.peer.alive("lab2"), "the fake box never linked");
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline && !a.peer.holds("lab2/s-b1") {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(a.peer.holds("lab2/s-b1"), "the seat list never arrived");
+    wait_until("the seat list to arrive", || a.peer.holds("lab2/s-b1"));
     // Silent from here: four tick intervals of nothing and the link is away, which is the only
     // thing that can notice a box that never said goodbye.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && a.peer.alive("lab2") {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("a silent link to end", || !a.peer.alive("lab2"));
     assert!(!a.peer.alive("lab2"), "a silent link stayed up");
     assert!(
         a.peer.why("lab2").contains("missed"),
@@ -574,10 +572,7 @@ fn a_box_that_comes_back_with_an_unchanged_seat_list_has_its_seats_marked_here_a
     // The same box comes back on a new connection with the SAME list. The seats are marked here
     // again - that is what a roster needs, and it is said once, not once per reconnect.
     let _second = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && !a.peer.alive("lab2") {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the box that came back to link", || a.peer.alive("lab2"));
     assert!(a.peer.alive("lab2"), "the box that came back is not linked");
     // The list it sent the first time is what a reconnect re-announces: no second Profiles frame
     // is needed for this, and none was sent.
@@ -600,19 +595,13 @@ fn a_goodbye_is_worded_as_the_far_boxs_reason() {
     use letibot_room::peer::{PeerFrame, STOPPING};
     let a = Box::open("bye", "lab1", A);
     let mut far = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && !a.peer.alive("lab2") {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the fake box to link", || a.peer.alive("lab2"));
     assert!(a.peer.alive("lab2"));
     // Exactly the words this build's own `stop` sends: the sender's box, not the reader's.
     far.say(&PeerFrame::Bye {
         why: STOPPING.to_string(),
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && a.peer.alive("lab2") {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the goodbye to end the link", || !a.peer.alive("lab2"));
     assert_eq!(
         a.peer.why("lab2"),
         "lab2 said goodbye: its coordinator is stopping",
