@@ -11,6 +11,7 @@ pub mod id;
 pub mod item;
 pub mod lease;
 pub mod own;
+pub mod peer;
 pub mod restart;
 pub mod room;
 pub mod scope;
