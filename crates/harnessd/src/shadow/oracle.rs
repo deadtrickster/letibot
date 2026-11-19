@@ -29,9 +29,9 @@ use super::verdict::{Decision, Shown, Verdict};
 /// The line an oracle brief opens with, so the permission prompt knows which question it is.
 pub const QUESTION: &str = "question: did the operator ask for this?";
 
-/// The scope the stages in force earn. `reads` reaches outside the project at most; writes and
-/// exec reach the workspace and the roots the operator granted writable, which [`stage_of`] leaves
-/// to the class because a scope carries one reach for every intent.
+/// The scope the stages in force earn. `reads` reaches outside the project at most; exec reaches
+/// the host when the call only looks at it (see [`stage_of`]) and the workspace plus the operator's
+/// writable grants when it writes, which one scope cannot say per call.
 pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
     let mut intents: BTreeSet<Intent> = BTreeSet::new();
     let mut reach = EffectScope::HostProject;
@@ -52,6 +52,9 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
                     Intent::ExecuteCode,
                     Intent::Destroy,
                 ]);
+                // A diagnostic that only reads the host is the exec stage's cheapest case, so the
+                // scope has to reach that far for `stage_of`'s per-call answer to be reachable.
+                reach = reach.max(EffectScope::HostOther);
             }
         }
     }
@@ -60,8 +63,9 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
         reach,
         format!(
             "R316 stages {}: reads past the shadow's read denylist, writes and exec inside the \
-             workspace and the operator's writable grants, promoted by `[shadow] answers` and \
-             measured by `letibot shadow replay --job permission`",
+             workspace and the operator's writable grants, and an exec that only looks at the host \
+             as far as `host_other`, promoted by `[shadow] answers` and measured by `letibot shadow \
+             replay --job permission`",
             stages
                 .iter()
                 .map(|s| s.as_str())
@@ -113,9 +117,17 @@ pub fn stage_of(
         return Err("layer A found no intent, so there is nothing to answer".into());
     }
     let stage = stage_for(&reading.intents)?;
-    // Reach is per call because the scope carries one reach for every intent it holds.
+    // Reach is per call because a scope carries one reach for every intent it holds. Only the
+    // intents decide it: `Region::Device` is a place inside the host, so `/sys`, `ip neigh` and
+    // `networkctl status` land at `host_other`, while a class reaches `external` only through the
+    // network intent, and such a call is refused below.
+    let looks_only = !reading.intents.contains(&Intent::WriteFile)
+        && !reading.intents.contains(&Intent::Destroy);
     let allowed = match stage {
         Stage::Reads => EffectScope::HostOther,
+        // Writing or destroying at exec keeps the workspace and the operator's grants: the host is
+        // not a place this session writes to, and what may be written is the class's own answer.
+        Stage::Exec if looks_only => EffectScope::HostOther,
         _ => EffectScope::HostProject,
     };
     if req.class.scope > allowed {
@@ -178,6 +190,10 @@ fn stage_for(intents: &BTreeSet<Intent>) -> Result<Stage, String> {
         Intent::WriteFile,
         Intent::ExecuteCode,
         Intent::Destroy,
+        // A program this build never heard of - `ip`, `networkctl`, `nmcli` - is exec, and the
+        // model is what judges it; refusing it here made the shadow refuse the read-only
+        // diagnostics it exists for. `OracleScope::covers` skips it too, for the same reason.
+        Intent::Unknown,
     ];
     if within(&exec) {
         return Ok(Stage::Exec);

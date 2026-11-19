@@ -590,3 +590,46 @@ fn the_always_ask_list_wins_over_a_grant() {
     assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
     assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
 }
+
+/// The card's own command: three programs this build never heard of, one `/sys` counter and a
+/// `head`. Unknown is the exec stage's, so the model judges it instead of the person being asked.
+const DIAGNOSTIC: &str = "cat /sys/class/net/eno1np0/carrier_changes; echo ---; ip neigh 2>&1; \
+                          echo ---; (networkctl status eno1np0 2>&1 | head -20) ; echo ---; \
+                          nmcli -t dev status 2>&1 | head";
+
+#[test]
+fn a_read_only_diagnostic_of_the_host_is_the_shadows() {
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    assert!(
+        matches!(
+            g.admit(&call(&serde_json::json!({ "command": DIAGNOSTIC }))),
+            GateDecision::Admit
+        ),
+        "the shadow's cited allow did not admit the diagnostic"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the shadow was consulted");
+    assert_eq!(*person.0.lock().unwrap(), 0, "and the person was not");
+}
+
+/// `Unknown` is not the model's at any cost: a call carrying it that writes outside the workspace
+/// is the person's, and the lexical screen refuses it before the model is asked.
+#[test]
+fn an_unknown_program_with_a_write_outside_the_workspace_asks() {
+    let write =
+        serde_json::json!({ "command": "nmcli -t dev status; /usr/bin/touch /etc/hostname" });
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    assert!(!matches!(g.admit(&call(&write)), GateDecision::Admit));
+    assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
+}
+
+/// And with `exec` not promoted, an unknown program is the person's too: how far the shadow reaches
+/// is what the operator promoted, not what the model is willing to judge.
+#[test]
+fn an_unknown_program_without_the_exec_stage_asks() {
+    let unknown = serde_json::json!({ "command": "nmcli -t dev status" });
+    let (mut g, person, _, asked) = automode_gate(&[Stage::Reads, Stage::WorkspaceWrites], ALLOW);
+    assert!(!matches!(g.admit(&call(&unknown)), GateDecision::Admit));
+    assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
+}
