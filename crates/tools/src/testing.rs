@@ -1262,6 +1262,51 @@ pub fn repo_config(repo: &std::path::Path) {
     }
 }
 
+/// How long a test waits for a thing to happen before it calls it never-happened. Generous on
+/// purpose: nothing here asserts how FAST anything is, and a loaded box is slow.
+pub const PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The gap between two looks inside a busy wait: short enough that an event which has already
+/// been handled is not blurred by the wait, long enough that the wait costs the box nothing.
+const TICK: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Poll `cond` until it holds, and panic naming `what` if it has not within [`PATIENCE`]. A busy
+/// wait, not a sleep: it ends when the thing happened instead of after a guess about how long
+/// that takes.
+pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    wait_for(what, || cond().then_some(()));
+}
+
+/// The same for a wait that answers something: `Some` ends it and is returned, `None` keeps
+/// looking. A pid stamp, a row or a socket is handed back rather than looked at twice.
+pub fn wait_for<T>(what: &str, mut look: impl FnMut() -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        if let Some(got) = look() {
+            return got;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waited {PATIENCE:?} for {what}, which never happened"
+        );
+        std::thread::sleep(TICK);
+    }
+}
+
+/// Poll `cond` for a bound of its own and answer whether it happened, for the waits that are not
+/// [`PATIENCE`]-long and for the ones a caller reports as a count rather than a panic.
+pub fn wait_within(limit: std::time::Duration, cond: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    let mut cond = cond;
+    while std::time::Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(TICK);
+    }
+    cond()
+}
+
 /// The red this helper exists for: a box whose global config signs every commit with a key it has
 /// not got. A fixture repository must still commit, and the queue's landing rebases into one with
 /// the daemon's environment, so what the repository says in its own config is the whole remedy.
