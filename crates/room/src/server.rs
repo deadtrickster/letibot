@@ -2755,7 +2755,7 @@ impl Server {
                             kind: if key.is_empty() { "host" } else { "project" }.into(),
                             members: self.roster_rows(&id).len() as u64,
                             last_seq: chat.last_in(&id),
-                            unread: chat.unread(name, &id, |_| true),
+                            unread: chat.unread(name, name, &id, |_| true),
                             archived_ms: chat.archived_ms(&id),
                             project: key,
                             id,
@@ -3083,6 +3083,7 @@ impl Server {
                 let handles = self.handles();
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let (rows, skipped) = chat.inbox(
+                    name,
                     name,
                     self.family(name).as_deref(),
                     *attention,
