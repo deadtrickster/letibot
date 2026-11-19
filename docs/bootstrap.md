@@ -6,15 +6,19 @@ prefix; where a claim is measured it says so.
 
 ## 1. What the installer needs, and what it does
 
-Two paths, and which one a run takes is decided by what it can reach:
+Two paths, and which one a run takes is decided by what it can reach. **Both are cloud-only
+unless a local model is asked for**, which is the default:
 
 | path | needs | when |
 |---|---|---|
 | release asset | `curl`, `tar`, `mktemp`, `uname`, `cp`/`chmod`/`mkdir`/`rm`/`dirname`/`head`/`grep`, and a glibc loader | the default, when a platform asset exists |
-| source build | the above, plus `git`, `cargo`, a C compiler, and a built llama.cpp checkout for local models | `LETIBOT_FROM_SOURCE=1`, a platform with no asset, or a checkout |
+| source build | the above, plus `git`, `cargo` and a C compiler (the tree-sitter grammars are C) | `LETIBOT_FROM_SOURCE=1`, a platform with no asset, or a checkout |
+| the `-local` asset | the release asset's list, and the asset carries llama.cpp's four libraries itself | `LETIBOT_LOCAL=1` |
+| a local source build | the source build's list, plus a built llama.cpp checkout | `LETIBOT_LLAMA_DIR` and `LETIBOT_LLAMA_LIB` both set |
 
 A source build with no `LETIBOT_LLAMA_DIR`/`LETIBOT_LLAMA_LIB` is **cloud-only**: it links no
-llama library, so there is none to copy.
+llama library, so there is none to copy. `LETIBOT_LOCAL=1` on a source build with no llama.cpp is
+refused by name rather than quietly built cloud, and so is one of the pair without the other.
 
 Before it downloads or copies anything, it refuses by name for what this run will actually
 need:
@@ -22,8 +26,8 @@ need:
 - **No glibc loader** - the published binaries are built for glibc, and a musl system such as
   Alpine cannot run them whatever else is installed. The message says so and points at
   `LETIBOT_FROM_SOURCE=1`.
-- **Host libraries** - `libstdc++.so.6 libgomp.so.1 libsqlite3.so.0` for a build that carries
-  llama, `libsqlite3.so.0` alone for a cloud-only one, because the first two are llama.cpp's.
+- **Host libraries** - `libstdc++.so.6 libgomp.so.1 libsqlite3.so.0` for a local install,
+  `libsqlite3.so.0` alone for a cloud one, because the first two are llama.cpp's.
   `host_has_lib` asks `ldconfig -p` and falls back to walking `/lib`, `/lib64`, `/usr/lib`,
   `/usr/lib64`. The refusal names the packages for exactly what is missing, so a line can be
   pasted as it stands.
@@ -32,10 +36,11 @@ need:
   it: it writes its daemon record with `python3`.
 
 What it installs: the programs `harnessd`, `letibot-tui`, `letibot-multi`, `letibot`, `leticode`,
-`letibot-mcp`, `letibot-acp`, the link `letibot-askpass` to `letibot-multi`, and the four llama
-libraries. `letibot` and `leticode` must be **scripts**, and every write into the install
-directory refuses anything else under those names. A release old enough to predate the launcher
-installs everything else and says so.
+`letibot-mcp`, `letibot-acp`, and the link `letibot-askpass` to `letibot-multi`. A **local**
+install adds the four llama libraries, and a cloud one removes those four if an older local install
+left them in the directory, saying so. `letibot` and `leticode` must be **scripts**, and every
+write into the install directory refuses anything else under those names. A release old enough to
+predate the launcher installs everything else and says so.
 
 Then it proves the install runs, which is also the first real proof that the libraries landed:
 `harnessd --version`, `letibot-tui --version`, and `letibot --help` (the launcher has no

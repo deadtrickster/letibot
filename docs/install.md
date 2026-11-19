@@ -1,8 +1,10 @@
 # Installing letibot
 
-letibot installs as two launchers, four binaries and the four llama.cpp libraries `harnessd` links.
-It is a harness, a daemon and a head. Nothing in the archive is a model, and no turn is answered
-until one is reachable.
+letibot installs as two launchers and six binaries. **The default install is cloud-only**: the
+daemon serves a provider and links no llama.cpp, so nothing here needs a C++ runtime, OpenMP or a
+llama.cpp checkout. Local models are opt-in, and the section with that name below is how. It is a
+harness, a daemon and a head. Nothing in the archive is a model, and no turn is answered until one
+is reachable.
 
 ## From the published archive
 
@@ -10,21 +12,21 @@ until one is reachable.
 curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
 ```
 
-That puts twelve files in `~/.local/bin`; `LETIBOT_INSTALL_DIR` changes it. They are the launchers
+That puts eight files in `~/.local/bin`; `LETIBOT_INSTALL_DIR` changes it. They are the launchers
 `letibot` and `leticode`, the daemon `harnessd`, the head `letibot-tui`, the multicall
 `letibot-multi` (every other role, and the verbs the launcher hands on) with `letibot-askpass` a
 link to it, the
 Claude Code bridge `letibot-mcp` (the MCP server the `leticode` plugin runs,
-[claude-plugin/](../claude-plugin/README.md)), and the llama.cpp libraries `libllama.so.0`,
-`libggml.so.0`, `libggml-cpu.so.0` and `libggml-base.so.0`.
+[claude-plugin/](../claude-plugin/README.md)), and the ACP adapter `letibot-acp`, which is what Zed
+and Neovim launch ([acp.md](acp.md)).
 
-The adapter is the twelfth: `letibot-acp` is an Agent Client Protocol agent on stdio, which is
-what Zed and Neovim launch ([acp.md](acp.md)). An archive published before it exists installs the
-rest and says so, the way an archive without the bridge does.
+`LETIBOT_LOCAL=1` adds llama.cpp's four libraries and the binaries that link them; `install.sh
+--plan` prints which of the two this machine would get, and changes nothing. An archive published
+before the adapter exists installs the rest and says so, the way an archive without the bridge does.
 
-The libraries sit beside the binaries because that is what `$ORIGIN` resolves, so an install needs
-no `LD_LIBRARY_PATH` and no llama.cpp checkout of its own. On macOS the same four are `.0.dylib`
-files and `@loader_path` does the same job.
+Publishing is two assets per platform: `letibot-<triple>.tar.gz`, which the default install asks
+for, and `letibot-<triple>-local.tar.gz`, which `LETIBOT_LOCAL=1` asks for. The first carries no
+library at all and no binary of it may link llama.cpp; the release job fails if either is untrue.
 
 Published for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`.
 Other platforms take the source path.
@@ -32,17 +34,22 @@ Other platforms take the source path.
 `LETIBOT_VERSION` picks a tag or branch; `LETIBOT_FROM_SOURCE` set to anything skips the download
 and builds instead.
 
-## Three libraries come from the host
+## One library comes from the host
 
-The archive carries the llama.cpp four and nothing else. A minimal container has none of these, so
-`install.sh` checks for them and refuses by name before it copies anything, rather than letting you
-find out from an exit 127 afterwards:
+A cloud install links nothing of llama.cpp's, so the only runtime library the archive does not
+carry is SQLite. A minimal container does not have it, so `install.sh` checks for it and refuses by
+name before it copies anything, rather than letting you find out from an exit 127 afterwards:
+
+| needed | why | install it with |
+|---|---|---|
+| `libsqlite3.so.0` | SQLite, which `harnessd` links | `libsqlite3-0` (dnf, apk: `sqlite-libs`) |
+
+A **local** install links llama.cpp, and those binaries need two more:
 
 | needed | why | install it with |
 |---|---|---|
 | `libstdc++.so.6` | the C++ runtime `libllama` and `libggml*` link | `libstdc++6` (dnf/apk: `libstdc++`) |
 | `libgomp.so.1` | OpenMP, from `libggml-base` and `libggml-cpu` | `libgomp1` (dnf, apk: `libgomp`) |
-| `libsqlite3.so.0` | SQLite, which `harnessd` links | `libsqlite3-0` (dnf, apk: `sqlite-libs`) |
 
 They are named rather than bundled on purpose: a shipped `libstdc++` is a compatibility claim
 nobody has measured, since it has to match the host's libc, and one older than the host's fails
@@ -57,44 +64,58 @@ a substitute. On a box with neither `curl` nor a toolchain, install `curl` first
 
 ## From source
 
-Without `curl`, `install.sh` builds from source, which needs more rather than less:
+Without `curl`, `install.sh` builds from source, which needs `git`, Rust 1.98 (edition 2024) and a
+C compiler (the tree-sitter grammars are C). It is **cloud-only unless a llama.cpp is named**:
 
 ```sh
 LETIBOT_FROM_SOURCE=1 sh install.sh
 ```
 
-That needs `git`, Rust 1.98 (edition 2024), a C compiler, and a built llama.cpp checkout, because
-`harnessd` links its tokenizer for local models. Point it at one with `LETIBOT_LLAMA_DIR` (holding
-`include/llama.h`) and `LETIBOT_LLAMA_LIB` (holding `libllama.so.0`).
+The same build by hand is `cargo build --release --bins`, because `local` is off by default. CI's
+`no-llama` job builds and tests exactly that.
 
-On a Mac, llama.cpp must be built with `@loader_path` rather than `$ORIGIN`:
+## Local models
+
+A daemon that serves a local `llama-server` needs llama.cpp's tokenizer, so it is the one thing an
+install has to be asked for:
+
+```sh
+LETIBOT_LOCAL=1 sh install.sh      # the -local release asset
+```
+
+Or, from source, against a built llama.cpp checkout:
+
+```sh
+LETIBOT_LLAMA_DIR=$PWD/llama.cpp LETIBOT_LLAMA_LIB=$PWD/llama.cpp/build/bin \
+    cargo build --release --bins --features local
+```
+
+`LETIBOT_LLAMA_DIR` holds `include/llama.h` and `LETIBOT_LLAMA_LIB` the built `libllama.so.0`. Both
+are required; one without the other is refused by name rather than quietly built cloud. On a Mac,
+llama.cpp must be built with `@loader_path` rather than `$ORIGIN`:
 
 ```sh
 cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=@loader_path
 cmake --build llama.cpp/build -j "$(sysctl -n hw.ncpu)"
-LETIBOT_LLAMA_DIR=$PWD/llama.cpp LETIBOT_LLAMA_LIB=$PWD/llama.cpp/build/bin cargo build --release
 ```
 
-## Cloud only, without llama.cpp
+A local install puts four libraries beside the binaries, because that is what `$ORIGIN` resolves,
+so it needs no `LD_LIBRARY_PATH` and no llama.cpp checkout of its own. On macOS the same four are
+`.0.dylib` files and `@loader_path` does the same job. A **cloud install removes those four** if an
+older local install left them there, and says so: they sit where the loader looks, so leaving them
+would claim a local model this build has not.
 
-If the turns go to DeepSeek, GLM or Grok and never to a local model:
-
-```sh
-cargo build --release --no-default-features --bins
-cargo test --workspace --exclude letibot-llama --no-default-features
-```
-
-That drops the `local` feature: nothing links libllama, the daemon serves cloud providers, and
-pointing it at a local model is refused with a sentence saying this build has no llama.cpp. Tests
-that need a model vocabulary skip and say so; `LETIBOT_REQUIRE_APPARATUS=1` turns a skip into a
-failure. CI's `no-llama` job builds and tests exactly this.
-
-The daemon still keeps its hash-chained ledger in tokens, because that is what makes a session
+A cloud daemon still keeps its hash-chained ledger in tokens, because that is what makes a session
 resumable and tamper-evident. With no GGUF those tokens are the byte vocabulary (ids 0-255 are
 bytes, the dialect's control literals get reserved ids above), which never leaves the machine. The
 context arithmetic is rescaled by the provider's own token counts after the first turn. Such a
 session cannot be switched to a local model - its ids mean nothing to a llama-server - and says so.
+
+`cargo test --workspace --exclude letibot-llama --no-default-features` is the no-llama test run.
+`--no-default-features` is still needed there because `letibot-sessionlog` and `letibot-turn` keep
+`local` on by default for their own vocabulary tests. Tests that need a model vocabulary skip and
+say so; `LETIBOT_REQUIRE_APPARATUS=1` turns a skip into a failure.
 
 ## What you do not get
 
@@ -200,14 +221,15 @@ Doctor row: `LETIBOT_STORE`.
 
 `letibot` and `leticode` on `PATH` must be the shell launchers from `scripts/`, not binaries. The Rust multicall is `letibot-multi`, the launcher hands it the verbs it does not handle itself, and `letibot-askpass` is a copy (or a hard link) of it. Never install a binary under a launcher's name: `leticode --continue` then answers `letibot: no such role: --continue`.
 
-The release install loop, run in the main checkout:
+The release install loop, run in the main checkout. This box serves local models, so its build
+names the `local` feature; a box that does not can drop the flag and install the cloud build:
 
 ```sh
 git fetch -q && git merge --ff-only -q origin/main
 for o in target/release/build/letibot-builtins-*/output; do
   grep -q "rerun-if-changed=$PWD" "$o" || rm -f "$o"
 done
-nice -n 10 cargo build --release --bins
+nice -n 10 cargo build --release --bins --features local
 for b in harnessd letibot-tui letibot-mcp letibot-multi; do
   install -m755 "target/release/$b" ~/.local/bin/$b.new && mv -f ~/.local/bin/$b.new ~/.local/bin/$b
 done

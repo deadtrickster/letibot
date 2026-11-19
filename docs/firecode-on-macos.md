@@ -63,10 +63,11 @@ cmake --build ~/Projects/llama.cpp/build -j "$(sysctl -n hw.ncpu)"
 git clone https://github.com/deadtrickster/letibot ~/Projects/letibot/letibot
 cd ~/Projects/letibot/letibot
 LETIBOT_LLAMA_DIR=~/Projects/llama.cpp LETIBOT_LLAMA_LIB=~/Projects/llama.cpp/build/bin \
-    cargo build --release
+    cargo build --release --features local
 ```
 
-Cloud-only (no local model) skips llama.cpp: `cargo build --release --no-default-features --bins`.
+A build with no local model skips llama.cpp, and that is the default: `cargo build --release
+--bins`. Only a build that serves a local model names `--features local`.
 
 Check: `./target/release/harnessd --help | grep -A3 -- --where` lists `host|firecode`.
 

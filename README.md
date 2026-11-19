@@ -34,8 +34,14 @@ curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.
 letibot
 ```
 
-[docs/install.md](docs/install.md) has what the archive carries, the three host libraries it
-expects, the source build (Rust 1.98) and a cloud-only build with no llama.cpp.
+[docs/install.md](docs/install.md) has what the archive carries, the host library it expects,
+the source build (Rust 1.98) and how to opt in to local models.
+
+**The install is cloud-only by default**: the daemon serves DeepSeek, GLM, Grok or any
+OpenAI-compatible endpoint, and links no llama.cpp, so it needs no C++ runtime, no OpenMP and no
+llama.cpp checkout. A box that serves a LOCAL model is one variable more -
+`LETIBOT_LOCAL=1 sh install.sh`, or a source build with `LETIBOT_LLAMA_DIR` and `LETIBOT_LLAMA_LIB`
+and `--features local` - and `install.sh --plan` says which this machine would get.
 
 The archive is a harness and a head. It carries no model, and nothing answers a turn until one is
 reachable: the first message opens the `/models` chooser, and a cloud key is asked for once, saved
