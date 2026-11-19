@@ -252,6 +252,52 @@ fn the_bare_name_is_free_once_its_holder_is_gone() {
     server.stop();
 }
 
+/// A label arrives on the `Hello` too, and the hello is not the place to argue about a name: one a
+/// live seat already answers to is dropped, so two seats are never drawn alike and the seat's own
+/// `nick` frame is where the refusal is said.
+#[test]
+fn a_hello_does_not_take_a_label_another_live_seat_answers_to() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let first = seated(&server, "s-a", "", "", Seat::Session, "");
+    assert!(matches!(
+        first.nick("db-fuzz-fable"),
+        Response::Nicked { .. }
+    ));
+    let second = seated(
+        &server,
+        "cc@other",
+        "lab2x1/cc-7777",
+        "db-fuzz-fable",
+        Seat::External,
+        "",
+    );
+    let rows = roster(&server, &second, HOST_ROOM);
+    assert!(
+        rows.contains(&"cc@other [lab2x1/cc-7777]".to_string()),
+        "drawn by the name it speaks as: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.starts_with("db-fuzz-fable "))
+            .count(),
+        1,
+        "one seat answers to the label: {rows:?}"
+    );
+    // And the seat is told why when it asks for the name itself, with the holder and the counter.
+    match second.nick("db-fuzz-fable") {
+        Response::Refused {
+            why: Refused::NickTaken { held_by, next, .. },
+            ..
+        } => {
+            assert_eq!(held_by, "s-a");
+            assert_eq!(next.as_deref(), Some("db-fuzz-fable-2"));
+        }
+        other => panic!("{other:?}"),
+    }
+    server.stop();
+}
+
 /// A label a session's title already gives it is held too: the rule is every live seat on the box,
 /// not the bridges alone.
 #[test]
