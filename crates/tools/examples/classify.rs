@@ -22,6 +22,8 @@ fn main() {
         // which binary a bare name would have run.
         programs: Default::default(),
         shell_path: None,
+        // A bare command line, with no session and so no view: nothing was granted.
+        granted: Vec::new(),
     };
 
     // Where a relative script path is resolved from, and whether to read at all.

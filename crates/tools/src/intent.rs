@@ -2068,6 +2068,10 @@ pub struct Surroundings {
     /// classified as it was: a gate that does not know where the scratch is must not
     /// guess, because the guess would be a directory somebody may delete inside.
     pub scratch: Option<String>,
+    /// The roots the operator granted this session writable, as the boundary holds them. A
+    /// folder a person granted IS a workspace for the rules that judge scope, which is the
+    /// whole of the grant: what may be read there stays the boundary's rule.
+    pub granted: Vec<String>,
     /// See [`ShellTrust`]. Defaults to `Unknown`, which refuses bare command names.
     pub shell: ShellTrust,
     /// Hosts this session has already reached. A first contact is an always-ask; the
@@ -2100,6 +2104,7 @@ impl Surroundings {
             session: env::SessionEnv::default(),
             programs: ProgramLookup::None,
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -2193,6 +2198,15 @@ impl Surroundings {
         if let Some(ws) = &self.workspace
             && under(&p, ws)
         {
+            return Region::Workspace;
+        }
+        // A folder the operator granted writable is a workspace for the rules that judge
+        // SCOPE. The grant says where the session may work, so a delete there is ordinary work
+        // and no always-ask row fires on where it lands.
+        if self.granted.iter().any(|g| {
+            let g = collapse(&self.expand(g));
+            under(&p, &g)
+        }) {
             return Region::Workspace;
         }
         // Before the `/tmp` row below, because the scratch IS under `/tmp` and the table
@@ -4909,6 +4923,7 @@ mod destructive_flags {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -5018,6 +5033,7 @@ mod flag_coverage_survey {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         };
         let cases = [
             (
@@ -5098,6 +5114,7 @@ mod flag_rules {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
     fn saw_destroy(cmd: &str) -> bool {
@@ -5340,6 +5357,7 @@ mod flag_rules {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         };
         let mut spurious: Vec<&str> = Vec::new();
         for line in key
@@ -5380,6 +5398,7 @@ mod secret_is_not_destruction {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         };
         let look = |cmd: &str| {
             let b = Baseline::of_command(cmd, &sur);
@@ -5438,6 +5457,7 @@ mod recall {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         };
         let (mut tp, mut fnn, mut fp, mut tn) = (0, 0, 0, 0);
         let mut missed: Vec<&str> = Vec::new();
@@ -5506,6 +5526,7 @@ mod model_findings_gap {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         };
         // (program, a flag the model reported, whether it is a default-unless row)
         let cases: &[(&str, &str, bool)] = &[
@@ -5572,6 +5593,7 @@ mod heredoc_bodies {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -5810,6 +5832,7 @@ mod loopback_and_literals {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -5900,6 +5923,7 @@ mod inline_scripts {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -5970,6 +5994,7 @@ mod hosts_by_other_names {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
     fn egress(x: &Baseline) -> bool {
@@ -6088,6 +6113,7 @@ mod known_and_seen_hosts {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
         .with_known_hosts();
         for h in ["github.com", "gitlab.example.org", "codeberg.org"] {
@@ -6135,6 +6161,7 @@ mod operands_that_are_not_places {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -6183,6 +6210,7 @@ mod scratch_tests {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -6358,6 +6386,7 @@ mod a_script_that_writes_a_file {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 
@@ -6704,6 +6733,7 @@ mod a_script_named_as_a_path {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         }
     }
 

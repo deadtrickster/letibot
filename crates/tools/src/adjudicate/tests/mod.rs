@@ -133,6 +133,7 @@ fn pinned() -> crate::intent::Surroundings {
         session: Default::default(),
         programs: Default::default(),
         shell_path: None,
+        granted: Vec::new(),
     }
 }
 

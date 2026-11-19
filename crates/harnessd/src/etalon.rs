@@ -433,6 +433,7 @@ mod tests {
             session: Default::default(),
             programs: Default::default(),
             shell_path: None,
+            granted: Vec::new(),
         };
         let r = report(&path, &env, 100).unwrap();
         assert_eq!(r.rows, 4);

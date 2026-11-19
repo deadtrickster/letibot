@@ -25,6 +25,7 @@ fn sur() -> Surroundings {
         session: SessionEnv::seeded([("PATH".to_string(), path.clone())]),
         programs: ProgramLookup::Host,
         shell_path: Some(path),
+        granted: Vec::new(),
     }
 }
 

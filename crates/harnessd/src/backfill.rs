@@ -145,6 +145,9 @@ fn surroundings(workspace: &str) -> Surroundings {
         session: Default::default(),
         programs: Default::default(),
         shell_path: None,
+        // A replayed row was judged against the view the session had then, which this does
+        // not have: an empty list judges every path by the workspace alone.
+        granted: Vec::new(),
     }
 }
 
