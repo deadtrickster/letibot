@@ -73,10 +73,10 @@ line. It runs on this box or the host `[queue] gate_host` names, never on GitHub
 ```sh
 sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
-sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings
-LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
+sh scripts/clippy-gate.sh --workspace --all-targets --features local -- -D warnings
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast --features local -- --nocapture
 # ^ also runs tests/launcher.sh and tests/rrun.sh, from crates/tools/tests/shell_suites.rs
-cargo build --release --bins
+cargo build --release --bins --features local
 sh scripts/check-dist-names.sh --built
 sh scripts/install-gate-build.sh
 ```
