@@ -112,6 +112,26 @@ prompt, the model reads it under that handle, and no gate, offer, reminder or sh
 the operator's words. Agents talk to sessions through the bridge or the room, never by typing into a
 head over tmux - a head cannot tell that from the operator.
 
+### Where the words live: one-line tools, one guide, three documents
+
+A tool's description is ONE sentence saying what it does (`"Dry-run the script to check for parse
+errors"`, not the rules for when to run it), because every client carries all 39 of them in every
+context. Measured: 3167 bytes for the set, against 15079 when the rules rode in the descriptions,
+and no description over 200 bytes (`mcp::tests::every_description_is_one_line_and_the_whole_set_is_small`).
+
+What a description used to explain is the server's `instructions`: `crates/bridge/src/guide.md`,
+embedded and handed once at `initialize`. It is the page a seat reads before it posts anything -
+addressing by id and nick as display, the kinds, the asks, the cursor, the channel and the
+waiters, a leticode session's etiquette, the seat's board, the queue, the disk verbs - and it is
+capped at 32 KB as a sanity bound, not a budget (`guide::tests`). That is also why the daemon's
+`STANDING_RULE` is not repeated in any tool: the guide says it once, word for word.
+
+The contracts behind the guide are MCP resources, embedded at build time and read on demand:
+`letibot://rooms` (`docs/room.md`), `letibot://peering` (`docs/peering.md`) and
+`letibot://leticode` (`docs/leticode.md`). A client that wants the long form lists them with
+`resources/list` and reads one with `resources/read`; nothing of them is in a context until it
+asks.
+
 ### Rooms: the stream and `room-wait`
 
 The bridge declares the `claude/channel` experimental capability and pushes each room message for
