@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use super::config::ShadowConfig;
+use super::config::{ShadowConfig, Stage};
 use super::guard::Call;
 use super::judge::Judge;
 use super::record::Recorder;
@@ -1553,6 +1553,70 @@ fn answer_reads_is_off_until_turned_on() {
         !on(lines(&["turn_end"], Some(true))),
         "no permission job, nothing answers"
     );
+}
+
+#[test]
+fn the_stages_are_the_setting_and_answer_reads_is_the_old_spelling() {
+    // The stages the operator promoted, by name.
+    let f = providers(
+        "stages",
+        "[shadow]\nenabled = [\"permission\"]\nanswers = [\"reads\", \"exec\"]\n",
+    );
+    let cfg = ShadowConfig::load(Some(&f)).unwrap();
+    assert!(cfg.answers(Stage::Reads));
+    assert!(cfg.answers(Stage::Exec));
+    assert!(!cfg.answers(Stage::WorkspaceWrites));
+    assert!(cfg.answers_anything());
+
+    // `answer_reads = true` still means reads, and reads alone.
+    let f = providers(
+        "stages-old",
+        "[shadow]\nenabled = [\"permission\"]\nanswer_reads = true\n",
+    );
+    let cfg = ShadowConfig::load(Some(&f)).unwrap();
+    assert_eq!(cfg.stages().collect::<Vec<_>>(), vec![Stage::Reads]);
+    assert!(!cfg.answers(Stage::Exec));
+
+    // A stage this build does not run is refused by name, and with it every job.
+    let f = providers(
+        "stages-bad",
+        "[shadow]\nenabled = [\"permission\"]\nanswers = [\"writes\"]\n",
+    );
+    let err = ShadowConfig::load(Some(&f)).unwrap_err();
+    assert!(err.contains("reads, workspace_writes, exec"), "{err}");
+
+    // One setting written twice is refused rather than silently preferring one.
+    let both = letibot_provider::keys::ShadowLines {
+        enabled: vec!["permission".into()],
+        answer_reads: Some(true),
+        answers: Some(vec!["exec".into()]),
+        ..Default::default()
+    };
+    let err = ShadowConfig::from_lines(both, "local".into()).unwrap_err();
+    assert!(err.contains("one setting written twice"), "{err}");
+
+    // And the disclosure says which stages decide, on which model.
+    let f = providers(
+        "stages-said",
+        "[shadow]\nenabled = [\"permission\"]\npermission = \"deepseek/deepseek-flash\"\n\
+         answers = [\"reads\", \"workspace_writes\", \"exec\"]\n",
+    );
+    let cfg = ShadowConfig::load(Some(&f)).unwrap();
+    let said = cfg.disclose("glm/x").join("\n");
+    assert!(
+        said.contains("answers: reads, workspace_writes, exec"),
+        "{said}"
+    );
+    assert!(said.contains("deepseek/deepseek-flash"), "{said}");
+}
+
+#[test]
+fn a_shadow_with_no_stage_says_it_only_observes() {
+    let f = providers("stages-none", "[shadow]\nenabled = [\"permission\"]\n");
+    let cfg = ShadowConfig::load(Some(&f)).unwrap();
+    assert!(!cfg.answers_anything());
+    let said = cfg.disclose("glm/x").join("\n");
+    assert!(said.contains("answers: none"), "{said}");
 }
 
 #[test]

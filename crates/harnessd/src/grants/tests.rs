@@ -298,7 +298,7 @@ fn breaker_survives_reopen_while_grants_persist() {
         Answering::open(false, Some((f.at.clone(), MAIN.to_string())))
             .arm()
             .is_err(),
-        "nothing to arm while answer_reads is off"
+        "nothing to arm while no stage is on"
     );
 }
 

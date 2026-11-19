@@ -2159,7 +2159,7 @@ impl Harness {
         } = Self::open_the_stored(&mut cfg, &mut notes)?;
         // The shadow's answering state, shared by its oracle on the gate and its relay annotator.
         let shadow_answering = crate::shadow::permission::Answering::open(
-            cfg.shadow.answers_reads(),
+            cfg.shadow.answers_anything(),
             cfg.store_at().map(|at| (at, cfg.session_id.clone())),
         );
         Self::say_the_embedder(&hub, &cfg);
@@ -3180,20 +3180,44 @@ impl Harness {
                 // The guard model, attached whenever there is one: built from `--oracle` and NOT
                 // from the mode, which is what makes `/supervise` a toggle. `None` is not a
                 // failure; a session without one runs as before and `/supervise` refuses by name.
-                let advisor: Option<std::sync::Arc<dyn Adjudicator>> = match &cfg.oracle {
-                    Some(_) => {
-                        Some(model_adjudicator(&cfg, "`--oracle`", Some(hub.clone()))?.into())
+                // `[gatekeeper] via` decides which of the two guards answers, and with both
+                // configured the endpoint goes first and the shadow answers when it does not.
+                let endpoint_guard =
+                    || -> Result<Option<std::sync::Arc<dyn Adjudicator>>, HarnessError> {
+                        Ok(match &cfg.oracle {
+                            Some(_) => Some(
+                                model_adjudicator(&cfg, "`--oracle`", Some(hub.clone()))?.into(),
+                            ),
+                            None => None,
+                        })
+                    };
+                let shadow_guard = || -> Option<std::sync::Arc<dyn Adjudicator>> {
+                    if !crate::shadow::is_oracle(&cfg) {
+                        return None;
                     }
-                    None if crate::shadow::is_oracle(&cfg) => {
-                        Some(Arc::new(crate::shadow::oracle::ShadowAdjudicator::new(
+                    Some(std::sync::Arc::new(
+                        crate::shadow::oracle::ShadowAdjudicator::new(
                             shadow_cell.clone(),
                             shadow_answering.clone(),
+                            cfg.shadow.stages().collect(),
                             std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
                             cfg.workspace.clone(),
                             cfg.store_at().is_some(),
-                        )))
-                    }
-                    None => None,
+                        ),
+                    ))
+                };
+                let advisor: Option<std::sync::Arc<dyn Adjudicator>> = match cfg.guard_via() {
+                    crate::guard_via::Via::Endpoint => endpoint_guard()?.or_else(shadow_guard),
+                    // The shadow first: a box with no local guard, and a provider doing the
+                    // judging. An endpoint the operator also configured still answers when no
+                    // stage is promoted, so turning the stages off never silences the guard.
+                    crate::guard_via::Via::Shadow => shadow_guard().or(endpoint_guard()?),
+                    crate::guard_via::Via::Both => match (endpoint_guard()?, shadow_guard()) {
+                        (Some(e), Some(s)) => Some(std::sync::Arc::new(
+                            crate::guard_via::EndpointThenShadow::new(e, s),
+                        )),
+                        (e, s) => e.or(s),
+                    },
                 };
                 let trail_for_gate = trail.clone();
                 let g = AdjudicatedGate::new(adj)

@@ -154,9 +154,9 @@ pub fn watches(cfg: &crate::config::Config) -> bool {
         && cfg.store_at().is_some()
 }
 
-/// Whether the shadow is this session's oracle: [`watches`], with `answer_reads` on.
+/// Whether the shadow is this session's oracle: [`watches`], with a stage promoted.
 pub fn is_oracle(cfg: &crate::config::Config) -> bool {
-    cfg.shadow.answers_reads() && watches(cfg)
+    cfg.shadow.answers_anything() && watches(cfg)
 }
 
 /// The shadow for a session with `cfg`, on `watched_model`. `NotYet` while its row or transcript is

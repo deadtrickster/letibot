@@ -88,7 +88,20 @@ impl Harness {
         self.cfg.oracle = Some(endpoint.clone());
         let advisor = model_adjudicator(&self.cfg, "`/supervise`", Some(self.hub.clone()))
             .map_err(|e| e.to_string())?;
-        self.gate().attach_advisor(std::sync::Arc::from(advisor))?;
+        // `/supervise` turns the guard on; it does not choose WHICH guard, so this follows
+        // `[gatekeeper] via` like the open does - and on a box whose GPU is down, the shadow is
+        // what keeps the session from asking a card each call.
+        let advisor: std::sync::Arc<dyn Adjudicator> =
+            match (self.cfg.guard_via(), self.shadow_adjudicator()) {
+                (crate::guard_via::Via::Both, Some(shadow)) => {
+                    std::sync::Arc::new(crate::guard_via::EndpointThenShadow::new(
+                        std::sync::Arc::from(advisor),
+                        shadow,
+                    ))
+                }
+                _ => std::sync::Arc::from(advisor),
+            };
+        self.gate().attach_advisor(advisor)?;
         Ok(format!(
             "guard model at {} for this session. To make it the default, put it in \
              {}:\n  [gatekeeper]\n  endpoint = \"{}\"",

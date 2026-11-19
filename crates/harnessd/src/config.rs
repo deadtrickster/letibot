@@ -703,6 +703,9 @@ pub struct Config {
     /// `[gatekeeper] intents` / `max_scope` in providers.toml. `None` is the
     /// built-in floor, which is what a box that has said nothing gets.
     pub oracle_scope: Option<letibot_tools::authorise::OracleScope>,
+    /// `[gatekeeper] via`, or what the box's configuration implies when the file says nothing:
+    /// who answers a card when the endpoint and the shadow both could.
+    pub oracle_via: Option<crate::guard_via::Via>,
     /// The memory cap a model's tool call runs under, and the most it may take without the
     /// operator - `providers.toml`'s `[memory]`. Built-in: 64 MiB, and half of
     /// what is free.
@@ -1433,6 +1436,18 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
 }
 
 impl Config {
+    /// Who answers a card when the endpoint and the shadow both could: `[gatekeeper] via` when the
+    /// operator wrote one, and otherwise what this box has configured - the endpoint first and the
+    /// shadow behind it when both are there, because a box whose GPU is down still has the shadow.
+    pub fn guard_via(&self) -> crate::guard_via::Via {
+        self.oracle_via.unwrap_or_else(|| {
+            crate::guard_via::Via::default_for(
+                self.oracle.is_some(),
+                crate::shadow::is_oracle(self),
+            )
+        })
+    }
+
     /// What this session does on a stale prompt: its seat's answer, with `[sessions] auto_reseat =
     /// false` turning every reseat into a card. The review queue's session, and a seat in a package,
     /// a one-shot or under a parent, have no person at the card, so those reseat too.
@@ -1850,6 +1865,7 @@ impl Config {
             oracle: None,
             oracle_model: None,
             oracle_scope: None,
+            oracle_via: None,
             memory: Default::default(),
             oracle_budget: std::time::Duration::from_millis(400),
             oracle_max_tokens: None,

@@ -547,12 +547,13 @@ fn with_shadow_lines(
             home: "/home/op".into(),
             answering: answering.clone(),
         })));
-    // The oracle the main session installs when `answer_reads` is on, as `relay_queue_asks` does.
-    if cfg.answers_reads() {
+    // The oracle the main session installs when a stage is on, as `relay_queue_asks` does.
+    if cfg.answers_anything() {
         w.set.set_oracle(Some(Arc::new(
             crate::shadow::oracle::ShadowAdjudicator::new(
                 cell,
                 answering.clone(),
+                cfg.stages().collect(),
                 "/home/op".into(),
                 REVIEW_WORKSPACE.into(),
                 true,
@@ -993,14 +994,10 @@ fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_ro
     assert_eq!(main_rows.len(), 1, "{main_rows:?}");
     assert_eq!(
         main_rows[0].0,
-        "shadow allowed s-gatekeeper-k-sub-1 to read /build/letibot-r1 · alt-n to see · \
-         /shadow revoke"
+        "shadow allowed s-gatekeeper-k-sub-1 to read /build/letibot-r1 · deepseek, reads · \
+         alt-n to see · /shadow revoke"
     );
-    assert!(
-        main_rows[0]
-            .1
-            .contains("grant: read-only `/build/letibot-r1`")
-    );
+    assert!(main_rows[0].1.contains("target: /build/letibot-r1"));
     let rows = rows.0.lock().unwrap();
     assert!(
         rows.iter().any(|r| r.starts_with("permission")),
@@ -1191,7 +1188,7 @@ fn a_shadow_grant_is_kept_like_any_other_and_both_revokes_trip_the_breaker() {
     assert!(
         main_rows
             .iter()
-            .any(|(t, _)| t.starts_with("shadow stopped answering reads after 2 disagreements")),
+            .any(|(t, _)| t.starts_with("shadow stopped answering after 2 disagreements")),
         "{main_rows:?}"
     );
     assert!(

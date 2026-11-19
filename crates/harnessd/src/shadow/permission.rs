@@ -14,6 +14,7 @@ use letibot_tools::authorise::{CorpusRow, CorpusSink, OperatorOverride};
 use letibot_tools::permission::{Action, Rule, Ruleset};
 
 use super::Job;
+use super::config::Stage;
 use super::guard::Call;
 use super::record::Recorder;
 use super::runner::{Outcome, Shadow};
@@ -173,6 +174,9 @@ impl CorpusSink for ShadowSink {
 /// shadow granted.
 pub const BREAKER_AT: u32 = 2;
 
+/// How many unanswered cards' shapes a session keeps for scoring a later No, at most.
+const ASKED_MAX: usize = 1024;
+
 /// The breaker's job key in the store, beside the session whose shadow answers.
 const BREAKER_JOB: &str = "permission";
 
@@ -181,7 +185,7 @@ const BREAKER_JOB: &str = "permission";
 /// and the granted shapes outlive the daemon, as the grants they guard do.
 pub struct Answering {
     on: AtomicBool,
-    /// `answer_reads` as configured: what a re-arm may turn back on.
+    /// The stages as configured: what a re-arm may turn back on.
     configured: bool,
     at: Option<(crate::config::StoreAt, String)>,
     disagreements: AtomicU32,
@@ -216,7 +220,7 @@ impl Answering {
                     }
                     for g in crate::grants::shadow_grants(&store).unwrap_or_default() {
                         if let letibot_tools::grant_ledger::Kept::View { path, .. } = &g.kept {
-                            granted.insert(shape(&path.display().to_string()));
+                            granted.insert(shape(Stage::Reads, &path.display().to_string()));
                         }
                     }
                 }
@@ -243,12 +247,14 @@ impl Answering {
     /// `/shadow arm`: the operator's explicit re-arm, the only way a tripped breaker clears.
     pub fn arm(&self) -> Result<String, String> {
         if !self.configured {
-            return Err("answer_reads is off in [shadow], so there is nothing to arm".into());
+            return Err(
+                "no stage is on in [shadow] (`answers`), so there is nothing to arm".into(),
+            );
         }
         self.persist(0, None, "")?;
         self.disagreements.store(0, Ordering::SeqCst);
         self.on.store(true, Ordering::SeqCst);
-        Ok("the shadow answers relayed reads again, with 0 disagreements".into())
+        Ok("the shadow answers its stages again, with 0 disagreements".into())
     }
 
     /// The breaker as the store keeps it. No store is nothing to keep.
@@ -302,28 +308,45 @@ impl Answering {
         }
     }
 
-    /// A read the shadow granted through the oracle: its shape counts toward a later No, and the
-    /// main session gets one row about it.
-    pub fn granted_read(&self, req_id: &str, session: &str, path: &str, basis: &str) {
+    /// A call the shadow allowed through the oracle at `stage`: its shape counts toward a later No,
+    /// and the main session gets one row about it naming the model, the stage and the request.
+    pub fn granted(
+        &self,
+        req_id: &str,
+        session: &str,
+        stage: Stage,
+        target: &str,
+        judge: &str,
+        basis: &str,
+    ) {
         self.granted
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(shape(path));
+            .insert(shape(stage, target));
         self.push_row(
-            format!("shadow allowed {session} to read {path} · alt-n to see · /shadow revoke"),
             format!(
-                "verdict: allow\nbasis: {basis}\ngrant: read-only `{path}` into the view of \
-                 {session}, for that session\nrequest: {req_id}\nrevoke: /shadow revoke"
+                "shadow allowed {session} to {} {target} · {judge}, {} · alt-n to see · /shadow \
+                 revoke",
+                verb(stage),
+                stage.as_str()
+            ),
+            format!(
+                "verdict: allow\nstage: {}\nmodel: {judge}\nbasis: {basis}\ntarget: {target}\n\
+                 request: {req_id}\nrevoke: /shadow revoke",
+                stage.as_str()
             ),
         );
     }
 
-    /// A read the shadow was asked about and left to the operator, so their No can be scored.
-    pub fn asked_read(&self, req_id: &str, path: &str) {
-        self.asked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(req_id.to_string(), shape(path));
+    /// A call the shadow was asked about and left to the operator, so their later No can be scored
+    /// against the same shape. Bounded: a run long enough to overflow it loses that signal, which
+    /// is cheaper than a map that grows with every card.
+    pub fn asked(&self, req_id: &str, stage: Stage, target: &str) {
+        let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+        if asked.len() >= ASKED_MAX {
+            asked.clear();
+        }
+        asked.insert(req_id.to_string(), shape(stage, target));
     }
 
     /// One disagreement, and the breaker at [`BREAKER_AT`]: answering stops, observe-only.
@@ -337,7 +360,7 @@ impl Answering {
         let kept = self.persist(n, trips.then(unix_ms), why);
         if (trips || kept.is_err()) && self.on.swap(false, Ordering::SeqCst) {
             let title = format!(
-                "shadow stopped answering reads after {n} disagreements · observe-only until /shadow arm"
+                "shadow stopped answering after {n} disagreements · observe-only until /shadow arm"
             );
             if let Some(r) = rec {
                 r.row(&format!("permission · {title}"), why);
@@ -353,11 +376,20 @@ fn unix_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// The ask's shape for the breaker: the path's first two components. Any seat's read of it is
-/// the same shape, so a shape read back from a stored grant needs no seat.
-fn shape(path: &str) -> String {
-    let prefix: PathBuf = std::path::Path::new(path).components().take(3).collect();
-    format!("read {}", prefix.display())
+/// The ask's shape for the breaker: the stage and the target's first three components. Any seat
+/// asking the same thing is the same shape, so a shape read back from a stored grant needs no seat.
+fn shape(stage: Stage, target: &str) -> String {
+    let prefix: PathBuf = std::path::Path::new(target).components().take(3).collect();
+    format!("{} {}", stage.as_str(), prefix.display())
+}
+
+/// What a granted stage lets the session do, for the row's title.
+fn verb(stage: Stage) -> &'static str {
+    match stage {
+        Stage::Reads => "read",
+        Stage::WorkspaceWrites => "write",
+        Stage::Exec => "run",
+    }
 }
 
 /// The seat kind of a review-queue asker, from its session id and never its role string: a
@@ -517,7 +549,7 @@ impl Annotator for Relay {
             "",
         );
         if let Ok((path, _)) = scope(c, &self.home) {
-            self.answering.asked_read(&c.req_id, &path);
+            self.answering.asked(&c.req_id, Stage::Reads, &path);
         }
         let outcome = shadow.ask(Job::Permission, self.shown_for(c))?;
         line_of(shadow.label(Job::Permission).as_deref(), &outcome)
