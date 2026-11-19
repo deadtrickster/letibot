@@ -238,9 +238,15 @@ pub struct App {
     /// The picker opened before the cursor could be seated on this session (its list had not
     /// landed, or lacked it). The next list seats it; any cursor move cancels.
     pub(crate) picker_seat_pending: bool,
-    /// The session list's live filter, lowercased: the composer's line while the list is in front,
-    /// unless that line is a number or a command. Empty is no filter.
+    /// The session list's live filter, lowercased: the line the list holds while it is in front,
+    /// unless that line is a number or a command. Empty is no filter, and it starts empty however
+    /// much the composer holds.
     pub(crate) picker_filter: String,
+    /// The composer's words held aside while the list is in front. The list's search field is the
+    /// composer's line (one buffer, so typing, undo and the cursor are the editor's), so a draft
+    /// prompt is put back when the list closes instead of being read as a query. See
+    /// [`App::hold_the_composer_for_the_picker`].
+    pub(crate) picker_draft: Option<String>,
     /// The home this head shortens paths against, `$HOME`, read once at construction: three
     /// places draw a path and a per-frame read would make the picture depend on the process's
     /// environment, which no test can pin. A test sets this field.
@@ -1382,6 +1388,7 @@ impl App {
             picker_size: std::cell::Cell::new((0, 0)),
             picker_seat_pending: false,
             picker_filter: String::new(),
+            picker_draft: None,
             home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
             host_build: std::cell::RefCell::new(None),

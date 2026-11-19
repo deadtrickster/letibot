@@ -1,5 +1,6 @@
-//! The session list's live filter: the composer's line narrows the list as it is typed, a hit
-//! inside a folded group is drawn, and Enter takes the row under the cursor.
+//! The session list's live filter: the line the list holds narrows it as it is typed, a hit inside a
+//! folded group is drawn, and Enter takes the row under the cursor. The line starts EMPTY - a prompt
+//! waiting in the composer is the operator's next message, not a query.
 
 use super::*;
 
@@ -12,9 +13,10 @@ fn at(id: &str, title: &str, workspace: &str) -> SessionBrief {
     b
 }
 
-/// A head in `s-habr`, the list open. `s-bench` is folded under `s-pkg`, and `s-far` sits in a
-/// project this head is not in, which starts folded too.
-fn a_head() -> App {
+/// A head in `s-habr`, with the list NOT yet open: the state a person is in when they have typed a
+/// prompt and have not sent it. `s-bench` is folded under `s-pkg`, and `s-far` sits in a project this
+/// head is not in, which starts folded too.
+fn a_head_with_the_list_closed() -> App {
     let mut bench = at("s-bench", "the rust bench", LETIBOT);
     bench.parent_session_id = Some("s-pkg".into());
     let sessions = vec![
@@ -27,6 +29,12 @@ fn a_head() -> App {
     let mut a = app();
     a.home = "/home/dead".into();
     a.apply(hello("s-habr", sessions, Hub::new("s-habr").snapshot()));
+    a
+}
+
+/// The same head with the list open.
+fn a_head() -> App {
+    let mut a = a_head_with_the_list_closed();
     a.key(Key::CtrlS);
     a
 }
@@ -108,4 +116,86 @@ fn letters_in_order_are_a_fallback_only() {
         vec!["s-rust".to_string()],
         "no session contains it, so letters in order match"
     );
+}
+
+/// A prompt waiting in the composer is the operator's next message, not a query: `ctrl-s` opens the
+/// list on an EMPTY search, so a sentence that names no session cannot filter every session out of
+/// sight - the bug that read a typed line as a search and answered with an empty list.
+#[test]
+fn a_draft_in_the_composer_is_not_the_search() {
+    let mut a = a_head_with_the_list_closed();
+    let every = drawn_ids(&a);
+    assert!(!every.is_empty(), "the premise: there are sessions to list");
+    typed(&mut a, "please look at the bench");
+    assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
+    assert!(
+        a.picker_filter.is_empty(),
+        "the draft was taken as the query: {:?}",
+        a.picker_filter
+    );
+    assert_eq!(drawn_ids(&a), every, "every session is on the list");
+    // And no search field is drawn, because there is nothing being searched for.
+    let screen = a.screen(110, 30).join("\n");
+    assert!(
+        !screen.contains("match"),
+        "a search field for a draft:\n{screen}"
+    );
+}
+
+/// The list's own line is its search, exactly as before: a letter narrows it, and `esc` comes back
+/// to the composer with the draft untouched - the query was a question about the list, and a query
+/// is not a message.
+#[test]
+fn the_lists_own_line_narrows_it_and_esc_gives_the_draft_back() {
+    let mut a = a_head_with_the_list_closed();
+    let every = drawn_ids(&a);
+    typed(&mut a, "the bench, please");
+    a.key(Key::CtrlS);
+    typed(&mut a, "landing");
+    let hits = drawn_ids(&a);
+    assert_eq!(a.picker_filter, "landing");
+    assert_eq!(
+        hits,
+        vec!["s-pkg".to_string()],
+        "the line narrowed the list to its one hit"
+    );
+    assert_ne!(hits, every, "the list was narrowed, not left whole");
+
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(!a.is_open(Surface::Picker));
+    assert_eq!(a.input(), "the bench, please", "the draft came back");
+    assert!(a.picker_filter.is_empty(), "the query went with the list");
+    assert_eq!(drawn_ids(&a), every, "the list is whole again");
+}
+
+/// The other way out: `ctrl-s` again closes the list, and the search it was narrowed with is not
+/// left in the composer to be sent as a prompt.
+#[test]
+fn ctrl_s_again_gives_the_draft_back_and_drops_the_query() {
+    let mut a = a_head();
+    typed(&mut a, "rust");
+    assert_eq!(a.key(Key::CtrlS), None, "the chord closes it");
+    assert!(!a.is_open(Surface::Picker));
+    assert!(a.input().is_empty(), "the query stayed behind as a prompt");
+
+    // And from a draft, the same round trip gives the operator their words back.
+    typed(&mut a, "a line I was writing");
+    a.key(Key::CtrlS);
+    typed(&mut a, "habr");
+    a.key(Key::CtrlS);
+    assert_eq!(a.input(), "a line I was writing");
+}
+
+/// A multi-line draft is held whole: the composer is emptied for the search and put back line for
+/// line, since a draft is not the one line `set_composer` clears.
+#[test]
+fn a_multi_line_draft_survives_the_list() {
+    let mut a = a_head_with_the_list_closed();
+    typed(&mut a, "first line");
+    a.key(Key::SoftEnter);
+    typed(&mut a, "second line");
+    a.key(Key::CtrlS);
+    assert!(a.input().is_empty(), "the search starts empty");
+    a.key(Key::Esc);
+    assert_eq!(a.input(), "first line\nsecond line");
 }

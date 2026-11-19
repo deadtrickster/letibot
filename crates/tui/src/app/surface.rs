@@ -316,6 +316,9 @@ impl App {
             }
             Surface::Subagents => self.sub_out_pending = None,
             Surface::Standing => self.standing_corpus = None,
+            // The list searched a line that was not the operator's message: the query goes with it and
+            // the draft they were writing comes back.
+            Surface::Picker => self.give_the_composer_back(),
             // The rows and the cursor stay: a skill written since is a row at the next open,
             // and the reader lands on the one they left.
             Surface::Skills => {}
@@ -352,12 +355,19 @@ impl App {
     /// come to do two different things. Returns what the daemon has to be asked for the surface to
     /// have rows: the jobs table, the todo list, the standing notes, the queue, the settings.
     pub(crate) fn open_surface(&mut self, s: Surface) -> Option<Action> {
+        // A surface already on the stack is brought FORWARD by `push_surface`, not opened again: the
+        // picker holds the composer's draft while it is up, and taking it twice would keep the list's
+        // search as a draft (`/sessions` typed with the list already open).
+        let fresh = !self.is_open(s);
         self.push_surface(s);
         match s {
             Surface::Picker => {
                 // The two pickers are never open together: the setting card goes, so the
                 // screen holds one list and the arrows mean one thing. The cursor starts on
                 // the session this head is in, so Enter on an untouched list is a no-op.
+                if fresh {
+                    self.hold_the_composer_for_the_picker();
+                }
                 self.pick = None;
                 self.seat_picker();
                 Some(Action::ListSessions)
