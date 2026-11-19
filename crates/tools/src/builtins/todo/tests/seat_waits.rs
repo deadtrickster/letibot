@@ -291,14 +291,19 @@ fn a_board_is_read_by_seat_by_session_and_only_of_this_project() {
             .unwrap();
     }
     let mine = folder_words(std::path::Path::new("/work/etcd-a36"));
-    // The last one is the seat id a wait should carry: `<host>/<local>`, looked up as the session
-    // it names, so a wait written with an id resolves to the same board the bare id reaches.
-    for name in ["db-fuzz", "s-1", "lab2x1/s-1"] {
+    // The seat id a wait should carry is `<host>/<local>`, looked up as the session it names, and
+    // the bare id is the same board. A TITLE is a name, so it is refused with the id behind it.
+    for name in ["s-1", "lab2x1/s-1"] {
         assert!(
             matches!(board_of(&store, &mine, name).unwrap(), Board::Rows(rows) if rows.len() == 1),
             "{name} names a session of this project"
         );
     }
+    let titled = board_of(&store, &mine, "db-fuzz").unwrap_err();
+    assert!(
+        titled.contains("is a name") && titled.contains("`s-1`"),
+        "{titled}"
+    );
     // And a BRIDGE's seat id finds the board that bridge writes under the id: the words a handle
     // carries are not there to match, so an id is looked up whole rather than refused as another
     // project's.
@@ -317,8 +322,8 @@ fn a_board_is_read_by_seat_by_session_and_only_of_this_project() {
         "a seat that wrote none is unknown, and the sentence names it"
     );
 
-    // The session of another project is refused, and the refusal names the project.
-    let elsewhere = board_of(&store, &mine, "elsewhere").unwrap_err();
+    // A board of another project is refused, and the refusal names the project.
+    let elsewhere = board_of(&store, &mine, "cc@other-thing").unwrap_err();
     assert!(elsewhere.contains("another project"), "{elsewhere}");
     assert!(elsewhere.contains("etcd-a36"), "{elsewhere}");
 

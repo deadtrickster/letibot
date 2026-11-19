@@ -56,12 +56,20 @@ pub fn board_of(store: &Store, mine: &[String], name: &str) -> Result<Board, Str
     }
     let Some(session) = store.session_named(name).map_err(|e| e.to_string())? else {
         return Ok(Board::Unknown(format!(
-            "no session and no seat is called `{name}`{}. A `todo` wait names an external seat \
-             (`cc@<folder>`) or another session of this project by its id or by the name \
-             `letibot --continue` takes",
+            "no session and no seat is called `{name}`{}. A `todo` wait names a seat by its id \
+             (`lab2x1/cc-<session>`) or another session of this project by its id",
             held(store, mine)
         )));
     };
+    // A session's title is a NAME, exactly as a room label is: what it is filed under is the id, so
+    // a wait written with the title would move the day somebody retitles the session.
+    if session.id != name.trim() {
+        return Err(format!(
+            "`{name}` is a name; address `{}` - a wait names the id its board is filed under, and \
+             a title is only what a reader sees",
+            session.id
+        ));
+    }
     if crosses(mine, &folder_words(Path::new(&session.workspace_root))) {
         return Err(other_project(name, mine));
     }

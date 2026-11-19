@@ -722,14 +722,14 @@ fn a_seats_row_can_wait_on_a_sessions_row_and_is_freed_by_its_finishing() {
         &bridge,
         "todo_write",
         json!({"todos": [{"content": "collect the package", "status": "in_progress",
-                "needs": [{"kind": "todo", "seat": "db-fuzz", "content": "ship the pane"}]}]}),
+                "needs": [{"kind": "todo", "seat": "s-42", "content": "ship the pane"}]}]}),
     )
     .expect("a session of this project is a board this seat can wait on");
     assert_eq!(wrote["stored"], json!(true), "{wrote}");
     assert_eq!(
         rows(&bridge).remove(0).needs,
         vec![TodoNeed::Todo {
-            seat: "db-fuzz".into(),
+            seat: "s-42".into(),
             content: "ship the pane".into(),
         }],
         "the wait is on the row, in the store"
@@ -757,7 +757,7 @@ fn a_seats_row_can_wait_on_a_sessions_row_and_is_freed_by_its_finishing() {
     assert_eq!(freeing.len(), 1, "one note for one freed wait: {notes:?}");
     let said = nag_text(freeing[0]);
     assert!(
-        said.contains("db-fuzz finished \"ship the pane\"")
+        said.contains("s-42 finished \"ship the pane\"")
             && said.contains("no longer a wait of")
             && said.contains("collect the package"),
         "{said}"
@@ -790,7 +790,13 @@ fn a_wait_on_another_projects_row_or_an_unknown_one_is_refused_by_name() {
                     "needs": [{"kind": "todo", "seat": seat, "content": "ship it"}]}]}),
         )
     };
-    let elsewhere = write("elsewhere").expect_err("a board of another project");
+    // A TITLE is a name: a wait written with one is refused with the id the board is filed under.
+    let titled = write("elsewhere").expect_err("a title is a name");
+    assert!(
+        titled.contains("is a name") && titled.contains("`s-42`"),
+        "{titled}"
+    );
+    let elsewhere = write("cc@other-thing").expect_err("a board of another project");
     assert!(
         elsewhere.contains("another project") && elsewhere.contains("seat-todo"),
         "the refusal names the project it is not: {elsewhere}"

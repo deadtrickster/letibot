@@ -126,14 +126,14 @@ fn an_external_naming_a_roster_seat_becomes_an_ask() {
         board.snapshot()[0].needs,
         vec![TodoNeed::Ask {
             ask: 4213,
-            of: "cc@etcd-752".into(),
+            of: "lab2x1/cc-etcd752".into(),
             room: "proj".into(),
             question: what.into(),
         }]
     );
     assert_eq!(room.asked.lock().unwrap().len(), 1);
     assert!(
-        r.payload.contains("became an `ask` of `cc@etcd-752`"),
+        r.payload.contains("became an `ask` of `lab2x1/cc-etcd752`"),
         "{}",
         r.payload
     );
@@ -174,7 +174,7 @@ fn the_first_thing_named_wins() {
     let r = tool.wait_on(&json!([{"content": ROW, "external": what}]), None);
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
     assert!(
-        matches!(board.snapshot()[0].needs.as_slice(), [TodoNeed::Ask { of, .. }] if of == "cc@etcd-752")
+        matches!(board.snapshot()[0].needs.as_slice(), [TodoNeed::Ask { of, .. }] if of == "lab2x1/cc-etcd752")
     );
 }
 

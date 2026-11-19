@@ -251,6 +251,53 @@ fn every_seat_in_the_store_is_drawn() {
     }
 }
 
+/// A board is filed under the seat's ID, and the pane draws the label the roster holds for that
+/// seat: the operator reads `db-fuzz-fable`, not `lab2x1/cc-897b5a90`. A seat no roster row names
+/// keeps its id, which is the only name it has here.
+#[test]
+fn a_seats_board_is_drawn_by_the_label_the_roster_holds_for_its_id() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    crate::app::tests::rooms::reply(
+        &mut a,
+        serde_json::json!({"type": "roster", "room": "host", "rows": [
+            {"name": "db-fuzz-fable", "id": "cc@app", "seat_id": "lab2x1/cc-897b5a90",
+             "kind": "external", "connected": true, "project": "", "label": ""}]}),
+    );
+    board(
+        &mut a,
+        Vec::new(),
+        vec![
+            seat(
+                "lab2x1/cc-897b5a90",
+                vec![row("collect", TodoStatus::Pending, Vec::new())],
+            ),
+            seat(
+                "lab2x1/cc-0000",
+                vec![row("alone", TodoStatus::Pending, Vec::new())],
+            ),
+        ],
+    );
+    a.key(Key::CtrlT);
+    let lines = a.todos_lines(160);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("db-fuzz-fable — a Claude Code seat's board")),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("lab2x1/cc-897b5a90 —")),
+        "the id is not what a person reads: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("lab2x1/cc-0000 — a Claude Code seat's board")),
+        "a seat no roster names keeps its id: {lines:#?}"
+    );
+}
+
 /// A seat's board is pulled, never pushed: only a `Todos` reply refreshes it, so the pane says how
 /// old the copy it draws is once it is older than a minute.
 #[test]

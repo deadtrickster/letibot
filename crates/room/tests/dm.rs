@@ -134,6 +134,8 @@ fn said(r: Response) -> letibot_room::Message {
 /// shown, which is the handle and hides exactly the re-addressing this file is about.
 fn coordinator(s: &Scratch) -> Server {
     let server = Server::serve(&s.0.join("room.sock"), Room::new()).expect("a coordinator");
+    // The box's half of every id, pinned: a refusal names the id a name meant.
+    server.with_seat_host("lab2x1");
     server.with_chat_store(&s.0.join("chat.json"));
     server
 }
@@ -209,7 +211,7 @@ fn a_dm_to_a_bridge_that_is_away_is_refused_naming_the_ones_that_answer() {
 }
 
 /// A session's dm to a Claude Code seat whose name is the handle of a session in another project
-/// is refused, with the ids that do go by the name, and the id itself still reaches it.
+/// is refused, naming the id the name means, and the id itself still reaches it.
 #[test]
 fn the_1038_shape_a_handle_from_another_project_is_refused_and_not_re_addressed() {
     let dir = Scratch::new();
@@ -219,13 +221,14 @@ fn the_1038_shape_a_handle_from_another_project_is_refused_and_not_re_addressed(
     tell(&me, vec![top("s-dbfuzz", "db-fuzz")]);
     tell(&arango, vec![top("s-arango", "serenedb")]);
 
-    // No bridge by that name is connected, and the bare name is the arango session's handle.
+    // No bridge by that name is connected, and the bare name is the arango session's handle - which
+    // is a label, so it is refused with the id behind it before a project is even compared.
     for (id, to) in [("1", "serenedb"), ("2", "cc@serenedb")] {
         let why = refused(me.dm(id, to, "cc@serenedb: two questions"));
         match (to, why) {
-            ("serenedb", Refused::HandleInAnotherProject { name, sessions }) => {
+            ("serenedb", Refused::NameIsLabel { name, id }) => {
                 assert_eq!(name, "serenedb");
-                assert_eq!(sessions, vec!["s-arango".to_string()]);
+                assert_eq!(id, "lab2x1/s-arango");
             }
             ("cc@serenedb", Refused::UnknownAddressee { name, .. }) => {
                 assert_eq!(name, "cc@serenedb")

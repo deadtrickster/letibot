@@ -1221,6 +1221,64 @@ impl Server {
             .any(|c| c.family.as_deref() == Some(name))
     }
 
+    /// The seat ids a written word is the LABEL of, when it names a seat by something other than the
+    /// name that seat speaks as: the ids a send must carry instead. Empty for an address - an id, a
+    /// `cc@` handle, a `s-…` session, the operator, the harness, a queue seat - and for a word no
+    /// seat answers to. More than one is a name that fits several, which is the room's `Ambiguous`.
+    ///
+    /// Precedence is `resolve_handle`'s: a word that IS a handle is that member's, and only when no
+    /// handle answers does a title count. Both are refused; only the count differs.
+    fn seats_behind_label(&self, written: &str) -> Vec<String> {
+        let word = written.trim().trim_start_matches('@').trim();
+        if word.is_empty()
+            || crate::SeatId::parse(word).is_some()
+            || word.starts_with("s-")
+            || chat::bridge_parts(word).is_some()
+            || chat::BRIDGE_ALIASES.contains(&word)
+        {
+            return Vec::new();
+        }
+        // A label is written the way a person reads it, so `Rano Session` and `rano-session` are one
+        // name: the exact spelling decides first, the folded one after it.
+        let key = name_key(word);
+        let want = word.to_lowercase();
+        let host = self.seat_host();
+        let mut exact: Vec<String> = Vec::new();
+        let mut folded: Vec<String> = Vec::new();
+        {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            for m in rooms.values().flat_map(|r| r.members().iter()) {
+                if m.group != crate::Group::Top || m.session == word {
+                    continue;
+                }
+                let id = crate::SeatId::of_session(&host, &m.session).to_string();
+                if !m.handle.is_empty() && m.handle == want {
+                    exact.push(id);
+                } else if (!m.handle.is_empty() && (!key.is_empty() && name_key(&m.handle) == key))
+                    || (!key.is_empty() && name_key(&m.label) == key)
+                {
+                    folded.push(id);
+                }
+            }
+        }
+        // A bridge's label is the nick the ROOM holds for it, by seat id - a nick is taken with a
+        // `Nick` frame and kept there, so the connection's own field says nothing about it.
+        for (seat, (label, name)) in self.live_nicks() {
+            if label == name || crate::SeatId::parse(&seat).is_none() {
+                continue;
+            }
+            if label == want {
+                exact.push(seat);
+            } else if !key.is_empty() && name_key(&label) == key {
+                folded.push(seat);
+            }
+        }
+        let mut ids = if exact.is_empty() { folded } else { exact };
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     /// The external names holding a connection now.
     fn external_names(&self) -> Vec<String> {
         self.conn_list()
@@ -1230,10 +1288,62 @@ impl Server {
             .collect()
     }
 
+    /// The principal a seat id names: the connection that says it, else the map a bridge's id was
+    /// greeted into, else - for a session - the local half, which IS its name. `None` for an id no
+    /// connection here speaks as, another box's included: an id is minted where its seat is.
+    fn name_of_id(&self, id: &str) -> Option<String> {
+        let parsed = crate::SeatId::parse(id)?;
+        let host = self.seat_host();
+        if let Some(c) = self
+            .conn_list()
+            .into_iter()
+            .find(|c| c.seat(&host) == parsed.to_string())
+        {
+            return Some(c.who.session.clone());
+        }
+        if let Some(name) = self
+            .inner
+            .ids_of
+            .lock()
+            .expect("the ids lock")
+            .iter()
+            .find(|(_, at)| **at == parsed.to_string())
+            .map(|(name, _)| name.clone())
+        {
+            return Some(name);
+        }
+        (parsed.is_session() && !parsed.host().is_empty()).then(|| parsed.local().to_string())
+    }
+
     /// What a name a sender wrote means: itself when somebody answers to it, else the one
     /// connected bridge a short name (`cc`, `claude-code`) stands for, else the session whose
     /// handle it is. `Err` says why the name named nobody, and what it could have been.
-    fn resolve_name(&self, project: &str, name: &str, reach: Reach) -> Result<String, Miss> {
+    ///
+    /// A seat ID is the address itself and is resolved first; a word that is a seat's LABEL rather
+    /// than its address is refused with the id it would have meant when `labels` is
+    /// [`Labels::Refuse`], because routing on a label is what a rename breaks.
+    fn resolve_name(
+        &self,
+        project: &str,
+        name: &str,
+        reach: Reach,
+        labels: Labels,
+    ) -> Result<String, Miss> {
+        if crate::SeatId::parse(name).is_some() {
+            return self.name_of_id(name).ok_or(Miss::Unknown);
+        }
+        if labels == Labels::Refuse {
+            match self.seats_behind_label(name).as_slice() {
+                [] => {}
+                [id] => {
+                    return Err(Miss::Label {
+                        name: name.trim().trim_start_matches('@').to_string(),
+                        id: id.clone(),
+                    });
+                }
+                ids => return Err(Miss::Ambiguous(ids.to_vec())),
+            }
+        }
         let collapsed = Self::collapse_bridge(name);
         if collapsed != name && self.is_known(&collapsed) {
             return Ok(collapsed);
@@ -1474,15 +1584,16 @@ impl Server {
                 out = replace_mention(&out, &m, &format!("cc@{folder}:*"));
                 continue;
             }
-            match self.resolve_name(project, &m, Reach::Host) {
+            match self.resolve_name(project, &m, Reach::Host, Labels::Rewrite) {
                 Ok(full) if full != m => {
                     out = replace_mention(&out, &m, &full);
                 }
                 Ok(_) => {}
                 // A mention of nobody stays as it was written: the sentence is the sender's, and
-                // only a name that fits several is a refusal, because only that one is not.
+                // only a name that fits several is a refusal, because only that one is not. A label
+                // is rewritten above, so `Label` is a `Refuse`-only answer and cannot come back here.
                 Err(miss @ Miss::Ambiguous(_)) => return Err(miss.refused(&m, self)),
-                Err(Miss::Unknown | Miss::Elsewhere(_)) => {}
+                Err(Miss::Unknown | Miss::Elsewhere(_) | Miss::Label { .. }) => {}
             }
         }
         Ok(out)
@@ -1893,9 +2004,13 @@ impl Server {
         because: Option<u64>,
     ) -> Result<String, crate::Refused> {
         let to = to.trim().trim_start_matches('@');
-        let session = self
-            .resolve_name(project, to, Reach::OwnProject)
-            .unwrap_or_else(|_| to.to_string());
+        let session = match self.resolve_name(project, to, Reach::OwnProject, Labels::Refuse) {
+            Ok(s) => s,
+            // A label is answered with the id it means, which is the only useful thing to say here:
+            // the session it names is one this prompt would reach.
+            Err(miss @ Miss::Label { .. }) => return Err(miss.refused(to, self)),
+            Err(_) => to.to_string(),
+        };
         if session.is_empty() || session == name {
             return Err(crate::Refused::UnknownAddressee {
                 name: session,
@@ -2572,15 +2687,16 @@ impl Server {
                 }
                 let asked = to.trim().trim_start_matches('@');
                 // A claim is handed within the project, like a dm's `to`.
-                let target = match self.resolve_name(project, asked, Reach::OwnProject) {
-                    Ok(t) => t,
-                    Err(miss) => {
-                        return Some(Response::Refused {
-                            id: Some(id.clone()),
-                            why: miss.refused(asked, self),
-                        });
-                    }
-                };
+                let target =
+                    match self.resolve_name(project, asked, Reach::OwnProject, Labels::Refuse) {
+                        Ok(t) => t,
+                        Err(miss) => {
+                            return Some(Response::Refused {
+                                id: Some(id.clone()),
+                                why: miss.refused(asked, self),
+                            });
+                        }
+                    };
                 let got =
                     self.with_claims(project, |c| match c.hand(name, scope, &target, note, now) {
                         Ok(claim) => (Ok(claim.clone()), vec![claim]),
@@ -2848,7 +2964,7 @@ impl Server {
                     return refuse(Some(id), crate::Refused::NullPost);
                 }
                 let to = to.trim().trim_start_matches('@').to_string();
-                let to = match self.resolve_name(project, &to, Reach::OwnProject) {
+                let to = match self.resolve_name(project, &to, Reach::OwnProject, Labels::Refuse) {
                     Ok(t) => t,
                     Err(miss) => return refuse(Some(id), miss.refused(&to, self)),
                 };
@@ -3158,7 +3274,7 @@ impl Server {
                     return refuse(None, Self::room_refusal(project, &room));
                 }
                 let asked = session.trim().trim_start_matches('@');
-                let who = match self.resolve_name(project, asked, Reach::Host) {
+                let who = match self.resolve_name(project, asked, Reach::Host, Labels::Refuse) {
                     Ok(who) => who,
                     Err(miss) => return refuse(None, miss.refused(asked, self)),
                 };
@@ -3186,7 +3302,7 @@ impl Server {
                 let who = match session.as_deref().map(|s| s.trim().trim_start_matches('@')) {
                     None | Some("") => name.to_string(),
                     Some(asked) => self
-                        .resolve_name(project, asked, Reach::Host)
+                        .resolve_name(project, asked, Reach::Host, Labels::Refuse)
                         .unwrap_or_else(|_| asked.to_string()),
                 };
                 // A guest leaves by itself; the room's members and the operator show one out.
@@ -3399,7 +3515,7 @@ impl Server {
             .filter(|t| !t.is_empty())
         {
             None => None,
-            Some(t) => match self.resolve_name(project, t, Reach::OwnProject) {
+            Some(t) => match self.resolve_name(project, t, Reach::OwnProject, Labels::Refuse) {
                 Ok(full) => Some(full),
                 Err(miss) => return refuse(miss.refused(t, self)),
             },
@@ -3687,7 +3803,7 @@ impl Server {
     /// where it was said, and the one it names is brought in rather than left outside looking in.
     fn invite_the_named(&self, room: &str, project: &str, text: &str) {
         for m in chat::mentions(text) {
-            let Ok(who) = self.resolve_name(project, &m, Reach::Host) else {
+            let Ok(who) = self.resolve_name(project, &m, Reach::Host, Labels::Rewrite) else {
                 continue;
             };
             if who == chat::OPERATOR || !self.is_known(&who) {
@@ -4090,13 +4206,17 @@ impl Server {
     }
 
     /// A candidate as a reader picks it: `` `handle` (id, "title") `` for a session the tree names,
-    /// else the name itself.
+    /// else the name itself. A candidate may be a SEAT id, whose local half is the session the tree
+    /// knows, so both spellings find the row.
     fn who_is(&self, id: &str) -> String {
+        let local = crate::SeatId::parse(id)
+            .map(|s| s.local().to_string())
+            .unwrap_or_else(|| id.to_string());
         let rooms = self.inner.rooms.lock().expect("the rooms lock");
         let member = rooms
             .values()
             .flat_map(|r| r.members().iter())
-            .find(|m| m.session == id && m.group == crate::Group::Top);
+            .find(|m| m.session == local && m.group == crate::Group::Top);
         match member {
             Some(m) if !m.handle.is_empty() => format!("`{}` ({id}, \"{}\")", m.handle, m.label),
             Some(m) if !m.label.is_empty() => format!("{id} (\"{}\")", m.label),
@@ -4167,7 +4287,7 @@ impl Server {
             why,
         };
         let asked = to.trim().trim_start_matches('@');
-        let target = match self.resolve_name(project, asked, Reach::Host) {
+        let target = match self.resolve_name(project, asked, Reach::Host, Labels::Refuse) {
             Ok(t) => t,
             // A name nobody answers to is left to the block below, which tells another box's
             // `x@host` from a typo: both are the same question about the same name.
@@ -4179,6 +4299,7 @@ impl Server {
                     sessions,
                 });
             }
+            Err(miss @ Miss::Label { .. }) => return refuse(miss.refused(asked, self)),
         };
         if target == name {
             return refuse(crate::Refused::AskSelf);
@@ -5221,6 +5342,16 @@ enum Reach {
     Host,
 }
 
+/// What a word that turns out to be a seat's LABEL means. A `to`, a dm and an ask are addresses, and
+/// an address is an id: the label is refused with the id it would have meant, so routing never
+/// depends on a name a rename can change. A mention inside a sentence is REWRITTEN instead - that line
+/// is the sender's, and throwing it back over a label would lose what they said.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Labels {
+    Refuse,
+    Rewrite,
+}
+
 /// How many near names an unknown-name refusal lists.
 const CLOSEST: usize = 5;
 
@@ -5278,6 +5409,8 @@ enum Miss {
     Unknown,
     /// It is a handle, but another project's: these are the session ids that go by it.
     Elsewhere(Vec<String>),
+    /// It is the LABEL of `id`: a name the room draws, which is not an address.
+    Label { name: String, id: String },
 }
 
 impl Miss {
@@ -5298,6 +5431,7 @@ impl Miss {
                 name: written.to_string(),
                 sessions,
             },
+            Miss::Label { name, id } => crate::Refused::NameIsLabel { name, id },
         }
     }
 }

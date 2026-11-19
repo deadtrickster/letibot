@@ -11,7 +11,7 @@ const QUESTION: &str = "which port?";
 fn asked(ask: u64) -> TodoNeed {
     TodoNeed::Ask {
         ask,
-        of: "serenedb".into(),
+        of: "lab2x1/s-seren".into(),
         room: "host".into(),
         question: QUESTION.into(),
     }
@@ -49,14 +49,14 @@ fn an_ask_made_through_the_room_becomes_an_edge_on_the_row() {
     let (tool, room) = ask_tool(board.clone());
     let r = waits(
         &tool,
-        json!([{"content": ROW, "ask": {"session": "serenedb", "room": "host", "question": QUESTION}}]),
+        json!([{"content": ROW, "ask": {"session": "lab2x1/s-seren", "room": "host", "question": QUESTION}}]),
     );
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
     assert_eq!(board.snapshot()[0].needs, vec![asked(4211)]);
     assert_eq!(
         room.asked.lock().unwrap().as_slice(),
         [(
-            "serenedb".to_string(),
+            "lab2x1/s-seren".to_string(),
             Some("host".to_string()),
             QUESTION.to_string()
         )],
@@ -64,7 +64,7 @@ fn an_ask_made_through_the_room_becomes_an_edge_on_the_row() {
     );
     assert!(
         r.payload
-            .contains("the session `serenedb` - asked \"which port?\" (ask #4211 in host)"),
+            .contains("the session `lab2x1/s-seren` - asked \"which port?\" (ask #4211 in host)"),
         "{}",
         r.payload
     );
@@ -83,19 +83,19 @@ fn an_ask_with_no_room_takes_the_one_the_room_resolves() {
     let (tool, room) = ask_tool(board.clone());
     let r = waits(
         &tool,
-        json!([{"content": ROW, "ask": {"session": "serenedb", "question": QUESTION}}]),
+        json!([{"content": ROW, "ask": {"session": "lab2x1/s-seren", "question": QUESTION}}]),
     );
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
     assert_eq!(
         room.asked.lock().unwrap().as_slice(),
-        [("serenedb".to_string(), None, QUESTION.to_string())],
+        [("lab2x1/s-seren".to_string(), None, QUESTION.to_string())],
         "the call passed no room through, so the link chooses"
     );
     assert_eq!(
         board.snapshot()[0].needs,
         vec![TodoNeed::Ask {
             ask: 4211,
-            of: "serenedb".into(),
+            of: "lab2x1/s-seren".into(),
             room: "proj".into(),
             question: QUESTION.into(),
         }]
@@ -110,7 +110,7 @@ fn the_rooms_own_note_about_the_target_is_said_in_the_same_call() {
     let (tool, _room) = ask_tool(board.clone());
     let r = waits(
         &tool,
-        json!([{"content": ROW, "ask": {"session": "arango", "question": "which port?"}}]),
+        json!([{"content": ROW, "ask": {"session": "lab2x1/s-arango", "question": "which port?"}}]),
     );
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
     assert!(
@@ -218,7 +218,7 @@ fn a_restated_row_keeps_its_ask() {
     let (tool, _room) = ask_tool(board.clone());
     let r = waits(
         &tool,
-        json!([{"content": ROW, "ask": {"session": "serenedb", "room": "host", "question": QUESTION}}]),
+        json!([{"content": ROW, "ask": {"session": "lab2x1/s-seren", "room": "host", "question": QUESTION}}]),
     );
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
     let r = restated(&tool, ROW);
@@ -250,15 +250,16 @@ fn each_settle_replaces_the_edge_with_the_one_sentence() {
     for (settle, said) in [
         (
             AskSettle::Answered("5433".into()),
-            "`serenedb` answered: 5433",
+            "`lab2x1/s-seren` answered: 5433",
         ),
         (
             AskSettle::Declined("not my area, ask arango".into()),
-            "`serenedb` declined: not my area, ask arango",
+            "`lab2x1/s-seren` declined: not my area, ask arango",
         ),
         (
             AskSettle::Down,
-            "`serenedb` was shut down for good (its session was deleted) - no answer will arrive",
+            "`lab2x1/s-seren` was shut down for good (its session was deleted) - no answer will \
+             arrive",
         ),
         (
             AskSettle::Withdrawn("the operator".into()),
@@ -335,7 +336,7 @@ fn a_row_waiting_on_a_session_is_blocked_and_the_rest_of_the_plan_continues() {
     );
     assert!(said.contains("waiting on another session"), "{said}");
     assert!(
-        said.contains("the SESSION `serenedb` — \"which port?\" (ask #4211)"),
+        said.contains("the SESSION `lab2x1/s-seren` — \"which port?\" (ask #4211)"),
         "{said}"
     );
     assert!(said.contains("Keep going"), "{said}");

@@ -1100,13 +1100,14 @@ impl SessionRoom {
         })
     }
 
-    /// Every session and outside seat in the rooms this session can see, by the name `to` takes.
-    /// A room that does not answer adds nobody: the steer it feeds is best effort.
-    pub fn roster_handles(&self) -> Vec<String> {
+    /// Every session and outside seat in the rooms this session can see: the label a model's words
+    /// carry, and the seat id an ask takes. A room that does not answer adds nobody: the steer it
+    /// feeds is best effort.
+    pub fn roster_handles(&self) -> Vec<(String, String)> {
         let Ok(Response::Rooms { rows }) = self.client.request(&Request::Rooms) else {
             return Vec::new();
         };
-        let mut names: Vec<String> = Vec::new();
+        let mut names: Vec<(String, String)> = Vec::new();
         for info in rows {
             let request = Request::Roster { room: info.id };
             let Ok(Response::Roster { rows, .. }) = self.client.request(&request) else {
@@ -1120,7 +1121,7 @@ impl SessionRoom {
                             letibot_room::chat::Seat::Session | letibot_room::chat::Seat::External
                         ) && p.name != self.session
                     })
-                    .map(|p| p.name),
+                    .map(|p| (p.name, p.seat_id)),
             );
         }
         names.sort_unstable();
@@ -1150,7 +1151,7 @@ impl letibot_tools::builtins::todo::AskLink for LateRoom {
         }
     }
 
-    fn roster(&self) -> Vec<String> {
+    fn roster(&self) -> Vec<(String, String)> {
         self.get().map(|l| l.roster_handles()).unwrap_or_default()
     }
 }

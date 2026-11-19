@@ -481,6 +481,79 @@ fn a_seat_renames_only_itself_and_only_to_a_label() {
     server.stop();
 }
 
+/// A named seat is addressed by its ID, and a `to` written as its nick is refused with that id:
+/// the label is what the operator reads, the id is what a send is keyed on, so a rename never
+/// un-addresses a seat.
+#[test]
+fn a_nick_in_a_to_is_refused_with_the_seat_id_it_means() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a = seated(&server, "s-a", "", "", Seat::Session, A);
+    a.call(Request::Members {
+        rows: vec![top("s-a", "mac")],
+        root: String::new(),
+    });
+    let b = seated(
+        &server,
+        "cc@app",
+        "lab2x1/cc-897b5a90",
+        "",
+        Seat::External,
+        "",
+    );
+    match b.nick("db-fuzz-fable") {
+        Response::Nicked { .. } => {}
+        other => panic!("a free nick is granted: {other:?}"),
+    }
+
+    let dm = |id: &str, to: &str| {
+        a.call(Request::Dm {
+            id: id.into(),
+            to: to.into(),
+            text: "the cache key is warm".into(),
+            thread: None,
+            attachments: Vec::new(),
+        })
+    };
+    // The brief's own sentence: a name is refused with the id it would have meant.
+    match dm("1", "db-fuzz-fable") {
+        Response::Refused {
+            why: Refused::NameIsLabel { name, id },
+            ..
+        } => {
+            assert_eq!(name, "db-fuzz-fable");
+            assert_eq!(id, "lab2x1/cc-897b5a90", "the seat the nick is drawn by");
+            let said = Refused::NameIsLabel { name, id }.to_string();
+            assert!(
+                said.contains("is a name; address `lab2x1/cc-897b5a90`"),
+                "{said}"
+            );
+        }
+        other => panic!("a nick is not an address: {other:?}"),
+    }
+    // A session's handle is a name too, and the id it means is the id of the box that minted it.
+    match dm("2", "mac") {
+        Response::Refused {
+            why: Refused::NameIsLabel { id, .. },
+            ..
+        } => assert_eq!(id, "lab2x1/s-a"),
+        other => panic!("a handle is not an address either: {other:?}"),
+    }
+    // The id itself reaches the seat, and what the operator reads is still the nick.
+    match dm("3", "lab2x1/cc-897b5a90") {
+        Response::Said { .. } => {}
+        other => panic!("an id addresses it: {other:?}"),
+    }
+    assert!(
+        roster(&server, HOST_ROOM)
+            .iter()
+            .any(|r| r == "db-fuzz-fable [lab2x1/cc-897b5a90]"),
+        "the view still draws the nick: {:?}",
+        roster(&server, HOST_ROOM)
+    );
+    server.stop();
+}
+
 /// A `Hello` whose id is not one is refused at the door: an id is minted once, and a typo must not
 /// become a second seat answering to the same name.
 #[test]
