@@ -83,7 +83,9 @@ fn label(v: &RoomsView, c: &Chan) -> String {
             None => id.clone(),
         },
         Chan::Dm(p) if v.sessions.iter().any(|s| &s.id == p) => "  dm".into(),
-        Chan::Dm(p) => clean_line(p),
+        // A DM's channel is keyed by the peer's identity, and drawn by the label the roster holds
+        // for it now - a renamed seat is not a channel list full of names nobody answers to.
+        Chan::Dm(p) => peer(v, p),
         Chan::Session(id) => v
             .sessions
             .iter()
@@ -92,13 +94,19 @@ fn label(v: &RoomsView, c: &Chan) -> String {
     }
 }
 
+/// A peer's label, by the identity the channel is keyed on.
+fn peer(v: &RoomsView, id: &str) -> String {
+    v.roster_label(id)
+        .map_or_else(|| clean_line(id), |n| clean_line(&n))
+}
+
 fn title(v: &RoomsView, c: &Chan) -> String {
     match c {
         Chan::Room(id) => match id.strip_prefix("project/") {
             Some(_) => format!("project {}", clean_line(&v.room_label(id))),
             None => format!("{id} room"),
         },
-        Chan::Dm(p) => format!("dm with {}", clean_line(p)),
+        Chan::Dm(p) => format!("dm with {}", peer(v, p)),
         Chan::Session(_) => "session".into(),
     }
 }
@@ -578,6 +586,11 @@ impl App {
         for list in self.rooms.roster.values() {
             for m in list {
                 handles.insert(m.name.as_str());
+                // The identity as well as the label: a renamed seat's row names only its label,
+                // and a message is authored by the identity.
+                if !m.id.is_empty() {
+                    handles.insert(m.id.as_str());
+                }
             }
         }
         for b in &self.sessions {

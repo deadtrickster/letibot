@@ -978,8 +978,10 @@ and a name in a `to` is not yet refused with the id it would have meant), a todo
 `{"kind":"todo","seat":…}` and an ask's `by_me`/`of_me` (stored rows hold the handle they were
 given, so nothing stored was migrated), and the inbox cursor (`who.session`, so a bridge that
 reconnects under another *name* while keeping its id keeps its label and its roster row but not its
-cursor). The head draws `Presence.name`, which is the label, so a nick reaches the screen already;
-history's "current nick with the then-name beside it" is not built.
+cursor). The head draws a message's author through the roster's identity (`Presence.id`, the name it
+is addressed by) to the label the roster holds now, and appends the label the post recorded in its
+`nick` ref only where the two differ - `db-fuzz-fable (was cc@app)`. A message written before the
+room recorded a label, or by a seat no roster row holds, is drawn as the name it posted under.
 
 Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
 `$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,

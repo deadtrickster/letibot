@@ -1069,6 +1069,42 @@ fn a_dm_channel_is_listed_under_direct_messages_with_its_unread_count() {
     }
 }
 
+/// A DM is keyed by the peer's identity and drawn by the label the roster holds now: a channel
+/// named after a handle the seat no longer answers to is a person talking to a name nobody has.
+#[test]
+fn a_dm_channel_is_drawn_by_the_label_the_roster_holds_now() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 0, 0)]));
+    let mut said = msg(13, "dm", "cc@app", "external", "psst");
+    said["to"] = json!("operator");
+    said["refs"] = json!([{"kind": "nick", "id": "db-fuzz-fable"}]);
+    // Ten minutes earlier, so each opens its own header instead of continuing the one above it.
+    let mut older = msg(3, "dm", "cc@app", "external", "before the rename");
+    older["to"] = json!("operator");
+    reply(&mut a, history("dm", vec![older, said]));
+    // The roster's row is keyed by the identity a message is authored by; its `name` is the label.
+    reply(
+        &mut a,
+        json!({"type": "roster", "room": "host", "rows": [
+            {"name": "db-fuzz-2", "id": "cc@app", "kind": "external", "connected": true,
+             "project": "", "label": ""}]}),
+    );
+    a.key(Key::Down);
+    let rows = screen(&mut a, 120);
+    let all = rows.join("\n");
+    assert!(all.contains("dm with db-fuzz-2"), "{all}");
+    assert!(!all.contains("dm with cc@app"), "{all}");
+    assert!(
+        row_with(&rows, "#13").contains("db-fuzz-2 (was db-fuzz-fable)"),
+        "the speaker is the label now, with the one it posted under beside it: {all}"
+    );
+    // A line older than the ref is drawn by the label it holds and given no name it never had.
+    assert!(
+        row_with(&rows, "#3").contains("db-fuzz-2") && !row_with(&rows, "#3").contains("(was"),
+        "{all}"
+    );
+}
+
 fn host_roster(a: &mut App) {
     reply(a, rooms_reply(&[("host", 3, 1, 0)]));
     reply(
