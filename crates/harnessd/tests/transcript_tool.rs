@@ -168,6 +168,45 @@ fn a_row_the_compaction_left_behind_is_found_and_marked_as_history() {
     assert_eq!(hits.chain[0].forked_at_seq, Some(2), "t1 was cut at seq 2");
 }
 
+/// A reseat forks onto a transcript that carries every row of the old one unchanged: a history
+/// search finds each of those rows once, in the conversation the session is in, and not a second
+/// time in the transcript it was carried from.
+#[test]
+fn a_row_a_reseat_carried_over_is_found_once() {
+    let d = tempdir();
+    let (store, session_id) = store_with_a_fork(d.path());
+    let t0 = format!("{session_id}#t0");
+    let prefix_id = store
+        .transcript_prefix_id(&t0)
+        .expect("reading the prefix")
+        .expect("t0 has one");
+    let t2 = format!("{session_id}#t2");
+    store
+        .put_fork(&t2, &session_id, &prefix_id, &t0, 4)
+        .expect("forking");
+    let carried = [
+        user("the oracle should reach unknown intents"),
+        assistant("covers() now filters Intent::Unknown"),
+    ];
+    for (seq, item) in carried.iter().enumerate() {
+        store
+            .append_item(&t2, seq as u32, item, &row(seq as u32), &[seq as u32])
+            .expect("appending to t2");
+    }
+    let hits = source(d.path(), &session_id)
+        .find(&TranscriptQuery {
+            matching: Some("unknown intents".into()),
+            ..q()
+        })
+        .expect("searching");
+    assert_eq!(
+        hits.matched, 1,
+        "one row, not one per generation: {:?}",
+        hits.rows
+    );
+    assert_eq!(hits.rows[0].generation, 0, "found where the session is now");
+}
+
 /// `history=false` is the caller asking only about the conversation it is in, and then the same
 /// search misses - which proves the walk is doing the work rather than the row being in both places.
 #[test]

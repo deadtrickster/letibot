@@ -157,8 +157,14 @@ impl TranscriptSource for StoreTranscripts {
         let conn = store.connection_of("transcript");
         let mut scanned = 0usize;
         let mut matched: Vec<TranscriptRow> = Vec::new();
+        // The rows of every newer generation, counted: a reseat carries its parent's rows over
+        // unchanged, and an older copy of a row the newer transcript holds is the same row, not a
+        // second one - a search that showed both read as a conversation that repeated itself.
+        let mut newer: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         for link in &searched {
+            let mut carried = newer.clone();
+            let mut this_link: Vec<String> = Vec::new();
             let mut stmt = conn
                 .prepare(
                     "SELECT seq, kind, item_json, created_at
@@ -179,6 +185,13 @@ impl TranscriptSource for StoreTranscripts {
                 let (seq, kind, item_json, created_ms) =
                     row.map_err(|e| format!("reading rows: {e}"))?;
                 scanned += 1;
+                this_link.push(item_json.clone());
+                if let Some(left) = carried.get_mut(&item_json)
+                    && *left > 0
+                {
+                    *left -= 1;
+                    continue;
+                }
                 let seq = seq as u32;
                 // The seq predicates address the CURRENT transcript's numbering, so they are only applied
                 // there - a `from`/`to` range meant for generation 0 would select arbitrary rows in
@@ -224,6 +237,9 @@ impl TranscriptSource for StoreTranscripts {
                     created_ms,
                     generation: link.generation,
                 });
+            }
+            for json in this_link {
+                *newer.entry(json).or_insert(0) += 1;
             }
         }
 
