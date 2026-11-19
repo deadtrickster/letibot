@@ -1,6 +1,6 @@
 //! The helpers, run: a spawned child sees no door, and the guard puts back what it changed.
 
-use letibot_testenv::{EnvGuard, command, isolate};
+use letibot_testenv::{EnvGuard, command, daemon, isolate};
 
 fn child_env(cmd: &mut std::process::Command) -> String {
     let out = cmd.output().expect("env runs");
@@ -19,6 +19,16 @@ fn a_command_carries_no_door_but_keeps_the_apparatus_and_what_the_test_sets() {
     assert!(said.contains("LETIBOT_VOCAB_GGUF=/models/v.gguf"), "{said}");
     let said = child_env(command("env").env("LETIBOT_SOCKET", "/test/own.sock"));
     assert!(said.contains("LETIBOT_SOCKET=/test/own.sock"), "{said}");
+}
+
+#[test]
+fn a_daemons_argv_names_the_point_a_fixture_stands_at() {
+    let cmd = daemon("harnessd");
+    let args: Vec<_> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(args, ["--mode", "always-ask"]);
 }
 
 #[test]

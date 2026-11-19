@@ -46,6 +46,15 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+/// The daemon a fixture drives, at the point a fixture stands at: a project nobody configured is
+/// `automode` since 2026-11-18, and it refuses to open without an authorisation oracle. Every test
+/// here opens in a scratch folder with no mode row and no oracle, so it names the older default.
+pub fn daemon(program: impl AsRef<OsStr>) -> Command {
+    let mut cmd = command(program);
+    cmd.arg("--mode").arg("always-ask");
+    cmd
+}
+
 static ENV: Mutex<()> = Mutex::new(());
 
 /// The environment, held: every test in a binary that sets or removes a variable takes this one

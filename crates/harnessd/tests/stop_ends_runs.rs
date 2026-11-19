@@ -36,7 +36,7 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         .expect("the workspace root");
     let home = dir.join("home");
     std::fs::create_dir_all(&home).expect("a home with no config in it");
-    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"));
+    let mut cmd = letibot_testenv::daemon(env!("CARGO_BIN_EXE_harnessd"));
     cmd.arg("--socket")
         .arg(socket)
         .arg("--store")

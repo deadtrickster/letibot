@@ -157,6 +157,9 @@ impl Daemon {
         .expect("providers.toml");
         let stderr = std::fs::File::create(home.join("daemon.log")).expect("the log");
         let mut args: Vec<String> = vec![
+            // The point a fixture's scratch folder stands at; see `letibot_testenv::daemon`.
+            "--mode".into(),
+            "always-ask".into(),
             "--provider".into(),
             "deepseek".into(),
             "--model".into(),

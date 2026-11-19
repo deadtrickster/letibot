@@ -1792,7 +1792,10 @@ impl Config {
             // alone, and a daemon that never wrote the section scores exactly what it did before.
             embedder: EmbedderSlot::default(),
             wordfreq: crate::embeddings::Wordfreq::default(),
-            mode: letibot_tools::mode::UNSEEN_PROJECT,
+            // A fixture stands where it always did: `always-ask`. A test opens its session in a
+            // scratch folder with no mode row and no oracle, and `automode` - the default for a
+            // project nobody configured - refuses exactly that. `for_the_daemon` sets it back.
+            mode: letibot_tools::mode::Mode::ALWAYS_ASK,
             // The seed, which a fresh box starts with. The operator's file and search key are read
             // by `read_the_box`: a fixture judged by them passes or fails by whose box it ran on.
             permission: letibot_tools::permission::seed(),
@@ -1875,6 +1878,9 @@ impl Config {
     /// afterwards; a file that will not parse means `host`, not a stopped daemon.
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
+        // The rule the docs state: a project nobody configured is `automode`. Set HERE and not in
+        // `for_this_box`, which every fixture builds on and none of them has an oracle.
+        cfg.mode = letibot_tools::mode::UNSEEN_PROJECT;
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
         // The reviewers' own directory, beside the landing root and for the same reason: it is
         // the daemon's, not a session's, and a fixture that serves reviews names its own.

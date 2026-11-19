@@ -44,7 +44,7 @@ fn start(dir: &Path) -> (Daemon, PathBuf) {
         .parent()
         .and_then(Path::parent)
         .expect("the workspace root");
-    let child = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
+    let child = letibot_testenv::daemon(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--socket")
         .arg(&socket)
         .arg("--store")

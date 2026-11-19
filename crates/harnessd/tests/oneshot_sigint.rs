@@ -219,7 +219,7 @@ impl OneShot {
             .parent()
             .and_then(Path::parent)
             .expect("the workspace root");
-        let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"));
+        let mut cmd = letibot_testenv::daemon(env!("CARGO_BIN_EXE_harnessd"));
         cmd.arg("--socket")
             .arg(&socket)
             .arg("--store")

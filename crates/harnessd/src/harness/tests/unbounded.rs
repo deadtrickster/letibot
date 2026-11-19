@@ -64,10 +64,12 @@ fn on_the_whole_host(dir: &Scratch, id: &str) -> Config {
     cfg
 }
 
-/// A box as it comes: the default seat, nothing configured. Enough to answer what the default
-/// point is and what a box that cannot supply it gets.
+/// A box as it comes: the default seat, nothing configured, and the point a fresh install has.
+/// Enough to answer what the default point is and what a box that cannot supply it gets.
 fn bare(dir: &Scratch, id: &str) -> Config {
     let mut cfg = Config::for_this_box(dir.ws());
+    // The box's own default, which `for_this_box` does not give a fixture: this one is about it.
+    cfg.mode = letibot_tools::mode::UNSEEN_PROJECT;
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(dir.db());
     cfg.session_id = id.into();
