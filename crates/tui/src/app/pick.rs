@@ -437,13 +437,45 @@ pub(crate) fn filter_of(line: &str) -> String {
 }
 
 impl App {
-    /// The session list's filter follows the composer while the list is in front.
+    /// The session list's filter follows the line the list itself holds while it is in front - the
+    /// composer's, which [`App::hold_the_composer_for_the_picker`] emptied of the draft on the way in.
     pub(crate) fn sync_picker_filter(&mut self) {
         let want = match self.focused_surface() {
             Some(Surface::Picker) => filter_of(self.editor.text()),
             _ => String::new(),
         };
         self.set_picker_filter(want);
+    }
+
+    /// `ctrl-s` opens the list on an EMPTY search: what the composer holds is the operator's next
+    /// message, not a query, so it is held aside and the list's search starts blank. A draft naming
+    /// no session used to filter every session out of sight.
+    pub(crate) fn hold_the_composer_for_the_picker(&mut self) {
+        if self.picker_draft.is_some() {
+            return;
+        }
+        self.picker_draft = Some(self.editor.text().to_string());
+        self.set_the_composer_line("");
+        self.set_picker_filter(String::new());
+    }
+
+    /// The list closed: what narrowed it was a query and goes with it, and the draft comes back, so
+    /// `ctrl-s` and `esc` cost the operator nothing they had typed.
+    pub(crate) fn give_the_composer_back(&mut self) {
+        let Some(draft) = self.picker_draft.take() else {
+            return;
+        };
+        self.set_the_composer_line(&draft);
+        self.set_picker_filter(String::new());
+    }
+
+    /// The composer's line replaced whole. Not [`App::set_composer`], which kills to the end of one
+    /// LINE: a draft is several lines and the rest of it would stay behind the empty search.
+    fn set_the_composer_line(&mut self, text: &str) {
+        self.editor.kill_range(0..self.editor.text().len());
+        if !text.is_empty() {
+            self.editor.insert(text);
+        }
     }
 
     /// A new filter is a new list, so the cursor starts on its top hit; no filter puts it back on
