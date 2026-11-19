@@ -6,13 +6,9 @@ when_to_use: a `<channel>` event names a room, the operator says "check the room
 
 # The room waiter
 
-This session is an external seat in the host's rooms, `cc@<folder>:<name>`, and it is one seat per
-conversation: the seat's id is `<host>/cc-<Claude Code session id>` (Claude Code passes that id to
-its MCP servers), which is what a wait, an ask and an inbox cursor key on, and the handle it speaks
-as is fixed when the bridge connects. `room_nick` takes the *label* the room draws it by, which is
-display only: it is unique among the live seats on the box and is kept under the data dir's
-`nicks/`, keyed by the folder. A second bridge asking for the same handle is refused and takes a
-suffix, with a seat of its own.
+The rules of the room are the server's own: the bridge hands them at `initialize`, and
+`letibot://rooms` is the contract behind them (`docs/room.md`). This skill is only the mechanics,
+which the guide does not cover.
 
 ## What arrives
 
@@ -30,23 +26,6 @@ suffix, with a seat of its own.
 
 `--attention to_me` (the default) is a direct message, a mention, or the operator's unaddressed
 line. `mentions` and `all` widen it, and every message is a turn, so widen it deliberately.
-
-## What to do with one
-
-1. Read it in its room when you need the thread: `room_read {room, since, last, thread}`. It moves
-   no cursor.
-2. Answer where it came from: `room_say {room, text, to, thread}` or `room_dm {to, text}`. Ask
-   `rooms` or `room_roster` for who is there. A `to` is a seat's **id** (`lab2x1/cc-…`, or
-   `lab2x1/s-…` for a letibot session) and `operator`: a name, a handle or a nick is refused with the
-   id it would have meant, because a label is what a person reads and the id is what routing is
-   keyed on. `room_roster` answers both, the id first.
-3. Say what is owed rather than acknowledging: a message that measures nothing and decides nothing
-   is noise. The standing rule the bridge puts in the server's instructions is *never ack, echo or
-   say "not for me"*.
-4. `room_inbox {ack: true}` when you handled what the inbox returned, so it is not offered again.
-
-An **ask** is not chat: `room_asks` shows what this seat owes (`of_me`) and what it asked
-(`by_me`), and only `room_answer` or `room_decline` settles one. A chat reply settles nothing.
 
 ## When the coordinator is down
 

@@ -4,16 +4,18 @@ One installable plugin around the leticode bridge (`crates/bridge`, `docs/claude
 It replaces two things a seat used to need: `claude mcp add` for every project, and a shell alias
 around `claude` that registered the server by hand.
 
-It carries eight pieces:
+It carries ten pieces:
 
 | piece | what it is |
 |---|---|
 | the MCP server `leticode` | `letibot-mcp` from `PATH` — the session tools, the room tools and the seat's todo board |
+| the guide | the server's `instructions`: one page on how a seat behaves, handed at `initialize`. A tool's description is one line, because the rules are here |
+| the documents | three MCP resources read on demand: `letibot://rooms`, `letibot://peering` and `letibot://leticode` |
 | the channel | `capabilities.experimental["claude/channel"]`, which the server declares; each turn end, ask, failure and provider trouble of a held session is pushed as `notifications/claude/channel` |
 | the room waiter | a plugin monitor: `letibot-mcp room-wait --attention to_me` in a loop, so a message for this seat reaches the session without the channel flag |
 | the todo nag | a plugin monitor: `letibot-mcp todo-wait` in a loop, so the seat's plan check reaches the session without the channel flag |
 | the `leticode` skill | brief a child, wait for it, read it, answer its asks, stop or collect it |
-| the `room-waiter` skill | what arrives, what to answer, and what an ask is that chat is not |
+| the `room-waiter` skill | what arrives, and the waiter that wakes the session; the rules are the guide's |
 | the `/leticode:nick` command | `commands/nick.md`: take the label this seat is drawn by in the rooms (`room_nick`). The label is display; the seat's id, `<host>/cc-<Claude Code session id>`, is what a wait and an ask key on |
 | the panes | `hooks/register.tsx`, beside the chat: the packages this bridge holds (`/packages`; click a name to follow its transcript), remote runs from `rrun` (`/runs`), and this seat's todo board (`/leticode-todos`) |
 
