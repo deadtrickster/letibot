@@ -12,8 +12,9 @@ use crate::room::{
 /// The room's protocol version, and the room's alone. The number moves at release points: a frame
 /// added mid-series rides the next number. 10 added `Ask`, 11 the ask by scope (`path`, `topic`),
 /// 12 `ArchiveRoom` and - under an unchanged number - `MayPrompt` and `Hello.share`/`family`; 13 is
-/// 12 with those counted, so only a 13 coordinator is known to read `may_prompt`.
-pub const ROOM_PROTOCOL_VERSION: u16 = 13;
+/// 12 with those counted, so only a 13 coordinator is known to read `may_prompt`; 14 adds `Nick`
+/// (`Hello.id`/`nick` ride an unknown field, which a 13 coordinator ignores).
+pub const ROOM_PROTOCOL_VERSION: u16 = 14;
 
 /// The oldest client this coordinator still serves. Only a bump that changes what an old client
 /// is sent unasked raises it. `may_prompt` does not, since a client chooses to send it.
@@ -24,6 +25,7 @@ pub const OLDEST_CLIENT: u16 = 11;
 pub fn frame_since(frame: &str) -> Option<u16> {
     match frame {
         "may_prompt" => Some(13),
+        "nick" => Some(14),
         _ => None,
     }
 }
@@ -44,13 +46,14 @@ pub fn frame_refusal(theirs: u16, frame: &str) -> Option<String> {
     ))
 }
 
-/// The frame's own word on the wire (`may_prompt`), for the frames [`frame_since`] knows. Empty for
-/// every other frame: a client that has to name a refused frame is naming one of these, and the
-/// answer to *what else does this job* is the table above rather than a second match.
+/// The frame's own word on the wire (`may_prompt`, `nick`), for the frames [`frame_since`] knows.
+/// Empty for every other frame: a client that has to name a refused frame is naming one of these,
+/// and the answer to *what else does this job* is the table above rather than a second match.
 impl Request {
     pub fn frame(&self) -> &'static str {
         match self {
             Request::MayPrompt { .. } => "may_prompt",
+            Request::Nick { .. } => "nick",
             _ => "",
         }
     }
@@ -1047,32 +1050,46 @@ mod tests {
     use super::*;
 
     /// The number is the contract: a version-11 coordinator knows no `ArchiveRoom` and would take a
-    /// room put away for one it cannot see, and a version-12 one may have shipped before
-    /// `MayPrompt`.
+    /// room put away for one it cannot see, a version-12 one may have shipped before `MayPrompt`,
+    /// and a version-13 one reads no `Nick`.
     #[test]
-    fn the_protocol_is_thirteen() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 13);
-        assert_eq!(crate::server::protocol(), 13);
+    fn the_protocol_is_fourteen() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 14);
+        assert_eq!(crate::server::protocol(), 14);
         assert_eq!(
-            protocol_refusal(13),
+            protocol_refusal(14),
             None,
             "the same build speaks to itself"
         );
         assert_eq!(
             protocol_refusal(11),
             None,
-            "an 11 client sends nothing 12 or 13 changed"
+            "an 11 client sends nothing 12, 13 or 14 changed"
         );
         let older = protocol_refusal(10).expect("a version-10 client is told");
-        assert!(older.contains("this room speaks protocol 13"), "{older}");
+        assert!(older.contains("this room speaks protocol 14"), "{older}");
         assert!(older.contains("the client is the older"), "{older}");
         assert!(older.contains(CLIENT_UPGRADE), "{older}");
-        let newer = protocol_refusal(14).expect("a newer client is told");
+        let newer = protocol_refusal(15).expect("a newer client is told");
         assert!(newer.contains(ROOM_UPGRADE), "{newer}");
-        // And the one frame only a 13 coordinator is known to read is refused below it by name.
+        // And the frames only a newer coordinator is known to read are refused below it by name.
         assert!(frame_refusal(12, "may_prompt").is_some());
         assert_eq!(frame_refusal(13, "may_prompt"), None);
+        assert!(
+            frame_refusal(13, "nick").is_some(),
+            "a 13 coordinator has no `Nick`"
+        );
+        assert_eq!(frame_refusal(14, "nick"), None);
         assert_eq!(frame_refusal(11, "say"), None, "nothing else is gated");
+        // And the frame's own word is the one `frame_since` knows it by.
+        assert_eq!(
+            Request::Nick {
+                id: String::new(),
+                nick: "x".into()
+            }
+            .frame(),
+            "nick"
+        );
         // And an old client's frame is still a frame: the attachments it cannot know are defaulted,
         // so a version-9 head reading a 10 daemon's `say` sees exactly what it always saw.
         let old: Request = serde_json::from_str(r#"{"type":"say","id":"1","text":"hi"}"#).unwrap();
