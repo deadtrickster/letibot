@@ -3,7 +3,7 @@
 //! missing, not go green having measured nothing.
 
 use letibot_tools::exec::{Fired, JobId, ProcessHost, ScopeKind};
-use letibot_tools::testing::runner_harness;
+use letibot_tools::testing::{runner_harness, wait_for, wait_until, wait_within};
 use letibot_transcript::{Backgrounding, ToolOutcome};
 
 macro_rules! runner {
@@ -313,17 +313,11 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
         "the result must name the file its output is going into: {rendered}"
     );
 
-    // `job_wait` returns at once for a job this session started, so the wait is a poll on
-    // the state, not a clock the harness invents.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while host
-        .job(&jid)
-        .map(|v| v.state.is_running())
-        .unwrap_or(false)
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    // `job_wait` returns at once for a job this session started, so the wait is on the state
+    // itself, not on a clock the harness invents.
+    wait_until("the command to finish", || {
+        !host.job(&jid).map(|v| v.state.is_running()).unwrap_or(true)
+    });
     assert!(
         !host.job(&jid).map(|v| v.state.is_running()).unwrap_or(true),
         "the command never finished"
@@ -435,16 +429,10 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         "the result must name the file that keeps the whole of it: {rendered}"
     );
 
-    // `job_wait` returns at once here too, so the wait is a poll on the state.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while host
-        .job(&jid)
-        .map(|v| v.state.is_running())
-        .unwrap_or(false)
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    // `job_wait` returns at once here too, so the wait is on the state itself.
+    wait_until("the command to finish", || {
+        !host.job(&jid).map(|v| v.state.is_running()).unwrap_or(true)
+    });
     assert!(
         !host.job(&jid).map(|v| v.state.is_running()).unwrap_or(true),
         "the command never finished"
@@ -703,8 +691,12 @@ fn pkill_lists_and_kills_by_pid_only() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let list = h.call("pkill", &serde_json::json!({"pattern": marker}).to_string());
+    // The process has to be visible to `pkill` before it can be listed, and that visibility is
+    // the condition rather than a pause in front of the call.
+    let list = wait_for("the process to be listed", || {
+        let l = h.call("pkill", &serde_json::json!({"pattern": marker}).to_string());
+        l.payload.contains("1 process(es) match").then_some(l)
+    });
     assert!(
         list.payload.contains("1 process(es) match"),
         "{}",
@@ -1114,10 +1106,11 @@ fn an_interrupt_ends_a_foreground_command_and_keeps_its_output() {
         .and_then(|t| t.split_whitespace().next())
         .and_then(|t| t.parse().ok())
         .unwrap_or_else(|| panic!("the partial output is in the result: {rendered}"));
-    while alive(pid) && at.elapsed() < std::time::Duration::from_secs(2) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(!alive(pid), "sleep {pid} outlived the interrupt by 2 s");
+    let killed_in = wait_within(std::time::Duration::from_secs(2), || !alive(pid));
+    assert!(
+        killed_in && !alive(pid),
+        "sleep {pid} outlived the interrupt by 2 s"
+    );
     assert!(
         at.elapsed() < std::time::Duration::from_secs(2),
         "{:?}",
