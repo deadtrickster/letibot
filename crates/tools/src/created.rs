@@ -44,11 +44,16 @@ pub struct Created {
     since: Option<SystemTime>,
 }
 
+/// How far a filesystem stamp may trail the wall clock: the kernel stamps from a coarse clock, so
+/// a directory changed in the tick before the snapshot can carry the same mtime after the call.
+const STAMP_SLACK: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl Created {
     /// Take the snapshot: one `read_dir` per place, and nothing recursive.
     pub fn before(places: &[PathBuf]) -> Created {
+        let now = SystemTime::now();
         Created {
-            since: Some(SystemTime::now()),
+            since: Some(now.checked_sub(STAMP_SLACK).unwrap_or(now)),
             roots: places.iter().map(|p| (p.clone(), list(p))).collect(),
         }
     }
@@ -76,7 +81,11 @@ impl Created {
                 match before.entries.get(name) {
                     // A place the command could write has an entry this call put there.
                     None => out.paths.push(root.join(name)),
-                    Some((was_dir, was_mtime)) if *is_dir && *was_dir && mtime != was_mtime => {
+                    Some((was_dir, was_mtime))
+                        if *is_dir
+                            && *was_dir
+                            && (mtime != was_mtime || self.recent(*was_mtime)) =>
+                    {
                         self.descend(&root.join(name), 1, &mut budget, &mut out);
                     }
                     Some(_) => {}
@@ -88,6 +97,12 @@ impl Created {
             }
         }
         out
+    }
+
+    /// A stamp inside the slack before the snapshot: the directory may have changed again since
+    /// without its mtime moving.
+    fn recent(&self, stamp: Option<SystemTime>) -> bool {
+        matches!((stamp, self.since), (Some(t), Some(s)) if t >= s)
     }
 
     /// Look inside a directory whose mtime moved for an entry this call made. Only entries stamped

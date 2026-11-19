@@ -400,6 +400,10 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 "letibot_room::host_key",
                 "letibot_room::lease::host_key_of",
                 "letibot_room::socket_path(",
+                "letibot_room::id::",
+                "letibot_room::SeatId::",
+                "letibot_room::chat::NICK_MAX",
+                "letibot_room::chat::valid_nick",
             ]
             .iter()
             .map(|item| used.matches(item).count())
@@ -409,7 +413,8 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 "`bridge` may name only the room crate's wire types and pure helpers: the protocol \
                  number, upgrade hint and frame refusal, the message, its reach and a refusal's \
                  type, the operator's name, the peer-text checks, the digest's author and page \
-                 size, the room-naming helpers, and the host key and socket path"
+                 size, the room-naming helpers, the host key and socket path, and the seat id and nick \
+                 helpers"
             );
             continue;
         }
