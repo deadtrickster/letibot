@@ -273,13 +273,27 @@ scope_probe_start() {
 }
 # Waits up to `SCOPE_PROBE_SECONDS` for the answer, with one live line on a terminal so a slow
 # manager does not look like a hung launcher. 0 when it answered.
+# Bounds are wall clock: on a loaded box each `sleep 0.1` runs long, and counted ticks stretched
+# a two-second bound into eight. START is EPOCHREALTIME's digits, or empty where bash has none
+# (macOS's bash 3.2), and then the ticks I are counted after all.
+# left_us SECONDS START I -- microseconds left of a bound of SECONDS; zero or less is past it.
+left_us() {
+  if [ -n "$2" ]; then
+    local t=${EPOCHREALTIME//[.,]/}
+    echo $(($1 * 1000000 - (t - $2)))
+  else
+    echo $((($1 * 10 - $3) * 100000))
+  fi
+}
 scope_probe_wait() {
-  local i=0 ticks=$((SCOPE_PROBE_SECONDS * 10)) shown=""
+  local i=0 shown="" start=${EPOCHREALTIME//[.,]/} left
   # An earlier caller in this run already waited the bound out.
   [ -f "${SCOPE_LATE%/*}/late" ] && [ ! -f "$SCOPE_LATE" ] && return 1
-  while [ ! -f "$SCOPE_LATE" ] && [ "$i" -lt "$ticks" ]; do
+  while [ ! -f "$SCOPE_LATE" ]; do
+    left=$(left_us "$SCOPE_PROBE_SECONDS" "$start" "$i")
+    [ "$left" -gt 0 ] || break
     if [ -t 2 ] && [ $((i % 10)) -eq 5 ]; then
-      printf '\rletibot: waiting for systemd (%ss)...' "$((SCOPE_PROBE_SECONDS - i / 10))" >&2
+      printf '\rletibot: waiting for systemd (%ss)...' "$(((left + 999999) / 1000000))" >&2
       shown=1
     fi
     sleep 0.1
@@ -363,12 +377,12 @@ SCOPE_PID=""
 # once it is in, 1 after the join was given up and killed. Whoever makes the gate directory
 # first decides a join that lands at the bound, so the command never runs twice.
 scope_join() {
-  local gate i=0
+  local gate i=0 start=${EPOCHREALTIME//[.,]/}
   gate="$RUNDIR/scope-join-$$-$RANDOM"
   # shellcheck disable=SC2016 # expanded by the child shell, inside the scope
   "${SCOPE_RUN[@]}" "$BASH" -c 'mkdir "$0" 2>/dev/null || exit 125; exec "$@"' "$gate" "$@" <&0 &
   SCOPE_PID=$!
-  while [ ! -d "$gate" ] && [ "$i" -lt $((SCOPE_JOIN_SECONDS * 10)) ] && kill -0 "$SCOPE_PID" 2>/dev/null; do
+  while [ ! -d "$gate" ] && [ "$(left_us "$SCOPE_JOIN_SECONDS" "$start" "$i")" -gt 0 ] && kill -0 "$SCOPE_PID" 2>/dev/null; do
     sleep 0.1
     i=$((i + 1))
   done
