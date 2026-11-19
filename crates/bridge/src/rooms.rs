@@ -15,6 +15,11 @@ use serde_json::{Value, json};
 /// The environment variable that names this bridge in the rooms.
 pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 
+/// The environment variable Claude Code passes every MCP server it starts: the id of the Claude
+/// Code session the server belongs to. It is what makes a bridge the SAME seat after a reconnect,
+/// and a fork (a new session id, a copied transcript) a new one.
+pub const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
+
 /// How `me` behaves in the rooms, said once in the server's instructions: the host room and its own
 /// project's room, never a third. Short because a test holds the byte budget. The two addressing
 /// rules ride here because this seat has no `room` tool text of ours to carry them.
@@ -182,26 +187,18 @@ pub fn remember_name(
         .map_err(|e| format!("cannot keep the name in {}: {e}", file.display()))
 }
 
-/// A nick: lowercase letters, digits and `-`, at most 20, not a session prefix, the operator or
-/// a bridge alias.
+/// A nick, in the room's own one rule (`letibot_room::chat::valid_nick`): the coordinator refuses
+/// a label by that rule, so the bridge refusing a different set would only make two answers.
 fn valid_nick(nick: &str) -> Result<(), String> {
-    let ok = !nick.is_empty()
-        && nick.len() <= 20
-        && !nick.starts_with("s-")
-        && !nick.starts_with('-')
-        && !nick.ends_with('-')
-        && !["operator", "cc", "claude-code"].contains(&nick)
-        && nick
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if ok {
-        Ok(())
-    } else {
-        Err(format!(
-            "`{nick}` is not a nick: 1-20 of a-z, 0-9 and `-`, no leading or trailing `-`, not \
-             `operator`, `cc`, `claude-code` or starting `s-`"
-        ))
+    if letibot_room::chat::valid_nick(nick) {
+        return Ok(());
     }
+    Err(format!(
+        "`{nick}` is not a nick: 1-{} of a-z, 0-9 and `-`, no leading or trailing `-`, and not \
+         `operator`, `cc`, `claude-code`, `s-…` or `cc-…` - those read as a name the room already \
+         means",
+        letibot_room::chat::NICK_MAX
+    ))
 }
 
 /// Does `author` (a handle as the room shows it) name the bridge `me`?
@@ -315,6 +312,71 @@ pub fn handle() -> String {
 
 fn set_handle(name: String) {
     *name_cell().lock().unwrap_or_else(|e| e.into_inner()) = name;
+}
+
+/// This bridge's seat: `<host>/cc-<Claude Code session id>`, minted once and kept in the working
+/// folder. The handle above is a label a reader sees; this is what the room, a wait and an ask are
+/// keyed on, so a reconnect under another name is the same seat and keeps its cursor.
+fn seat_cell() -> &'static Mutex<String> {
+    static SEAT: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+    SEAT.get_or_init(|| Mutex::new(mint_seat(&data_dir(), &cwd())))
+}
+
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_default()
+}
+
+/// The seat a bridge of this folder is, in the order the facts decide it: the Claude Code session id
+/// Claude Code handed this process; else the id this folder was last minted (a bridge started
+/// without the variable is still the seat the folder has); else the folder itself, so the first
+/// mint is stable too.
+fn mint_seat(dir: &std::path::Path, here: &std::path::Path) -> String {
+    let host = letibot_room::id::seat_host(dir);
+    if let Some(raw) = std::env::var(SESSION_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        let id = letibot_room::SeatId::of_bridge(&host, &raw);
+        let _ = letibot_room::id::write_folder(dir, here, &id);
+        return id.to_string();
+    }
+    if let Some(id) = letibot_room::id::read_folder(dir, here).filter(|i| i.host() == host) {
+        return id.to_string();
+    }
+    let id = letibot_room::SeatId::fresh_bridge(&host, &letibot_room::id::folder_key(here));
+    let _ = letibot_room::id::write_folder(dir, here, &id);
+    id.to_string()
+}
+
+/// The seat this bridge speaks as, as its `Hello` says it.
+pub fn seat() -> String {
+    seat_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn set_seat(id: String) {
+    *seat_cell().lock().unwrap_or_else(|e| e.into_inner()) = id;
+}
+
+/// A seat of this process alone, for the second bridge of a folder whose id is already held: it is
+/// not kept, because the folder's id is the first bridge's and a twin must not take it back.
+fn fresh_seat() -> String {
+    let dir = data_dir();
+    let stamp = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let host = letibot_room::id::seat_host(&dir);
+    let id = letibot_room::SeatId::fresh_bridge(&host, &stamp);
+    let _ = letibot_room::id::write_folder(&dir, &cwd(), &id);
+    id.to_string()
 }
 
 fn family_cell() -> &'static Mutex<Option<String>> {
@@ -941,6 +1003,10 @@ impl RoomLink {
             "seat": "external",
             "share": self.inner.share.load(Ordering::SeqCst),
             "family": family(),
+            "id": seat(),
+            // The label, when the folder has taken one: display only, and the room refuses a name
+            // a live seat already answers to rather than letting two seats be drawn alike.
+            "nick": read_nick(&data_dir(), &cwd()).unwrap_or_default(),
         });
         write_line(&mut writer, &hello)?;
         let mut first = String::new();
@@ -971,6 +1037,9 @@ impl RoomLink {
             let asked = base();
             set_family(Some(family_for(&asked)));
             set_handle(suffixed(&asked, fresh_salt(u32::from(tried))));
+            // A second bridge of a folder is a second seat: it must not answer to the first one's
+            // id, or a wait keyed on that id would wake whichever of them the room saw last.
+            set_seat(fresh_seat());
             return self.open();
         }
         match first["type"].as_str() {
@@ -1044,38 +1113,28 @@ impl RoomLink {
         Ok(())
     }
 
-    /// Take the name part `nick` for this bridge: reconnect as the new handle, and keep the nick
-    /// for this working folder. Refused, with the old handle kept, when a live member holds it.
+    /// Take `nick` as the label this seat is drawn by. The room holds it, because it is the one
+    /// place that can see every live seat on the box: it refuses a name another seat answers to,
+    /// saying whose it is and which counter is free. The seat's id is its identity, so a rename
+    /// never moves it and never makes the seat somebody else; the label is kept in the working
+    /// folder so a restart asks for it again.
     pub fn nick(&self, nick: &str) -> Result<Value, String> {
-        valid_nick(nick)?;
+        let nick = nick.trim().to_lowercase();
+        valid_nick(&nick)?;
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let env = std::env::var(NAME_ENV).ok();
-        let new = base_name(env.as_deref(), Some(nick), &cwd);
-        let _one = self.inner.call.lock().unwrap_or_else(|e| e.into_inner());
-        let old = handle();
-        if new != old {
-            self.drop_connection();
-            let was = family();
-            set_family(None);
-            set_handle(new.clone());
-            if let Err(e) = self.open() {
-                set_family(was);
-                set_handle(old.clone());
-                for _ in 0..20 {
-                    if self.open().is_ok() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                return Err(if e.contains("name in use") {
-                    format!("`{new}` is held by a live member; this bridge stays `{old}`")
-                } else {
-                    e
-                });
-            }
+        let first = handle();
+        let reply = self.request(&json!({ "type": "nick", "nick": nick }))?;
+        if reply["type"] != "nicked" {
+            return Err(format!("the room did not take the nick: {reply}"));
         }
-        write_nick(&data_dir(), &cwd, nick)?;
-        Ok(json!({ "type": "nick", "handle": new, "previous": old, "env_override": env.is_some() }))
+        write_nick(&data_dir(), &cwd, &nick)?;
+        Ok(json!({
+            "type": "nick",
+            "nick": nick,
+            "previous": reply["previous"],
+            "seat": seat(),
+            "handle": first,
+        }))
     }
 
     /// A fresh request id, unique to this bridge process.
@@ -1797,12 +1856,13 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_nick",
-            "Set the name part of your handle (`cc@<folder>:<name>`) for this folder, when it \
-             holds several repos. Refused while a live member holds it.",
+            "The label the room draws this seat by, beside its id: a nick is display, and the seat's \
+             id is its identity. Refused while a live seat answers to it, with whose it is and the \
+             next counter free.",
             json!({
                 "type": "object",
                 "properties": {
-                    "nick": { "type": "string", "description": "1-20 of a-z, 0-9 and `-`." }
+                    "nick": { "type": "string", "description": "1-24 of a-z, 0-9 and `-`, no edge `-`." }
                 },
                 "required": ["nick"]
             }),

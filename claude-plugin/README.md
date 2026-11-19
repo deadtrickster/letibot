@@ -4,7 +4,7 @@ One installable plugin around the leticode bridge (`crates/bridge`, `docs/claude
 It replaces two things a seat used to need: `claude mcp add` for every project, and a shell alias
 around `claude` that registered the server by hand.
 
-It carries seven pieces:
+It carries eight pieces:
 
 | piece | what it is |
 |---|---|
@@ -14,6 +14,7 @@ It carries seven pieces:
 | the todo nag | a plugin monitor: `letibot-mcp todo-wait` in a loop, so the seat's plan check reaches the session without the channel flag |
 | the `leticode` skill | brief a child, wait for it, read it, answer its asks, stop or collect it |
 | the `room-waiter` skill | what arrives, what to answer, and what an ask is that chat is not |
+| the `/leticode:nick` command | `commands/nick.md`: take the label this seat is drawn by in the rooms (`room_nick`). The label is display; the seat's id, `<host>/cc-<Claude Code session id>`, is what a wait and an ask key on |
 | the panes | `hooks/register.tsx`, beside the chat: the packages this bridge holds (`/packages`; click a name to follow its transcript), remote runs from `rrun` (`/runs`), and this seat's todo board (`/leticode-todos`) |
 
 ## Install
