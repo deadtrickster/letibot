@@ -97,6 +97,9 @@ struct Shared {
     /// ([`Client::with_seat`]). A client that says neither is the seat its name always was.
     seat_id: Mutex<String>,
     nick: Mutex<String>,
+    /// One more connection of a seat that is already connected - a bridge and its waiter. An id is
+    /// one seat, so the second connection must say it is sharing rather than claiming it again.
+    share: bool,
     /// The room this client believes it is reaching. It rides on every `Hello`, including a
     /// reconnect's: a session moved to another box must not keep talking to the one it opened on.
     room: String,
@@ -195,6 +198,25 @@ impl Client {
         client.dial()
     }
 
+    /// One more connection of a seat another connection already holds, saying so: the `Hello`'s
+    /// `share`. A second bridge of one Claude Code session is this - and so is a bridge's waiter.
+    pub fn connect_shared(
+        path: impl Into<PathBuf>,
+        speaker: Speaker,
+        room: impl Into<String>,
+        seat: crate::chat::Seat,
+        id: impl Into<String>,
+        wake: Wake,
+    ) -> Result<Client, ClientError> {
+        let client = Self::build(path, speaker, room, seat, wake);
+        client.with_seat(id, "");
+        let mut shared = client;
+        Arc::get_mut(&mut shared.inner)
+            .expect("the only reference")
+            .share = true;
+        shared.dial()
+    }
+
     /// The client, before it has dialled: what a caller sets its seat on.
     fn build(
         path: impl Into<PathBuf>,
@@ -214,6 +236,7 @@ impl Client {
                 live: Mutex::new(None),
                 seat_id: Mutex::new(String::new()),
                 nick: Mutex::new(String::new()),
+                share: false,
                 generation: std::sync::atomic::AtomicU64::new(0),
                 call: Mutex::new(()),
                 waiting: Mutex::new(None),
@@ -418,7 +441,7 @@ impl Client {
             room: self.inner.room.clone(),
             seat: self.inner.seat,
             token: operator_token(&self.inner.path),
-            share: false,
+            share: self.inner.share,
             family: None,
             id: self.inner.seat_id.lock().expect("the seat lock").clone(),
             nick: self.inner.nick.lock().expect("the nick lock").clone(),

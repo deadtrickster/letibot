@@ -368,6 +368,33 @@ fn an_id_that_is_not_one_is_refused_at_the_door() {
         Arc::clone(&wake) as Arc<dyn Fn(&Event) + Send + Sync>,
     );
     assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.0));
+    // One id is one seat: another name claiming the same id is refused, unless it says it is one
+    // more connection of that seat (a bridge and its waiter do).
+    let err = Client::connect_seated(
+        server.path(),
+        Speaker::top_level("cc@other"),
+        letibot_room::room_name(&server.name(), ""),
+        Seat::External,
+        "lab2x1/cc-2e4a9c1b",
+        "",
+        Arc::clone(&wake) as Arc<dyn Fn(&Event) + Send + Sync>,
+    )
+    .err()
+    .unwrap_or_else(|| panic!("one id is one seat"));
+    assert!(err.0.contains("lab2x1/cc-2e4a9c1b"), "{err}");
+    let shared = Client::connect_shared(
+        server.path(),
+        Speaker::top_level("cc@other"),
+        letibot_room::room_name(&server.name(), ""),
+        Seat::External,
+        "lab2x1/cc-2e4a9c1b",
+        Arc::clone(&wake) as Arc<dyn Fn(&Event) + Send + Sync>,
+    );
+    assert!(
+        shared.is_ok(),
+        "a connection that says it shares the seat is let in: {:?}",
+        shared.err().map(|e| e.0)
+    );
     // The operator's seat has no id of its own to mint, and says so rather than guessing one.
     let op = seated(&server, OPERATOR, "", "", Seat::Operator, "");
     assert!(matches!(op.call(Request::Rooms), Response::Rooms { .. }));
