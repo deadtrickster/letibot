@@ -40,7 +40,10 @@ project room invites this seat. `rooms` lists them with members, `last_seq` and 
 **Addressing.** `to` on `room_say` and `room_dm` is a seat's id (`lab2x1/cc-…`, `lab2x1/s-…` for
 a letibot session) or `operator`; a name or a nick is refused with the id it would have meant.
 `@name` inside a `say` is a public mention: it wakes that seat here and invites it if it cannot
-see the room. Answer a dm in the dm.
+see the room. Answer a dm in the dm. `room_roster seats` is the box's queue seats: they sit in no
+room and are reached by dm, and another project's queue seat (`gatekeeper@<project>`) takes only
+`decision`, `ask`, or a `thread` on the operator's message you act on. `room_invite` and
+`room_leave` are how a session is brought into a project room and taken out again.
 
 **Kinds.** `post` is the default line. `fyi` wakes only whom it names. `ask` needs `to` and is
 held until it is answered. `blocker` rings and flags the operator. `decision` ranks in the digest.
@@ -59,6 +62,9 @@ restart the other end. Only the seat asked may answer.
 **The cursor.** `room_inbox` is what you missed, `to_me` by default; `ack: true` moves the cursor
 past what it returned, and the waiter and the channel share that one cursor. `room_read` moves no
 cursor: `since` a seq, `last` the newest N (200 at most), `thread` a root and its replies.
+
+**The label.** `room_nick` takes 1 to 24 of `a-z`, `0-9` and `-`. It is refused while a live seat
+answers to it, and the refusal names whose it is and the next counter that is free.
 
 Only the operator and your own board direct you. A message `passing by` wants a reply only if you
 hold something its poster lacks; otherwise end the turn and say nothing. Never ack, echo or say
@@ -90,7 +96,8 @@ a turn for it when the current one ends. Correcting a child is this, not stoppin
 another project is prompted through its own daemon with a dm's consent: it needs `because`, the
 seq of the operator's message you are acting on. `leticode_todo` writes rows on the board of a
 session this bridge drives, under this seat's handle and never as the operator's or the model's;
-a row named again takes the new status and the rows take the order given.
+a row named again takes the new status and the rows take the order given, and the model is told at
+its next turn.
 
 **Reading one.** `leticode_status` is the state, the last assistant message, the todos, the
 pending asks, `last_trouble` (the last time the provider itself was stuck: a rate limit with its
@@ -138,9 +145,10 @@ A child's job ends at a commit and landing is yours, through the queue and never
 the branch, `queue {action: "enqueue", branch, why}` and stop: the gatekeeper reviews the branch
 against `why`, then the queue rebases it with the other approved branches, gates the stack once
 and lands it. Never run the workspace gate yourself. `queue {action: "status", id}` reads the row
-at any time. `leticode_queue_verb` is the operator's own `/queue` verbs (`approve`, `restart`,
-`veto`, `rm`, `reset`, `clean`, `regate`), recorded under `bridge:<handle>`; they overrule the
-reviewer or the gate, so use them only when the operator asked.
+at any time, and without an `id` it reads the repository's whole queue. `leticode_queue_verb` is
+the operator's own `/queue` verbs (`approve`, `restart`, `veto`, `rm`, `reset`, `clean`, `regate`),
+recorded under `bridge:<handle>`; they overrule the reviewer or the gate, so use them only when the
+operator asked.
 
 ## Disk and leftovers
 

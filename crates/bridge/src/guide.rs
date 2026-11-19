@@ -22,7 +22,7 @@ mod tests {
     /// Every rule the tool descriptions used to carry, as a phrase the guide keeps it in. The
     /// descriptions are one line each now, so this list is what stops a rule being dropped on the
     /// way out rather than moved. Each entry is (what the rule is, the words it lives in).
-    const RULES: [(&str, &str); 51] = [
+    const RULES: &[(&str, &str)] = &[
         (
             "the seat id is keyed on the Claude Code session",
             "`CLAUDE_CODE_SESSION_ID` pins the seat's id",
@@ -91,6 +91,22 @@ mod tests {
         ),
         ("a read moves no cursor", "`room_read` moves no cursor"),
         (
+            "the queue seats are reached by dm",
+            "`room_roster seats` is the box's queue seats",
+        ),
+        (
+            "another project's queue seat takes only decision, ask or a thread",
+            "takes only `decision`, `ask`, or a `thread` on the operator's message",
+        ),
+        (
+            "a session is invited into a project room",
+            "`room_invite` and `room_leave` are how a session",
+        ),
+        (
+            "a nick is refused while a live seat answers to it",
+            "It is refused while a live seat answers to it",
+        ),
+        (
             "a passing-by message is not for you",
             "A message `passing by` wants a reply only if you",
         ),
@@ -150,6 +166,10 @@ mod tests {
         (
             "a row is written under this seat's handle",
             "under this seat's handle and never as the operator's or the model's",
+        ),
+        (
+            "a driven session's model is told about its new rows",
+            "the model is told at its next turn",
         ),
         ("a cursor the ring outlived says dropped", "plus `dropped`"),
         ("the transcript caps long strings", "8000 characters"),
