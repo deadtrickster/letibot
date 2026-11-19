@@ -436,9 +436,12 @@ fn a_slash_on_its_own_thread_runs_once_and_is_not_handed_on() {
         }
     }));
     let hub = registry.get(&id).expect("the session's hub");
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let until = std::time::Instant::now() + Duration::from_secs(60);
     while hub.owner() != letibot_sessionlog::hub::Owner::OwnThread {
-        assert!(std::time::Instant::now() < deadline, "no own thread");
+        assert!(
+            std::time::Instant::now() < until,
+            "the session never got its own thread"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     let head = hub.attach(
@@ -463,8 +466,17 @@ fn a_slash_on_its_own_thread_runs_once_and_is_not_handed_on() {
                 .filter(|(l, h)| l == line && *h == handed)
                 .count()
         };
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while of(false) == 0 && of(true) < 100 && std::time::Instant::now() < deadline {
+        // Each run is a store call, and under IO load one takes tens of seconds: this waits for the
+        // outcome to be recorded, and the deadline is only the one that says it never happened.
+        let until = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if of(false) >= 1 || of(true) >= 100 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "`/{line}` never ran on its own thread"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
