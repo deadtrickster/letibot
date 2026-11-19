@@ -14,7 +14,7 @@ use letibot_tools::exec::{
     Cgroup2, ExecError, HostProcesses, JobId, JobState, ProcessHost, Reaping, ScopeId, ScopeKind,
     ScopeTree, SpawnRequest,
 };
-use letibot_tools::testing::runner_harness;
+use letibot_tools::testing::{runner_harness, wait_until};
 use letibot_transcript::ToolOutcome;
 
 /// The branch taken on a box with no delegated cgroup v2, asserted rather than skipped: the
@@ -73,19 +73,10 @@ fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
     };
 
     // Wait for it to settle rather than racing it: 125 is not a duration.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let view = loop {
-        let v = host.job(&JobId(id.clone())).expect("the job is known");
-        if !v.state.is_running() {
-            break v;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the job never settled: {}",
-            v.state.word()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    wait_until("the job to settle", || {
+        !host.job(&JobId(id.clone())).expect("the job is known").state.is_running()
+    });
+    let view = host.job(&JobId(id.clone())).expect("the job is known");
 
     // The state word: `exited 125`, not `not run (could not join its scope)`.
     assert_eq!(
@@ -267,15 +258,10 @@ fn a_command_that_prints_the_marker_ran_and_did_not_fail_to_join_its_scope() {
         other => job_id_anywhere(&r.payload).unwrap_or_else(|| panic!("{other:?}: {}", r.render())),
     };
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let view = loop {
-        let v = host.job(&JobId(id.clone())).expect("the job is known");
-        if !v.state.is_running() {
-            break v;
-        }
-        assert!(std::time::Instant::now() < deadline, "never settled");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
+    wait_until("the job to settle", || {
+        !host.job(&JobId(id.clone())).expect("the job is known").state.is_running()
+    });
+    let view = host.job(&JobId(id.clone())).expect("the job is known");
 
     assert_eq!(
         view.state,

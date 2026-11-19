@@ -2,7 +2,7 @@
 //! a picture of the right size, and a stop that ends the process.
 
 use letibot_tools::builtins::screen::{CELL_H, CELL_W, ScreenTool};
-use letibot_tools::testing::{Harness, runner_harness};
+use letibot_tools::testing::{Harness, runner_harness, wait_for, wait_until};
 use letibot_transcript::ToolOutcome;
 
 fn seat() -> Option<Harness> {
@@ -110,29 +110,16 @@ fn stop_ends_the_process() {
     let cmd = format!("echo $$ > {}; exec sleep 60", pidfile.display());
     let start = call(&mut h, serde_json::json!({"action": "start", "cmd": cmd}));
     let id = id_of(&start.payload);
-    let mut pid = 0i32;
-    for _ in 0..50 {
-        if let Ok(s) = std::fs::read_to_string(&pidfile)
-            && let Ok(p) = s.trim().parse()
-        {
-            pid = p;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    let pid: i32 = wait_for("the program's pid file", || {
+        std::fs::read_to_string(&pidfile)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    });
     assert!(pid > 0, "the program never wrote its pid");
     assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "it runs before stop");
     let stop = call(&mut h, serde_json::json!({"action": "stop", "id": id}));
     assert_eq!(stop.outcome, ToolOutcome::Ok, "{}", stop.payload);
-    let mut gone = false;
-    for _ in 0..50 {
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            gone = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    assert!(gone, "pid {pid} survived stop");
+    wait_until("the screen's program to go", || unsafe { libc::kill(pid, 0) } != 0);
 }
 
 #[test]
@@ -260,12 +247,9 @@ fn a_page_served_by_a_session_job_renders() {
         "{}",
         started.payload
     );
-    for _ in 0..50 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    wait_until("the server to answer on its port", || {
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
     let url = format!("http://127.0.0.1:{port}/index.html");
     let shot = call(
         &mut h,
