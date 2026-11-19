@@ -138,7 +138,7 @@ fn head(m: &Msg, names: &BTreeMap<String, String>, me: &str) -> Vec<Cell> {
     } else {
         Role::Hue(hue(&m.author))
     };
-    out.push(Cell::role(display(names, &m.author), who));
+    out.push(Cell::role(speaker(m, names), who));
     if let Some(to) = m.to.as_deref().filter(|to| *to != me) {
         out.push(Cell::role(
             format!("to {}", display(names, to)),
@@ -160,7 +160,7 @@ fn quote(t: u64, all: &[&Msg], names: &BTreeMap<String, String>) -> String {
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or_default();
             let said = truncate(first.trim(), QUOTE_COLS);
-            format!("↳ {t} {}: {said}", display(names, &target.author))
+            format!("↳ {t} {}: {said}", speaker(target, names))
         }
         None => format!("↳ {t}"),
     }
@@ -182,6 +182,19 @@ fn system_text(m: &Msg) -> String {
 /// named it.
 fn display(names: &BTreeMap<String, String>, handle: &str) -> String {
     clean_line(names.get(handle).map(String::as_str).unwrap_or(handle))
+}
+
+/// What a message's author is drawn as: the name this head holds for it now, and - where the label
+/// it posted under was another - that label beside it, `db-fuzz-fable (was cc@app)`. A message with
+/// no `nick` ref, or an author no list knows, is drawn as the handle it was posted under.
+fn speaker(m: &Msg, names: &BTreeMap<String, String>) -> String {
+    let now = display(names, &m.author);
+    match m.nick() {
+        Some(then) if now != clean_line(&m.author) && clean_line(then) != now => {
+            format!("{now} (was {})", clean_line(then))
+        }
+        _ => now,
+    }
 }
 
 /// The name each blob of the window was sent under, whether it is a picture, and the size the

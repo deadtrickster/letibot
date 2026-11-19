@@ -328,6 +328,55 @@ fn a_mention_of_a_session_id_draws_its_name() {
     assert!(!row.contains("@s-1793"), "the id is not drawn: {row:?}");
 }
 
+/// A seat is drawn as the label it holds now, and a line it posted under an older one says which:
+/// `db-fuzz-fable (was cc@app)`. A message with no `nick` ref is not given a name it never had.
+#[test]
+fn a_renamed_seat_is_drawn_by_its_label_with_the_name_it_posted_under() {
+    // One message each, ten minutes apart: the run rule is not what this test is about.
+    let nick = |then: &str| {
+        vec![ChatRef {
+            kind: "nick".into(),
+            id: then.into(),
+        }]
+    };
+    let mut renamed = message(1, "cc@app", "the cache key is warm");
+    renamed.refs = nick("db-fuzz-fable");
+    let mut older = message(11, "cc@app", "posted while it was db-fuzz-fable");
+    older.refs = nick("db-fuzz-fable");
+    let never = message(21, "cc@app", "posted before the room had labels");
+    let mut unknown = message(31, "cc@other", "a seat no roster row holds");
+    unknown.refs = nick("some-label");
+    // Renamed twice: the label now is not the one `renamed` or `older` were posted under.
+    let named = names(&[("cc@app", "db-fuzz-2")]);
+    let v = view(vec![renamed, older, never, unknown]);
+    let s = crate::app::chat_adapter::stream(&v, &chan(), &named, "operator", TS + 120_000);
+    let head = |i: usize| entries(&s)[i].head[0].text.clone();
+    assert_eq!(head(0), "db-fuzz-2 (was db-fuzz-fable)");
+    assert_eq!(head(1), "db-fuzz-2 (was db-fuzz-fable)");
+    assert_eq!(
+        head(2),
+        "db-fuzz-2",
+        "no ref is no then-name: a line older than the ref is drawn as it always was"
+    );
+    assert_eq!(
+        head(3),
+        "cc@other",
+        "an author the head does not know is drawn by the handle it posted under"
+    );
+    // The then-name is the label the POST carried, so a seat still drawn by that label says
+    // nothing: the suffix is only there where the two differ.
+    let mut same = message(1, "cc@app", "still drawn as it posted");
+    same.refs = nick("db-fuzz-fable");
+    let s = crate::app::chat_adapter::stream(
+        &view(vec![same]),
+        &chan(),
+        &names(&[("cc@app", "db-fuzz-fable")]),
+        "operator",
+        TS + 120_000,
+    );
+    assert_eq!(entries(&s)[0].head[0].text, "db-fuzz-fable");
+}
+
 /// A message that names the reader says so in its header, and the token itself is the one mention
 /// no speaker's hue may quiet.
 #[test]

@@ -322,9 +322,14 @@ impl App {
         verbs
     }
 
-    /// The name a handle is read as: the roster's label, the session list's title, and the handle
-    /// itself when neither knows it.
+    /// The name a handle is read as: the roster's label for the seat that handle is the identity
+    /// of, the session list's title, and the handle itself when neither knows it. The identity is
+    /// tried first, because a renamed seat's roster row is keyed by nothing else - its `name` is
+    /// already the label.
     pub(crate) fn rooms_display_name(&self, handle: &str) -> String {
+        if let Some(label) = self.rooms.roster_label(handle) {
+            return label;
+        }
         for m in self.rooms.roster.values().flatten() {
             if m.name == handle && !m.label.is_empty() {
                 return m.label.clone();
