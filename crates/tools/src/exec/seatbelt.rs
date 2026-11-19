@@ -345,6 +345,17 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
         s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
     }
     s.push_str(&format!("  {})\n", l.xcrun_filter()));
+    // The config directory's ssh pair, for a view that is not the whole filesystem: the deny below
+    // leaves these out of its mask, and a tight seat reads nothing it is not told it may.
+    let config = l.operator_home.join(super::config_dir::CONFIG_REL);
+    if l.deny.contains(&config) {
+        for p in super::config_dir::readable(&config, view.grants.iter().map(|g| g.path())) {
+            s.push_str(&format!(
+                "(allow file-read* (subpath \"{}\"))\n",
+                p.display()
+            ));
+        }
+    }
     // The store's data, for a view that is not the whole filesystem; the denies below keep
     // its secrets out and its writes refused.
     let store = l.operator_home.join(super::store::STORE_REL);

@@ -2,7 +2,8 @@
 //! readable and never writable, its secrets and live control files are neither. One rule set,
 //! read by the macOS profile, the bwrap view and the file tools, so they cannot drift.
 //!
-//! Data: `sessions.db*`, `metrics.db*`, `embeddings.db*`, `logs/**`, `panes/**`, `room-*.chat`.
+//! Data: `shared.db*`, `projects/**` (a split store's index and its per-project files),
+//! `sessions.db*`, `metrics.db*`, `embeddings.db*`, `logs/**`, `panes/**`, `room-*.chat`.
 //! Everything else in the directory stays fenced (`sessions/<id>/` is writable only by its
 //! own session, through the file tools), and `~/.config/letibot` is not in this directory.
 
@@ -12,10 +13,10 @@ use std::path::{Path, PathBuf};
 pub const STORE_REL: &str = ".local/share/letibot";
 
 /// SQLite files: the database and its `-wal`, `-shm` and `-journal` companions.
-pub const DATA_DBS: &[&str] = &["sessions.db", "metrics.db", "embeddings.db"];
+pub const DATA_DBS: &[&str] = &["shared.db", "sessions.db", "metrics.db", "embeddings.db"];
 const DB_COMPANIONS: &[&str] = &["-wal", "-shm", "-journal"];
 /// Directories readable as a whole.
-pub const DATA_DIRS: &[&str] = &["logs", "panes"];
+pub const DATA_DIRS: &[&str] = &["projects", "logs", "panes"];
 /// A top-level `room-<key>.chat` is a transcript: data.
 const CHAT: (&str, &str) = ("room-", ".chat");
 
@@ -131,6 +132,22 @@ pub fn fence_note(body: &str, store: &Path) -> Option<String> {
         "`{named}` is inside the letibot store, which a command's view does not hold: this \
          session's own directory there is reached with `read`, `edit` and `write`, never with \
          `bash`. Use a file tool for it — no `[boundary]` key grants the store."
+    ))
+}
+
+/// The note a command earns when it names the single `sessions.db` in a store that has been split:
+/// that file is the pre-split name, and a query there answers *no such session* about sessions that
+/// are all present. `None` when the store is not split or the command does not name the file.
+pub fn split_note(command: &str, store: &Path) -> Option<String> {
+    if !command.contains("sessions.db") || !store.join("shared.db").is_file() {
+        return None;
+    }
+    Some(format!(
+        "this store is split: `sessions.db` in {} is not where the sessions are. The index is \
+         `shared.db` (table `session`; its `project` column names the file), and each project's \
+         history is `projects/<project>.db` (tables `transcript`, `transcript_item`). Every \
+         session on this box is in those files, whichever daemon runs it.",
+        store.display()
     ))
 }
 
@@ -260,5 +277,27 @@ mod tests {
         assert!(fence_note("cat: src/lib.rs: No such file or directory", store).is_none());
         // And a path that only looks similar is not the store.
         assert!(fence_note("cat: /home/op/.local/share/letibot-copy/x", store).is_none());
+    }
+
+    /// A command naming `sessions.db` in a split store is told where the sessions are; in a store
+    /// that is not split, or naming another file, it is told nothing.
+    #[test]
+    fn a_command_on_the_old_file_of_a_split_store_is_told_the_layout() {
+        let dir = std::env::temp_dir().join(format!("store-split-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cmd = "sqlite3 ~/.local/share/letibot/sessions.db 'select id from session'";
+        assert!(
+            split_note(cmd, &dir).is_none(),
+            "an unsplit store is not noted"
+        );
+        std::fs::write(dir.join("shared.db"), "").unwrap();
+        let note = split_note(cmd, &dir).expect("a split store is noted");
+        assert!(
+            note.contains("shared.db") && note.contains("projects/"),
+            "{note}"
+        );
+        assert!(split_note("sqlite3 metrics.db .tables", &dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

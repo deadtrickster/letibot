@@ -1047,7 +1047,7 @@ fn certificate_trust_evaluates_in_both_seats_and_the_tight_seat_still_has_no_key
 /// A fake letibot store under `op`: data and secrets side by side.
 fn fake_store(op: &Path) -> PathBuf {
     let store = op.join(".local/share/letibot");
-    for d in ["logs/2026", "panes", "keys", "sessions/s-1"] {
+    for d in ["logs/2026", "panes", "keys", "sessions/s-1", "projects"] {
         std::fs::create_dir_all(store.join(d)).expect("a store directory");
     }
     std::fs::create_dir_all(op.join(".config/letibot/keys")).expect("the config keys");
@@ -1055,6 +1055,8 @@ fn fake_store(op: &Path) -> PathBuf {
     std::fs::write(op.join(".config/letibot/providers.toml"), SECRET).expect("the providers file");
     for (name, body) in [
         ("sessions.db", "sessions-data"),
+        ("shared.db", "index-data"),
+        ("projects/42ce9f1aae08.db", "history-data"),
         ("metrics.db", "metrics-data"),
         ("logs/2026/a.jsonl", "log-data"),
         ("panes/p", "pane-data"),
@@ -1090,6 +1092,9 @@ fn every_seat_reads_the_stores_data_and_never_its_secrets_or_writes_it() {
         let st = store.display();
         for (file, want) in [
             ("sessions.db", "sessions-data"),
+            // A split store: the index and a project's history are the data a session reads.
+            ("shared.db", "index-data"),
+            ("projects/42ce9f1aae08.db", "history-data"),
             ("metrics.db", "metrics-data"),
             ("logs/2026/a.jsonl", "log-data"),
             ("panes/p", "pane-data"),

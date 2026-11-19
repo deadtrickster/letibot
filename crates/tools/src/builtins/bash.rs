@@ -1339,6 +1339,9 @@ impl Tool for Bash {
                 | letibot_transcript::ToolOutcome::Backgrounded { .. }
         ) || matches!(state, JobState::Exited { code } if code != 0);
         inv = store_note(inv, failed, &crate::lifecycle::data_dir());
+        if let Some(note) = crate::exec::store::split_note(command, &crate::lifecycle::data_dir()) {
+            inv = inv.with_note(note);
+        }
         // Carried to the runtime, which is the layer that holds the gate and can
         // therefore ASK about widening the view. The tool only reports what the
         // boundary told it.
