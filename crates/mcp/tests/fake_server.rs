@@ -12,6 +12,10 @@ use letibot_tools::testing::external_harness_with_gate;
 use letibot_tools::{ExternalBackends, MemoryStore, OutputCap, Spiller};
 use letibot_transcript::ToolOutcome;
 
+mod support;
+
+use support::{PATIENCE, wait_until};
+
 /// The fake server's path. Not `env!`: `cargo clippy` does not build the bin, so it is unset there.
 fn fake_bin() -> String {
     if let Some(p) = option_env!("CARGO_BIN_EXE_letibot-mcp-fake") {
@@ -210,10 +214,17 @@ fn a_restart_that_fails_waits_out_its_backoff_before_the_next() {
     );
     assert!(!marker.exists(), "no start was tried");
 
-    std::thread::sleep(Duration::from_millis(600));
-    let r = cat
-        .call("fake", "echo", &serde_json::json!({"text": "up"}))
-        .unwrap();
+    // The restart's backoff is 500 ms and doubles, so ask until it has passed rather than sleep
+    // through it: a call inside the window spawns nothing and answers with the time left.
+    let r = {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            match cat.call("fake", "echo", &serde_json::json!({"text": "up"})) {
+                Ok(r) => break r,
+                Err(e) => assert!(std::time::Instant::now() < deadline, "never restarted: {e:?}"),
+            }
+        }
+    };
     assert_eq!(r.text, "up");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -231,15 +242,9 @@ fn a_list_changed_notice_lists_the_tools_again() {
     assert!(!names(&cat).contains(&"extra".to_string()));
     cat.call("fake", "grow", &serde_json::json!({})).unwrap();
     // The notice follows the answer on the pipe, so it is read on a later listing.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !names(&cat).contains(&"extra".to_string()) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "never relisted: {:?}",
-            names(&cat)
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the tools to be listed again", || {
+        names(&cat).contains(&"extra".to_string())
+    });
     let mut h = harness(cat, allow_all_mcp());
     let r = h.call("mcp_call", r#"{"tool":"fake__extra"}"#);
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
@@ -324,15 +329,11 @@ fn a_timed_out_mcp_call_is_cancelled_not_retried_blind() {
     };
     // The server answers at 900 ms and reads the note after, so the id arrives a moment behind the
     // timeout; the pairing is that the id in the log is the one the error names.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut logged = String::new();
-    while std::time::Instant::now() < deadline {
+    wait_until("the cancellation to reach the server", || {
         logged = std::fs::read_to_string(&log).unwrap_or_default();
-        if !logged.trim().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        !logged.trim().is_empty()
+    });
     let id = logged.trim();
     assert!(!id.is_empty(), "no cancellation reached the server: {why}");
     assert!(

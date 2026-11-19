@@ -2,11 +2,15 @@
 //! process, which no other test may observe.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_mcp_client::{Catalog, ServerSpec, Transport};
 use letibot_tools::builtins::external::mcp::McpCatalog;
 use serde_json::json;
+
+mod support;
+
+use support::wait_until;
 
 fn fake_bin() -> String {
     if let Some(p) = option_env!("CARGO_BIN_EXE_letibot-mcp-fake") {
@@ -67,9 +71,7 @@ fn stdio_spawn_does_not_leak_env_or_orphan() {
         .unwrap();
     assert!(alive(pid), "the grandchild started");
     drop(cat);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while alive(pid) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!alive(pid), "grandchild {pid} outlived the server's drop");
+    wait_until(&format!("grandchild {pid} to go with the server"), || {
+        !alive(pid)
+    });
 }

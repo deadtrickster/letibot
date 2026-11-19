@@ -7,6 +7,10 @@ use std::time::Duration;
 use letibot_mcp_client::{Catalog, Did, Pool, ServerSpec, State, Transport};
 use letibot_tools::builtins::external::mcp::McpCatalog;
 
+mod support;
+
+use support::{PATIENCE, wait_until};
+
 fn fake_bin() -> String {
     if let Some(p) = option_env!("CARGO_BIN_EXE_letibot-mcp-fake") {
         return p.into();
@@ -88,13 +92,17 @@ fn a_call_in_flight_finishes_on_the_process_it_started_on() {
     let old = pid(&cat, "slow");
     let caller = {
         let cat = cat.clone();
-        std::thread::spawn(move || {
-            cat.call("slow", "pid", &serde_json::json!({"ms": 1500}))
+        let (signed_in, told) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            signed_in.send(()).expect("the test is listening");
+            cat.call("slow", "pid", &serde_json::json!({"ms": 3_000}))
                 .unwrap()
                 .text
-        })
+        });
+        told.recv_timeout(PATIENCE)
+            .expect("the caller to take its turn");
+        handle
     };
-    std::thread::sleep(Duration::from_millis(300));
     let changes = cat.reconcile(&[fake("slow", &["--tag=new"])], Vec::new());
     assert_eq!(changes[0].did, Did::Restarted("config changed"));
     assert_eq!(caller.join().unwrap(), old.to_string());
@@ -121,7 +129,14 @@ fn a_rebuilt_binary_is_stale_until_restarted() {
     std::fs::copy(fake_bin(), &bin).unwrap();
     let cat = Catalog::start(&[spec("srv", bin.to_str().unwrap(), &[])]);
     assert!(cat.stale().is_empty());
-    std::thread::sleep(Duration::from_millis(20));
+    // The stamp is the file's mtime, so the copy about to be made must be stamped later than the
+    // one the running process left: wait for the clock rather than guess a tick.
+    let born = std::fs::metadata(&bin).unwrap().modified().unwrap();
+    wait_until("the clock to pass the binary's own stamp", || {
+        std::time::SystemTime::now()
+            .duration_since(born)
+            .is_ok_and(|d| !d.is_zero())
+    });
     // A new file at the path, as an install does: the running process keeps the old inode.
     let next = dir.join("srv.new");
     std::fs::copy(fake_bin(), &next).unwrap();
@@ -145,19 +160,20 @@ fn a_reload_retries_a_server_that_failed() {
         cat.status()
     );
     std::fs::copy(fake_bin(), &bin).unwrap();
-    // A file just written can be busy for exec while another test's fork still holds it.
+    // A file just written can be busy for exec while another test's fork still holds it, so try
+    // again rather than sleep a fixed time and hope.
     let mut changes = cat.reconcile(&specs, Vec::new());
-    for _ in 0..20 {
+    wait_until("the server to be retried and start", || {
         if !changes[0]
             .failed
             .as_deref()
             .is_some_and(|w| w.contains("busy"))
         {
-            break;
+            return true;
         }
-        std::thread::sleep(Duration::from_millis(50));
         changes = cat.reconcile(&specs, Vec::new());
-    }
+        false
+    });
     assert_eq!(changes[0].to_string(), "late restarted (retried)");
     assert_eq!(cat.status()[0].state, State::Running);
 }
