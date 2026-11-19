@@ -58,6 +58,10 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     // seat that decides whether the arbiter can rule at all: `resolve_role` keeps ONLY the tools a
     // role names, so `room` must be named in `roles::m1_orchestrator`, not merely registered.
     cfg.seat = Seat::Orchestrator;
+    // Its own point, not the project default: the coordinator has no store, so no mode row reaches
+    // it, and the default's oracle is a thing a box may not have - a room that refuses to open is a
+    // room no message crosses. `always-ask` is the point it always ran at, and it needs no oracle.
+    cfg.mode = letibot_tools::mode::Mode::ALWAYS_ASK;
     // And this daemon's own session joins its own room, so the arbiter does not hold a `NoRoom`
     // tool and hear the refusal one layer too late. Set HERE rather than inherited, so a fixture
     // calling `configure` measures the coordinator and not the constructor.
@@ -392,6 +396,9 @@ mod tests {
         assert!(!cfg.allow_bash);
         assert!(!cfg.serve_queues);
         assert_eq!(cfg.seat, Seat::Orchestrator);
+        // Its own point and never the project default, whose oracle a box may lack: with no store,
+        // no mode row reaches the coordinator, and on a box with no oracle the room refused to open.
+        assert_eq!(cfg.mode.name, letibot_tools::mode::Mode::ALWAYS_ASK.name);
         // And the arbiter's own session can reach the room it arbitrates. Without this the seat
         // names `room` and the tool behind it is a `NoRoom`: the tie-breaker is woken, told to call
         // a tool it cannot use, and a raised item stays frozen.
