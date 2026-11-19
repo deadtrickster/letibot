@@ -11,6 +11,7 @@ pub mod claims;
 pub mod coordinator;
 pub mod link;
 pub mod operator;
+pub mod peering;
 pub mod remind;
 pub mod roster;
 pub mod seat;

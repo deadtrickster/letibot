@@ -197,6 +197,9 @@ impl Coordinator {
             server.with_item_store(&items);
         }
         server.with_arbiter(session).with_lease(lease.clone());
+        // Peering, when the operator wrote a cookie for it: a box without one is a coordinator
+        // that goes on being exactly what it was, and this answers `None` without a word.
+        super::peering::start(&server);
         // How long a gone session's ask may stand before the operator is asked to restart it. Read
         // from the box's environment, so a test can make the grace seconds while the shipped box
         // runs five minutes with no config file to keep in step with the constant.

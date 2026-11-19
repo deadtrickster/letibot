@@ -455,6 +455,19 @@ impl Server {
             .collect()
     }
 
+    /// Where a project's workspace is, as its own daemon last told the room: what a caller turns
+    /// into the repository identity its seats are matched by. Empty when no session of that
+    /// project has dialled in with a root yet.
+    pub fn project_root(&self, project: &str) -> String {
+        self.inner
+            .rooms
+            .lock()
+            .expect("the rooms lock")
+            .get(project)
+            .map(|r| r.root().to_string())
+            .unwrap_or_default()
+    }
+
     /// The project a `Hello` is asking for, or the sentence refusing it. An empty name is *I do not
     /// say* - a protocol-1 client - and reaches the box's own room, where the version check refuses
     /// it. A name that is not this box's is refused here, before any verb exists to refuse.
