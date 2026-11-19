@@ -1728,6 +1728,13 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             format!("{} message(s), {skipped} left out", rows.len())
         }
         Response::Acked { cursor } => format!("read up to #{cursor}"),
+        Response::Nicked { id, nick, previous } => {
+            if previous.is_empty() {
+                format!("`{nick}` is this seat's label now ({id})")
+            } else {
+                format!("`{nick}` is this seat's label now ({id}, was `{previous}`)")
+            }
+        }
         Response::Signals { card } => {
             let mut out = format!("signals, {}m window", card.window_ms / 60_000);
             for (title, rows) in [("senders", &card.senders), ("kinds", &card.kinds)] {
@@ -1816,7 +1823,8 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
 /// One row per member, offline ones included: the name in backticks is what `to` takes.
 fn roster_sentence(room: &str, rows: &[letibot_room::chat::Presence]) -> String {
     let mut s = format!(
-        "in `{room}`, {} member(s); `to` takes the name in backticks:",
+        "in `{room}`, {} member(s); `to` takes the name in backticks, and `seat` beside it is the \
+         id a wait or an ask is keyed on:",
         rows.len()
     );
     for p in rows {
@@ -1836,6 +1844,10 @@ fn roster_sentence(room: &str, rows: &[letibot_room::chat::Presence]) -> String 
         }
         if !p.id.is_empty() && p.id != p.name {
             row.push_str(&format!(" ({})", p.id));
+        }
+        // The seat's id: a nick is a label the seat may change, and this is what outlives it.
+        if !p.seat_id.is_empty() && p.seat_id != p.name {
+            row.push_str(&format!(", seat {}", p.seat_id));
         }
         s.push_str(&row);
     }

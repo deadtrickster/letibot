@@ -258,6 +258,7 @@ fn roster_is_a_frame_and_its_sentence_names_every_member() {
     let row = |name: &str, id: &str, kind, connected, label: &str| letibot_room::chat::Presence {
         name: name.into(),
         id: id.into(),
+        seat_id: String::new(),
         kind,
         connected,
         project: "aaaaaaaaaaaa".into(),
@@ -277,19 +278,32 @@ fn roster_is_a_frame_and_its_sentence_names_every_member() {
                     "ws 1a2b",
                 ),
                 row("cc@mac", "cc@mac", letibot_room::Seat::External, true, ""),
+                // A seat that knows its id is drawn by its label with the id beside it - a label
+                // is display, and the id is what a wait or an ask is keyed on.
+                letibot_room::chat::Presence {
+                    name: "db-fuzz-fable".into(),
+                    id: "cc@app".into(),
+                    seat_id: "lab2x1/cc-9a1f".into(),
+                    kind: letibot_room::Seat::External,
+                    connected: true,
+                    project: "aaaaaaaaaaaa".into(),
+                    label: String::new(),
+                    seat: None,
+                },
             ],
         },
         "s-me",
     )
     .expect("a sentence");
     assert!(
-        said.starts_with("in `project/aaaaaaaaaaaa`, 3 member(s)"),
+        said.starts_with("in `project/aaaaaaaaaaaa`, 4 member(s)"),
         "{said}"
     );
     for want in [
         "`rano` - session, connected, project aaaaaaaaaaaa, \"Rano\" (s-rano)",
         "`s-plain` - session, offline, project aaaaaaaaaaaa, \"ws 1a2b\"",
         "`cc@mac` - external, connected",
+        "`db-fuzz-fable` - external, connected, project aaaaaaaaaaaa (cc@app), seat lab2x1/cc-9a1f",
     ] {
         assert!(said.contains(want), "`{want}` missing: {said}");
     }

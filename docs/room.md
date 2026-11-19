@@ -944,12 +944,34 @@ room. Nothing about it is a protocol change: `room` was always the field a `hell
 `room_say` or `room_ask` with no `room` argument says it in that seat's own room, exactly as a
 session's `say` does; `rooms` lists the two it may use.
 
-**The name.** Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
+**The seat, and the name it is drawn by.** A seat has two things and they are not the same thing.
+
+Its **id** is `<host>/<local>`: `lab2x1/s-1792687430252160872` for a letibot session,
+`lab2x1/cc-<Claude Code session id>` for a bridge. The host half is the box's short name *at
+minting*, pinned in the data directory's `seat-host` the first time an id is asked for, so a rename
+never re-issues an id already handed out. A bridge mints its own from `CLAUDE_CODE_SESSION_ID`,
+which Claude Code passes every MCP server it starts, and keeps it in the working folder
+(`seats/<folder key>`) so a bridge started without the variable is still that folder's seat. A fork
+of a Claude Code session (a new session id, a copied transcript) is a new seat, and does not take
+the parent's name while the parent lives. A session's id is derived from its own session id, so a
+daemon that sends no `id` at all is still minted one. The id is what a todo wait, an ask and an
+inbox cursor are keyed on: a reconnect under another name is the same seat and keeps all three.
+Two connections of one id must say `share` (a bridge and its waiter do); otherwise the second is
+refused as `name_in_use`.
+
+Its **nick** is the label a reader sees, and nothing is keyed on it. It is unique among the live
+seats on the box - sessions and bridges alike - and `room_nick` takes it: a name another live seat
+answers to is refused with that seat (`held_by`) and the next counter free (`db-fuzz-fable-2`,
+never a random suffix), and a name whose holder is gone is free. A rename is said once in each room
+the seat is in. A session's default label is the slug of its title, which is also the handle it is
+addressed by; a bridge's is the handle `cc@<folder>:<name>` it speaks as.
+
+Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
 `$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,
-for a linked worktree) or the `room_nick` the working folder was given (kept under the data dir's
+for a linked worktree) or the nick the working folder was given (kept under the data dir's
 `nicks/`, keyed by the folder's canonical path). The folder is the one holding that repository, or the
 working folder itself outside a repository. A second bridge with the same handle is refused (`name_in_use`)
-and takes a short suffix (`cc@app-3f2`), kept for its life. Its `hello` names the handle it lost as its
+and takes a short suffix (`cc@app-3f2`), kept for its life, with a seat of its own. Its `hello` names the handle it lost as its
 `family`: mail to `cc@app` is pushed to `cc@app-3f2` too, counts in its own inbox under its own cursor,
 and still reaches it when `cc@app` is gone. A family must be the handle's own prefix before `-<suffix>`,
 or it is ignored. One Claude Code session can run two bridges (a user-scope `leticode` server and the
@@ -985,6 +1007,7 @@ Tools:
 | `room_asks` | - | the asks between this seat and the other sessions: `of_me` (owed an answer) and `by_me`, with `state` and `lines` |
 | `room_answer` | `{ask, text}` | answers the ask: a thread reply in its room, and the asker's row is released |
 | `room_decline` | `{ask, text}` | declines it, saying why. A different outcome from an answer, and the asker's row reads which |
+| `room_nick` | `{nick}` | the label the room draws this seat by, beside its id. Refused while a live seat answers to it, with whose it is and the next counter free (`db-fuzz-fable-2`). The plugin's `/leticode:nick` calls it |
 
 **Being asked.** A Claude Code seat has no board, so an ask of it is nagged by the channel push of the
 question plus the operator's card when it is gone - and settled by `room_answer` or `room_decline`, which
