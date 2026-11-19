@@ -2366,50 +2366,57 @@ impl Chat {
         rows.into_iter().cloned().collect()
     }
 
-    /// Start `name`'s inbox at the head of the log if it has none: a reader hears what happens next.
-    pub fn arm(&mut self, name: &str) {
+    /// Start `id`'s inbox at the head of the log if it has none: a reader hears what happens next.
+    /// `id` is the seat's id, not the label it is drawn by: a cursor outlives a rename, so every
+    /// method here that keys durable state takes the id and nothing else.
+    pub fn arm(&mut self, id: &str) {
         let head = self.next;
-        if !self.cursors.contains_key(name) {
-            self.cursors.insert(name.to_string(), head);
+        if !self.cursors.contains_key(id) {
+            self.cursors.insert(id.to_string(), head);
             self.write(&[Record::Cursor {
-                name: name.to_string(),
+                name: id.to_string(),
                 seq: head,
             }]);
         }
     }
 
-    pub fn cursor(&self, name: &str) -> u64 {
-        self.cursors.get(name).copied().unwrap_or(self.next)
+    /// Where `id`'s cursor stands.
+    pub fn cursor(&self, id: &str) -> u64 {
+        self.cursors.get(id).copied().unwrap_or(self.next)
     }
 
-    /// Move `name`'s cursor forward. It never moves back and never past the head.
-    pub fn ack(&mut self, name: &str, seq: u64) -> u64 {
+    /// Move `id`'s cursor forward. It never moves back and never past the head.
+    pub fn ack(&mut self, id: &str, seq: u64) -> u64 {
         let head = self.next;
-        let before = self.cursors.get(name).copied();
-        let c = self.cursors.entry(name.to_string()).or_insert(head);
+        let before = self.cursors.get(id).copied();
+        let c = self.cursors.entry(id.to_string()).or_insert(head);
         *c = (*c).max(seq.min(head));
         let now = *c;
         if before != Some(now) {
             self.write(&[Record::Cursor {
-                name: name.to_string(),
+                name: id.to_string(),
                 seq: now,
             }]);
         }
         now
     }
 
-    /// What `name` missed: visible messages after its cursor that pass `attention`, oldest first, up
+    /// What `id` missed: visible messages after its cursor that pass `attention`, oldest first, up
     /// to `limit`, plus how many visible ones were left out. Moves nothing.
+    /// Two arguments because they answer two questions: `id` is whose cursor is read - a seat keeps
+    /// it across a rename - and `name` is how that seat is addressed in the text (`to`, a mention),
+    /// which is the label and moves when the seat takes another.
     /// `family` is the name a suffixed bridge also answers to: its mail counts under this cursor.
     pub fn inbox(
         &self,
+        id: &str,
         name: &str,
         family: Option<&str>,
         attention: Attention,
         limit: usize,
         see: impl Fn(&Message) -> bool,
     ) -> (Vec<Message>, u64) {
-        let cursor = self.cursor(name);
+        let cursor = self.cursor(id);
         let attends = |m: &Message| {
             m.attends(name, attention) || family.is_some_and(|f| m.attends(f, attention))
         };
@@ -2515,25 +2522,25 @@ impl Chat {
         self.guests.clone()
     }
 
-    /// Note that `name` was connected while `seq` was said. Memory only, until [`Chat::keep_seen`].
-    pub fn mark_seen(&mut self, name: &str, seq: u64) {
-        let s = self.seen.entry(name.to_string()).or_insert(0);
+    /// Note that `id` was connected while `seq` was said. Memory only, until [`Chat::keep_seen`].
+    pub fn mark_seen(&mut self, id: &str, seq: u64) {
+        let s = self.seen.entry(id.to_string()).or_insert(0);
         *s = (*s).max(seq);
     }
 
-    /// Write `name`'s seen mark, so a restart knows where its gap began.
-    pub fn keep_seen(&mut self, name: &str) {
-        if let Some(seq) = self.seen.get(name).copied() {
+    /// Write `id`'s seen mark, so a restart knows where its gap began.
+    pub fn keep_seen(&mut self, id: &str) {
+        if let Some(seq) = self.seen.get(id).copied() {
             self.write(&[Record::Seen {
-                name: name.to_string(),
+                name: id.to_string(),
                 seq,
             }]);
         }
     }
 
-    /// The newest `seq` `name` was connected for, `None` for a member never seen.
-    pub fn seen(&self, name: &str) -> Option<u64> {
-        self.seen.get(name).copied()
+    /// The newest `seq` the seat `id` was connected for, `None` for a member never seen.
+    pub fn seen(&self, id: &str) -> Option<u64> {
+        self.seen.get(id).copied()
     }
 
     /// What `name` missed, for [`summarise`]: visible messages of others after `since` (a `seq`) or,
@@ -2560,9 +2567,10 @@ impl Chat {
         all
     }
 
-    /// Messages after `name`'s cursor that are not its own and that it may see - a room's unread.
-    pub fn unread(&self, name: &str, room: &str, see: impl Fn(&Message) -> bool) -> u64 {
-        let cursor = self.cursor(name);
+    /// Messages after `id`'s cursor that are not its own (by `name`) and that it may see - a room's
+    /// unread. Two arguments for the two questions `inbox` takes them for.
+    pub fn unread(&self, id: &str, name: &str, room: &str, see: impl Fn(&Message) -> bool) -> u64 {
+        let cursor = self.cursor(id);
         self.rings
             .get(room)
             .into_iter()
@@ -3213,11 +3221,11 @@ mod tests {
         c.arm("s-me");
         say(&mut c, "1", HOST_ROOM, "s-a", Seat::Session, "chatter");
         say(&mut c, "2", HOST_ROOM, "s-a", Seat::Session, "hey @s-me");
-        let (rows, skipped) = c.inbox("s-me", None, Attention::ToMe, 50, |_| true);
+        let (rows, skipped) = c.inbox("s-me", "s-me", None, Attention::ToMe, 50, |_| true);
         assert_eq!((rows.len(), skipped), (1, 1));
         assert_eq!(c.cursor("s-me"), 0, "the inbox moves nothing");
         c.ack("s-me", 2);
-        let (rows, skipped) = c.inbox("s-me", None, Attention::All, 50, |_| true);
+        let (rows, skipped) = c.inbox("s-me", "s-me", None, Attention::All, 50, |_| true);
         assert_eq!((rows.len(), skipped), (0, 0));
         assert_eq!(c.ack("s-me", 1), 2, "a cursor never moves back");
         assert_eq!(c.ack("s-me", 99), 2, "nor past the head");
@@ -3270,7 +3278,7 @@ mod tests {
         say(&mut c, "1", HOST_ROOM, "s-a", Seat::Session, "old");
         c.arm("s-new");
         assert_eq!(c.cursor("s-new"), 1);
-        let (rows, _) = c.inbox("s-new", None, Attention::All, 50, |_| true);
+        let (rows, _) = c.inbox("s-new", "s-new", None, Attention::All, 50, |_| true);
         assert!(rows.is_empty());
     }
 }
