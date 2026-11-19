@@ -105,7 +105,7 @@ policy on macOS (§4k).
 | `/tmp` | a fresh tmpfs per command (`TmpView::PerCommand`), or one directory bound there for the session (`TmpView::Session`), so a two-call scratch idiom is not silently eaten. `/var/tmp` and `/run` are fresh tmpfs either way |
 | `/proc`, `/dev` | this command's own procfs, showing only its PID namespace; a minimal device set |
 | the network | an empty network namespace by default; the host's only with `Egress::Host` and the sentence that asked for it, plus `/etc/resolv.conf` and its friends - without which every name fails to resolve and the decision reads as no network at all |
-| grants | a path the operator admitted, `--ro-bind` or `--bind`, each carrying the `why` that put it there. An agent socket is bound at a fixed `/run/letibot/agent.sock` so `SSH_AUTH_SOCK` inside does not carry the operator's path out; the key never enters the view |
+| grants | a path the operator admitted, `--ro-bind-try` or `--bind-try`, each carrying the `why` that put it there. The `-try` is what makes a grant of a dotfile the operator does not have (`~/.gitconfig` under a daemon whose home is not theirs) a bind that does not happen rather than an argv bwrap refuses whole. An agent socket is bound at a fixed `/run/letibot/agent.sock` so `SSH_AUTH_SOCK` inside does not carry the operator's path out; the key never enters the view |
 
 The **top-level seat** is the one view that is not a subset of the machine. `ViewSpec::wide` binds
 `/` itself, read-write at its own paths, `$HOME` is the operator's real home, and `ViewSpec::masked`
@@ -291,7 +291,10 @@ that cannot be done. `allow-all` requires a confinement because on a bare host i
 `OperatorConsented` and no confinement to require; it is deliberately **not** in `Mode::NAMED` - a
 point that stands for a person's confirmation must not be selectable by a string - and the
 confirmation is recorded with the project and the session, so it survives a restart and is read aloud
-at every startup. `Mode::UNSEEN_PROJECT` is `automode`: a project root with no row is judged by the
+at every startup. `--mode allow-all` is the other door to it: the operator typed the word, so a host
+placement takes it as that confirmation (`ALLOW_ALL_HERE`) instead of refusing a confinement only a
+firecode VM can supply, and says so on the open's notes. `Mode::UNSEEN_PROJECT` is `automode`: a
+project root with no row is judged by the
 model, not put to a person. On a box with no oracle that point cannot be carried and the open
 **refuses by name**, naming `[gatekeeper] endpoint` and `--oracle` - it does not fall back to
 `always-ask`. `--mode always-ask` is how a session is opened where no model may answer.
