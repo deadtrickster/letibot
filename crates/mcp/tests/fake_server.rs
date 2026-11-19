@@ -221,7 +221,10 @@ fn a_restart_that_fails_waits_out_its_backoff_before_the_next() {
         loop {
             match cat.call("fake", "echo", &serde_json::json!({"text": "up"})) {
                 Ok(r) => break r,
-                Err(e) => assert!(std::time::Instant::now() < deadline, "never restarted: {e:?}"),
+                Err(e) => assert!(
+                    std::time::Instant::now() < deadline,
+                    "never restarted: {e:?}"
+                ),
             }
         }
     };

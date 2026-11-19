@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;

@@ -2,11 +2,14 @@
 //! scorecard, and the ledger is a file beside the chat.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{Act, Event, Request, Response, Room, Seat, Speaker, room_name};
+
+mod support;
+
+use support::wait_until;
 
 const WINDOW_MS: u64 = 400;
 
@@ -107,7 +110,15 @@ fn the_scorecard_counts_what_followed() {
     })
     .unwrap();
 
-    std::thread::sleep(Duration::from_millis(WINDOW_MS + 100));
+    // The window is a wall clock, so wait for the ledger to say it closed rather than out-sleep it.
+    wait_until("the ignored line's window to close", || {
+        server
+            .scorecard()
+            .senders
+            .iter()
+            .find(|r| r.key == "s-a")
+            .is_some_and(|row| row.pending == 0)
+    });
     server.flush_signals();
     let card = server.scorecard();
     let row = card.senders.iter().find(|r| r.key == "s-a").unwrap();

@@ -4,7 +4,6 @@
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::lease::CoordinatorLease;
@@ -13,7 +12,7 @@ use letibot_room::{HOST_ROOM, Request, Response, Room, Speaker};
 
 mod support;
 
-use support::PATIENCE;
+use support::wait_until;
 
 const LEASE: u64 = 90_000;
 const LONG_SWEEP: u64 = 3_600_000;
@@ -52,14 +51,6 @@ fn coordinator(s: &Scratch, held: &UnixListener, owner: &str) -> (Server, Coordi
         .with_item_store(&s.0.join("room.items"))
         .with_lease(lease.clone());
     (server, lease)
-}
-
-fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
-    let until = Instant::now() + PATIENCE;
-    while !ok() {
-        assert!(Instant::now() < until, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 #[test]
@@ -115,7 +106,7 @@ fn a_session_reconnects_across_a_restart_on_the_same_listener_and_loses_nothing(
         "a stop leaves the manager's socket file alone"
     );
     drop(first);
-    wait_for("the lease's own release", || {
+    wait_until("a lease given back", || {
         CoordinatorLease::owned_by(s.0.join("room.lease"), "box/activated/1")
             .read()
             .map(|h| h.owner)
@@ -131,7 +122,7 @@ fn a_session_reconnects_across_a_restart_on_the_same_listener_and_loses_nothing(
             .map(|h| h.owner),
         Some("box/activated/3".to_string())
     );
-    wait_for("the session's redial", || {
+    wait_until("the session's redial", || {
         c.connected() && c.welcome().instance != before && second.connections() == 1
     });
 

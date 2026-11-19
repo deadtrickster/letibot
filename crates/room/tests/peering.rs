@@ -546,10 +546,7 @@ fn a_box_that_comes_back_with_an_unchanged_seat_list_has_its_seats_marked_here_a
     first.say(&PeerFrame::Profiles {
         seats: vec![theirs.clone()],
     });
-    let deadline = Instant::now() + PATIENCE;
-    while Instant::now() < deadline && !a.peer.alive("lab2") {
-        std::thread::sleep(TICK);
-    }
+    wait_until("the fake box to link", || a.peer.alive("lab2"));
     assert!(a.peer.alive("lab2"), "the fake box never linked");
     wait_until("the seat list to arrive", || a.peer.holds("lab2/s-b1"));
     // Silent from here: four tick intervals of nothing and the link is away, which is the only

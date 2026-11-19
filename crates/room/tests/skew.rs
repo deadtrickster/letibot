@@ -11,6 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use letibot_room::client::Client;
 use letibot_room::{Request, Speaker};
 
+mod support;
+
+use support::wait_until;
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -83,11 +87,7 @@ fn a_v12_mid_series_coordinator_refuses_may_prompt_by_name() {
     };
     // The bind happens on the stub's thread; a connect before it is a refused connection, not a
     // failure of the thing under test.
-    let mut tries = 0;
-    while !socket.exists() && tries < 200 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        tries += 1;
-    }
+    wait_until("the stub coordinator's socket", || socket.exists());
 
     let client = Client::connect(&socket, Speaker::top_level("s-a"), Arc::new(|_| {}))
         .expect("the stub coordinator welcomes this session");

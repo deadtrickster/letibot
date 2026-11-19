@@ -292,7 +292,9 @@ fn recv(rx: &Receiver<Event>, what: &str) -> Event {
     match rx.recv_timeout(PATIENCE) {
         Ok(e) => e,
         Err(mpsc::RecvTimeoutError::Timeout) => panic!("nothing arrived about {what}"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the client went away waiting for {what}"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the client went away waiting for {what}")
+        }
     }
 }
 
