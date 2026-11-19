@@ -187,6 +187,22 @@ fn until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
+/// A job's stamp, `start:<ticks>`, which `/proc/<pid>/stat` answers only once the process is
+/// really there: a spawn that has returned is not yet a pid this box can read.
+fn stamp_of(pid: u32) -> String {
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(p) = letibot_tools::exec::procs::read(pid) {
+            return format!("start:{}", p.start);
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "pid {pid} never had a stamp"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// The next daemon adopts a kept job: its rows read `running` and name this daemon, its output
 /// file goes on growing, and the restart notice names it on one line.
 #[test]
@@ -391,9 +407,7 @@ fn a_restart_keeps_the_job_and_a_plain_stop_kills_it() {
             })
             .expect("the job starts");
         let view = host.job(&id).expect("the job");
-        let stamp = letibot_tools::exec::procs::read(view.pid)
-            .map(|p| format!("start:{}", p.start))
-            .expect("a stamp");
+        let stamp = stamp_of(view.pid);
         if restart {
             h.session_registry.close_for_restart();
         } else {
@@ -459,9 +473,7 @@ fn a_restart_keeps_the_job_through_every_stop_step_and_the_next_daemon_takes_it_
         })
         .expect("the job starts");
     let view = host.job(&id).expect("the job");
-    let stamp = letibot_tools::exec::procs::read(view.pid)
-        .map(|p| format!("start:{}", p.start))
-        .expect("a stamp");
+    let stamp = stamp_of(view.pid);
     // The marker's own close: every run ender keeps what can outlive this daemon.
     h.session_registry.close_for_restart();
     let db = dir.0.join("sessions.db");
