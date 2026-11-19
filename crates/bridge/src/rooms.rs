@@ -466,6 +466,40 @@ pub fn project_of(cwd: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+/// What a folder is a checkout of, as a seat's profile names it: the repository's own folder and
+/// the branch HEAD is on. Both empty outside a repository, which is a seat on no project.
+pub fn checkout_of(folder: &std::path::Path) -> (String, String) {
+    let branch =
+        crate::diff::git(folder, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let repo = crate::diff::git(folder, &["rev-parse", "--show-toplevel"])
+        .map(|top| {
+            std::path::Path::new(&top)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+        .unwrap_or_default();
+    (repo, branch)
+}
+
+/// The frame that tells the room what this seat is on: its folder (which the room keeps as its
+/// project's root), the repository, the branch, and the row its board has in progress. A Claude
+/// Code bridge is a seat with no daemon, so nothing else says any of this - and without it a
+/// peer's roster draws a bare id with no project and `(no branch)`.
+pub fn seat_frame(folder: &std::path::Path, task: &str) -> Value {
+    let root = crate::diff::git(folder, &["rev-parse", "--show-toplevel"])
+        .unwrap_or_else(|| folder.display().to_string());
+    let (repo, branch) = checkout_of(folder);
+    json!({
+        "type": "seat",
+        "root": root,
+        "facts": {
+            "working": { "row": task, "repo": repo, "branch": branch },
+        },
+    })
+}
+
 fn project_root(cwd: &std::path::Path) -> Option<PathBuf> {
     repo_root(cwd).or_else(|| {
         // A folder outside a repository is its own project, as the daemon's roster reads it, so a
@@ -831,7 +865,6 @@ struct Inner {
     /// How many times this connection has taken a suffixed name, so a coordinator holding every
     /// name it offers ends the attempt instead of recursing forever.
     twins: std::sync::atomic::AtomicU8,
-    share: AtomicBool,
     /// Why the room channel is off for good: a coordinator whose welcome named a protocol this
     /// build cannot speak. Set once, refused by every door that would dial, so a coordinator that
     /// is gone for days costs nothing - and the bridge's other tools go on working without it.
@@ -885,17 +918,10 @@ impl RoomLink {
                 seat: Mutex::new(seat()),
                 protocol: Mutex::new(None),
                 twins: std::sync::atomic::AtomicU8::new(0),
-                share: AtomicBool::new(false),
                 off: Mutex::new(None),
                 note: Mutex::new(note_on_stderr()),
             }),
         }
-    }
-
-    /// Join as one more connection of a name another connection holds (a waiter beside its
-    /// bridge) instead of being refused as a duplicate.
-    pub fn share_name(&self) {
-        self.inner.share.store(true, Ordering::SeqCst);
     }
 
     /// The seat this connection is, as its `Hello` says it: the process's, unless a twin had to
@@ -911,6 +937,20 @@ impl RoomLink {
     /// A seat of this connection's own, which the link already connected keeps its own of.
     fn set_seat(&self, id: String) {
         *self.inner.seat.lock().unwrap_or_else(|e| e.into_inner()) = id;
+    }
+
+    /// Where the one sentence about a room channel that is off for good goes. stderr is where a log
+    /// is; a Claude Code session is where the operator is, so the MCP server sets this to say it
+    /// there too - once, and before anything else is tried again.
+    pub fn note_with(&self, note: Note) {
+        *self.inner.note.lock().unwrap_or_else(|e| e.into_inner()) = note;
+    }
+
+    /// Tell the room what this seat is on: its folder, its repository, its branch and its row.
+    /// Nothing answers if the room is not there - the next pass says it again.
+    pub fn say_what_im_on(&self, folder: &Path, task: &str) -> Result<Value, String> {
+        self.request(&seat_frame(folder, task))
+            .map(|_| json!({ "type": "seat" }))
     }
 
     /// The coordinator start the last welcome named.
@@ -1017,7 +1057,10 @@ impl RoomLink {
             "speaker": { "session": handle(), "parent": null },
             "room": here,
             "seat": "external",
-            "share": self.inner.share.load(Ordering::SeqCst),
+            // A bridge and its folder's waiter are ONE seat (both mint from the Claude Code
+            // session id), so the second arrives asking to share it. The room admits that only for
+            // the same seat id, so a second Claude Code session in the folder still takes a twin.
+            "share": true,
             "family": family(),
             "id": self.seat(),
             // The label, when the folder has taken one: display only, and the room refuses a name
@@ -1063,14 +1106,29 @@ impl RoomLink {
             Some("welcome") => {
                 let theirs = first["protocol"].as_u64().map(|p| p as u16);
                 // A number outside the wire's range is a coordinator this build would misread every
-                // frame with, and no redial finds a different one: given up on here, said once.
+                // frame with, and no redial finds a different one: given up on here, said once. WHICH
+                // of the two is older decides what a person can do about it.
                 if let Some(theirs) = theirs
                     && letibot_room::wire::protocol_refusal(theirs).is_some()
                 {
-                    return Err(self.go_dark(format!(
-                        "the room coordinator speaks protocol {theirs}; this bridge speaks \
-                         {PROTOCOL} - rooms are off until one restarts"
-                    )));
+                    let why = if theirs > PROTOCOL {
+                        format!(
+                            "this bridge speaks protocol {PROTOCOL} and the room speaks {theirs}: \
+                             the bridge is the older of the two, so its rooms are off until it is \
+                             updated. Install the current build (the release archive from \
+                             `releases/latest`, or `cargo build --release --bins` in a checkout and \
+                             its binaries into ~/.local/bin), then reconnect this session's \
+                             servers (`/mcp`). Everything but the rooms keeps working meanwhile."
+                        )
+                    } else {
+                        format!(
+                            "the room coordinator speaks protocol {theirs}; this bridge speaks \
+                             {PROTOCOL} - the coordinator is the older of the two, so rooms are off \
+                             until it is restarted from the installed build (`letibot --room --stop` \
+                             && `letibot --room`)"
+                        )
+                    };
+                    return Err(self.go_dark(why));
                 }
                 *self.inner.named.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 *self
@@ -2350,7 +2408,6 @@ pub fn wait_marked(
     mark: Option<&Path>,
 ) -> (i32, String) {
     let (tx, rx) = mpsc::channel::<Value>();
-    link.share_name();
     link.on_chat(Arc::new(move |m, names_you| {
         if attention.passes(m, names_you) {
             let _ = tx.send(m.clone());
@@ -3011,5 +3068,111 @@ mod tests {
         assert_eq!(notes, vec![why], "said once");
         assert_eq!(*hellos.lock().unwrap(), 1, "no redial into the same wall");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A room NEWER than this bridge: the bridge is the one that is out of date, and the sentence
+    /// has to say so. Telling a person to restart the coordinator is advice that cannot work, and
+    /// the operator meets that as *rooms just off* with nothing to run.
+    #[test]
+    fn a_room_newer_than_this_bridge_says_the_bridge_is_the_older_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-room-newer-{}-{}",
+            std::process::id(),
+            PROTOCOL
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let newer = PROTOCOL + 1;
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut out = stream.try_clone().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let welcome = json!({"type": "welcome", "protocol": newer, "lease_ms": 0,
+                    "beat_every_ms": 0, "threshold": 0, "instance": 1});
+                let _ = writeln!(out, "{welcome}");
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+        let link = RoomLink::at(&path);
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        {
+            let seen = said.clone();
+            *link.inner.note.lock().unwrap_or_else(|e| e.into_inner()) =
+                Arc::new(move |what: &str| seen.lock().unwrap().push(what.to_string()));
+        }
+        let why = link.ensure().expect_err("a newer room is not speakable");
+        assert!(why.contains("the bridge is the older of the two"), "{why}");
+        assert!(why.contains("updated"), "{why}");
+        assert!(
+            !why.contains("restart"),
+            "the coordinator is not what is out of date: {why}"
+        );
+        assert_eq!(said.lock().unwrap().clone(), vec![why], "said once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bridge's `Hello` says it shares its seat: its folder's waiter is usually connected already
+    /// under the same id, and a second connection of one seat is what `share` is for.
+    #[test]
+    fn a_bridge_hello_shares_the_seat_it_speaks_for() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let (tx, rx) = mpsc::channel::<Value>();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut out = stream.try_clone().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let hello: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let _ = tx.send(hello);
+                let welcome = json!({"type": "welcome", "protocol": PROTOCOL, "lease_ms": 0,
+                    "beat_every_ms": 0, "threshold": 0, "instance": 1});
+                let _ = writeln!(out, "{welcome}");
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let link = RoomLink::at(&path);
+        link.ensure().expect("the welcome is speakable");
+        let hello = rx.recv_timeout(Duration::from_secs(5)).expect("a hello");
+        assert_eq!(hello["share"], Value::Bool(true), "{hello}");
+        assert_eq!(hello["id"], Value::String(seat()), "{hello}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a bridge tells the room about itself: the folder it works in (which is the project's
+    /// root, the one fact a bridge-only project has no daemon to send), and the row it is on.
+    #[test]
+    fn a_seat_frame_names_its_folder_and_its_row() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let frame = seat_frame(here, "the LAN run's seven fixes");
+        assert_eq!(frame["type"], "seat");
+        let root = frame["root"].as_str().expect("a root");
+        assert!(std::path::Path::new(root).is_dir(), "{root}");
+        assert_eq!(
+            frame["facts"]["working"]["row"],
+            "the LAN run's seven fixes"
+        );
+        // A folder that is nobody's checkout is its own root and says nothing it cannot know.
+        let tmp = std::env::temp_dir().join(format!("bridge-seat-frame-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let plain = seat_frame(&tmp, "");
+        assert_eq!(
+            plain["root"].as_str(),
+            Some(tmp.display().to_string().as_str())
+        );
+        assert_eq!(plain["facts"]["working"]["branch"], "");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

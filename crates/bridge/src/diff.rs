@@ -28,7 +28,7 @@ fn base(worktree: &Path) -> Option<(String, String)> {
 
 /// One git invocation, trimmed, or `None` when it failed - a branch with no upstream is an
 /// ordinary state here and not an error to report.
-fn git(worktree: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(worktree: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .current_dir(worktree)
         .args(args)

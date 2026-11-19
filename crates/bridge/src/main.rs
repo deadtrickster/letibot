@@ -185,6 +185,20 @@ fn serve() -> i32 {
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
+    // What this seat is on, into its room, on a slow poll: a Claude Code seat's branch and its
+    // board's row change mid-session, and a peer's roster draws only what the room was last told.
+    if bridge.stream_rooms() {
+        let reporting = std::sync::Arc::downgrade(&bridge);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let Some(bridge) = reporting.upgrade() else {
+                    return;
+                };
+                bridge.say_what_im_on();
+            }
+        });
+    }
     match mcp::serve(stdin.lock(), stdout, &bridge) {
         Ok(()) => 0,
         Err(e) => {

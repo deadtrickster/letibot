@@ -312,6 +312,19 @@ impl Bridge {
         }
     }
 
+    /// Tell the room what this seat is on: the folder it works in (which the room keeps as its
+    /// project's root), the repository, the branch, and the row its board has in progress. A
+    /// Claude Code bridge is a seat with no daemon, so nothing else says any of it - and a peer's
+    /// roster without it draws a bare id, no project and `(no branch)`.
+    ///
+    /// Best effort: a room that is not running is an ordinary state, and a room this build cannot
+    /// speak is already said once by the link itself.
+    pub fn say_what_im_on(&self) {
+        let folder = self.folder();
+        let task = self.seat().map(|s| s.in_progress_row()).unwrap_or_default();
+        let _ = self.rooms.say_what_im_on(&folder, &task);
+    }
+
     /// A call that does work is the seat working: it is not idle, and the plan check waits for its
     /// end. Never opens the seat - a bridge that has never served a todo tool has no board to re-arm.
     pub fn touch_seat(&self) {

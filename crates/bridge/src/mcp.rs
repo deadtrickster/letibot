@@ -91,6 +91,19 @@ fn read_loop<R: BufRead, W: Write>(
                 // legal, so the room's stream may start.
                 if request["method"] == "notifications/initialized" && bridge.stream_rooms() {
                     let tx = push.clone();
+                    // The one sentence about a room channel that is off for good goes where the
+                    // operator is - into the session - and not only onto a stderr nobody reads.
+                    let said = push.clone();
+                    let seat = crate::rooms::handle();
+                    bridge
+                        .rooms()
+                        .note_with(std::sync::Arc::new(move |why: &str| {
+                            eprintln!("letibot-mcp: {why}");
+                            let _ = said.send(crate::seat::notice(&seat, "room", why));
+                        }));
+                    // What this seat is on: a Claude Code bridge has no daemon, so nothing else
+                    // tells the room its repository, branch and row.
+                    bridge.say_what_im_on();
                     // Every pushed line goes through the folder's `push_channel` layer: the client
                     // gets the rule's answer, in its words when it has better ones. A silenced line
                     // was still seen, so it is taken and the cursor moves past it.

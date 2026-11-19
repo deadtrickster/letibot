@@ -170,6 +170,16 @@ impl Seat {
         self.board.snapshot()
     }
 
+    /// The row this seat's board has in progress, in its own words: the one line a peer is told
+    /// the seat is on. Empty when nothing is in progress.
+    pub fn in_progress_row(&self) -> String {
+        self.rows()
+            .into_iter()
+            .find(|r| matches!(r.status, TodoStatus::InProgress))
+            .map(|r| r.content)
+            .unwrap_or_default()
+    }
+
     /// The board as a tool answers it: every row with its waits, and the version they last moved at.
     pub fn board_json(&self) -> Value {
         json!({
@@ -551,12 +561,18 @@ fn a_pass(
 /// The channel notification for one notice: the same frame a held session's events use, so a client
 /// reads one kind of event and `meta.event` says which.
 pub fn nag(seat: &str, text: &str) -> Value {
+    notice(seat, "todo", text)
+}
+
+/// One channel notification under any event word: what a notice beside the plan check is (a room
+/// channel that is off for good, say), so the session hears it where the operator reads.
+pub fn notice(seat: &str, event: &str, text: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/claude/channel",
         "params": {
             "content": text,
-            "meta": { "source": "seat", "event": "todo", "seat": seat },
+            "meta": { "source": "seat", "event": event, "seat": seat },
         },
     })
 }
