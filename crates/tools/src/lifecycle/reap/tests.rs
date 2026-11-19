@@ -729,12 +729,10 @@ fn a_vm_outliving_its_daemon_is_brought_down_and_seen_gone() {
         .args(["--id", run])
         .spawn()
         .expect("the stand-in firecracker");
-    let began = Instant::now();
-    while held::live_vms(&runs, &places.proc_root).is_empty()
-        && began.elapsed() < Duration::from_secs(5)
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // The stand-in has to be in `/proc` before the pass looks for it.
+    crate::testing::wait_until("the stand-in firecracker to be seen", || {
+        !held::live_vms(&runs, &places.proc_root).is_empty()
+    });
     // And firecode's CLI, whose `down` does nothing: the ladder below it is what takes the VM.
     let bin = b.at("down-here");
     crate::testing::write_stub(&bin, "#!/bin/sh\nexit 0\n");
@@ -745,8 +743,13 @@ fn a_vm_outliving_its_daemon_is_brought_down_and_seen_gone() {
     };
     let out = pass(&s, &places, &ops, None, now).expect("a pass");
     let _ = fc.wait();
+    // The stub's own `sleep 0.2` grandchild outlives the shell that started it by one nap, so
+    // "nothing is running" is waited for: on an idle box the kill and this read are far enough
+    // apart, and under a loaded one they are not. A VM the pass really left up still fails it.
     assert!(
-        held::live_vms(&runs, &places.proc_root).is_empty(),
+        crate::testing::wait_within(crate::testing::PATIENCE, || {
+            held::live_vms(&runs, &places.proc_root).is_empty()
+        }),
         "the VM outlived the pass: {out:?}"
     );
     assert_eq!(
@@ -946,6 +949,9 @@ fn stop_saw_the_marker(name: &str, keep_jobs: bool) -> bool {
     let mut child = std::process::Command::new(&script)
         .spawn()
         .expect("a fake daemon");
+    // The stub has to have run its first two lines - the TERM trap among them - before the record
+    // names it, or the signal arrives before there is a trap to take it. A fixture's own startup,
+    // not a measurement: nothing here is asserted about how long it took.
     std::thread::sleep(Duration::from_millis(100));
     b.daemon_record("k1", Path::new("/w"), child.id());
     let mut owner = package("s-1", 0, 60_000);
