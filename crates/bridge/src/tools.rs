@@ -1605,44 +1605,26 @@ pub fn list() -> Value {
     let mut tools = vec![
         tool(
             "leticode_start",
-            "Start leticode on a worktree and hold the session. Starts or joins that \
-              folder's daemon, opens a session, sets the approval point, sends the brief as \
-              the first prompt, and stays attached so the gate's asks reach this bridge. \
-              Answers the session id every other tool takes. Its turn ends, asks, failures \
-              and provider trouble arrive as <channel> events when the client loaded this \
-              server's channel; without the channel, run the `wait` verb as a background \
-              command afterwards — its exit is the notification. `host` places the session's TOOLS on \
-              another machine: a daemon already running for this folder with a different \
-              placement is refused, naming where it runs and how to stop it, because a \
-              package must never end up running locally when its caller asked for a host.",
+            "Start a leticode session on a worktree, send the brief as its first prompt and hold \
+             it: answers the session id every other tool takes.",
             json!({
                 "type": "object",
                 "properties": {
                     "worktree": { "type": "string", "description": "Absolute path to the checkout the work happens in." },
                     "brief": { "type": "string", "description": "The task, in full: what to build, the hard rules, and what to report." },
-                    "model": { "type": "string", "description": "What answers THIS session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice. It is set on the session, so it holds over a daemon already serving another provider, and a name this box cannot serve is refused before the brief is sent." },
-                    "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
-                    "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." },
-                    "package": { "type": "string", "description": "Make this a PACKAGE: a worktree of the repository `worktree` names, under this box's owner root, on the branch `pk/<short id>/<name>` — created here, with the owner recorded first. Omitted: the session runs in `worktree` as it is." },
-                    "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. With `host`, the VM is booted on THAT machine by its own firecode, over this session's ssh link, on a copy of the checkout; the guest is the boundary, so builds and tests run there without asking. Omitted: false. A host with no firecode, or no `/dev/kvm` this connection's user may open, is refused by name." }
+                    "model": { "type": "string", "description": "What answers this session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's choice." },
+                    "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`." },
+                    "host": { "type": "string", "description": "A machine from `hosts.toml` (or the `hosts` tool), where this session's tools run. Omitted: on this box." },
+                    "package": { "type": "string", "description": "A name: make this a package, a worktree of that repository on its own branch. Omitted: run in `worktree` as it is." },
+                    "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. Default false." }
                 },
                 "required": ["worktree", "brief"]
             }),
         ),
         tool(
             "leticode_attach",
-            "Join a session that is already running — this folder's review queue, a \
-              package a person resumed, any session a folder's daemon holds — and hold it \
-              the way `leticode_start` holds one, without a brief. With nothing listening on that \
-              folder's socket it starts the folder's daemon only to reopen a session the store \
-              has for that folder, on its id and with its transcript, and refuses any other \
-              id. `watch_only` (the default) makes this a \
-              WATCHING head: it reads the turn, the last message, the todos, the pending asks \
-              and the progress ring, and `leticode_send`, `leticode_answer` and `leticode_stop` \
-              then refuse, because the head that holds the session is somebody else's. Its \
-              reviewers are child sessions and `leticode_events` shows each of them starting \
-              and ending; following one into its own turns needs a second `leticode_attach` on \
-              that child's id.",
+            "Hold a session that is already running, without a brief: a watching head unless \
+             `watch_only` is false.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1655,12 +1637,7 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_send",
-            "Send a line into a session, stored as yours. Queued behind a running turn as \
-              the head's own prompt, so it never loses a race with what the model is doing; \
-              the daemon starts a turn for it when the current one ends. A session this bridge \
-              held until its daemon stopped is reopened first. Any other session on the box is \
-              prompted through its own daemon, with a dm's consent: another project's needs \
-              `because`, the seq of the operator's message you act on.",
+            "Queue a line into a session behind its running turn, stored as this seat's.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1673,11 +1650,7 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_todo",
-            "Write rows on the board of a session this bridge drives (attached with `watch_only: \
-              false` or started here). Rows are stored under this seat's handle, never as the \
-              operator's or the model's. A row named again takes the new status, and the rows take \
-              the order given, rows left out after them. The model is told at its next turn. \
-              Waits while a turn runs, since the board is written between turns.",
+            "Write rows on the board of a session this bridge drives, under this seat's handle.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1700,19 +1673,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_status",
-            "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
-              assistant message, the todos, the last turn's tokens and cost, and which asks \
-              are pending. `model` is what answers this session's turns, as `/models` spells it, \
-               and `last_trouble` is the last time the provider itself was stuck — a rate \
-               limit (with the reset instant it gave), an exhausted account, a timeout or a \
-               stall — so a caller can wait it out or move the session instead of guessing. \
-               `placement` says where the session's tools run — `host` for this \
-              box, `host:NAME` for another machine, null when the daemon recorded nothing. \
-              When that message is the brief's closing report, it also comes \
-              back parsed: `report.built`, `report.tested`, `report.could_not`, \
-              `report.contracts` and the `report.commits` it named — the newest report, \
-              with `report_is_last` false when words came after it. `spent` sums every \
-              round since the bridge attached; `cost_usd` and `tokens` are the last round.",
+            "What the session is doing: state, last message, todos, pending asks, provider \
+             trouble, placement and cost.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1723,15 +1685,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_events",
-            "The session's progress since a cursor, folded to one line each: tool calls (name \
-              and what they act on), their outcomes, background jobs starting and ending, \
-              turns, permission asks opening and being answered, the reviewer subagents a \
-              session spawns (their slug, the branch they were given, and how they ended — the \
-              review queue's children are how its work appears here), warnings and failures, \
-              and the first line of each assistant message. Never the banner, the memory \
-              watcher or a payload — for those, read the transcript. Pass the `next` of one \
-              answer as the `since` of the next; a cursor the ring has outlived is answered \
-              with what remains plus `dropped`, the count it can no longer show you.",
+            "The session's progress since a cursor, one line per call, job, turn, ask, child, \
+             warning or failure.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1744,10 +1699,7 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_asks",
-            "The permission asks still owed an answer: the ask id, the call (tool and \
-              target), the sentence the gate wrote, and the options the ladder offers. \
-              Answer one with `leticode_answer`; a turn stopped on a card does not continue \
-              without one.",
+            "The asks this session is still owed an answer for, with the options each offers.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1758,11 +1710,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_answer",
-            "Answer an open ask. A PERMISSION ask takes one of the option ids it offered, sent \
-              as the protocol's Answer frame, and only on a session this bridge started: the \
-              decision lands in the corpus as this agent's, never as the operator's. A QUESTION ask (the model's own \
-              ask_user_question) takes one of its `choices` by exact text or 1-based number, \
-              `free:<words>` for a typed reply, or `abstain`; `note` qualifies a chosen option.",
+            "Answer an open ask: a permission's option id, or a question's choice, \
+             `free:<words>` or `abstain`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1776,10 +1725,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_diff",
-            "The worktree's branch against its merge base: the commits it added \
-              (`git log --oneline`) and the shape of the change (`git diff --stat`). The \
-              full diff only when `full` is true — it is large and belongs in a review, not \
-              in a status check.",
+            "The worktree's branch against its merge base: its commits and the shape of the \
+             change.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1791,14 +1738,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_transcript",
-            "The session's CONVERSATION, row by row, as the daemon serves it to a head — the \
-              same rows a terminal attached to that session is drawing. Full text: the \
-              operator's prompts, the model's answers, every tool call (name and arguments) and \
-              every tool result (outcome and payload). Long strings are cut only beyond the cap \
-              this answer states (`cap`, 8000 characters), and a row that was cut says so. Pass \
-              the `next` of the last answer as `since` and you get only what is new. It reads \
-              the daemon, never the session store; it works on a session this bridge holds and \
-              on one it only watches.",
+            "The session's conversation row by row, from a cursor, with full call arguments and \
+             results.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1812,14 +1753,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_mode",
-            "Move the session's approval point. A point that needs nobody is applied at once \
-              (`writes-allowed`, `read-only`, `allow-all` inside a VM). `allow-all` on a box with \
-              no boundary needs the OPERATOR's confirmation: the daemon puts the same card a \
-              terminal shows for `/mode allow-all` in front of the heads attached to that \
-              session, and the point moves only when a person says yes — this bridge never \
-              consents on its own. With nobody attached to ask, nothing is changed and the \
-              answer is `needs the operator's confirmation in a head: run leticode --session \
-              <id>`.",
+            "Move the session's approval point, which `allow-all` makes the operator's to \
+             confirm.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1831,13 +1766,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_model",
-            "Move a RUNNING session to another model without restarting anything. The switch is the \
-              daemon's own `/models` verb: it is per session, it is written to the session's row so a \
-              restart restores it, and a switch that arrives mid-turn takes effect when the turn ends \
-              - never inside one, because the rest of a half-finished turn belongs to the model that \
-              started it. Works on a session this bridge started and on one it joined, including a \
-              session of a daemon another session started. The answer's `said` is the daemon's own \
-              sentence, which says when the switch takes.",
+            "Move a running session to another model without restarting it, from the end of the \
+             turn it is in.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1849,11 +1779,7 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_stop",
-            "Interrupt a running turn, close the session here and detach this bridge from it. \
-              Closing it is what settles a PLACEMENT: what a host session committed comes home \
-              as the branch `remote/<host>/<short id>` (`branch` in the answer) as the session \
-              closes, and the daemon's log names the commit it landed at. The rows stay on \
-              disk, so `letibot --session <id>` or another head can reopen it.",
+            "Interrupt the turn, close the session here and detach, settling its placement.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1864,12 +1790,7 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_archive",
-            "Put a session this bridge holds out of sight and let go of it. The daemon closes \
-             it and writes the row, so the conversation stops here either way; nothing is \
-             deleted, the rows stay in the store, and `letibot --sessions --archived` lists it. \
-             It comes back by being opened: `letibot --session <id>` takes it into the list again, \
-             and so does attaching to it. Unarchiving a session this bridge does not hold is the \
-             CLI's `--unarchive`.",
+            "Put a session this bridge holds out of sight and let go of it, deleting nothing.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1881,12 +1802,8 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_collect",
-            "Fetch what a session that is already stopped committed on its host, as the branch \
-            `remote/<host>/<short id>`. `leticode_stop` brings the branch home as it closes and answers `branch_home` (true, or false with `branch_said`), \
-            but a daemon stopped underneath the session - or one that died - reaches no close, \
-            and then the work stays on that machine. Nothing of the daemon is needed: the \
-            session id, the host and the repository are the names the placement was made from. \
-            Answers `branch` and a sentence saying what arrived, or why not.",
+            "Fetch what a stopped session committed on its host, as the branch \
+             `remote/<host>/<short id>`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1900,24 +1817,14 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_list",
-            "The sessions this bridge is holding, with their state, pending ask count, \
-              where each one's tools run (`placement`) and \
-              whether each is only watched (`leticode_attach`'s default) or driven. It lists \
-              what this process holds, not what the daemon has on disk.",
+            "The sessions this process holds right now, with state, pending asks, placement and \
+             whether each is watched.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "holds",
-            "What the owners of this folder hold on disk right now - a package's VM, its cgroup \
-             scope with its process count and memory, its worktree and target sizes, its firecode \
-             copies, its daemon - each with the stamp that proves whose it is, its state and what \
-             will happen to it. The facts come from the kernel and the filesystem, so a seat in a \
-             sandbox can read its own leftovers: a job's pid it cannot see is not evidence of \
-             anything, and this never asks `ps`. Read-only, always. Omit `owner` for every owner \
-             this folder's daemon recorded, which is how a seat finds the packages it started. \
-             The answer is COUNTS per owner by default - how many holdings of each class, the \
-             bytes, the memory and the one `holds:` line - because the rows themselves are \
-             megabytes for an owner of a build folder; `full: true` is the rows.",
+            "What the owners of this folder hold on disk, read off the kernel and the \
+             filesystem: counts per owner unless `full`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1928,11 +1835,8 @@ pub fn list() -> Value {
         ),
         tool(
             "gc_plan",
-            "What `letibot gc` would reap for this folder, and why, and when - the read-only plan. \
-             Each holding gets a verdict (`reap now`, `reap at`, `keep`) and one sentence; a \
-             directory that looks like letibot's and names no owner the store knows is reported \
-             under `looks_like_ours` and is never reaped by pattern. Nothing here removes, stops or \
-             writes anything: this build's reaping is G2 (compute), G3 (work), G4 (caches).",
+            "What `letibot gc` would reap for this folder, and why, as a plan that removes \
+             nothing.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1948,8 +1852,7 @@ pub fn list() -> Value {
     json!({ "tools": tools })
 }
 
-/// The seat's board, as three tools: the session's `todo_write` - its own schema and its own
-/// description, so the two runtimes cannot answer the same call differently - and the two the
+/// The seat's board, as three tools: `todo_write` over the session's own schema, and the two the
 /// bridge needs beside it, a read and the operator's answer.
 fn todo_list() -> Vec<Value> {
     let session_tool = letibot_tools::builtins::todo::TodoWriteTool::new(std::sync::Arc::new(
@@ -1957,20 +1860,22 @@ fn todo_list() -> Vec<Value> {
     ));
     let schema = letibot_tools::runtime::Tool::schema(&session_tool);
     vec![
-        tool("todo_write", &schema.description, schema.parameters),
+        // The schema is the session runtime's, so a row means the same thing in both. The
+        // description is this page's: the guide says how the board behaves.
+        tool(
+            "todo_write",
+            "Write this seat's plan: the whole list every time, in order, a row named again taking \
+             its new status.",
+            schema.parameters,
+        ),
         tool(
             "todos",
-            "This seat's todo board as it stands: every row, its status, its waits and the \
-             version they last moved at. The board is the store's, under this seat's handle, so \
-             it survives a bridge restart - read it back with this rather than from memory.",
+            "This seat's todo board as it stands, with each row's waits.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "todo_answer",
-            "The operator's answer to a question a row waits on them for: `todo_write`'s \
-             `wait_on {operator: {question, options}}` puts the question on the board, you ask \
-             it in the conversation, and this records their reply on the row so the row stops \
-             waiting. The words are theirs, kept as they said them.",
+            "Record the operator's own words on the row that waits for them.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1983,13 +1888,7 @@ fn todo_list() -> Vec<Value> {
         ),
         tool(
             "seat_job_start",
-            "Run a command as a job of YOURS - the seat's own, not a package's - and answer the \
-             handle. A seat is not a session, so nothing else here can background a command for \
-             it: this is the local gate, the long build, the thing a row waits on while the \
-             package turn it was waiting for is over. `argv` is run verbatim (no shell), its \
-             output goes to a file under this bridge's rundir, and the row's `todo_write \
-             {wait_on: [{content, job: \"<handle>\"}]}` is quiet until it ends. Its ending arrives \
-             as a <channel> event `job_ended`, the same frame a package's jobs use.",
+            "Run a command as a job of this seat's own, under no shell, and answer its handle.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2006,15 +1905,13 @@ fn todo_list() -> Vec<Value> {
         ),
         tool(
             "seat_jobs",
-            "Every job this seat has started, oldest first, with the state each ended in - `running` \
-             only while its process is really there. The `log` is the file its output went to, and \
-             `pid`/`start` are what `wait_on {pid}` names.",
+            "Every job this seat has started, with the state each ended in and the file its \
+             output went to.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "seat_job_kill",
-            "End one of this seat's own jobs: SIGKILL to that exact process. Its ending - the row's \
-             release and the `job_ended` event - follows on the seat's next pass.",
+            "End one of this seat's own jobs.",
             json!({
                 "type": "object",
                 "properties": {

@@ -18,11 +18,8 @@ pub const TOOL: &str = "queue";
 pub fn definition() -> Value {
     json!({
         "name": TOOL,
-        "description": "The merge queue of this folder's repository. `enqueue` puts a pushed \
-            branch up for review: the gatekeeper reviews it, then the queue rebases it onto the \
-            target with the other approved branches, gates them once and lands them. Push, \
-            enqueue, stop: never run the workspace gate yourself. `status` with `id` reads that \
-            row (review and landing state, and why); without `id` it reads the repository's queue.",
+        "description": "The merge queue of this folder's repository: enqueue a pushed branch \
+            for review, or read a row.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -150,11 +147,7 @@ pub fn verb_definition() -> Value {
     json!({
         "name": VERB_TOOL,
         "description": "The operator's `/queue` verbs on this folder's repository, recorded as \
-            `bridge:<handle>`. `approve ID` over the reviewer (the merge gate still runs; not a row a \
-            bridge enqueued, which the operator approves), \
-            `restart ID` a parked row, `veto ID why` rejects in your words, `rm ID` withdraws, \
-            `reset`/`clean` restart or withdraw every parked row (or the one `id` names), \
-            `regate` gates the target's tip again.",
+            `bridge:<handle>`.",
         "inputSchema": {
             "type": "object",
             "properties": {

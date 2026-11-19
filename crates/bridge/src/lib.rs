@@ -14,8 +14,10 @@
 pub mod browser;
 pub mod daemon;
 pub mod diff;
+pub mod docs;
 pub mod exe_stamp;
 pub mod fleet;
+pub mod guide;
 pub mod head;
 pub mod holds;
 pub mod mcp;

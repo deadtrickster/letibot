@@ -170,13 +170,15 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
             // lets anyone who can reply through the room approve tool use here.
             "capabilities": {
                 "tools": {},
+                // The three documents the guide defers to. No `listChanged`: the set is what this
+                // build embedded and it never moves at run time.
+                "resources": {},
                 "experimental": capabilities(bridge),
             },
-            "instructions": format!("Room messages for `{}` and your leticode sessions' ends, \
-                asks and failures arrive as <channel> events. Each is a header \
-                (`#seq [room] from <author> (<seat>) to <you|@you|dm|all>`) + text. Reply with \
-                `room_say`/`room_dm`; `room_inbox` acks what you handled. {}",
-                crate::rooms::handle(), crate::rooms::etiquette(&crate::rooms::handle())),
+            // The guide, said once at connect: what a seat is, what the rooms and the sessions
+            // expect, and the three documents to read on demand. A tool's description is one line
+            // because this page carries the rules.
+            "instructions": crate::guide::text(&crate::rooms::handle()),
             "serverInfo": {
                 "name": "letibot-mcp",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -196,6 +198,11 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
         crate::relay::VERDICT => return None,
         "ping" => Some(json!({})),
         "tools/list" => Some(crate::tools::list_with(bridge)),
+        "resources/list" => Some(crate::docs::list()),
+        "resources/read" => match resources_read(&params) {
+            Ok(result) => Some(result),
+            Err((code, message)) => return id.map(|id| error(id, code, &message)),
+        },
         "tools/call" => match call_tool(bridge, &params) {
             Ok(result) => Some(result),
             // A caller's mistake is the protocol's to report, and the id is the only way the
@@ -212,6 +219,24 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
     };
     let id = id?;
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result.unwrap_or(Value::Null) }))
+}
+
+/// `resources/read`: the document a uri names. A uri this build does not publish is a caller's
+/// mistake (`-32602`) carrying the list, the same shape `tools/call` gives an unknown tool.
+fn resources_read(params: &Value) -> Result<Value, (i64, String)> {
+    let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+        return Err((-32602, "resources/read needs a `uri`".into()));
+    };
+    crate::docs::read(uri).ok_or_else(|| {
+        let served: Vec<&str> = crate::docs::RESOURCES.iter().map(|r| r.uri).collect();
+        (
+            -32602,
+            format!(
+                "unknown resource `{uri}`; this build serves {}",
+                served.join(", ")
+            ),
+        )
+    })
 }
 
 /// `tools/call`: run the verb and wrap what it said. A caller's mistake (unknown tool, missing
@@ -291,9 +316,7 @@ mod tests {
     }
 
     /// The budget is for this build's own words. The seat handle is `cc@<folder>:<name>` out of the
-    /// working folder, so a long worktree would otherwise decide whether the test passes. This
-    /// stands in for a seat name at the width the budget assumes; it occurs in four tool
-    /// descriptions, and a change that adds text there still has to trim.
+    /// working folder, so a long worktree would otherwise decide whether the test passes.
     const HANDLE: &str = "cc@host:seat";
 
     /// `text` with the seat handle stood in for by a fixed-length one, for a byte budget.
@@ -301,7 +324,7 @@ mod tests {
         text.replace(&crate::rooms::handle(), HANDLE)
     }
 
-    /// `initialize` answers the revision, the capability and the name - the three
+    /// `initialize` answers the revision, the capabilities and the name, then the guide - the
     /// fields a client reads before it sends anything else.
     #[test]
     fn initialize_answers_the_revision_and_names_the_server() {
@@ -318,6 +341,10 @@ mod tests {
         assert_eq!(r["id"], 1);
         assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
         assert!(r["result"]["capabilities"]["tools"].is_object(), "{r}");
+        assert!(
+            r["result"]["capabilities"]["resources"].is_object(),
+            "the documents are advertised: {r}"
+        );
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
         let said = r["result"]["instructions"].as_str().unwrap_or("");
         let me = crate::rooms::handle();
@@ -328,29 +355,81 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("every room"), "no room is its own: {said}");
-        let counted = budgeted(said);
-        assert!(counted.len() <= 600, "{} bytes: {counted}", counted.len());
-        assert!(!said.contains('\u{2014}'), "no em dash: {said}");
     }
 
-    /// The standing rule is said once per context: in the instructions, and in no tool's
-    /// description, which every context also carries.
+    /// The guide is where the rules live, so its cap is a sanity bound on one prose page and not a
+    /// budget for a tool's description. It names every document this server serves on demand.
     #[test]
-    fn the_standing_rule_is_said_once_and_the_room_tools_fit_their_budget() {
+    fn the_guide_is_the_rules_and_names_the_documents() {
+        let answers = run(&[r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#]);
+        let said = answers[0]["result"]["instructions"].as_str().unwrap_or("");
+        let counted = budgeted(said);
+        assert!(
+            counted.len() <= 32 * 1024,
+            "{} bytes of instructions",
+            counted.len()
+        );
+        assert!(!said.contains('\u{2014}'), "no em dash: {said}");
+        for resource in crate::docs::RESOURCES {
+            assert!(said.contains(resource.uri), "{said}");
+        }
+    }
+
+    /// A description is ONE line saying what the tool does. The rules, the examples and the
+    /// examples' consequences are the guide's, which every context carries once instead.
+    #[test]
+    fn every_description_is_one_line_and_the_whole_set_is_small() {
+        let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
+        let tools = answers[0]["result"]["tools"].as_array().expect("tools");
+        let mut total = 0;
+        let mut longest = String::new();
+        for t in tools {
+            let d = t["description"].as_str().unwrap_or("");
+            assert!(!d.is_empty(), "{} has no description", t["name"]);
+            assert!(
+                !d.contains("\n") && !d.contains("  "),
+                "{} is more than one line: {d}",
+                t["name"]
+            );
+            assert!(!d.contains('\u{2014}'), "no em dash: {d}");
+            assert!(d.len() <= 200, "{}: {} bytes: {d}", t["name"], d.len());
+            if d.len() > longest.len() {
+                longest = d.to_string();
+            }
+            total += d.len();
+        }
+        assert!(
+            total < 4000,
+            "{total} bytes of descriptions for 39 tools, against 15079 before they were one \
+             liners (longest: {longest})"
+        );
+    }
+
+    /// The standing rule is said once per context: in the guide, and in no tool's description,
+    /// which every context also carries.
+    #[test]
+    fn the_standing_rule_is_said_once_and_only_in_the_guide() {
         let rule = letibot_tools::builtins::room::STANDING_RULE;
         let answers = run(&[r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#]);
         let said = answers[0]["result"]["instructions"].as_str().unwrap_or("");
-        let mut count = said.matches(rule).count();
+        let mut count = said
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .matches(rule)
+            .count();
         let mut bytes = 0;
         for t in crate::rooms::tool_list() {
             let d = budgeted(&t.to_string());
             count += d.matches(rule).count();
             assert!(!d.contains("hold something"), "{d}");
-            assert!(!d.contains('\u{2014}'), "no em dash: {d}");
             bytes += budgeted(t["description"].as_str().unwrap_or("")).len();
         }
         assert_eq!(count, 1, "the rule is said once");
-        assert!(bytes <= 2000, "{bytes} bytes of room tool descriptions");
+        assert!(
+            bytes < 1000,
+            "{bytes} bytes of room tool descriptions, against 1995 when the rules rode in them"
+        );
     }
 
     /// Every tool this build serves, each with a schema - the design's table, and the shape MCP
@@ -430,14 +509,14 @@ mod tests {
     /// caller knows which request failed.
     #[test]
     fn an_unknown_method_is_method_not_found() {
-        let answers = run(&[r#"{"jsonrpc":"2.0","id":9,"method":"resources/list"}"#]);
+        let answers = run(&[r#"{"jsonrpc":"2.0","id":9,"method":"prompts/list"}"#]);
         assert_eq!(answers[0]["error"]["code"], -32601, "{:?}", answers[0]);
         assert_eq!(answers[0]["id"], 9);
         assert!(
             answers[0]["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("resources/list"),
+                .contains("prompts/list"),
             "{:?}",
             answers[0]
         );

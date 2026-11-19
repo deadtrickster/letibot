@@ -20,17 +20,6 @@ pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 /// and a fork (a new session id, a copied transcript) a new one.
 pub const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 
-/// How `me` behaves in the rooms, said once in the server's instructions: the host room and its own
-/// project's room, never a third. Short because a test holds the byte budget. The two addressing
-/// rules ride here because this seat has no `room` tool text of ours to carry them.
-pub fn etiquette(me: &str) -> String {
-    format!(
-        "As `{me}` you see `host`, your project's room, dms. An `fyi` wakes only whom it names; \
-         answer a dm in the dm. {}",
-        letibot_tools::builtins::room::STANDING_RULE
-    )
-}
-
 /// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>:<name>` (just
 /// `cc@<name>` when the two match). The name is the folder's nick or the repository's, and the
 /// folder is the one holding that repository, or the working folder outside one.
@@ -1785,20 +1774,15 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 }
 
 pub fn tool_list() -> Vec<Value> {
-    let me = handle();
     vec![
         tool(
             "rooms",
-            &format!(
-                "The rooms `{me}` sees: `host` and one `project/<key>` per project (`label` its \
-                 folder), with members, `last_seq` and `unread`."
-            ),
+            "The rooms this seat sees, with their members, last seq and unread count.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "room_read",
-            "Read a room. Moves no cursor. `since` a seq, `last` the newest N (max 200), \
-             `thread` a root seq and its replies.",
+            "Read a room: since a seq, the newest N, or a thread and its replies.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1812,14 +1796,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_say",
-            &format!(
-                "Say something as `{me}`. `to` is PRIVATE: the dm, no room, and it wakes them; \
-                 it takes a seat's ID (`lab2x1/cc-…`, from `room_roster`) and never a name. \
-                 `@name` is a public mention that wakes them here, inviting them if they cannot see \
-                 it. Answer a dm in the dm. `thread` answers a seq and stays in its room. `refs`: a \
-                 todo or queue row. Over 4000 bytes is refused, never cut. A refusal is the \
-                 room's etiquette, not an error."
-            ),
+            "Say something in a room, to a name in public or privately to a seat by its id.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1859,8 +1836,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_ask",
-            "Ask whoever owns a `path`/`topic`: the room finds the owner and says why. `to` asks \
-             a session instead. Only `answer` settles it.",
+            "Ask whoever owns a path or a topic, or a named seat, a question the room holds \
+             open until it is answered.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1875,8 +1852,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_dm",
-            "A private message to one seat, by its id (`lab2x1/cc-…`) or `operator`: `room_say` \
-             with `to`. Answers a dm.",
+            "Send a private message to one seat or the operator, which is also how a dm is \
+             answered.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1894,8 +1871,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_roster",
-            "Who is in a room: `seat_id` (what a `to` takes), name, kind, whether connected, \
-             project and the tree's label. `seats`: the queue seats.",
+            "Who is in a room, by the seat id a `to` takes.",
             json!({
                 "type": "object",
                 "properties": { "room": { "type": "string", "description": "A room, or `seats`: the box's queue seats, in no room and reached by dm." } },
@@ -1904,8 +1880,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_invite",
-            "Invite a session (id or name) into a project room (`project/<key>` or label) until it \
-             leaves. Answers with the roster.",
+            "Invite a session into a project room until it leaves.",
             json!({
                 "type": "object",
                 "properties": { "room": { "type": "string" }, "session": { "type": "string" } },
@@ -1914,7 +1889,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_leave",
-            "Take an invited session out of a project room. Answers with the room's roster.",
+            "Take an invited session out of a project room.",
             json!({
                 "type": "object",
                 "properties": { "room": { "type": "string" }, "session": { "type": "string" } },
@@ -1923,10 +1898,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_inbox",
-            &format!(
-                "What `{me}` missed since its cursor: `to_me` (default), `mentions` or `all`. \
-                 `ack: true` moves the cursor past it."
-            ),
+            "What this seat missed since its cursor.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1938,8 +1910,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_nick",
-            "The label the room draws this seat by, beside its id. Refused while a live seat answers \
-             to it, with whose it is and the next counter free.",
+            "Set the label the room draws this seat by, beside its id.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1950,18 +1921,12 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_asks",
-            &format!(
-                "Asks between `{me}` and sessions: `of_me` wait on you, `by_me` you asked. Only \
-                 `room_answer` or `room_decline` settles one; a chat reply does not. `state` is \
-                 `open`, `answered`, `declined`, `down` or `withdrawn`; `escalated` means the \
-                 operator is asked to restart the other end."
-            ),
+            "The asks between this seat and sessions: what is owed to it and what it asked.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "room_answer",
-            "Answer open ask `ask` with `text`: a thread reply to the asker that releases its \
-             board row. Only the one asked may answer.",
+            "Answer an open ask, which releases its row on the asker's board.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1973,7 +1938,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_decline",
-            "Decline ask `ask` with `text` saying why: the asker's row is released as declined.",
+            "Decline an open ask, saying why, which releases its asker's row.",
             json!({
                 "type": "object",
                 "properties": {
