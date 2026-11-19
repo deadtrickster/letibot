@@ -1,10 +1,19 @@
 #!/bin/sh
 # Package built binaries as the release asset `install.sh` asks for.
 #
-#   scripts/make-dist.sh <target-triple> [outdir]
+#   scripts/make-dist.sh <target-triple> [outdir] [--cloud|--local]
 #
-# install.sh downloads `letibot-<triple>.tar.gz` and expects the binaries at the archive root.
-# `scripts/check-dist-names.sh` holds the names to install.sh.
+# Two assets, and install.sh asks for one of them by name:
+#
+#   letibot-<triple>.tar.gz         CLOUD, the default install: the seven programs, no libraries
+#   letibot-<triple>-local.tar.gz   the same programs linking llama, plus its four libraries
+#
+# `--cloud` is the default here because it is the default everywhere a person installs letibot.
+# A cloud archive carries no library and no binary of it may link one; a local one carries the
+# four and its `harnessd` must link `libllama`. Both are checked below rather than assumed.
+# `scripts/check-dist-names.sh` holds the two names to install.sh's.
+#
+# install.sh expects the binaries at the archive root.
 #
 # `letibot-askpass` is a link to `letibot-multi` that install.sh makes, and must sit beside
 # `harnessd`: `sudo::install()` looks for it there. `letibot-m1` and the `letibot-render*`
@@ -33,12 +42,38 @@ ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
 # must match (`check-dist-names.sh` holds the two to each other).
 ARCHIVE_LIBRARIES_DARWIN="libllama.0.dylib libggml.0.dylib libggml-cpu.0.dylib libggml-base.0.dylib"
+# The local asset's name suffix, which install.sh's ASSET_SUFFIX_LOCAL must equal: install.sh is
+# served from `main` and the archive comes from a tag, so a name that drifts is a 404.
+ASSET_SUFFIX_LOCAL="-local"
 
-triple="${1:-}"
+flavor=cloud
+triple=""
+outdir=""
+for arg in "$@"; do
+  case "$arg" in
+    --cloud) flavor=cloud ;;
+    --local) flavor=local ;;
+    -*)
+      echo "make-dist: unknown option: $arg (--cloud or --local)" >&2
+      exit 2
+      ;;
+    *)
+      if [ -z "$triple" ]; then
+        triple="$arg"
+      elif [ -z "$outdir" ]; then
+        outdir="$arg"
+      else
+        echo "make-dist: unexpected argument: $arg" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
 if [ -z "$triple" ]; then
-  echo "usage: make-dist.sh <target-triple> [outdir]" >&2
+  echo "usage: make-dist.sh <target-triple> [outdir] [--cloud|--local]" >&2
   exit 2
 fi
+local_libs=""
 case "$triple" in
   *-apple-darwin)
     darwin=1
@@ -46,8 +81,12 @@ case "$triple" in
     ;;
   *) darwin=0 ;;
 esac
-ARCHIVE="$ARCHIVE_BINARIES $ARCHIVE_LIBRARIES"
-outdir="${2:-dist}"
+# Only the local archive carries libraries, and a Mac's are in Mach-O's spelling.
+if [ "$flavor" = local ]; then
+  local_libs=$ARCHIVE_LIBRARIES
+fi
+ARCHIVE="$ARCHIVE_BINARIES $local_libs"
+outdir="${outdir:-dist}"
 
 # shellcheck disable=SC1007 # an empty CDPATH for this cd only, so it cannot print a path
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -76,10 +115,10 @@ for want in $ARCHIVE_BINARIES; do
   exit 1
 done
 
-# The libraries are a hard requirement, not a best effort: a package that names
-# them but does not carry them installs cleanly and then fails to start, which is
-# the failure shape this whole script exists to keep off a user's machine.
-for so in $ARCHIVE_LIBRARIES; do
+# The libraries are a hard requirement of a LOCAL archive, not a best effort: a package that
+# names them but does not carry them installs cleanly and then fails to start, which is the
+# failure shape this whole script exists to keep off a user's machine. A cloud archive has none.
+for so in $local_libs; do
   if [ ! -f "$lib/$so" ]; then
     echo "make-dist: $lib/$so not found." >&2
     echo "  harnessd links it and needs it in the package. Set LETIBOT_LLAMA_LIB" >&2
@@ -89,7 +128,11 @@ for so in $ARCHIVE_LIBRARIES; do
 done
 
 mkdir -p "$outdir"
+# The cloud asset is the name install.sh asks for by default; `--local` gets its own.
 name="letibot-$triple.tar.gz"
+if [ "$flavor" = local ]; then
+  name="letibot-$triple$ASSET_SUFFIX_LOCAL.tar.gz"
+fi
 
 # A staging directory rather than `tar -C` twice, so the archive is a listing of one
 # directory and does not depend on argument order. The checks below walk it.
@@ -116,13 +159,62 @@ for want in $ARCHIVE_BINARIES; do
     fi
   fi
 done
-for so in $ARCHIVE_LIBRARIES; do
+for so in $local_libs; do
   # `-L`: these are symlinks in a llama.cpp build tree (libllama.so.0 →
   # libllama.so.0.4.0) and an archive holding a dangling symlink extracts to
   # nothing. The real file is what has to travel.
   cp -L "$lib/$so" "$stage/$so"
 done
 chmod 755 "$stage"/*
+
+# **The flavor of the archive, read off the staged bytes.** Both directions are refused here
+# because both are silent on a user's machine: a cloud asset whose harnessd links libllama dies
+# at exec on the box that downloaded it precisely because it has no llama.cpp, and a `-local`
+# asset whose harnessd links none is a local install that cannot run a local model.
+staged_programs=""
+for want in $ARCHIVE_BINARIES; do
+  case "$want" in letibot | leticode) continue ;; esac
+  staged_programs="$staged_programs $stage/$want"
+done
+for f in $staged_programs; do
+  [ -f "$f" ] || continue
+  if [ "$darwin" = 1 ]; then
+    needs=$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}')
+  else
+    needs=$(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')
+  fi
+  for need in $needs; do
+    case "$need" in
+      *llama* | *ggml*)
+        if [ "$flavor" = cloud ]; then
+          echo "make-dist: $(basename "$f") links $need, and a cloud archive must link none." >&2
+          echo "  Build it without the local feature:" >&2
+          echo "    cargo build --release --bins --no-default-features" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+done
+if [ "$flavor" = local ]; then
+  # The positive half: this asset exists to run a local model, and only a harnessd linking
+  # libllama can. A cloud build packaged under the local name would be that failure.
+  if [ "$darwin" = 1 ]; then
+    needs=$(otool -L "$stage/harnessd" 2>/dev/null | tail -n +2 | awk '{print $1}')
+  else
+    needs=$(readelf -d "$stage/harnessd" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')
+  fi
+  linked=0
+  for need in $needs; do
+    case "$need" in *llama*) linked=1 ;; esac
+  done
+  if [ "$linked" = 0 ]; then
+    echo "make-dist: harnessd links no libllama, so this is not a local build." >&2
+    echo "  Build it with the local feature:" >&2
+    echo "    cargo build --release --bins --features letibot-harnessd/local" >&2
+    exit 1
+  fi
+fi
 
 # The libraries must not depend on an absolute path. `DT_RUNPATH` is not inherited by a
 # library's dependencies, so a `libllama.so.0` with an absolute runpath finds its siblings only
@@ -160,7 +252,7 @@ if [ "$darwin" = 1 ]; then
     chmod 644 "$f"
   done
   staged_libs=""
-  for so in $ARCHIVE_LIBRARIES; do staged_libs="$staged_libs $stage/$so"; done
+  for so in $local_libs; do staged_libs="$staged_libs $stage/$so"; done
   for f in "$stage"/harnessd "$stage"/letibot-tui $staged_libs; do
     for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}'); do
       case "$dep" in
@@ -238,7 +330,7 @@ else
     esac
   done
 
-  chmod 644 "$stage"/lib*.so.0
+  chmod 644 "$stage"/lib*.so.0 2>/dev/null || true
 
   # The closure check: every `DT_NEEDED` of every staged ELF is either staged or provided by the
   # base system per `ldconfig`. Not an `ldd` run: `ldd` resolves through the binary's runpath,
@@ -295,10 +387,18 @@ else
         candidates="$candidates $need"
       done
     done
-    # What install.sh promises to check for, read from the file rather than restated.
-    install_sh_host=$(sed -n 's/^HOST_LIBS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+    # What install.sh promises to check for, read from the file rather than restated, and the
+    # list that belongs to THIS flavor: a local archive's host libraries are HOST_LIBS, a cloud
+    # archive's are HOST_LIBS_CLOUD (SQLite alone), which is also the list install.sh's own
+    # `prebuilt` plan is held to.
+    if [ "$flavor" = local ]; then
+      host_var=HOST_LIBS
+    else
+      host_var=HOST_LIBS_CLOUD
+    fi
+    install_sh_host=$(sed -n "s/^$host_var=\"\(.*\)\"$/\1/p" "$repo/install.sh" | head -1)
     if [ -z "$install_sh_host" ]; then
-      echo "make-dist: install.sh has no HOST_LIBS line to compare against." >&2
+      echo "make-dist: install.sh has no $host_var line to compare against." >&2
       echo "  That list is what refuses an install on a machine missing a runtime" >&2
       echo "  library; without it the failure is an exit-127 on a user's box." >&2
       exit 1
@@ -326,7 +426,7 @@ else
     if [ -n "$unlisted" ]; then
       echo "make-dist: these are needed at run time and install.sh does not check for them:$unlisted" >&2
       echo "  They come from the host, so a machine without them installs cleanly and" >&2
-      echo "  then dies at exec. Either add them to HOST_LIBS in install.sh (with the" >&2
+      echo "  then dies at exec. Either add them to $host_var in install.sh (with the" >&2
       echo "  package name for the fix), or add them to \`always\` above if every glibc" >&2
       echo "  system has them by definition." >&2
       exit 1
@@ -334,7 +434,7 @@ else
     if [ -n "$stale" ]; then
       echo "make-dist: install.sh refuses over libraries nothing here needs:$stale" >&2
       echo "  A stale name turns a user away from an install that would have worked," >&2
-      echo "  quoting a package they already have. Remove it from HOST_LIBS." >&2
+      echo "  quoting a package they already have. Remove it from $host_var." >&2
       exit 1
     fi
   fi

@@ -76,6 +76,7 @@ fi
 # The installer is served from `main` and the archive from `releases/latest`, two refs. So
 # install.sh's BINARIES + LIBRARIES and make-dist.sh's ARCHIVE are read from their files and
 # compared as sets, both ways. A copy of either list here would be a third place to drift.
+# `LIBRARIES` is the local archive's set: a cloud archive carries none of them.
 install_files=""
 for var in BINARIES LIBRARIES; do
   v=$(sed -n "s/^$var=\"\(.*\)\"$/\1/p" "$repo/install.sh" | head -1)
@@ -137,6 +138,45 @@ if [ "$(printf '%s\n' $inst_darwin | sort)" != "$(printf '%s\n' $pack_darwin | s
   echo "  make-dist   ARCHIVE_LIBRARIES_DARWIN: $pack_darwin" >&2
   exit 1
 fi
+
+# **The two asset NAMES, which is the other half of the same contract.** install.sh asks for
+# `letibot-<triple>.tar.gz` by default and `letibot-<triple>-local.tar.gz` when asked for a local
+# install; make-dist.sh produces exactly those. The suffix is a constant in both files, so it is
+# read from both rather than restated here.
+inst_suffix=$(sed -n 's/^ASSET_SUFFIX_LOCAL="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+pack_suffix=$(sed -n 's/^ASSET_SUFFIX_LOCAL="\(.*\)"$/\1/p' "$repo/scripts/make-dist.sh" | head -1)
+if [ -z "$inst_suffix" ] || [ -z "$pack_suffix" ]; then
+  echo "check-dist-names: install.sh or make-dist.sh has no ASSET_SUFFIX_LOCAL line." >&2
+  echo "  That constant is the whole of which asset is the default and which carries llama." >&2
+  exit 1
+fi
+if [ "$inst_suffix" != "$pack_suffix" ]; then
+  echo "check-dist-names: the two asset names disagree:" >&2
+  echo "  install.sh  ASSET_SUFFIX_LOCAL:  $inst_suffix" >&2
+  echo "  make-dist   ASSET_SUFFIX_LOCAL:  $pack_suffix" >&2
+  exit 1
+fi
+# And each file must still build both names from that suffix: the default one and the local one.
+# shellcheck disable=SC2016 # the `$1` and `$triple` are the files' own text, matched literally
+if ! grep -qF 'letibot-$1.tar.gz' "$repo/install.sh"; then
+  echo "check-dist-names: install.sh no longer asks for letibot-<triple>.tar.gz by default." >&2
+  exit 1
+fi
+# shellcheck disable=SC2016 # the same
+if ! grep -qF 'letibot-$triple$ASSET_SUFFIX_LOCAL.tar.gz' "$repo/scripts/make-dist.sh"; then
+  echo "check-dist-names: make-dist.sh no longer produces letibot-<triple>$ASSET_SUFFIX_LOCAL.tar.gz." >&2
+  exit 1
+fi
+
+# Every workflow that publishes must build BOTH assets: the cloud one under the default name and
+# the local one beside it. One without the other is an install that 404s or a local model nobody
+# can install prebuilt, and neither shows up until a user tries.
+for want in --cloud --local; do
+  if ! grep -q -- "make-dist.sh.*$want" "$repo"/.github/workflows/*.yml 2>/dev/null; then
+    echo "check-dist-names: no workflow runs make-dist.sh $want, so only one asset is published." >&2
+    exit 1
+  fi
+done
 
 # A role link is made at install time, never shipped, and never a launcher's name.
 launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)

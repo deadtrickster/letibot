@@ -1,19 +1,23 @@
 name: Release
 
-# Assets, built on a tag. This is what install.sh downloads:
+# Assets, built on a tag. This is what install.sh downloads, and there are TWO per platform:
 #
 #   curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
 #
-# asks for `letibot-<triple>.tar.gz` at `releases/latest/download/`, holding at the
-# archive root:
+#   letibot-<triple>.tar.gz         the CLOUD install, and the default: seven programs, no
+#                                   llama.cpp anywhere in it
+#   letibot-<triple>-local.tar.gz   the same programs linking llama, plus its four libraries
+#
+# install.sh asks for the first unless `LETIBOT_LOCAL=1`, which asks for the second. Both hold
+# at the archive root:
 #
 #   harnessd letibot-tui letibot-askpass          the runtime
 #   letibot-mcp                                   the Claude Code bridge
-#   libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0  what harnessd links
+#   libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0  what harnessd links (local only)
 #
-# `scripts/make-dist.sh` produces exactly that and asserts the contents; both this
-# workflow and `scripts/check-dist-names.sh` pin the names to install.sh's, so an
-# asset cannot be published under a name the installer does not ask for.
+# `scripts/make-dist.sh --cloud|--local` produces each and asserts its contents; both this
+# workflow and `scripts/check-dist-names.sh` pin the names to install.sh's, so an asset cannot be
+# published under a name the installer does not ask for.
 
 on:
   push:
@@ -195,8 +199,33 @@ jobs:
       - name: Fetch the built-in plugins' dependencies
         run: for m in plugins/builtin/*/Cargo.toml; do cargo fetch --manifest-path "$m"; done
 
-      - name: Build
-        run: cargo build --release --bin harnessd --bin letibot-tui --bin letibot-mcp --bin letibot-multi --bin letibot-acp
+      - name: Build (cloud, the default install)
+        run: cargo build --release --bins --no-default-features
+
+      # **The cloud asset's whole promise: nothing in it links llama.cpp.** The box that downloads
+      # it may have no llama.cpp at all, and a single `local` build in this tree would put
+      # libllama's DT_NEEDED into one of these and turn the install into an exec failure. `ldd`
+      # on Linux, `otool -L` on macOS, over every program the archive carries.
+      - name: No cloud binary may link llama.cpp
+        run: |
+          set -eu
+          for b in harnessd letibot-tui letibot-multi letibot-mcp letibot-acp; do
+            f="target/release/$b"
+            [ -x "$f" ] || { echo "::error::no $f to check"; exit 1; }
+            if [ "$RUNNER_OS" = macOS ]; then
+              deps=$(otool -L "$f" | tail -n +2)
+            else
+              deps=$(ldd "$f")
+            fi
+            case "$deps" in
+              *llama* | *ggml*)
+                echo "::error::$b links llama.cpp, and a cloud asset must link none."
+                echo "$deps"
+                exit 1
+                ;;
+            esac
+          done
+          echo "cloud: no binary links llama.cpp"
 
       # No ELF may sit under a launcher's name, and install.sh and the archive name the same files.
       - name: Names
@@ -211,22 +240,59 @@ jobs:
           ./target/release/harnessd --version
           ./target/release/letibot-tui --version
 
-      - name: Package
-        run: sh scripts/make-dist.sh ${{ matrix.triple }} dist
+      - name: Package (cloud)
+        run: sh scripts/make-dist.sh ${{ matrix.triple }} dist --cloud
 
       # **And the PACKAGE must run with nothing else present.** The archive is
       # extracted somewhere else and run with `LD_LIBRARY_PATH` emptied — so the only
       # thing that can satisfy the loader is `$ORIGIN`. This is the check that turns
       # "it worked on the build machine" into "it works on a machine with no
       # llama.cpp", which is every machine but the author's.
-      - name: The package must run on its own
+      - name: The cloud package must run on its own
         run: |
           set -eu
           d=$(mktemp -d)
           tar -xzf dist/letibot-${{ matrix.triple }}.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 11 || { echo "::error::archive holds $n entries, expected 11 (7 programs: harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibot-acp; 4 libraries)"; ls -la "$d"; exit 1; }
+          test "$n" -eq 7 || { echo "::error::cloud archive holds $n entries, expected 7 (7 programs, no libraries)"; ls -la "$d"; exit 1; }
           head -c 2 "$d/letibot" | grep -q '^#!' || { echo "::error::the archive's letibot is not the launcher script"; exit 1; }
+          ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-multi --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./harnessd --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-tui --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-mcp --version )
+
+      # **The local flavor, built second so the cloud archive is already staged.** The flag is
+      # spelled `pkg/feature` rather than a bare `local`: this is a virtual workspace, and only
+      # these two crates have the feature.
+      - name: Build (local, the opt-in install)
+        run: cargo build --release --bins --features letibot-harnessd/local,letibot/local
+
+      # The other direction, and the reason this asset exists: it must be able to run a local
+      # model, which only a harnessd linking libllama can.
+      - name: The local harnessd must link llama.cpp
+        run: |
+          set -eu
+          if [ "$RUNNER_OS" = macOS ]; then
+            otool -L target/release/harnessd | grep llama
+          else
+            ldd target/release/harnessd | grep llama
+            ldd target/release/letibot-multi | grep llama
+          fi
+
+      - name: Package (local)
+        run: sh scripts/make-dist.sh ${{ matrix.triple }} dist --local
+
+      # **And the LOCAL package must run with nothing else present.** The archive is extracted
+      # somewhere else and run with `LD_LIBRARY_PATH` emptied, so the only thing that can satisfy
+      # the loader is `$ORIGIN`. This is the check that turns "it worked on the build machine" into
+      # "it works on a machine with no llama.cpp".
+      - name: The local package must run on its own
+        run: |
+          set -eu
+          d=$(mktemp -d)
+          tar -xzf dist/letibot-${{ matrix.triple }}-local.tar.gz -C "$d"
+          n=$(ls -1 "$d" | wc -l)
+          test "$n" -eq 11 || { echo "::error::local archive holds $n entries, expected 11 (7 programs; 4 libraries)"; ls -la "$d"; exit 1; }
           ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-multi --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./harnessd --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-tui --version )
@@ -235,9 +301,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: letibot-${{ matrix.triple }}
-          # The whole dist directory, so the asset name is make-dist.sh's to decide and
-          # this file does not restate it.
-          path: dist/letibot-${{ matrix.triple }}.tar.gz
+          # The whole dist directory, so the two asset names are make-dist.sh's to decide and this
+          # file does not restate them.
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   # Publishes the assets as a release, which is what makes `releases/latest` resolve.
@@ -260,47 +326,69 @@ jobs:
       - name: List what will be published
         run: ls -la dist/
 
-      # The same extraction the installer does, run once here so a bad archive is
-      # caught at publish time rather than by the first user.
-      # **Read from the TAGGED `install.sh`, not from a list written here.**
-      #
-      # This step used to carry its own copy of the file names, which is the drift
-      # shape this repository keeps meeting: the installer says one thing, the
-      # publish step says another, and the disagreement is found by whoever runs the
-      # one-liner. Reading `install.sh`'s own `BINARIES`/`LIBRARIES` makes it the
-      # SAME contract `check-dist-names.sh` asserted before the build, now checked
-      # against the bytes that actually came out.
-      #
-      # The script and the asset do not come from the same ref — the script is served
-      # from `main`, the archive from `releases/latest` — so the only thing tying a
-      # user's install to a release's contents is that both name the same files.
+      # **Both assets for every triple, and each one's own file list.** A cloud asset carries the
+      # programs and no library; a `-local` asset carries the programs plus the four llama
+      # libraries. Reading `install.sh`'s own lists rather than restating them keeps the installer
+      # and the archive one contract, which is what `check-dist-names.sh` asserts before the build.
       - name: Every asset must extract to what install.sh expects
         run: |
           set -eu
           bins=$(sed -n 's/^BINARIES="\(.*\)"$/\1/p' install.sh | head -1)
           libs_linux=$(sed -n 's/^LIBRARIES="\(.*\)"$/\1/p' install.sh | head -1)
           libs_darwin=$(sed -n 's/^LIBRARIES_DARWIN="\(.*\)"$/\1/p' install.sh | head -1)
-          [ -n "$bins" ] || { echo "::error::install.sh at this tag has no BINARIES line"; exit 1; }
-          [ -n "$libs_linux" ] || { echo "::error::install.sh at this tag has no LIBRARIES line"; exit 1; }
-          [ -n "$libs_darwin" ] || { echo "::error::install.sh at this tag has no LIBRARIES_DARWIN line"; exit 1; }
-          echo "install.sh at $GITHUB_REF_NAME wants: $bins + $libs_linux (Linux) / $libs_darwin (macOS)"
+          local_suffix=$(sed -n 's/^ASSET_SUFFIX_LOCAL="\(.*\)"$/\1/p' install.sh | head -1)
+          for want in "$bins" "$libs_linux" "$libs_darwin" "$local_suffix"; do
+            [ -n "$want" ] || { echo "::error::install.sh at this tag is missing a BINARIES, LIBRARIES, LIBRARIES_DARWIN or ASSET_SUFFIX_LOCAL line"; exit 1; }
+          done
+          echo "install.sh at $GITHUB_REF_NAME wants: $bins"
+          echo "  plus, for a $local_suffix asset only: $libs_linux (Linux) / $libs_darwin (macOS)"
           for f in dist/*.tar.gz; do
-            # A Mac copies LIBRARIES_DARWIN, so the Darwin asset answers to that list.
-            case "$f" in
-              *-apple-darwin.tar.gz) libs=$libs_darwin ;;
-              *) libs=$libs_linux ;;
+            base=$(basename "$f")
+            libs=""
+            case "$base" in
+              *"$local_suffix".tar.gz)
+                # A Mac copies LIBRARIES_DARWIN; a Linux asset copies LIBRARIES.
+                case "$base" in
+                  *-apple-darwin"$local_suffix".tar.gz) libs=$libs_darwin ;;
+                  *) libs=$libs_linux ;;
+                esac
+                ;;
             esac
             d=$(mktemp -d)
             tar -xzf "$f" -C "$d"
             for want in $bins $libs; do
-              [ -f "$d/$want" ] || { echo "::error::$f is missing $want, which install.sh copies"; exit 1; }
+              [ -f "$d/$want" ] || { echo "::error::$base is missing $want, which install.sh copies"; exit 1; }
             done
             for want in $bins; do
-              [ -x "$d/$want" ] || { echo "::error::$f: $want is not executable"; exit 1; }
+              [ -x "$d/$want" ] || { echo "::error::$base: $want is not executable"; exit 1; }
             done
+            # And the OTHER way: a cloud asset carrying a llama library is the one thing this
+            # asset promises not to do, so it is checked rather than assumed absent.
+            if [ -z "$libs" ]; then
+              for extra in $(ls "$d"); do
+                case "$extra" in
+                  libllama* | libggml*)
+                    echo "::error::$base carries $extra, and a cloud asset must carry no llama library"
+                    exit 1
+                    ;;
+                esac
+              done
+            fi
             rm -rf "$d"
           done
-          echo "$(ls dist/*.tar.gz | wc -l) assets, all complete"
+          # Every triple must have BOTH, or the other install path 404s.
+          for f in dist/*.tar.gz; do
+            base=$(basename "$f")
+            case "$base" in
+              *"$local_suffix".tar.gz)
+                [ -f "dist/${base%"$local_suffix".tar.gz}.tar.gz" ] || { echo "::error::$base has no cloud sibling, so the default install 404s"; exit 1; }
+                ;;
+              *)
+                [ -f "dist/${base%.tar.gz}$local_suffix.tar.gz" ] || { echo "::error::$base has no $local_suffix sibling, so a local install has no prebuilt asset"; exit 1; }
+                ;;
+            esac
+          done
+          echo "$(ls dist/*.tar.gz | wc -l) assets, all complete, in pairs"
 
       # `gh` rather than a release action: it is already on the runner, so this is one
       # less third-party action to trust in the path that publishes binaries people
