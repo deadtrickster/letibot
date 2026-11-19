@@ -2389,8 +2389,8 @@ impl Harness {
         // SERVER's window, which is this cell.
         let local_window_cell: Arc<std::sync::Mutex<Option<Option<u64>>>> = Default::default();
         // This session's point, in a cell its own runner can see: `base` is a clone taken at open
-        // and nothing updates it, so a cell is the only way a spawn can read the point the session
-        // is AT rather than the one it opened at. Built here, after the mode is final.
+        // and nothing updates it, so a cell is the only way a spawn reads the point the session is
+        // AT. Its value is written below, where the point is final.
         let point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>> =
             Arc::new(std::sync::Mutex::new(cfg.mode));
         // A child's ceiling: the parent's point as `resolve_the_point` found it, followed live
@@ -3161,6 +3161,10 @@ impl Harness {
             // point the operator moves to later is checked against the same list.
             Some((have, seats))
         };
+        // The point a spawn reads, written once the point is final: the flag's substitution and
+        // the seat's clamp are the last two things that move it, and a child clamps what it is
+        // handed. Filled with the ASKED point, the cell narrowed every `--mode allow-all` child.
+        *point_cell.lock().unwrap_or_else(|e| e.into_inner()) = cfg.mode;
 
         let trail = Arc::new(TrailMirror::default());
         // What this session will hold, and the ceiling it states for itself - see

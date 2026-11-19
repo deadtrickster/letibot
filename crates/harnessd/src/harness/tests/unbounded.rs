@@ -84,6 +84,13 @@ type Cards = Arc<AtomicUsize>;
 
 fn open(cfg: Config) -> (Harness, Cards) {
     let cards: Cards = Arc::new(AtomicUsize::new(0));
+    let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
+    (opened_in(&parts, cfg, &cards), cards)
+}
+
+/// [`open`] over a `Parts` an earlier open already used, so a child sees its parent's live point:
+/// the tree table the ceiling is read from is the parent's, exactly as a spawn finds it.
+fn opened_in(parts: &Parts, cfg: Config, cards: &Cards) -> Harness {
     let seen = cards.clone();
     let adjudicator = letibot_tools::adjudicate::AskAdjudicator::new("human:test", move |req| {
         seen.fetch_add(1, Ordering::Relaxed);
@@ -95,17 +102,45 @@ fn open(cfg: Config) -> (Harness, Cards) {
             ),
         )
     });
-    let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
     let id = cfg.session_id.clone();
-    let h = Harness::open_with(
-        &parts,
-        cfg,
-        Hub::new(&id),
-        Some(Box::new(adjudicator)),
-        None,
+    Harness::open_with(parts, cfg, Hub::new(&id), Some(Box::new(adjudicator)), None)
+        .expect("the session opens")
+}
+
+/// A child's config as `HarnessTaskRunner` builds one: the parent's own config cloned, its id
+/// named as the parent, and the point its parent's spawn cell holds.
+fn child_of(parent: &Harness, id: &str) -> Config {
+    let mut cfg = parent.config().clone();
+    cfg.session_id = id.to_string();
+    cfg.parent_session_id = Some(parent.config().session_id.clone());
+    cfg.mode = parent.live_point();
+    cfg
+}
+
+/// An exec-class call put to the session's gate and NOT run: what a card is asked before any
+/// command starts, which is the half of "asks nothing" a box with no cgroup can still measure.
+fn exec_admitted(h: &Harness, command: &str) -> bool {
+    let args = serde_json::json!({ "command": command });
+    let workspace = h.workspace().display().to_string();
+    let call = letibot_tools::GateCall {
+        name: "bash",
+        access: letibot_tools::schema::Access::Exec,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: &workspace,
+        target_exists: None,
+        scripts: &[],
+        preview: &[],
+    };
+    matches!(
+        h.runtime
+            .gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit(&call),
+        letibot_tools::GateDecision::Admit
     )
-    .expect("the session opens");
-    (h, cards)
 }
 
 /// One tool call, through the runtime the turn loop uses.
@@ -412,4 +447,195 @@ fn the_flag_spelling_of_allow_all_opens_a_host_session_with_a_shell() {
         );
         assert!(out.payload.contains("hi"), "{}", out.payload);
     }
+}
+
+/// `--mode allow-all` is per-open and NOT stored, so a child has only its parent to read the point
+/// from: what the spawn reads must be the point the parent STANDS at - the flag's structural
+/// `allow-all` substituted for this box's coordinate - and not the name the flag spelled.
+#[test]
+fn a_flag_allow_all_parents_child_stands_where_its_parent_does() {
+    let dir = Scratch::new("allow-all-flag-child");
+    let cards: Cards = Arc::new(AtomicUsize::new(0));
+    let mut parent_cfg = config(&dir, "s-parent");
+    parent_cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
+    let parts = Parts::load(&parent_cfg).expect("the byte vocabulary loads");
+    let parent = opened_in(&parts, parent_cfg, &cards);
+
+    let here = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+    assert_eq!(
+        parent.config().mode,
+        here,
+        "the flag's `allow-all` was not substituted for this box"
+    );
+    assert_eq!(
+        parent.live_point(),
+        here,
+        "the cell a spawn reads holds `{}`, the point the flag ASKED for, not the one this \
+         session stands at",
+        parent.live_point().name
+    );
+
+    let child = opened_in(&parts, child_of(&parent, "s-parent-sub-1"), &cards);
+    assert_eq!(
+        child.config().mode,
+        here,
+        "the child of an allow-all parent opened at `{}`: {:?}",
+        child.config().mode.name,
+        child.open_notes()
+    );
+    assert!(
+        child.runtime.backend.boundary().is_none(),
+        "the child's commands were given a boundary: {:?}",
+        child.runtime.backend.boundary().map(|b| b.mechanism)
+    );
+    let outside = dir.0.join("outside.txt");
+    let write = wrote(&child, &outside);
+    assert_eq!(
+        write.outcome,
+        letibot_transcript::ToolOutcome::Ok,
+        "the child could not write outside the project: {}",
+        write.payload
+    );
+    assert!(
+        exec_admitted(&child, "awk 'BEGIN { print 1 }' fs.awk"),
+        "a child's command was put to a person"
+    );
+    assert_eq!(
+        cards.load(Ordering::Relaxed),
+        0,
+        "a child's call raised a card"
+    );
+    // And run for real where the box can seat a shell: a cgroup is what this seat has not got, so
+    // the same call is only asked of a gate here.
+    if child.config().allow_bash {
+        let out = call(&child, "bash", serde_json::json!({ "command": "echo hi" }));
+        assert_eq!(
+            out.outcome,
+            letibot_transcript::ToolOutcome::Ok,
+            "{}",
+            out.payload
+        );
+        assert_eq!(
+            cards.load(Ordering::Relaxed),
+            0,
+            "a child's command raised a card"
+        );
+    }
+}
+
+/// The other door onto the same point: a `/mode allow-all` the operator answered yes to. The child
+/// carries what the parent stands at, whichever door moved it there.
+#[test]
+fn a_mode_moved_allow_all_parents_child_stands_where_its_parent_does() {
+    let dir = Scratch::new("allow-all-move-child");
+    let cards: Cards = Arc::new(AtomicUsize::new(0));
+    let parent_cfg = on_the_whole_host(&dir, "s-parent");
+    let parts = Parts::load(&parent_cfg).expect("the byte vocabulary loads");
+    let mut parent = opened_in(&parts, parent_cfg, &cards);
+    parent
+        .move_mode(letibot_tools::mode::Mode::ALLOW_ALL, true)
+        .expect("a person's yes on this box");
+
+    let here = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+    assert_eq!(parent.config().mode, here);
+    assert_eq!(parent.live_point(), here, "the spawn's cell moved with it");
+
+    let child = opened_in(&parts, child_of(&parent, "s-parent-sub-2"), &cards);
+    assert_eq!(
+        child.config().mode,
+        here,
+        "the child of a moved-to-allow-all parent opened at `{}`: {:?}",
+        child.config().mode.name,
+        child.open_notes()
+    );
+    assert!(child.runtime.backend.boundary().is_none());
+    assert!(exec_admitted(&child, "cargo test -p letibot-room"));
+    assert_eq!(
+        cards.load(Ordering::Relaxed),
+        0,
+        "a card was put to a person"
+    );
+}
+
+/// And the point that is not allow-all: a child of an `automode` parent stays `automode`, so what a
+/// spawn carries is the parent's point and not *unbounded*.
+#[test]
+fn an_automode_parents_child_stays_automode() {
+    let dir = Scratch::new("auto-child");
+    let cards: Cards = Arc::new(AtomicUsize::new(0));
+    let mut parent_cfg = bare(&dir, "s-auto");
+    parent_cfg.oracle = Some(letibot_turn::Endpoint::parse("127.0.0.1:9").expect("an endpoint"));
+    let parts = Parts::load(&parent_cfg).expect("the byte vocabulary loads");
+    let parent = opened_in(&parts, parent_cfg, &cards);
+    let auto = letibot_tools::mode::Mode::AUTO;
+    assert_eq!(parent.config().mode, auto, "the box's default point");
+    assert_eq!(parent.live_point(), auto);
+
+    let child = opened_in(&parts, child_of(&parent, "s-auto-sub-1"), &cards);
+    assert_eq!(
+        child.config().mode,
+        auto,
+        "a child of an automode parent opened at `{}`: {:?}",
+        child.config().mode.name,
+        child.open_notes()
+    );
+    assert!(
+        !child.config().mode.admits_everything(),
+        "automode is not allow-all"
+    );
+}
+
+/// The operator keeps `--mode` per-open and does not persist it, so a restart with no flag is a
+/// session at the box's own point - and the children it has from then on follow that, not the
+/// allow-all it was opened with.
+#[test]
+fn after_a_restart_without_the_flag_a_new_child_follows_the_new_point() {
+    let dir = Scratch::new("allow-all-flag-restart");
+    let cards: Cards = Arc::new(AtomicUsize::new(0));
+    let mut first_cfg = bare(&dir, "s-parent");
+    first_cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
+    {
+        // The first daemon, which goes away before the second opens the same session: the writer
+        // claim is what refuses two of them, so the restart is spelled by dropping it.
+        let first = opened_in(
+            &Parts::load(&first_cfg).expect("the byte vocabulary loads"),
+            first_cfg,
+            &cards,
+        );
+        assert_eq!(
+            first.live_point(),
+            letibot_tools::mode::Mode::ALLOW_ALL_HERE
+        );
+    }
+
+    // What the flag left behind: nothing. The three rows a stored point would live in.
+    let rows = crate::modes::ModeStore::load(&dir.db());
+    assert!(
+        !rows.is_set(&dir.ws()),
+        "`--mode` wrote the project's row, which it must not"
+    );
+    assert!(
+        rows.session("s-parent").is_none(),
+        "`--mode` wrote the session's row, which it must not"
+    );
+
+    // The restart: no flag, so the box's own default (`bare` is it), and nothing in the store to
+    // widen it back.
+    let second_cfg = bare(&dir, "s-parent");
+    let parts = Parts::load(&second_cfg).expect("the byte vocabulary loads");
+    let parent = opened_in(&parts, second_cfg, &cards);
+    assert_eq!(parent.live_point(), parent.config().mode);
+    assert!(
+        !parent.config().mode.admits_everything(),
+        "a restart with no flag came back at `{}`",
+        parent.config().mode.name
+    );
+
+    let child = opened_in(&parts, child_of(&parent, "s-parent-sub-3"), &cards);
+    assert_eq!(
+        child.config().mode,
+        parent.config().mode,
+        "the new child did not follow the point the parent came back at"
+    );
+    assert!(!child.config().mode.admits_everything());
 }

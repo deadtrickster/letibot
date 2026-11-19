@@ -886,6 +886,12 @@ impl Harness {
         self.parent_point.as_ref().map(trees::Ceiling::mode)
     }
 
+    /// The point a spawn reads off this session: the cell `task` and the tree table both hold.
+    #[cfg(test)]
+    pub(crate) fn live_point(&self) -> letibot_tools::mode::Mode {
+        *self.point_cell.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// What this point makes a confirmed command's network, and the probe that makes it the one
     /// that runs. `None` when the boundary already holds it, or nothing here is a view.
     fn reseat_network(&self, mode: letibot_tools::mode::Mode) -> Result<Option<String>, String> {
