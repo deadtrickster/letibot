@@ -99,13 +99,23 @@ impl PeerConfig {
 /// not wait for the reader to come round.
 type Sender = Arc<Mutex<TcpStream>>;
 
+/// A live link, and which one of them it is. A box that reconnects makes a second link while the
+/// first one's reader may still be waking from its socket, and the reader of the OLD socket must not
+/// take the new link down: the generation is what tells them apart.
+#[derive(Clone)]
+struct Live {
+    generation: u64,
+    stream: Sender,
+}
+
 struct Inner {
     host: String,
     cookie: Cookie,
     port: u16,
     tick: Tick,
     mesh: Mutex<Mesh>,
-    links: Mutex<BTreeMap<String, Sender>>,
+    links: Mutex<BTreeMap<String, Live>>,
+    next_generation: AtomicU64,
     dialing: Mutex<BTreeSet<String>>,
     seats: Mutex<Vec<SeatProfile>>,
     /// This box's projects, as the mesh matches a peer's seat against them: the identity is read
@@ -153,10 +163,10 @@ impl Inner {
             .expect("the links lock")
             .get(host)
             .cloned();
-        let Some(stream) = at else {
+        let Some(live) = at else {
             return false;
         };
-        let Ok(mut stream) = stream.lock() else {
+        let Ok(mut stream) = live.stream.lock() else {
             return false;
         };
         let mut line = frame.line();
@@ -168,7 +178,11 @@ impl Inner {
             Ok(()) => true,
             Err(e) => {
                 drop(stream);
-                self.unlinked(host, &format!("writing to {host} failed ({e})"));
+                self.unlinked(
+                    host,
+                    live.generation,
+                    &format!("writing to {host} failed ({e})"),
+                );
                 false
             }
         }
@@ -176,12 +190,16 @@ impl Inner {
 
     /// The one place a link becomes live: the socket is filed for writing, the mesh says so, and
     /// this box says what its seats are on.
-    fn linked(&self, host: &str, addr: SocketAddr, stream: TcpStream) {
+    fn linked(&self, host: &str, addr: SocketAddr, stream: TcpStream) -> u64 {
         let now = self.now();
-        self.links
-            .lock()
-            .expect("the links lock")
-            .insert(host.to_string(), Arc::new(Mutex::new(stream)));
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst);
+        self.links.lock().expect("the links lock").insert(
+            host.to_string(),
+            Live {
+                generation,
+                stream: Arc::new(Mutex::new(stream)),
+            },
+        );
         let event = self.mesh.lock().expect("the mesh lock").up(host, addr, now);
         // The seats go out on every new link, before the `Up` is announced: a box that has just
         // heard of this one should be able to introduce the seats in the same breath.
@@ -194,10 +212,22 @@ impl Inner {
         if let Some(event) = event {
             self.announce_event(event);
         }
+        generation
     }
 
-    fn unlinked(&self, host: &str, why: &str) {
-        self.links.lock().expect("the links lock").remove(host);
+    /// A link ended. `generation` is the link that ended: one that has since been replaced by a
+    /// reconnect says nothing, because the box is not away - it came back.
+    fn unlinked(&self, host: &str, generation: u64, why: &str) {
+        {
+            let mut links = self.links.lock().expect("the links lock");
+            match links.get(host) {
+                Some(live) if live.generation == generation => {
+                    links.remove(host);
+                }
+                Some(_) => return,
+                None => {}
+            }
+        }
         self.sent.lock().expect("the sent lock").remove(host);
         let event = self.mesh.lock().expect("the mesh lock").down(host, why);
         if let Some(event) = event {
@@ -236,6 +266,7 @@ impl Peer {
                 tick: cfg.tick,
                 mesh: Mutex::new(Mesh::new(cfg.tick)),
                 links: Mutex::new(BTreeMap::new()),
+                next_generation: AtomicU64::new(1),
                 dialing: Mutex::new(BTreeSet::new()),
                 seats: Mutex::new(Vec::new()),
                 projects: Mutex::new(Vec::new()),
@@ -388,11 +419,19 @@ impl Peer {
             .tick_round(now);
         for event in down {
             if let PeerEvent::Down { host, .. } = &event {
-                self.inner
+                // The socket goes too: a reader still blocked on a box the tick called away would
+                // hold a descriptor and a thread for as long as the far side is silent.
+                let live = self
+                    .inner
                     .links
                     .lock()
                     .expect("the links lock")
                     .remove(host);
+                if let Some(live) = live
+                    && let Ok(stream) = live.stream.lock()
+                {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
                 self.inner.sent.lock().expect("the sent lock").remove(host);
             }
             out.push(event);
@@ -404,16 +443,16 @@ impl Peer {
     /// anybody and takes nothing; the coordinator is going away.
     pub fn stop(&self) {
         self.inner.stop.store(true, Ordering::SeqCst);
-        let links: Vec<(String, Sender)> = self
+        let links: Vec<(String, Live)> = self
             .inner
             .links
             .lock()
             .expect("the links lock")
             .iter()
-            .map(|(h, s)| (h.clone(), Arc::clone(s)))
+            .map(|(h, live)| (h.clone(), live.clone()))
             .collect();
-        for (host, stream) in links {
-            if let Ok(mut stream) = stream.lock() {
+        for (host, live) in links {
+            if let Ok(mut stream) = live.stream.lock() {
                 let mut line = PeerFrame::Bye {
                     why: "this box's coordinator is stopping".to_string(),
                 }
@@ -423,7 +462,8 @@ impl Peer {
                 let _ = stream.flush();
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
-            self.inner.unlinked(&host, "this box stopped peering");
+            self.inner
+                .unlinked(&host, live.generation, "this box stopped peering");
         }
     }
 
@@ -575,9 +615,9 @@ fn run_link(inner: &Arc<Inner>, stream: TcpStream, how: Dialed) -> std::io::Resu
     let Some((far, addr)) = up else {
         return Ok(());
     };
-    inner.linked(&far, addr, stream);
+    let generation = inner.linked(&far, addr, stream);
     let why = read_loop(inner, &mut reader, &far);
-    inner.unlinked(&far, &why);
+    inner.unlinked(&far, generation, &why);
     Ok(())
 }
 

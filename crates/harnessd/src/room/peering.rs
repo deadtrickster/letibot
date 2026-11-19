@@ -63,7 +63,7 @@ pub fn start(server: &Server) -> Option<Peer> {
             .group
             .as_deref()
             .and_then(|g| g.parse().ok())
-            .unwrap_or_else(|| config.group);
+            .unwrap_or(config.group);
         config = config.at_group(group, port);
     }
     let (peer, events) = match Peer::open(config) {
