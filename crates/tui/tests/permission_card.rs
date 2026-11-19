@@ -91,9 +91,7 @@ impl Head {
     /// before the keys are pressed, and a card a frame opened ignores the key that would answer it
     /// for [`ARM_WINDOW`] - so the screen is read again once that window has passed.
     fn wait_for(&self, what: &str, needle: &str) -> String {
-        letibot_sessionlog::testing::wait_for(what, || {
-            self.drawn().contains(needle).then_some(())
-        });
+        letibot_sessionlog::testing::wait_for(what, || self.drawn().contains(needle).then_some(()));
         std::thread::sleep(ARM_WINDOW);
         self.drawn()
     }

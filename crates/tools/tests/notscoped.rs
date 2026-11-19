@@ -74,7 +74,11 @@ fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
 
     // Wait for it to settle rather than racing it: 125 is not a duration.
     wait_until("the job to settle", || {
-        !host.job(&JobId(id.clone())).expect("the job is known").state.is_running()
+        !host
+            .job(&JobId(id.clone()))
+            .expect("the job is known")
+            .state
+            .is_running()
     });
     let view = host.job(&JobId(id.clone())).expect("the job is known");
 
@@ -259,7 +263,11 @@ fn a_command_that_prints_the_marker_ran_and_did_not_fail_to_join_its_scope() {
     };
 
     wait_until("the job to settle", || {
-        !host.job(&JobId(id.clone())).expect("the job is known").state.is_running()
+        !host
+            .job(&JobId(id.clone()))
+            .expect("the job is known")
+            .state
+            .is_running()
     });
     let view = host.job(&JobId(id.clone())).expect("the job is known");
 

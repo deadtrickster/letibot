@@ -838,10 +838,7 @@ fn settled_captures_are_held_to_a_budget_and_the_oldest_go_first() {
         .collect();
     let running = spawn("head -c 1000 /dev/zero; sleep 30");
     wait_until("the first 1000 bytes", || {
-        h.output(&running, 0, 4096)
-            .map(|o| o.retained)
-            .unwrap_or(0)
-            >= 1000
+        h.output(&running, 0, 4096).map(|o| o.retained).unwrap_or(0) >= 1000
     });
 
     h.release_settled_captures(2500);

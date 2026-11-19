@@ -1157,8 +1157,7 @@ mod tests {
         let exited = || {
             #[cfg(not(target_os = "macos"))]
             {
-                let stat =
-                    std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
                 stat_state(&stat) == Some('Z')
             }
             #[cfg(target_os = "macos")]

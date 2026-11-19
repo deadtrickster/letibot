@@ -5,7 +5,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-
 use letibot_sessionlog::Hub;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};

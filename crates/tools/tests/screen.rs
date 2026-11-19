@@ -119,7 +119,10 @@ fn stop_ends_the_process() {
     assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "it runs before stop");
     let stop = call(&mut h, serde_json::json!({"action": "stop", "id": id}));
     assert_eq!(stop.outcome, ToolOutcome::Ok, "{}", stop.payload);
-    wait_until("the screen's program to go", || unsafe { libc::kill(pid, 0) } != 0);
+    wait_until(
+        "the screen's program to go",
+        || unsafe { libc::kill(pid, 0) } != 0,
+    );
 }
 
 #[test]

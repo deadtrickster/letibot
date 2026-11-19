@@ -2,10 +2,10 @@
 //! crossing between it and the composer, leaving it, and a send landing in the composer.
 
 use super::*;
+use letibot_sessionlog::testing::wait_until;
 use rano::term::{Event, KeyCode, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use letibot_sessionlog::testing::wait_until;
 
 /// A workspace on disk with the file the conversation edited, removed when the test ends.
 struct Workspace(PathBuf);

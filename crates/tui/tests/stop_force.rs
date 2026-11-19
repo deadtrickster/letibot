@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::protocol::{ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
-use letibot_sessionlog::testing::wait_until;
 use letibot_sessionlog::server::serve_registry;
+use letibot_sessionlog::testing::wait_until;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_tui::app::{App, Key, STOP_DEADLINE_MS};
 use letibot_tui::driver::Link;
