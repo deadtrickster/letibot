@@ -111,15 +111,24 @@ fn a_tree_the_sessions_own_command_created_raises_no_card() {
         letibot_tokencore::apparatus::absent("a boundary that can be re-probed with a wider view");
         return;
     }
+    // Through the shell: this fixture's file tools are rooted at the project and carry no fence,
+    // so the view is what is measured here. The file tools' half is the fence's own test.
     let inside = tree.join("README");
     let r = h.call(
-        "write",
-        &serde_json::json!({ "path": inside.display().to_string(), "content": "x\n" }).to_string(),
+        "bash",
+        &serde_json::json!({ "command": format!("echo x > {} && cat {0}", inside.display()) })
+            .to_string(),
     );
     assert_eq!(
         r.outcome,
         ToolOutcome::Ok,
         "a write inside the tree the session created must not be refused: {}",
+        r.render()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&inside).ok().as_deref(),
+        Some("x\n"),
+        "the write landed: {}",
         r.render()
     );
     assert_eq!(
