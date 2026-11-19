@@ -120,8 +120,10 @@ fn shared(port: u16) -> io::Result<UdpSocket> {
             }
         }
         let addr = libc::sockaddr_in {
-            // **`sin_len` is a BSD/macOS field** Linux does not have — set it to the struct's own
-            // size or `bind` returns `EINVAL` on macOS. `size_of` is portable and answers the same on both.
+            // **`sin_len` is a BSD/macOS field Linux does not have** — set it to the struct's own
+            // size or `bind` returns `EINVAL` on macOS, and gate it on `cfg` so Linux still compiles
+            // (the field does not exist there).
+            #[cfg(target_os = "macos")]
             sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
             sin_family: libc::AF_INET as libc::sa_family_t,
             sin_port: port.to_be(),
