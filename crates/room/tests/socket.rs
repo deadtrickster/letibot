@@ -14,6 +14,10 @@ use letibot_room::{
     Seat, Speaker, State, operator_token_path,
 };
 
+mod support;
+
+use support::{PATIENCE, wait_until};
+
 /// A directory of this test's own, removed when the test ends.
 struct Scratch(PathBuf);
 
@@ -72,6 +76,14 @@ fn post(c: &Client, id: &str, tag: &str, body: &str) -> u64 {
     }
 }
 
+/// The lease's last beat for what `c` holds, or 0 when it holds nothing: the beat's own clock.
+fn beat_ms(c: &Client) -> u64 {
+    match call(c, Request::Holding { session: None }) {
+        Response::Holding { rows, .. } => rows.first().map_or(0, |r| r.beat_ms),
+        other => panic!("a holding read: {other:?}"),
+    }
+}
+
 fn wait_for(rx: &Receiver<Event>, what: &str, within: Duration) -> Event {
     let deadline = Instant::now() + within;
     // Not a `loop`: every arm of the match below returns or panics, so a wrapping loop would be dead,
@@ -86,19 +98,6 @@ fn wait_for(rx: &Receiver<Event>, what: &str, within: Duration) -> Event {
         Err(mpsc::RecvTimeoutError::Timeout) => panic!("nothing arrived about {what}"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the client went away"),
     }
-}
-
-/// Wait until `f` says so, polling - for a fact that arrives on a thread (a connection served, a close
-/// noticed) rather than as a frame.
-fn until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("waited five seconds for {what}");
 }
 
 #[test]
@@ -344,7 +343,7 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
     // `s-b` hears the abandonment with the close's own reason, not a stale beat ninety seconds later and
     // not silence.
     let mut heard = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
         if let Ok(e) = eb.recv_timeout(Duration::from_millis(200)) {
             heard.push(e.clone());
@@ -382,7 +381,7 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
         Response::Claimed { item, .. } => assert_eq!(item.id, 1, "the abandoned item is the head"),
         other => panic!("the queue moves on: {other:?}"),
     }
-    until("the server to forget the closed connection", || {
+    wait_until("the server to forget the closed connection", || {
         server.connections() == 1
     });
     server.stop();
@@ -408,7 +407,7 @@ fn the_clock_takes_back_a_claim_whose_beat_stopped() {
 
     // No beats. The server's own clock is the one that notices.
     let mut stale = None;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
         match eb.recv_timeout(Duration::from_millis(200)) {
             Ok(Event::Abandoned {
@@ -444,9 +443,13 @@ fn the_daemon_beats_for_a_session_while_its_turn_runs() {
         },
     );
 
-    // The turn runs - and the daemon, not the model, says so.
+    // The turn runs - and the daemon, not the model, says so: its beats refresh the lease twice
+    // over, which a claim nobody beat for would not have survived at a 300 ms lease.
     let beat = a.start_beating();
-    std::thread::sleep(Duration::from_millis(900));
+    let claim_beat = beat_ms(&a);
+    wait_until("the daemon's beats to refresh the lease twice", || {
+        beat_ms(&a) >= claim_beat + 600
+    });
     let held = call(&a, Request::Holding { session: None });
     match held {
         Response::Holding { rows, .. } => {
@@ -458,21 +461,12 @@ fn the_daemon_beats_for_a_session_while_its_turn_runs() {
 
     // The turn ends. Nothing beats, and the lease takes it back - the fact the lease measures.
     beat.stop();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut lost = false;
-    while Instant::now() < deadline {
-        if let Response::Holding { rows, .. } = call(&a, Request::Holding { session: None })
-            && rows.is_empty()
-        {
-            lost = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(
-        lost,
-        "with the turn over and no beats, the room takes it back"
-    );
+    wait_until("the room to take back a claim nobody beats for", || {
+        matches!(
+            call(&a, Request::Holding { session: None }),
+            Response::Holding { ref rows, .. } if rows.is_empty()
+        )
+    });
     server.stop();
 }
 
@@ -515,7 +509,7 @@ fn the_arbiter_hears_every_event_even_with_nothing_under_the_tag() {
         assert!(matches!(ab, Response::Abandoned { .. }), "{ab:?}");
     }
     let mut raised = None;
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
         match eh.recv_timeout(Duration::from_millis(200)) {
             Ok(Event::Raised { question, .. }) => {
@@ -819,7 +813,7 @@ fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
         assert!(matches!(answer, Response::Said { .. }), "{answer:?}");
     }
     // The stalled connection went, saying so, and the room is still serving the other two.
-    until("the stalled reader to be disconnected", || {
+    wait_until("the stalled reader to be disconnected", || {
         server.connections() == 2
     });
     // Every message reached the reader that was reading, in order - the poster was never blocked
@@ -884,7 +878,7 @@ fn a_line_past_the_bound_is_refused_with_the_bound_in_the_sentence() {
     let mut rest = Vec::new();
     let _ = reader.read_to_end(&mut rest);
     assert!(rest.is_empty(), "nothing followed the refusal");
-    until("the refused connection to be gone", || {
+    wait_until("the refused connection to be gone", || {
         server.connections() == 0
     });
     server.stop();
@@ -921,7 +915,7 @@ fn an_external_that_has_gone_is_not_known_any_more() {
     };
     assert!(matches!(say_to(&me, "1"), Response::Said { .. }));
     drop(external);
-    until("the external's connection to close", || {
+    wait_until("the external's connection to close", || {
         server.connections() == 1
     });
     match say_to(&me, "2") {
@@ -978,7 +972,7 @@ fn a_name_is_known_the_moment_its_welcome_is_read() {
             .expect("an answer");
         assert!(matches!(answer, Response::Said { .. }), "{i}: {answer:?}");
         drop(external);
-        until("the external's connection to close", || {
+        wait_until("the external's connection to close", || {
             server.connections() == 1
         });
     }

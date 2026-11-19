@@ -10,6 +10,10 @@ use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{About, Event, Refused, Request, Response, Room, Speaker, Why};
 
+mod support;
+
+use support::wait_socket_gone;
+
 /// A lease the tests can walk past without sleeping one out.
 const LEASE: u64 = 90_000;
 /// A clock period longer than the test, so nothing sweeps unless the test asks: `Server::tick`
@@ -161,7 +165,7 @@ fn a_claim_and_its_queue_survive_a_coordinator_restart() {
     // abandons a holder's claims at once - never runs. A real restart is the same shape: the
     // sessions' daemons keep running and their sockets die with the coordinator's process.
     first.stop();
-    std::thread::sleep(Duration::from_millis(20));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     let second = stored(&dir);
     let items = second.items();
@@ -240,7 +244,7 @@ fn a_stale_lease_expires_on_reload_as_the_live_sweep_expires_it() {
     claim(&a, "c1", "ram");
     let t = letibot_room::server::now_ms();
     first.stop();
-    std::thread::sleep(Duration::from_millis(20));
+    wait_socket_gone(&dir.0.join("room.sock"));
     let second = stored_at(&dir, t + LEASE + 1);
 
     let reloaded = item_of(&second, 1);
@@ -282,7 +286,7 @@ fn a_lease_that_reaches_the_threshold_on_reload_raises_and_asks() {
     assert_eq!(item.id, one);
     let t = letibot_room::server::now_ms();
     first.stop();
-    std::thread::sleep(Duration::from_millis(20));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     // Reloaded an hour later: the reload's sweep is the third loss, so the item raises exactly as
     // it would live - frozen, its question owed to the tie-breaker who has not connected yet.
@@ -344,7 +348,7 @@ fn a_settled_item_out_of_the_window_is_read_by_its_id_after_a_restart() {
         assert!(matches!(done, Response::Finished { .. }), "{done:?}");
     }
     first.stop();
-    std::thread::sleep(Duration::from_millis(20));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     let second = stored(&dir);
     assert_eq!(second.items().len(), 500, "the window is what memory holds");
