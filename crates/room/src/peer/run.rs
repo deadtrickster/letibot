@@ -35,6 +35,10 @@ pub const QUEUE: usize = 1_024;
 /// How many refusals a box keeps to show an operator: a link is refused for one of a few reasons,
 /// and a list that grew would be a log with a lock on it.
 pub const REFUSALS_KEPT: usize = 8;
+/// Why a box says it is going, in the `Bye` of a coordinator that is stopping. The words are the
+/// SENDER's box's - the far side renders them as *that box's* (`mac1 said goodbye: its coordinator
+/// is stopping`), so they may not say *this box*.
+pub const STOPPING: &str = "its coordinator is stopping";
 
 /// What a box needs to peer. The cookie decides whether it peers at all: a coordinator with no
 /// cookie file has no peer object and runs exactly as it did before.
@@ -211,6 +215,16 @@ impl Inner {
         self.ship(host, &PeerFrame::Profiles { seats });
         if let Some(event) = event {
             self.announce_event(event);
+            // And what the FAR box holds, said again: after a `Down` the last list it sent is all
+            // this box knows, and a reconnect whose list did not change would otherwise never mark
+            // its seats here again.
+            let known = self.mesh.lock().expect("the mesh lock").known_seats(host);
+            if !known.is_empty() {
+                self.announce_event(PeerEvent::Profiles {
+                    host: host.to_string(),
+                    seats: known,
+                });
+            }
         }
         generation
     }
@@ -343,6 +357,16 @@ impl Peer {
         self.inner.mesh.lock().expect("the mesh lock").seats()
     }
 
+    /// Every seat of every box this one knows of, each with whether its box is linked now: what a
+    /// roster draws, where an away box's seats stay in the list and lose only their being here.
+    pub fn seats_with_state(&self) -> Vec<(SeatProfile, bool)> {
+        self.inner
+            .mesh
+            .lock()
+            .expect("the mesh lock")
+            .seats_with_state()
+    }
+
     /// The seat with this id, on the box that holds it - and only while that box is linked.
     pub fn seat(&self, id: &str) -> Option<SeatProfile> {
         self.inner.mesh.lock().expect("the mesh lock").seat(id)
@@ -354,6 +378,17 @@ impl Peer {
 
     pub fn alive(&self, host: &str) -> bool {
         self.inner.mesh.lock().expect("the mesh lock").alive(host)
+    }
+
+    /// Why `host` is away, in the words the operator reads - the far side's own for a `Bye`.
+    pub fn why(&self, host: &str) -> String {
+        self.inner
+            .mesh
+            .lock()
+            .expect("the mesh lock")
+            .link(host)
+            .map(|l| l.why.clone())
+            .unwrap_or_default()
     }
 
     /// The hosts whose links are up, and the ones known and not answering.
@@ -454,7 +489,7 @@ impl Peer {
         for (host, live) in links {
             if let Ok(mut stream) = live.stream.lock() {
                 let mut line = PeerFrame::Bye {
-                    why: "this box's coordinator is stopping".to_string(),
+                    why: STOPPING.to_string(),
                 }
                 .line();
                 line.push('\n');
@@ -715,7 +750,7 @@ fn read_loop(inner: &Arc<Inner>, reader: &mut BufReader<TcpStream>, far: &str) -
             PeerFrame::Message { message } => {
                 inner.announce_event(PeerEvent::Message(Box::new(message)));
             }
-            PeerFrame::Bye { why } => return format!("{far} said goodbye ({why})"),
+            PeerFrame::Bye { why } => return format!("{far} said goodbye: {why}"),
             PeerFrame::Hello { .. }
             | PeerFrame::Challenge { .. }
             | PeerFrame::Proved { .. }

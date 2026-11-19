@@ -133,6 +133,10 @@ pub struct SeatProfile {
     /// The one line the seat is on, as its own task line says it.
     #[serde(default)]
     pub task: String,
+    /// The label the seat holds here ([`crate::chat::valid_nick`]): display only, and the id above
+    /// stays the address. A peer's roster row is drawn by it and a send still takes the id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nick: String,
 }
 
 impl SeatProfile {
@@ -149,7 +153,15 @@ impl SeatProfile {
             label,
             branch: branch.trim().to_string(),
             task: task.trim().to_string(),
+            nick: String::new(),
         }
+    }
+
+    /// The same profile with the label its box draws it by. Never an address: a message goes by
+    /// [`SeatProfile::id`].
+    pub fn with_nick(mut self, nick: &str) -> SeatProfile {
+        self.nick = nick.trim().to_string();
+        self
     }
 
     pub fn identity(&self) -> &str {
@@ -160,7 +172,9 @@ impl SeatProfile {
         self.id.split_once('/').map(|(h, _)| h).unwrap_or("")
     }
 
-    /// The one line another seat is told: `<host>/<id> (<repo>, <branch>) - <task line>`.
+    /// The one line another seat is told: `<nick> (<host>/<id>, <repo>, <branch>) - <task line>`.
+    /// The id stays in the line even when there is a nick: the nick is what a reader says, and the
+    /// id is what it writes.
     pub fn line(&self) -> String {
         let repo = if self.label.is_empty() {
             self.repo.as_str()
@@ -172,10 +186,15 @@ impl SeatProfile {
         } else {
             self.branch.as_str()
         };
-        let head = if repo.is_empty() {
-            format!("{} ({branch})", self.id)
+        let seat = if self.nick.is_empty() {
+            self.id.clone()
         } else {
-            format!("{} ({repo}, {branch})", self.id)
+            format!("{} ({})", self.nick, self.id)
+        };
+        let head = if repo.is_empty() {
+            format!("{seat} ({branch})")
+        } else {
+            format!("{seat} ({repo}, {branch})")
         };
         match self.task.is_empty() {
             true => head,
@@ -297,6 +316,11 @@ mod tests {
         let peer = SeatProfile::new("mac/s-1792", &repo, "main", "provider fixes");
         assert_eq!(peer.line(), "mac/s-1792 (letibot, main) - provider fixes");
         assert_eq!(peer.host(), "mac");
+        // A nick is what a reader says, and the id is still in the line it writes to.
+        assert_eq!(
+            peer.clone().with_nick("cc@letibot").line(),
+            "cc@letibot (mac/s-1792) (letibot, main) - provider fixes"
+        );
         // An empty branch and task are still one line a person can read.
         assert_eq!(
             SeatProfile::new("mac/s-1", &repo, "", "").line(),

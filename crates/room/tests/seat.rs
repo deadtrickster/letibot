@@ -128,7 +128,8 @@ fn the_roster_derives_each_seats_state_from_its_facts_and_the_room() {
     };
     assert!(matches!(
         a.request(&Request::Seat {
-            facts: facts.clone()
+            facts: facts.clone(),
+            root: String::new(),
         })
         .unwrap(),
         Response::Seated { .. }
@@ -143,6 +144,7 @@ fn the_roster_derives_each_seats_state_from_its_facts_and_the_room() {
     // An open ask it made is a wait the room sees, without the daemon saying so.
     b.request(&Request::Seat {
         facts: SeatFacts::default(),
+        root: String::new(),
     })
     .unwrap();
     let asked = a
@@ -186,6 +188,7 @@ fn a_seat_reports_only_its_own_facts() {
             turn_since_ms: Some(1),
             ..SeatFacts::default()
         },
+        root: String::new(),
     })
     .unwrap();
     let s = row(&op, "s-a").seat.unwrap();
@@ -206,6 +209,7 @@ fn an_ask_to_a_rate_limited_seat_escalates_at_once_and_clears_when_it_lifts() {
     };
     b.request(&Request::Seat {
         facts: limited(Some(now + 600_000)),
+        root: String::new(),
     })
     .unwrap();
     let Response::Asked { ask, .. } = a
@@ -228,6 +232,7 @@ fn an_ask_to_a_rate_limited_seat_escalates_at_once_and_clears_when_it_lifts() {
     assert_eq!(ask.cannot, "is rate-limited");
     b.request(&Request::Seat {
         facts: limited(None),
+        root: String::new(),
     })
     .unwrap();
     let Response::Asks { by_me, .. } = a.request(&Request::Asks).unwrap() else {

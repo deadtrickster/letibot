@@ -203,6 +203,7 @@ fn edits_in_scope_renew_and_a_stopped_owner_is_flagged_to_the_operator() {
                 }],
                 ..SeatFacts::default()
             },
+            root: String::new(),
         })
         .unwrap();
     let Response::Seated { owns } = seated else {

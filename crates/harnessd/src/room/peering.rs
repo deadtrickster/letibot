@@ -120,7 +120,7 @@ pub fn publish(server: &Server, peer: &Peer) {
                 .find(|p| p.key == row.project)
                 .map(|p| p.identity.clone())
                 .unwrap_or_default();
-            SeatProfile::new(row.id, &identity, &row.branch, &row.task)
+            SeatProfile::new(row.id, &identity, &row.branch, &row.task).with_nick(&row.nick)
         })
         .collect();
     peer.publish_projects(projects);

@@ -277,6 +277,18 @@ struct DmAwaiting {
     peer: String,
 }
 
+/// What a `Hello` may do with the name it asks for - see [`Server::hello_name_door`].
+enum NameDoor {
+    /// The name is free, or this connection is one more of the seat that holds it.
+    Admit,
+    /// The same seat is already connected and this connection did not ask to share: it is that
+    /// seat reconnecting, and the connections the room still holds are its own stale ones.
+    Replace,
+    /// A name that is taken, by the answer to send. Boxed because a `Response` is far larger than
+    /// the two answers beside it, and this enum lives on one stack frame per `Hello`.
+    Refuse(Box<Response>),
+}
+
 /// One of this box's seats as the mesh needs it: the id it answers to, the project it is in, and
 /// the branch and task line its own daemon reported. The repository identity is NOT here - it is
 /// read from git by whoever owns the coordinator, and this crate reads no repository.
@@ -288,6 +300,9 @@ pub struct SeatRow {
     pub branch: String,
     /// The one line the seat is on, as its own task line says it.
     pub task: String,
+    /// The label the seat is drawn by here ([`crate::SeatId`]'s neighbour, never an address): a
+    /// peer draws it beside the id, and a send still takes the id.
+    pub nick: String,
 }
 
 /// A principal's chat while it has no connection - see [`Inner::pending`]. `dropped` is what did
@@ -691,6 +706,9 @@ impl Server {
     /// This box's seats as the mesh needs them: the id of every live seat, the project it is in,
     /// and what its daemon last said it was on. `project` is the key a caller turns into a
     /// repository identity; nothing here reads git.
+    ///
+    /// One row per SEAT, however many connections hold it: a bridge and its folder's waiter are two
+    /// connections of one id, and a mesh that carried both would offer a peer one seat twice.
     pub fn seat_rows(&self) -> Vec<SeatRow> {
         let host = self.seat_host();
         let facts: BTreeMap<String, crate::seat::SeatFacts> = self
@@ -701,13 +719,18 @@ impl Server {
             .iter()
             .map(|(name, (facts, _))| (name.clone(), facts.clone()))
             .collect();
-        self.conn_list()
+        let mut rows: BTreeMap<String, SeatRow> = BTreeMap::new();
+        for c in self
+            .conn_list()
             .into_iter()
             .filter(|c| matches!(c.seat, Seat::Session | Seat::External))
-            .map(|c| {
-                let working = facts.get(&c.who.session).map(|f| f.working.clone());
+        {
+            let working = facts.get(&c.who.session).map(|f| f.working.clone());
+            let id = c.seat(&host);
+            rows.insert(
+                id.clone(),
                 SeatRow {
-                    id: c.seat(&host),
+                    id,
                     project: c.project.clone(),
                     branch: working
                         .as_ref()
@@ -717,9 +740,21 @@ impl Server {
                         .as_ref()
                         .map(|w| w.row.trim().to_string())
                         .unwrap_or_default(),
-                }
-            })
-            .collect()
+                    nick: if c.nick.is_empty() {
+                        self.inner
+                            .nicks
+                            .lock()
+                            .expect("the nicks lock")
+                            .get(&c.id)
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        c.nick.clone()
+                    },
+                },
+            );
+        }
+        rows.into_values().collect()
     }
 
     /// Keep chat in `path`: load what it holds and append from now on. Call before the first
@@ -1064,11 +1099,20 @@ impl Server {
                     events: Vec::new(),
                 };
             }
-            if let Some(refused) = self.hello_name_refusal(seat, who, *share, id) {
-                return Answer {
-                    response: refused,
-                    events: Vec::new(),
-                };
+            match self.hello_name_door(seat, who, *share, id) {
+                NameDoor::Admit => {}
+                // The same seat reconnecting without asking to share: the room's list is what a
+                // name is held by, and a socket whose coordinator is gone cannot be noticed from
+                // the client's side. The new connection takes the name.
+                NameDoor::Replace => {
+                    self.end_name(&who.session, "the same seat reconnected on its own name")
+                }
+                NameDoor::Refuse(response) => {
+                    return Answer {
+                        response: *response,
+                        events: Vec::new(),
+                    };
+                }
             }
             // The room keeps a cursor and a missed-count per principal, and a connection may name
             // itself anything: a fresh name every time would grow both maps without end. Past the
@@ -1101,8 +1145,10 @@ impl Server {
                 };
             }
         }
-        // A session's facts, kept under the connection's own name: a daemon reports only its own.
-        if let Request::Seat { facts } = frame {
+        // A seat's facts, kept under the connection's own name: a daemon reports only its own, and
+        // a bridge reports the seat it holds - it is a seat with no daemon. The root a seat names is
+        // the room's, so a project whose only seat is a bridge still has somewhere to be found.
+        if let Request::Seat { facts, root } = frame {
             let mut owns = Vec::new();
             if seat == Seat::Session {
                 self.inner
@@ -1111,6 +1157,22 @@ impl Server {
                     .expect("the seats lock")
                     .insert(who.session.clone(), (facts.clone(), now));
                 owns = self.renew_claims(project, &who.session, facts, now);
+            } else if seat == Seat::External {
+                self.inner
+                    .seats
+                    .lock()
+                    .expect("the seats lock")
+                    .insert(who.session.clone(), (facts.clone(), now));
+            }
+            if !root.trim().is_empty()
+                && let Some(room) = self
+                    .inner
+                    .rooms
+                    .lock()
+                    .expect("the rooms lock")
+                    .get_mut(project)
+            {
+                room.set_root(root.clone());
             }
             return Answer {
                 response: Response::Seated { owns },
@@ -1427,16 +1489,11 @@ impl Server {
         })
     }
 
-    /// Why this `Hello` may not speak under this name in this seat, as the reply to send. `id` is
-    /// the seat it claims to be: an id is one seat, so a second connection that does not say it is
-    /// sharing (a bridge and its waiter do) is refused rather than becoming a second seat of one name.
-    fn hello_name_refusal(
-        &self,
-        seat: Seat,
-        who: &Speaker,
-        share: bool,
-        id: &str,
-    ) -> Option<Response> {
+    /// What this `Hello` may do with the name it asks for. `id` is the seat it claims to be: an id
+    /// is one seat, so a second connection under one name is admitted only when it IS that seat -
+    /// sharing it (a bridge and its waiter) or replacing it (a reconnect). A different seat under a
+    /// name already speaking is what a suffixed twin is for.
+    fn hello_name_door(&self, seat: Seat, who: &Speaker, share: bool, id: &str) -> NameDoor {
         let name = who.session.as_str();
         let ok = match seat {
             Seat::Session => name != chat::OPERATOR && !name.is_empty(),
@@ -1444,19 +1501,18 @@ impl Server {
             Seat::External => chat::valid_handle(name) && who.is_top_level(),
             Seat::System => false,
         };
-        if ok && seat == Seat::External && !share && self.external_names().iter().any(|n| n == name)
-        {
-            return Some(Response::Refused {
+        if !ok {
+            return NameDoor::Refuse(Box::new(Response::Refused {
                 id: None,
-                why: crate::Refused::NameInUse {
+                why: crate::Refused::ReservedName {
                     name: name.to_string(),
                 },
-            });
+            }));
         }
-        // Two connections of one seat must share it, as a bridge and its waiter do. A second seat
-        // claiming an id the room already keys a cursor and a wait on is refused - unless it is the
-        // same name reconnecting, which the name's own rule above already decides.
         let id = id.trim();
+        // One id is one seat, whatever name it is spoken under: a second connection claiming an id
+        // the room already keys a cursor and a wait on is refused - unless it says it is one more
+        // connection of that seat (a bridge and its waiter do).
         if !share
             && !id.is_empty()
             && self
@@ -1464,19 +1520,54 @@ impl Server {
                 .iter()
                 .any(|c| c.id == id && c.who.session != name)
         {
-            return Some(Response::Refused {
+            return NameDoor::Refuse(Box::new(Response::Refused {
                 id: None,
                 why: crate::Refused::NameInUse {
                     name: id.to_string(),
                 },
-            });
+            }));
         }
-        (!ok).then(|| Response::Refused {
+        if seat != Seat::External {
+            return NameDoor::Admit;
+        }
+        let held = self.conn_list();
+        let held: Vec<&Arc<Conn>> = held.iter().filter(|c| c.who.session == name).collect();
+        if held.is_empty() {
+            return NameDoor::Admit;
+        }
+        // A connection that named no id predates ids, and the name is all there is to tell it by.
+        let is = |c: &Conn| c.id.is_empty() || (!id.is_empty() && c.id == id);
+        if share {
+            return if held.iter().all(|c| is(c)) {
+                NameDoor::Admit
+            } else {
+                NameDoor::Refuse(Box::new(Response::Refused {
+                    id: None,
+                    why: crate::Refused::NameInUse {
+                        name: name.to_string(),
+                    },
+                }))
+            };
+        }
+        if held.iter().any(|c| !id.is_empty() && c.id == id) && held.iter().all(|c| is(c)) {
+            return NameDoor::Replace;
+        }
+        NameDoor::Refuse(Box::new(Response::Refused {
             id: None,
-            why: crate::Refused::ReservedName {
+            why: crate::Refused::NameInUse {
                 name: name.to_string(),
             },
-        })
+        }))
+    }
+
+    /// End every connection speaking as `name`: a name taken by a socket the room cannot use again.
+    /// Each ends the same way a stuck one does, so its reader wakes and its thread goes.
+    fn end_name(&self, name: &str, why: &str) {
+        for c in self.conn_list() {
+            if c.who.session == name {
+                c.give_up(why);
+            }
+        }
     }
 
     /// The family a connected external `name` declared at its `Hello`.
@@ -2753,7 +2844,7 @@ impl Server {
         // them, and this one draws the id it would send to. A box that is away keeps its seats in
         // the list, away - a roster that dropped them would be a room that forgot who it shares.
         if let Some(peer) = self.peer() {
-            for seat in peer.peer_seats() {
+            for (seat, live) in peer.seats_with_state() {
                 if seat.host() == host {
                     continue;
                 }
@@ -2765,11 +2856,16 @@ impl Server {
                 rows.insert(
                     seat.id.clone(),
                     chat::Presence {
-                        name: seat.id.clone(),
+                        // The id is the address a send takes; a nick is what a reader sees.
+                        name: if seat.nick.is_empty() {
+                            seat.id.clone()
+                        } else {
+                            seat.nick.clone()
+                        },
                         id: seat.id.clone(),
                         seat_id: seat.id.clone(),
                         kind: Seat::External,
-                        connected: false,
+                        connected: live,
                         project: here.unwrap_or_default(),
                         label: seat.line(),
                         seat: None,

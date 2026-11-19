@@ -74,6 +74,10 @@ pub struct Link {
     pub missed: u32,
     /// What its seats are on, as its last `Profiles` said.
     pub seats: Vec<SeatProfile>,
+    /// Has this link generation been told what its seats are? A reconnect is a new generation,
+    /// and the far side's list is the fact the coordinator has to hear again even when it did not
+    /// change - that is what puts its seats back in the roster.
+    pub announced: bool,
     /// Why it is down, once it is: the sentence the operator reads.
     pub why: String,
 }
@@ -113,6 +117,7 @@ impl Mesh {
             last_heard: now,
             missed: 0,
             seats: Vec::new(),
+            announced: false,
             why: String::new(),
         });
         entry.addr = addr;
@@ -129,6 +134,7 @@ impl Mesh {
             last_heard: now,
             missed: 0,
             seats: Vec::new(),
+            announced: false,
             why: String::new(),
         });
         if !addr.ip().is_unspecified() {
@@ -149,6 +155,8 @@ impl Mesh {
             return None;
         }
         link.up = true;
+        // A new generation has been told nothing yet, so its seat list is news again.
+        link.announced = false;
         Some(PeerEvent::Up {
             host: host.to_string(),
         })
@@ -167,24 +175,51 @@ impl Mesh {
         None
     }
 
-    /// A box's list of seats as its last frame said them.
+    /// A box's list of seats as its last frame said them. An unchanged list says nothing - except
+    /// on a link that has just come back, where it is the one fact that marks the seats here
+    /// again: a roster that heard nothing after a `Down` keeps them away for ever.
     pub fn seats_of(&mut self, host: &str, seats: Vec<SeatProfile>) -> Option<PeerEvent> {
         let link = self.links.get_mut(host)?;
-        if link.seats == seats {
+        if link.seats == seats && link.announced {
             return None;
         }
         link.seats = seats.clone();
+        link.announced = true;
         Some(PeerEvent::Profiles {
             host: host.to_string(),
             seats,
         })
     }
 
-    /// The link is down, by a reason the operator reads. A link already down says nothing twice.
+    /// What `host`'s seats were the last time it said, whether or not its link is up now: a link
+    /// coming back re-announces this, so the coordinator marks them here again.
+    pub fn known_seats(&self, host: &str) -> Vec<SeatProfile> {
+        self.links
+            .get(host)
+            .map(|l| l.seats.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every seat of every box this one knows of, with whether its box was up when this was read:
+    /// the roster's half of the mesh, where an away box keeps its seats and loses only their
+    /// `connected`.
+    pub fn seats_with_state(&self) -> Vec<(SeatProfile, bool)> {
+        self.links
+            .values()
+            .flat_map(|l| l.seats.iter().cloned().map(move |s| (s, l.live())))
+            .collect()
+    }
+
+    /// The link is down, by a reason the operator reads. A link already down says nothing twice,
+    /// and keeps the reason it first gave: the second sentence is a consequence of the first (the
+    /// socket the tick shut down reads as *closed the link* a moment later), and the cause is what
+    /// a person needs.
     pub fn down(&mut self, host: &str, why: &str) -> Option<PeerEvent> {
         let link = self.links.get_mut(host)?;
         if !link.up {
-            link.why = why.to_string();
+            if link.why.is_empty() {
+                link.why = why.to_string();
+            }
             return None;
         }
         link.up = false;
@@ -339,8 +374,9 @@ mod tests {
             "a link already down says nothing"
         );
 
-        // A frame on a link the tick ended does not resurrect it: only a handshake does.
-        mesh.seats_of("mac", vec![a_seat("mac/s-1")]);
+        // A frame on a link the tick ended does not resurrect it: only a handshake does. The list
+        // it carried is kept - an away box keeps its seats - and the seat is still not deliverable.
+        assert!(mesh.seats_of("mac", vec![a_seat("mac/s-1")]).is_some());
         mesh.heard("mac", 600);
         assert!(!mesh.alive("mac"), "a frame is not a link");
         assert!(mesh.seat("mac/s-1").is_none(), "an away box holds nothing");
@@ -348,6 +384,51 @@ mod tests {
         mesh.up("mac", an_addr(47101), 600);
         assert!(mesh.alive("mac"));
         assert_eq!(mesh.seat("mac/s-1"), Some(a_seat("mac/s-1")));
+    }
+
+    #[test]
+    fn a_link_coming_back_says_its_unchanged_seats_again() {
+        let mut mesh = Mesh::new(Tick::new(100, 4));
+        let at = an_addr(47101);
+        let seats = vec![a_seat("mac/s-1"), a_seat("mac/cc-9")];
+        mesh.up("mac", at, 0);
+        assert_eq!(
+            mesh.seats_of("mac", seats.clone()),
+            Some(PeerEvent::Profiles {
+                host: "mac".to_string(),
+                seats: seats.clone()
+            })
+        );
+        // While the link stays up the same list is not news.
+        assert_eq!(mesh.seats_of("mac", seats.clone()), None);
+        // Away, and back with the very same list: the seats are announced again, because nobody
+        // here has been told they are still held since the link went.
+        assert!(matches!(
+            mesh.tick_round(500).as_slice(),
+            [PeerEvent::Down { .. }]
+        ));
+        assert_eq!(
+            mesh.seats_with_state(),
+            seats
+                .iter()
+                .cloned()
+                .map(|s| (s, false))
+                .collect::<Vec<_>>(),
+            "an away box keeps its seats and loses only their being here"
+        );
+        mesh.up("mac", at, 600);
+        assert_eq!(mesh.known_seats("mac"), seats);
+        assert_eq!(
+            mesh.seats_of("mac", seats.clone()),
+            Some(PeerEvent::Profiles {
+                host: "mac".to_string(),
+                seats: seats.clone()
+            }),
+            "a reconnect generation re-says a list that did not change"
+        );
+        // And once said, it is quiet again.
+        assert_eq!(mesh.seats_of("mac", seats), None);
+        assert!(mesh.seats_with_state().iter().all(|(_, up)| *up));
     }
 
     #[test]
@@ -370,6 +451,7 @@ mod tests {
         assert_eq!(seats[0].identity(), seats[1].identity());
         // The same list again is not a change, so nothing is re-sent or re-introduced.
         assert_eq!(mesh.seats_of("mac", vec![a_seat("mac/s-1")]), None);
+        assert_eq!(mesh.known_seats("lab3"), vec![a_seat("lab3/cc-9")]);
         // A box that is forgotten is not in the roster and holds nothing.
         mesh.forget("lab3");
         assert_eq!(mesh.hosts(), vec!["mac".to_string()]);

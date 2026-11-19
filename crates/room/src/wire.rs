@@ -412,9 +412,17 @@ pub enum Request {
         #[serde(default)]
         root: String,
     },
-    /// This session's facts, from its daemon, every tick: what its roster presence is derived
-    /// from. A replacement with no id, like [`Request::Members`].
-    Seat { facts: crate::seat::SeatFacts },
+    /// This seat's facts, from whoever holds it, every tick: what its roster presence is derived
+    /// from. A replacement with no id, like [`Request::Members`]. A bridge sends it too - it is a
+    /// seat with no daemon, and its working folder is what it is on.
+    Seat {
+        facts: crate::seat::SeatFacts,
+        /// Where this seat's project is checked out, as the seat sees it. The room keeps it as the
+        /// room's root, which is the one thing a box needs in order to name the repository a seat
+        /// is on - and a bridge's project has no daemon to send [`Request::Members`].
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        root: String,
+    },
     /// Own `scope` (a path glob or a topic) for `ttl_ms`, or renew this session's own claim on it.
     /// `thread` is the message the claim answers, for the signal ledger.
     Own {

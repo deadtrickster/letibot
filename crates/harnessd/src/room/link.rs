@@ -461,7 +461,12 @@ impl SessionRoom {
             return;
         };
         let facts = seat.facts(letibot_room::server::now_ms());
-        if let Ok(Response::Seated { owns }) = self.client.request(&Request::Seat { facts }) {
+        // No root: the project's own `Members` frame already said it, and a second spelling here
+        // could only disagree with that one.
+        if let Ok(Response::Seated { owns }) = self.client.request(&Request::Seat {
+            facts,
+            root: String::new(),
+        }) {
             seat.set_owns(owns);
         }
     }

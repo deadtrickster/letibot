@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use letibot_room::client::Client;
 use letibot_room::peer::{
     Cookie, CookieError, Peer, PeerConfig, RepoIdentity, SeatProfile, Tick, cookie,
+    handshake::{Dialer, nonce},
 };
 use letibot_room::server::Server;
 use letibot_room::{Event, Message, Refused, Request, Response, Room, Seat, Speaker};
@@ -171,6 +172,78 @@ fn an_identity(root: &str) -> String {
     RepoIdentity::of(root, "git@github.com:deadtrickster/letibot.git")
         .as_str()
         .to_string()
+}
+
+/// A far box that is nobody's coordinator: a loopback socket that speaks the peer protocol and
+/// then does whatever the test wants, including nothing at all. That is how a link is made to go
+/// silent without stopping a process - the case a real box's killed coordinator leaves behind.
+struct FakeBox {
+    reader: std::io::BufReader<std::net::TcpStream>,
+    writer: std::net::TcpStream,
+}
+
+impl FakeBox {
+    /// Dial `at` as `host` and complete the handshake.
+    fn up(at: std::net::SocketAddr, host: &str, cookie: &Cookie) -> FakeBox {
+        use std::io::{BufRead, BufReader, Write};
+        let stream = std::net::TcpStream::connect_timeout(&at, Duration::from_secs(3))
+            .expect("the far box's listener");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        let mut reader = BufReader::new(stream.try_clone().expect("a reader"));
+        let mut writer = stream;
+        let mut state = Dialer::new(host, 0, nonce().expect("a nonce"));
+        let mut say = |frame: &letibot_room::peer::PeerFrame| {
+            let mut line = frame.line();
+            line.push('\n');
+            writer.write_all(line.as_bytes()).expect("a frame");
+            writer.flush().expect("a flush");
+        };
+        say(&state.hello());
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("an answer");
+            let frame = letibot_room::peer::PeerFrame::of(line.trim_end())
+                .unwrap_or_else(|| panic!("a frame this build reads: {line:?}"));
+            let step = state.on(&frame, cookie);
+            if let Some(answer) = &step.say {
+                let mut line = answer.line();
+                line.push('\n');
+                writer.write_all(line.as_bytes()).expect("a frame");
+                writer.flush().expect("a flush");
+            }
+            if step.is_up() {
+                return FakeBox { reader, writer };
+            }
+            assert!(step.why().is_none(), "the handshake was refused: {step:?}");
+        }
+    }
+
+    fn say(&mut self, frame: &letibot_room::peer::PeerFrame) {
+        use std::io::Write;
+        let mut line = frame.line();
+        line.push('\n');
+        let _ = self.writer.write_all(line.as_bytes());
+        let _ = self.writer.flush();
+    }
+
+    /// Read frames until one the far side sent is seen, ignoring pings: the far box pings whether
+    /// or not anybody listens.
+    fn wait_for(&mut self, want: &str) {
+        use std::io::BufRead;
+        for _ in 0..50 {
+            let mut line = String::new();
+            if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            if let Some(frame) = letibot_room::peer::PeerFrame::of(line.trim_end())
+                && frame.word() == want
+            {
+                return;
+            }
+        }
+    }
 }
 
 /// Two boxes, linked, each with one seat on `identity`. A's seat is `s-a1`, B's is `s-b1`.
@@ -343,13 +416,17 @@ fn seats_on_one_repository_are_introduced_once_and_shown_in_the_roster() {
         .map(|m| m.text.matches(INTRO_B).count())
         .sum::<usize>();
     assert_eq!(told, 1, "one line per new peer seat: {lines:?}");
-    // The peer's seat is in this project's roster, and it is not connected here - its box holds it.
+    // The peer's seat is in this project's roster, marked here while its box's link is up - the
+    // other box holds it, and this one draws the id it would send to.
     let roster = a.server.roster_rows(&letibot_room::chat::project_room(A));
     let row = roster
         .iter()
         .find(|r| r.seat_id == "lab2/s-b1")
         .unwrap_or_else(|| panic!("no peer row in {roster:?}"));
-    assert!(!row.connected);
+    assert!(
+        row.connected,
+        "a linked box's seat is not drawn away: {row:?}"
+    );
 
     // The same seat again is not news: a new task line changes its profile, and nothing is said.
     b.publishes(SeatProfile::new(
@@ -433,4 +510,112 @@ fn a_box_with_no_cookie_has_no_mesh_and_a_seat_on_another_box_is_nobody() {
     );
     server.stop();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The report's first bug: a link came back with the very same seat list, so nothing was said, and
+/// the far box's seats stayed marked away in the roster for ever.
+#[test]
+fn a_box_that_comes_back_with_an_unchanged_seat_list_has_its_seats_marked_here_again() {
+    use letibot_room::peer::PeerFrame;
+    let identity = an_identity("7777aaaa8888");
+    let a = Box::open("back-a", "lab1", A);
+    a.project_identity(&identity, true);
+    a.publishes(SeatProfile::new(
+        "lab1/s-a1",
+        &RepoIdentity::named(&identity),
+        "main",
+        "landing stacks",
+    ));
+    let mine = a.seat("s-a1");
+    let theirs = SeatProfile::new(
+        "lab2/s-b1",
+        &RepoIdentity::named(&identity),
+        "main",
+        "provider fixes",
+    );
+
+    // A far box links, says what it holds, and then goes silent the way a killed coordinator does:
+    // no `Bye`, so only the tick can notice. Nothing is sent while it is away.
+    let mut first = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    first.wait_for("profiles");
+    first.say(&PeerFrame::Profiles {
+        seats: vec![theirs.clone()],
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !a.peer.alive("lab2") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(a.peer.alive("lab2"), "the fake box never linked");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !a.peer.holds("lab2/s-b1") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(a.peer.holds("lab2/s-b1"), "the seat list never arrived");
+    // Silent from here: four tick intervals of nothing and the link is away, which is the only
+    // thing that can notice a box that never said goodbye.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && a.peer.alive("lab2") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!a.peer.alive("lab2"), "a silent link stayed up");
+    assert!(
+        a.peer.why("lab2").contains("missed"),
+        "the tick is what ends a link that never said goodbye: {}",
+        a.peer.why("lab2")
+    );
+    // It keeps its seats, away - a roster that dropped them would forget who it shares with.
+    let away = a.server.roster_rows(&letibot_room::chat::project_room(A));
+    let row = away
+        .iter()
+        .find(|r| r.seat_id == "lab2/s-b1")
+        .unwrap_or_else(|| panic!("the away box's seat left the roster: {away:?}"));
+    assert!(!row.connected, "an away box's seat is drawn away");
+
+    // The same box comes back on a new connection with the SAME list. The seats are marked here
+    // again - that is what a roster needs, and it is said once, not once per reconnect.
+    let _second = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !a.peer.alive("lab2") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(a.peer.alive("lab2"), "the box that came back is not linked");
+    // The list it sent the first time is what a reconnect re-announces: no second Profiles frame
+    // is needed for this, and none was sent.
+    let back = a.server.roster_rows(&letibot_room::chat::project_room(A));
+    let row = back
+        .iter()
+        .find(|r| r.seat_id == "lab2/s-b1")
+        .unwrap_or_else(|| panic!("the box that came back has no seat row: {back:?}"));
+    assert!(row.connected, "a box that came back is drawn away: {row:?}");
+    assert!(a.peer.holds("lab2/s-b1"));
+    // And the introduction was said once in all of this: a reconnect is not news.
+    let lines = mine.pushed(600);
+    let told = lines.iter().filter(|m| m.text.contains(INTRO_B)).count();
+    assert_eq!(told, 1, "an introduction was said per reconnect: {lines:?}");
+}
+
+/// The report's second bug: the far box's goodbye was rendered as this box's own.
+#[test]
+fn a_goodbye_is_worded_as_the_far_boxs_reason() {
+    use letibot_room::peer::{PeerFrame, STOPPING};
+    let a = Box::open("bye", "lab1", A);
+    let mut far = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !a.peer.alive("lab2") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(a.peer.alive("lab2"));
+    // Exactly the words this build's own `stop` sends: the sender's box, not the reader's.
+    far.say(&PeerFrame::Bye {
+        why: STOPPING.to_string(),
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && a.peer.alive("lab2") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        a.peer.why("lab2"),
+        "lab2 said goodbye: its coordinator is stopping",
+        "the reason is the far box's, and the sentence has to read as that box's"
+    );
 }

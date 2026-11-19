@@ -96,7 +96,10 @@ impl Seated {
                 .collect(),
             ..SeatFacts::default()
         };
-        self.call(Request::Seat { facts });
+        self.call(Request::Seat {
+            facts,
+            root: String::new(),
+        });
     }
 
     /// The tree its daemon sends, with the project's folder: where the room reads `OWNERS`.
