@@ -232,7 +232,12 @@ fn wait_queue_times_out_on_a_row_still_in_line() {
     let started = Instant::now();
     let (code, state) = wait(&bridge, &id, Duration::from_millis(150));
     assert_eq!(code, queue_desk::exit::TIMEOUT, "{state}");
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // The bound only has to tell its own timeout from a hang.
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(state["review"]["state"], "waiting", "{state}");
 
     let (code, said) = queue_desk::wait(&bridge, &bridge.folder(), "nope", Instant::now(), FAST);

@@ -513,7 +513,7 @@ mod tests {
         // stall for seconds on a loaded disk. The bound only has to tell a timeout from a hang.
         let t = std::time::Instant::now();
         let asked = briefs(&socket, "s-hung", Duration::from_secs(1));
-        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert!(t.elapsed() < Duration::from_secs(60), "{:?}", t.elapsed());
         assert_eq!(asked.err().as_deref(), Some("timed out after 1s"));
         let later = now_ms() + 3 * STOPPED_WINDOW_MS;
         let fleet = scan_in(

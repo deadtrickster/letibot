@@ -141,10 +141,12 @@ impl Fixture {
             .spawn()
             .expect("the stand-in firecracker starts");
         let began = Instant::now();
+        // Named on the process table before the fixture goes on: a loaded box takes seconds to
+        // schedule the stand-in, and the deadline is only the one that says it never ran.
         while letibot_tools::firecode::held::firecrackers(Path::new("/proc"))
             .iter()
             .all(|(_, p)| *p != child.id())
-            && began.elapsed() < Duration::from_secs(5)
+            && began.elapsed() < Duration::from_secs(60)
         {
             std::thread::sleep(Duration::from_millis(20));
         }
