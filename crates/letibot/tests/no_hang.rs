@@ -100,10 +100,21 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// The binary under test, copied beside the stubs: `current_exe()` resolves a link.
+/// The binary under test, linked beside the stubs under the name the launcher resolves.
+///
+/// A hard link to the build artifact, not a copy: these tests fork each other's children, and a
+/// child between fork and exec holds the write fd of any copy still in progress, which makes
+/// exec'ing the name `ETXTBSY`. A link writes nothing.
 fn letibot_multi(bin: &Path) -> PathBuf {
     let me = bin.join("letibot-multi");
-    std::fs::copy(env!("CARGO_BIN_EXE_letibot-multi"), &me).expect("the binary is copied");
+    let built = Path::new(env!("CARGO_BIN_EXE_letibot-multi"));
+    if std::fs::hard_link(built, &me).is_err() {
+        // Another filesystem for the fixture: a copy written under a name of its own and renamed
+        // into place, so the name only ever names a closed file.
+        let part = bin.join(format!("letibot-multi.{}", std::process::id()));
+        std::fs::copy(built, &part).expect("the binary is copied");
+        std::fs::rename(&part, &me).expect("the binary is in place");
+    }
     std::fs::set_permissions(&me, std::fs::Permissions::from_mode(0o755)).expect("executable");
     me
 }
