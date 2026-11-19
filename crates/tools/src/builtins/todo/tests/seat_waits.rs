@@ -291,7 +291,9 @@ fn a_board_is_read_by_seat_by_session_and_only_of_this_project() {
             .unwrap();
     }
     let mine = folder_words(std::path::Path::new("/work/etcd-a36"));
-    for name in ["db-fuzz", "s-1"] {
+    // The last one is the seat id a wait should carry: `<host>/<local>`, looked up as the session
+    // it names, so a wait written with an id resolves to the same board the bare id reaches.
+    for name in ["db-fuzz", "s-1", "lab2x1/s-1"] {
         assert!(
             matches!(board_of(&store, &mine, name).unwrap(), Board::Rows(rows) if rows.len() == 1),
             "{name} names a session of this project"
