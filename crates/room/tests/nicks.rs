@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{
-    Attention, Event, HOST_ROOM, Message, OPERATOR, Refused, Request, Response, Room, Seat,
+    Attention, Event, HOST_ROOM, Message, NICK, OPERATOR, Refused, Request, Response, Room, Seat,
     Speaker, project_room,
 };
 
@@ -173,6 +173,105 @@ fn a_seat_keeps_its_id_and_takes_its_label() {
         .collect();
     assert_eq!(said.len(), 1, "one line, not one per reader: {said:?}");
     assert!(said[0].contains("cc@app"), "it names the seat: {said:?}");
+    server.stop();
+}
+
+/// A line keeps the label its author was drawn by, so a reader can be told what a seat was called
+/// then: the room writes it, a caller's own claim about its label is dropped, and a line with no
+/// label reads exactly as it did before the room had one.
+#[test]
+fn a_post_keeps_the_label_its_author_was_drawn_by() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let bridge = seated(
+        &server,
+        "cc@app",
+        "lab2x1/cc-2e4a9c1b",
+        "",
+        Seat::External,
+        "",
+    );
+    let say = |id: &str, text: &str, refs: Vec<letibot_room::Ref>| {
+        let answer = bridge.call(Request::Say {
+            id: id.into(),
+            room: HOST_ROOM.into(),
+            text: text.into(),
+            to: None,
+            thread: None,
+            refs,
+            attachments: Vec::new(),
+            kind: Default::default(),
+        });
+        match answer {
+            Response::Said { message, .. } => message,
+            other => panic!("`{text}` must land: {other:?}"),
+        }
+    };
+    let read = || {
+        let answer = bridge.call(Request::Read {
+            room: HOST_ROOM.into(),
+            since: 0,
+            before: None,
+            last: Some(20),
+            thread: None,
+        });
+        match answer {
+            Response::History(history) => history.rows,
+            other => panic!("a read answers rows: {other:?}"),
+        }
+    };
+    let row = |rows: &[Message], said: &str| -> Message {
+        rows.iter()
+            .find(|m| m.text == said)
+            .unwrap_or_else(|| panic!("`{said}` is in the log: {rows:?}"))
+            .clone()
+    };
+    // Drawn by the name it speaks as: there is nothing to record, and the line is what it was.
+    // (`@operator` because the host room takes an addressed line and not talk.)
+    let before = say("q1", "before the label @operator", Vec::new());
+    assert_eq!(before.nick(), None);
+    assert!(before.refs.is_empty(), "{:?}", before.refs);
+    assert_eq!(
+        before.line(),
+        format!("#{} [host] cc@app: before the label @operator", before.seq)
+    );
+    match bridge.nick("db-fuzz-fable") {
+        Response::Nicked { nick, .. } => assert_eq!(nick, "db-fuzz-fable"),
+        other => panic!("the label is free: {other:?}"),
+    }
+    // A ref the caller wrote about its own label is not the room's to keep.
+    let claimed = letibot_room::Ref {
+        kind: NICK.into(),
+        id: "a-label-i-claim".into(),
+    };
+    let after = say("q2", "after the label @operator", vec![claimed]);
+    assert_eq!(after.nick(), Some("db-fuzz-fable"));
+    assert!(
+        after.refs.iter().all(|r| r.id != "a-label-i-claim"),
+        "the room's label replaces the caller's: {:?}",
+        after.refs
+    );
+    // The label is the header's, not a row the message points at: a tool's line is unchanged.
+    assert_eq!(after.rows_refs().count(), 0, "{:?}", after.refs);
+    assert_eq!(
+        after.line(),
+        format!("#{} [host] cc@app: after the label @operator", after.seq)
+    );
+    // Renamed again: the older line keeps the label it was posted under, and the new one says the
+    // label in force now - which is the whole of "draw the nick, with the then-name beside it".
+    assert!(matches!(bridge.nick("db-fuzz-2"), Response::Nicked { .. }));
+    let again = say("q3", "after the second label @operator", Vec::new());
+    assert_eq!(again.nick(), Some("db-fuzz-2"));
+    let rows = read();
+    assert_eq!(row(&rows, "before the label @operator").nick(), None);
+    assert_eq!(
+        row(&rows, "after the label @operator").nick(),
+        Some("db-fuzz-fable")
+    );
+    assert_eq!(
+        row(&rows, "after the second label @operator").nick(),
+        Some("db-fuzz-2")
+    );
     server.stop();
 }
 

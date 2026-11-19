@@ -569,6 +569,11 @@ is the user's own process trust, and the peer check on the daemon is the other g
   gate or queue row id, a seq or blob ref). At most 8 per message, each id at most 200 bytes. The row
   is not copied. `evidence` arrived after the others, so a message from before it is one that named
   nothing - no field was added and no version moved, because the wire already had `refs`.
+- One ref is the room's own: `nick`, whose id is the label the author was drawn by when it posted.
+  The coordinator writes it - a caller's is dropped - and only where that label is not the name the
+  seat speaks as, so a line with no `nick` ref is one whose author names itself. Renaming changes
+  nothing in the log: a `nick` ref in an old line is that line's then-name, and it is not a row a
+  rendering shows (`rows_refs` skips it, as it skips `say`).
 - `attachments` are the pictures and files the message carries, from the blob store: at most 4, each
   at most 8 MiB. `id` is the sha256 hex of the bytes. The field is absent from a message with none,
   and from every line written before it existed, so an old store replays unchanged. `w`/`h` are there

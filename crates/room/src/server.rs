@@ -2028,6 +2028,14 @@ impl Server {
         self.live_nicks().remove(seat).map(|(nick, _)| nick)
     }
 
+    /// The label the room draws `author` by, when it is a live seat that is drawn by something
+    /// other than the name it speaks as. `None` for the operator, the harness and any name no
+    /// seat holds: those are drawn exactly as they post, so there is nothing to record.
+    fn label_of(&self, author: &str) -> Option<String> {
+        let seat = self.seat_of(author).filter(|s| !s.is_empty())?;
+        self.nick_of(&seat).filter(|label| label != author)
+    }
+
     /// Every live seat's label, by seat id, with the name it is drawn by when it has no nick: a
     /// connection's own, and a live roster member's handle (the slug of its title). A seat with no
     /// connection is a seat with a name - the tree lists it - so both halves are here.
@@ -3797,6 +3805,12 @@ impl Server {
         }
         // The operator's long line is carried whole: a person is not filing a record for the room.
         let file = kind != Seat::Operator;
+        // What the author is drawn by rides the refs, so a reader who knew the seat under another
+        // label is told which, and a line written before this has no ref and reads unchanged.
+        let refs = match self.label_of(author) {
+            Some(label) => chat::with_nick_ref(&label, &refs),
+            None => refs,
+        };
         let appended = self.inner.chat.lock().expect("the chat lock").append_post(
             now,
             id,

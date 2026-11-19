@@ -236,6 +236,11 @@ pub const SAY: &str = "say";
 /// message: its id is that message's seq. Only the room writes it.
 pub const RELAYS: &str = "relays";
 
+/// The ref kind that says which label the author was drawn by when it posted: its id is that
+/// label. A seat is renamed and its id never moves, so this is the only place an old line's
+/// then-name survives; a message without it is one whose author names itself.
+pub const NICK: &str = "nick";
+
 /// The roster scope that lists the box's queue seats. They are in no room, so this is no room.
 pub const SEATS: &str = "seats";
 
@@ -365,6 +370,21 @@ pub fn with_say_ref(kind: crate::SayKind, refs: &[Ref]) -> Result<Vec<Ref>, crat
     Ok(out)
 }
 
+/// The refs a post carries once the room records the label its author was drawn by. The room's
+/// own, so a caller's [`NICK`] ref is dropped rather than trusted; a line already at [`MAX_REFS`]
+/// keeps the caller's refs and loses only this one, which is a reader's convenience.
+pub fn with_nick_ref(label: &str, refs: &[Ref]) -> Vec<Ref> {
+    let mut out: Vec<Ref> = refs.iter().filter(|r| r.kind != NICK).cloned().collect();
+    let label = label.trim();
+    if !label.is_empty() && label.len() <= MAX_REF_ID && out.len() < MAX_REFS {
+        out.push(Ref {
+            kind: NICK.to_string(),
+            id: label.to_string(),
+        });
+    }
+    out
+}
+
 impl Message {
     /// The message as one plain line: `#seq [room] author -> to: text (todo t-7)`. A newline inside
     /// the text becomes a quoted line, so no line of a peer's words can pass for a header.
@@ -386,10 +406,19 @@ impl Message {
         )
     }
 
-    /// The refs a rendering shows: every one but the [`SAY`] ref, which is not a row the message
-    /// points at but the kind its header's flags already say.
+    /// The refs a rendering shows: every one but the [`SAY`] and [`NICK`] refs, which are not rows
+    /// the message points at but what its header already says - the kind it asks, and its author.
     pub fn rows_refs(&self) -> impl Iterator<Item = &Ref> {
-        self.refs.iter().filter(|r| r.kind != SAY)
+        self.refs.iter().filter(|r| r.kind != SAY && r.kind != NICK)
+    }
+
+    /// The label the author was drawn by when it posted: what a reader who knew the seat under
+    /// another label is told. `None` for a message written while its author names itself.
+    pub fn nick(&self) -> Option<&str> {
+        self.refs
+            .iter()
+            .find(|r| r.kind == NICK && !r.id.trim().is_empty())
+            .map(|r| r.id.trim())
     }
 
     /// What this line asks of its readers. A message with no kind ref is an ordinary post.
@@ -1854,7 +1883,7 @@ impl Chat {
             || refs.iter().any(|r| {
                 !matches!(
                     r.kind.as_str(),
-                    "todo" | "queue" | "ask" | EVIDENCE | SAY | RELAYS
+                    "todo" | "queue" | "ask" | EVIDENCE | SAY | RELAYS | NICK
                 ) || r.id.trim().is_empty()
                     || r.id.len() > MAX_REF_ID
             })
