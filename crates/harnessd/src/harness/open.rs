@@ -444,6 +444,9 @@ struct Placed {
     described: String,
     writable: bool,
     monitors: Option<Arc<Monitors>>,
+    /// The roots the operator granted this session writable, read at each ask off the view that
+    /// runs - empty for a placement whose view is another machine's or a VM's own tree.
+    granted_roots: letibot_tools::view::GrantedRoots,
     surroundings: letibot_tools::Surroundings,
     confined: bool,
     /// The tools run over the whole host: nothing was asked for that this platform can build,
@@ -1328,11 +1331,12 @@ impl Harness {
         }
         // One boxed backend from here on, whichever substrate: the host one built
         // above, or a firecode VM booted on a copy of the tree `Config::vm_copy_source` names.
-        let (backend, backend_described, backend_writable, monitors): (
+        let (backend, backend_described, backend_writable, monitors, granted_roots): (
             Box<dyn letibot_tools::backend::ExecBackend>,
             String,
             bool,
             Option<Arc<Monitors>>,
+            letibot_tools::view::GrantedRoots,
         ) = if local_vm {
             // The tree the VM is booted on, and it is NOT always the workspace: `vm_copy_source`
             // is the one spelling of the decision, so a session seated above its repositories does
@@ -1405,7 +1409,14 @@ impl Harness {
             let described = fc.describe();
             let writable = fc.is_writable();
             let monitors = fc.host_processes().and_then(|h| h.monitors().cloned());
-            (Box::new(fc), described, writable, monitors)
+            // A VM's boundary is the copy it boots on, so the host's grants are not its reach.
+            (
+                Box::new(fc),
+                described,
+                writable,
+                monitors,
+                letibot_tools::view::GrantedRoots::default(),
+            )
         } else if let Some(host) = &remote {
             // The ssh placement: the repository's HEAD goes over as a bundle, the session works in
             // a checkout there, and its commits come back when it ends. No allow-all and no
@@ -1466,8 +1477,15 @@ impl Harness {
             let described = sb.describe();
             let writable = sb.is_writable();
             // No monitor mechanism on this host: a `monitor` call refuses by name rather
-            // than watching something nothing reaps.
-            (Box::new(sb), described, writable, None)
+            // than watching something nothing reaps. And a grant on THIS host's view is not
+            // this session's reach, so it has none of them.
+            (
+                Box::new(sb),
+                described,
+                writable,
+                None,
+                letibot_tools::view::GrantedRoots::default(),
+            )
         } else {
             let described = backend.describe();
             let writable = backend.is_writable();
@@ -1591,7 +1609,19 @@ impl Harness {
                 );
             }
             let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
-            (Box::new(backend), described, writable, monitors)
+            // The roots the operator granted this session, read at each ask off the view that
+            // runs: the gate and the shadow judge by it, so a grant answered or revoked
+            // mid-session moves with them instead of freezing at open.
+            let granted = match backend.host_processes() {
+                Some(host) => {
+                    let host = host.clone();
+                    letibot_tools::view::GrantedRoots::live(move || {
+                        host.current_view().map(|v| v.granted()).unwrap_or_default()
+                    })
+                }
+                None => letibot_tools::view::GrantedRoots::default(),
+            };
+            (Box::new(backend), described, writable, monitors, granted)
         };
 
         // `backend_confined`, asked of the backend that was actually built: a VM is a boundary by
@@ -1604,6 +1634,7 @@ impl Harness {
             described: backend_described,
             writable: backend_writable,
             monitors,
+            granted_roots,
             surroundings,
             confined: backend_confined,
             whole_host,
@@ -2203,6 +2234,7 @@ impl Harness {
             described: backend_described,
             writable: backend_writable,
             monitors,
+            granted_roots,
             surroundings,
             confined: backend_confined,
             whole_host: backend_whole_host,
@@ -3203,6 +3235,7 @@ impl Harness {
                             std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
                             cfg.workspace.clone(),
                             cfg.store_at().is_some(),
+                            granted_roots.clone(),
                         ),
                     ))
                 };
@@ -3255,6 +3288,9 @@ impl Harness {
                     // a host with none asks about the project's own code. Read off the backend
                     // above, never probed here - the gate takes the fact it is handed.
                     .with_boundary(backend_boundary, backend_boundary_refusal)
+                    // Where the session may work beyond its workspace: the operator's grants,
+                    // as the boundary binds them.
+                    .with_granted_roots(granted_roots.clone())
                     // What the agent says it is doing, so the guard can connect the operator's
                     // words to a call that does not repeat them. Outside the trail's numbering, so
                     // it can never be what an `ALLOW <n>` cites.

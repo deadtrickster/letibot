@@ -290,6 +290,7 @@ fn call(command: &str) -> Call {
         cwd: "/w/proj".into(),
         workspace: "/w/proj".into(),
         home: "/home/op".into(),
+        granted: Vec::new(),
     }
 }
 

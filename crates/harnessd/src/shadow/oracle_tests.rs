@@ -14,6 +14,7 @@ use super::config::Stage;
 use super::oracle::ShadowAdjudicator;
 use super::permission::{Answering, Cell};
 use super::runner::{Shadow, Timing};
+use letibot_tools::view::GrantedRoots;
 
 /// A judge that answers `reply`, counts the questions, and can be told to be slow.
 struct Judge {
@@ -150,6 +151,7 @@ fn automode_gate_slow(
         "/home/op".into(),
         "/w".into(),
         true,
+        GrantedRoots::default(),
     );
     let g = letibot_tools::AdjudicatedGate::new(Box::new(person.clone()))
         .with_identity("s-main", "agent")
@@ -178,6 +180,7 @@ fn adjudicator(stages: &[Stage]) -> ShadowAdjudicator {
         "/home/op".into(),
         "/w".into(),
         true,
+        GrantedRoots::default(),
     )
 }
 
@@ -314,6 +317,7 @@ fn a_tripped_breaker_asks_at_every_stage() {
             "/home/op".into(),
             "/w".into(),
             true,
+            GrantedRoots::default(),
         );
         let mut g = letibot_tools::AdjudicatedGate::new(Box::new(person.clone()))
             .with_identity("s-main", "agent")
@@ -417,4 +421,172 @@ fn a_reach_past_the_stage_is_refused_by_the_stage() {
         letibot_tools::adjudicate::ActionClass::host(letibot_tools::Access::Write, false, false);
     let d = adj.decide(&r);
     assert!(d.basis.contains("lands on `host_other`"), "{}", d.basis);
+}
+
+/// A root the operator granted writable outside the workspace, as one list a test can change.
+type Roots = Arc<Mutex<Vec<(std::path::PathBuf, bool)>>>;
+
+fn granted(roots: &[(&str, bool)]) -> (GrantedRoots, Roots) {
+    let list: Roots = Arc::new(Mutex::new(
+        roots
+            .iter()
+            .map(|(p, write)| (std::path::PathBuf::from(*p), *write))
+            .collect(),
+    ));
+    let read = list.clone();
+    (
+        GrantedRoots::live(move || read.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+        list,
+    )
+}
+
+/// A session at `automode` whose shadow answers `stages`, with the operator's granted roots read
+/// by BOTH halves that judge a call: the gate's class and the shadow's own stage.
+fn gate_with_grants(
+    stages: &[Stage],
+    roots: &[(&str, bool)],
+) -> (
+    letibot_tools::AdjudicatedGate,
+    Person,
+    Arc<Answering>,
+    Arc<AtomicU32>,
+    Roots,
+) {
+    let person = Person::default();
+    let (cell, asked) = shadow_cell(stages, ALLOW, None);
+    let set: BTreeSet<Stage> = stages.iter().copied().collect();
+    let answering = Answering::new(true);
+    let (for_oracle, list) = granted(roots);
+    let (for_gate, _) = granted(roots);
+    let advisor = ShadowAdjudicator::new(
+        cell,
+        answering.clone(),
+        set,
+        "/home/op".into(),
+        "/w".into(),
+        true,
+        for_oracle,
+    );
+    let g = letibot_tools::AdjudicatedGate::new(Box::new(person.clone()))
+        .with_identity("s-main", "agent")
+        .with_mode(letibot_tools::mode::Mode::parse("automode").unwrap())
+        .with_surroundings(letibot_tools::intent::Surroundings {
+            home: Some("/home/op".into()),
+            workspace: Some("/w".into()),
+            shell: letibot_tools::intent::ShellTrust::Pinned { how: "test".into() },
+            ..Default::default()
+        })
+        .with_trail_source(|_| trail())
+        .with_granted_roots(for_gate)
+        .with_advisor(Arc::new(advisor))
+        .start_supervised(true);
+    (g, person, answering, asked, list)
+}
+
+/// A file tool naming `args`, for the grant tests: the class comes from its `path`.
+fn write_call(args: &serde_json::Value) -> letibot_tools::GateCall<'_> {
+    letibot_tools::GateCall {
+        name: "write",
+        access: letibot_tools::Access::Write,
+        args,
+        turn_id: "t1",
+        call_id: "c2",
+        workspace: "/w",
+        target_exists: Some(true),
+        scripts: &[],
+        preview: &[],
+    }
+}
+
+/// The stage a decision was answered at, as the row the operator sees names it.
+fn stage_of_row(answering: &Answering) -> String {
+    answering
+        .take_rows()
+        .into_iter()
+        .map(|(title, _)| title)
+        .find(|t| t.starts_with("shadow allowed"))
+        .unwrap_or_default()
+}
+
+/// A folder the operator granted writable is a workspace for a write: the class is the project's
+/// own and the stage that answers it is `workspace_writes`, with nobody asked.
+#[test]
+fn a_write_into_a_granted_folder_is_answered_at_workspace_writes() {
+    let path = "/data/scratch/notes.txt";
+    let args = serde_json::json!({ "path": path });
+    let (mut g, person, answering, _, _) = gate_with_grants(
+        &[Stage::Reads, Stage::WorkspaceWrites],
+        &[("/data/scratch", true)],
+    );
+    assert!(
+        matches!(g.admit(&write_call(&args)), GateDecision::Admit),
+        "a write into a granted folder is the shadow's"
+    );
+    assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
+    let row = stage_of_row(&answering);
+    assert!(row.contains("workspace_writes"), "{row}");
+    assert!(row.contains(path), "{row}");
+}
+
+/// The same write with no grant is outside the workspace, and the person decides.
+#[test]
+fn the_same_write_without_a_grant_asks() {
+    let args = serde_json::json!({ "path": "/data/scratch/notes.txt" });
+    let (mut g, person, ..) = gate_with_grants(
+        &[Stage::Reads, Stage::WorkspaceWrites],
+        &[("/data/scratch", false)],
+    );
+    assert!(!matches!(g.admit(&write_call(&args)), GateDecision::Admit));
+    assert_eq!(
+        *person.0.lock().unwrap(),
+        1,
+        "a read-only grant is no write"
+    );
+}
+
+/// Destruction in a folder the operator granted writable is ordinary work, as it is in the
+/// workspace: exec answers it and the always-ask row for a delete outside the project does not
+/// fire on where it lands.
+#[test]
+fn a_delete_inside_a_granted_folder_is_answered_at_exec() {
+    let rm = serde_json::json!({ "command": "/usr/bin/rm -rf /data/scratch/tree" });
+    let (mut g, person, answering, _, _) =
+        gate_with_grants(&all_stages(), &[("/data/scratch", true)]);
+    assert!(
+        matches!(g.admit(&call(&rm)), GateDecision::Admit),
+        "a delete inside the grant is the shadow's"
+    );
+    assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
+    let row = stage_of_row(&answering);
+    assert!(row.contains("exec"), "{row}");
+}
+
+/// A grant revoked between two calls stops counting at once: the same write asks again.
+#[test]
+fn a_revoked_grant_stops_counting_at_once() {
+    let args = serde_json::json!({ "path": "/data/scratch/notes.txt" });
+    let (mut g, person, _, _, roots) = gate_with_grants(
+        &[Stage::Reads, Stage::WorkspaceWrites],
+        &[("/data/scratch", true)],
+    );
+    assert!(matches!(g.admit(&write_call(&args)), GateDecision::Admit));
+    assert_eq!(*person.0.lock().unwrap(), 0);
+    roots.lock().unwrap().clear();
+    assert!(!matches!(g.admit(&write_call(&args)), GateDecision::Admit));
+    assert_eq!(
+        *person.0.lock().unwrap(),
+        1,
+        "a grant taken back is a workspace no longer"
+    );
+}
+
+/// The always-ask list is the operator's whatever was granted: a grant says where the session may
+/// work, never that privilege may be raised there, and the shadow is not asked.
+#[test]
+fn the_always_ask_list_wins_over_a_grant() {
+    let sudo = serde_json::json!({ "command": "/usr/bin/sudo /usr/bin/rm -rf /data/scratch/tree" });
+    let (mut g, person, _, asked, _) = gate_with_grants(&all_stages(), &[("/data/scratch", true)]);
+    assert!(!matches!(g.admit(&call(&sudo)), GateDecision::Admit));
+    assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
 }

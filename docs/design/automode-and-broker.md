@@ -393,6 +393,15 @@ revoke, or a later No to a shape the shadow granted - stop answering until `/sha
 the trip is kept in the store. Every answer is a row on the session naming the model and the
 stage, and the card's own line reads *allowed by the shadow (deepseek, exec)*.
 
+A stage's reach is the workspace AND the roots the operator granted this session, read live off
+the view the boundary and the file fence enforce. A `grants_rw` folder - or one answered on a
+view card mid-session - is a workspace for `workspace_writes` and for `exec`: a write or a
+delete in it is ordinary work, and the always-ask memory of a delete outside the project does not
+fire on where it lands. A `grants_ro` folder widens nothing but `reads`. A grant taken back stops
+counting on the next call, and the always-ask list still wins over every grant: a folder the
+operator granted writable says where the session may work, never that privilege may be raised
+there.
+
 `[gatekeeper] via` decides which guard answers: `endpoint` is the local guard exactly as
 before, `shadow` is the permission job alone, and `both` - the default when both are configured
 - asks the endpoint first and the shadow when the endpoint does not answer at all (a refused

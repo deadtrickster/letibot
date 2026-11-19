@@ -116,6 +116,9 @@ impl ShadowSink {
             cwd: self.workspace.clone(),
             workspace: self.workspace.clone(),
             home: self.home.clone(),
+            // A relayed card names a path this record has no view to place; the boundary it
+            // runs in already answered whether the path is there.
+            granted: Vec::new(),
         };
         let q = question(request, tool, arguments, &self.rules, &call);
         let s = shown(request, tool, arguments, &self.rules, task, call);
@@ -504,6 +507,7 @@ impl Relay {
             cwd: workspace.clone(),
             workspace,
             home: self.home.clone(),
+            granted: Vec::new(),
         };
         let mut s = shown(
             &c.req_id,

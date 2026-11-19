@@ -11,6 +11,10 @@ pub struct Call {
     pub cwd: PathBuf,
     pub workspace: PathBuf,
     pub home: PathBuf,
+    /// The roots the operator granted this session writable, read when the call was judged. A
+    /// folder granted writable is a workspace to this denylist too, which is what lets a delete
+    /// inside one reach the stage that answers it instead of falling to the person.
+    pub granted: Vec<PathBuf>,
 }
 
 /// Commands that raise privilege.
@@ -35,7 +39,7 @@ pub fn allow_passes(call: &Call) -> Result<(), String> {
     for key in PATH_KEYS {
         if let Some(p) = call.args.get(key).and_then(|p| p.as_str())
             && is_write_tool(&call.tool)
-            && !inside(&resolve(p, call), &call.workspace)
+            && !inside(&resolve(p, call), call)
         {
             return Err(format!("`{}` writes {p}, outside the workspace", call.tool));
         }
@@ -71,7 +75,7 @@ pub fn allow_passes(call: &Call) -> Result<(), String> {
             if matches!(t, "/dev/null" | "/dev/stdout" | "/dev/stderr") {
                 continue;
             }
-            if !inside(&resolve(t, call), &call.workspace) {
+            if !inside(&resolve(t, call), call) {
                 return Err(format!("it writes {t}, outside the workspace"));
             }
         }
@@ -125,8 +129,8 @@ fn resolve(p: &str, call: &Call) -> PathBuf {
     out
 }
 
-fn inside(p: &Path, workspace: &Path) -> bool {
-    p.starts_with(workspace)
+fn inside(p: &Path, call: &Call) -> bool {
+    p.starts_with(&call.workspace) || call.granted.iter().any(|g| p.starts_with(g))
 }
 
 /// `Ok` when the shadow may grant a read of `path`: absolute, not a secret store, credential

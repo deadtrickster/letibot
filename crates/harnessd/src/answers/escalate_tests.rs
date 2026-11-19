@@ -557,6 +557,7 @@ fn with_shadow_lines(
                 "/home/op".into(),
                 REVIEW_WORKSPACE.into(),
                 true,
+                letibot_tools::view::GrantedRoots::default(),
             ),
         )));
     }

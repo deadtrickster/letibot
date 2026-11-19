@@ -49,7 +49,20 @@ impl Harness {
             std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
             self.cfg.workspace.clone(),
             self.cfg.store_at().is_some(),
+            self.granted_roots(),
         )))
+    }
+
+    /// The roots this session's view holds beyond its workspace, read at each ask: the granted
+    /// folder is a workspace to the shadow's stages, and a revoked one stops counting at once.
+    pub(crate) fn granted_roots(&self) -> letibot_tools::view::GrantedRoots {
+        let backend = self.runtime.backend.clone();
+        letibot_tools::view::GrantedRoots::live(move || {
+            backend
+                .boundary()
+                .map(|b| b.view.granted())
+                .unwrap_or_default()
+        })
     }
 
     /// The rows the shadow owes this session for the reads it answered, appended now.

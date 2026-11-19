@@ -1,7 +1,8 @@
 //! The permission job as layer B: an `AuthorisationOracle` behind `ModelAdjudicator`, so a shadow
 //! answer has the gate's brief, its trail, its scope and its corpus row. It answers the stages the
 //! operator promoted (`[shadow] answers`) - reads past the shadow's denylist, writes inside the
-//! workspace, exec inside it - while the breaker is armed, and never the always-ask list.
+//! workspace AND inside the roots the operator granted writable, exec in either - while the breaker
+//! is armed, and never the always-ask list.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -29,8 +30,8 @@ use super::verdict::{Decision, Shown, Verdict};
 pub const QUESTION: &str = "question: did the operator ask for this?";
 
 /// The scope the stages in force earn. `reads` reaches outside the project at most; writes and
-/// exec never leave it, which [`stage_of`] enforces one call at a time because a scope carries one
-/// reach for every intent.
+/// exec reach the workspace and the roots the operator granted writable, which [`stage_of`] leaves
+/// to the class because a scope carries one reach for every intent.
 pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
     let mut intents: BTreeSet<Intent> = BTreeSet::new();
     let mut reach = EffectScope::HostProject;
@@ -59,8 +60,8 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
         reach,
         format!(
             "R316 stages {}: reads past the shadow's read denylist, writes and exec inside the \
-             workspace, promoted by `[shadow] answers` and measured by `letibot shadow replay \
-             --job permission`",
+             workspace and the operator's writable grants, promoted by `[shadow] answers` and \
+             measured by `letibot shadow replay --job permission`",
             stages
                 .iter()
                 .map(|s| s.as_str())
@@ -73,8 +74,14 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
 /// The stage a call belongs to, or why no stage answers it. A call is one stage's: the narrowest
 /// that covers every intent it carries, and a stage the operator promoted is checked by the caller.
 /// Tier, resolution, a secret flow and a path that leaves the reach are refusals here, so the
-/// person is asked without the model being consulted.
-pub fn stage_of(req: &AdjudicationRequest, home: &Path, workspace: &Path) -> Result<Stage, String> {
+/// person is asked without the model being consulted. `granted` is the writable half of the
+/// session's view, so a denylist check treats a granted folder as the workspace it was made into.
+pub fn stage_of(
+    req: &AdjudicationRequest,
+    home: &Path,
+    workspace: &Path,
+    granted: &[PathBuf],
+) -> Result<Stage, String> {
     match &req.tier {
         Tier::MayApprove => {}
         Tier::AlwaysAsk { rule, .. } => {
@@ -125,6 +132,7 @@ pub fn stage_of(req: &AdjudicationRequest, home: &Path, workspace: &Path) -> Res
         cwd: workspace.to_path_buf(),
         workspace: workspace.to_path_buf(),
         home: home.to_path_buf(),
+        granted: granted.to_vec(),
     };
     if stage != Stage::Reads {
         // The lexical screen a shadow allow meets anyway: privilege, a push, a write, a redirect
@@ -311,6 +319,9 @@ pub struct ShadowAdjudicator {
     stages: BTreeSet<Stage>,
     home: PathBuf,
     workspace: PathBuf,
+    /// The roots the session's view holds beyond the workspace, read at each ask: a revoked grant
+    /// must stop counting before the next call, so this is the boundary's live set and not a copy.
+    granted: letibot_tools::view::GrantedRoots,
     /// A grant the shadow gave is kept where `/shadow revoke` finds it: a daemon with a store.
     revocable: bool,
     /// The last call never reached the model, so its advice is not this call's.
@@ -326,6 +337,7 @@ impl ShadowAdjudicator {
         home: PathBuf,
         workspace: PathBuf,
         revocable: bool,
+        granted: letibot_tools::view::GrantedRoots,
     ) -> Self {
         let oracle = ShadowOracle {
             cell: cell.clone(),
@@ -347,6 +359,7 @@ impl ShadowAdjudicator {
             stages,
             home,
             workspace,
+            granted,
             revocable,
             skipped: AtomicBool::new(false),
             last: Mutex::new(None),
@@ -413,7 +426,7 @@ impl Adjudicator for ShadowAdjudicator {
                 "no store, so a grant the shadow gave could not be revoked".into(),
             );
         }
-        let stage = match stage_of(req, &self.home, &self.workspace) {
+        let stage = match stage_of(req, &self.home, &self.workspace, &self.granted.writable()) {
             Ok(s) => s,
             Err(why) => return self.escalate(req, format!("the shadow does not answer it: {why}")),
         };
