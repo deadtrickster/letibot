@@ -1748,19 +1748,19 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_say",
             &format!(
-                "Say something as `{me}`. `to` is PRIVATE: the dm, no room, and it wakes them. \
+                "Say something as `{me}`. `to` is PRIVATE: the dm, no room, and it wakes them; \
+                 it takes a seat's ID (`lab2x1/cc-…`, from `room_roster`) and never a name. \
                  `@name` is a public mention that wakes them here, inviting them if they cannot see \
-                 it. Answer a dm in the dm. `cc@<name>` is one bridge, `cc@<folder>` all bridges of \
-                 a folder. `thread` answers a seq and stays in its room. `refs`: a todo or queue \
-                 row. Over 4000 bytes is refused, never cut. A refusal is the room's etiquette, not \
-                 an error."
+                 it. Answer a dm in the dm. `thread` answers a seq and stays in its room. `refs`: a \
+                 todo or queue row. Over 4000 bytes is refused, never cut. A refusal is the \
+                 room's etiquette, not an error."
             ),
             json!({
                 "type": "object",
                 "properties": {
                     "room": { "type": "string", "description": "Empty is your own project's room (see `rooms`); `host` is the whole box." },
                     "text": { "type": "string" },
-                    "to": { "type": "string", "description": "One principal, PRIVATE: the dm, no room." },
+                    "to": { "type": "string", "description": "A seat's id (`lab2x1/cc-…`), PRIVATE: the dm, no room." },
                     "thread": { "type": "integer", "description": "The seq this answers." },
                     "refs": {
                         "type": "array",
@@ -1802,7 +1802,7 @@ pub fn tool_list() -> Vec<Value> {
                     "question": { "type": "string", "description": "What you want to know." },
                     "path": { "type": "string", "description": "Repo-relative: `crates/room/src/server.rs`." },
                     "topic": { "type": "string", "description": "A topic word, instead of a path." },
-                    "to": { "type": "string", "description": "A session, when you know which." },
+                    "to": { "type": "string", "description": "A seat's id (`lab2x1/cc-…`), when you know which." },
                     "room": { "type": "string", "description": "Empty is your own project's room; `host` is the whole box." }
                 },
                 "required": ["question"]
@@ -1810,8 +1810,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_dm",
-            "A private message to one session, `operator` or a handle: `room_say` with `to`. Answers a \
-             dm.",
+            "A private message to one seat, by its id (`lab2x1/cc-…`) or `operator`: `room_say` \
+             with `to`. Answers a dm.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1829,8 +1829,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_roster",
-            "Who is in a room: name, kind, whether connected, project and the tree's label. \
-             `seats`: the queue seats.",
+            "Who is in a room: `seat_id` (what a `to` takes), name, kind, whether connected, \
+             project and the tree's label. `seats`: the queue seats.",
             json!({
                 "type": "object",
                 "properties": { "room": { "type": "string", "description": "A room, or `seats`: the box's queue seats, in no room and reached by dm." } },

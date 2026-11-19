@@ -971,14 +971,15 @@ never a random suffix), and a name whose holder is gone is free. A rename is sai
 the seat is in. A session's default label is the slug of its title, which is also the handle it is
 addressed by; a bridge's is the handle `cc@<folder>:<name>` it speaks as.
 
-**What is still a name.** The id is minted, on the wire and in the roster, and what the coordinator
-holds a label by - but three things still key on the name a connection speaks as, and lead 70
-leaves them for the next pass: `to`/`dm to`/`room_ask` (a model names a seat by name, not yet by id,
-and a name in a `to` is not yet refused with the id it would have meant), a todo wait's
-`{"kind":"todo","seat":…}` and an ask's `by_me`/`of_me` (stored rows hold the handle they were
-given, so nothing stored was migrated), and the inbox cursor (`who.session`, so a bridge that
-reconnects under another *name* while keeping its id keeps its label and its roster row but not its
-cursor). The head draws a message's author through the roster's identity (`Presence.id`, the name it
+**What is still a name.** A `to`, a dm and an ask are ADDRESSES and take the seat's id: a word that is
+another seat's label (a session's handle, a title, a bridge's nick) is refused with the id it would
+have meant (`refused: name_is_label`, "`db-fuzz-fable` is a name; address `lab2x1/cc-897b5a90`"), and
+a label no seat holds is `unknown_addressee`. An id is resolved first, by the connection that says it
+or the map a bridge's id was greeted into, so `lab2x1/s-42` and `lab2x1/cc-<session>` reach their
+seats. A `@mention` in a sentence is REWRITTEN to the name it resolves to instead of refused - the
+line is the sender's. What a stored row still holds is the name a connection spoke as (`to`, an ask's
+`by_me`/`of_me`), so a send is resolved to one when it is written and a rename does not re-route it.
+The head draws a message's author through the roster's identity (`Presence.id`, the name it
 is addressed by) to the label the roster holds now, and appends the label the post recorded in its
 `nick` ref only where the two differ - `db-fuzz-fable (was cc@app)`. A message written before the
 room recorded a label, or by a seat no roster row holds, is drawn as the name it posted under.

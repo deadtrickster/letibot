@@ -389,10 +389,15 @@ impl App {
             if i > 0 {
                 out.push(Line::default());
             }
+            // The board is filed under the seat's ID; the operator reads the label the roster holds
+            // for that seat, and the id is said only where no roster row names it.
+            let who = match self.rooms.seat_label(&board.seat) {
+                Some(n) => clean_line(&n),
+                None => clean_line(&board.seat),
+            };
             out.push(pane::faint(format!(
-                "  {} — a Claude Code seat's board, {open} open{also} — the seat writes it, this \
-                 pane reads it{read}:",
-                clean_line(&board.seat)
+                "  {who} — a Claude Code seat's board, {open} open{also} — the seat writes it, this \
+                 pane reads it{read}:"
             )));
             if board.todos.is_empty() {
                 out.push(pane::faint("    none yet."));

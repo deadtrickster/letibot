@@ -1568,26 +1568,40 @@ const OPERATOR_PHRASES: [&str; 3] = ["the operator", "operator's", "operator\u{2
 /// What an `external` wait's words name that letibot can track itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Named {
-    Seat(String),
+    /// A seat on the roster: the label the words carry, and the id a `to` and a wait take. They are
+    /// two facts because a label is what a person writes and an id is what the room routes on.
+    Seat {
+        label: String,
+        id: String,
+    },
     Operator,
 }
 
-/// The first thing in `what` that is a roster handle or an operator phrase, by position, or
-/// `None` for a wait that is truly outside. Deterministic: whole-word matches only.
-fn external_names(what: &str, roster: &[String]) -> Option<Named> {
+/// The first thing in `what` that is a roster label or an operator phrase, by position, or `None`
+/// for a wait that is truly outside. Deterministic: whole-word matches only.
+fn external_names(what: &str, roster: &[(String, String)]) -> Option<Named> {
     let mut first: Option<(usize, Named)> = None;
     let mut keep = |at: usize, named: Named| {
         if first.as_ref().is_none_or(|(was, _)| at < *was) {
             first = Some((at, named));
         }
     };
-    for handle in roster {
+    for (label, id) in roster {
         // A two-letter name would match ordinary words.
-        if handle.chars().count() < 3 {
+        if label.chars().count() < 3 {
             continue;
         }
-        if let Some(at) = word_at(what, handle) {
-            keep(at, Named::Seat(handle.clone()));
+        if let Some(at) = word_at(what, label) {
+            keep(
+                at,
+                Named::Seat {
+                    label: label.clone(),
+                    id: match id.is_empty() {
+                        true => label.clone(),
+                        false => id.clone(),
+                    },
+                },
+            );
         }
     }
     let lower = what.to_lowercase();
@@ -2808,9 +2822,10 @@ pub trait AskLink: Send + Sync {
     /// written to be shown to the model as it stands.
     fn ask(&self, of: &str, room: Option<&str>, question: &str) -> Result<AskMade, String>;
 
-    /// The seat handles this session could ask, as the room's rosters name them - what an
-    /// `external` wait is matched against to steer it to an ask. Empty when unknown.
-    fn roster(&self) -> Vec<String> {
+    /// The seats this session could ask, as the room's rosters name them: the LABEL a model's words
+    /// carry, and the seat ID an ask takes. What an `external` wait is matched against is the label;
+    /// what it is asked by is the id. Empty when unknown.
+    fn roster(&self) -> Vec<(String, String)> {
         Vec::new()
     }
 }
@@ -3023,7 +3038,7 @@ impl Tool for TodoWriteTool {
                                                     (\"question\": …, \"options\": […], at \
                                                     least two), `external` (\"what\": …), \
                                                     `pid` (\"pid\": N) — or `todo` \
-                                                    (\"seat\": \"cc@…\", \"content\": …) for a \
+                                                    (\"seat\": \"lab2x1/cc-…\", \"content\": …) for a \
                                                     row on ANOTHER board. A row naming nothing \
                                                     is ready at once; a name matching no row, or \
                                                     two, blocks the row and the check says which. \
@@ -3362,7 +3377,7 @@ impl TodoWriteTool {
     /// An `external` wait as it is written: one that names a seat on the roster becomes an ask of
     /// it, one that names the operator becomes an operator question, and the rest stay external
     /// with their quiet window starting now. The note says which, for the result.
-    fn steer_external(&self, what: &str, roster: &[String]) -> (Wait, String) {
+    fn steer_external(&self, what: &str, roster: &[(String, String)]) -> (Wait, String) {
         let external = || {
             Wait::On(TodoNeed::External {
                 what: what.to_string(),
@@ -3370,21 +3385,23 @@ impl TodoWriteTool {
             })
         };
         match external_names(what, roster) {
-            Some(Named::Seat(handle)) => {
+            Some(Named::Seat { label, id }) => {
                 let Some(link) = &self.asks else {
                     return (
                         external(),
                         format!(
-                            "the `external` names `{handle}`, a room seat, but this session has no \
+                            "the `external` names `{label}`, a room seat, but this session has no \
                              room to ask it in, so it stays external"
                         ),
                     );
                 };
-                match link.ask(&handle, None, what) {
+                // The ask carries the ID: the room refuses a label with the id it means, so an ask
+                // of the name would come back as a refusal instead of a wait.
+                match link.ask(&id, None, what) {
                     Ok(made) => {
                         let mut note = format!(
-                            "the `external` names `{handle}`, a room seat letibot can track, so it \
-                             became an `ask` of `{handle}` (ask #{} in `{}`), settled when they \
+                            "the `external` names `{label}`, a room seat letibot can track, so it \
+                             became an `ask` of `{id}` (ask #{} in `{}`), settled when they \
                              answer",
                             made.id, made.room
                         );
@@ -3394,7 +3411,7 @@ impl TodoWriteTool {
                         (
                             Wait::On(TodoNeed::Ask {
                                 ask: made.id,
-                                of: handle,
+                                of: id,
                                 room: made.room,
                                 question: what.to_string(),
                             }),
@@ -3404,7 +3421,7 @@ impl TodoWriteTool {
                     Err(why) => (
                         external(),
                         format!(
-                            "the `external` names `{handle}`, but the room would not take an ask \
+                            "the `external` names `{label}`, but the room would not take an ask \
                              of it ({why}), so it stays external"
                         ),
                     ),
@@ -3466,7 +3483,7 @@ impl TodoWriteTool {
         let mut room_said: Vec<String> = Vec::new();
         // What each `external` became, said back so the model knows which wait its row carries.
         let mut steered: Vec<String> = Vec::new();
-        let mut roster: Option<Vec<String>> = None;
+        let mut roster: Option<Vec<(String, String)>> = None;
         for (i, entry) in list.iter().enumerate() {
             let n = i + 1;
             let Some(obj) = entry.as_object() else {
@@ -4285,11 +4302,11 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                  `job` — a background job, by the handle `job_list` prints — `monitor` — a monitor \
                  you armed, by its name, until it fires or ends — `operator` — a \
                  question for the operator, with at least two `options` — `todo` — a row on ANOTHER \
-                 board, a seat's or another session's, by that board's name and the row's words — \
+                 board, a seat's or another session's, by that board's id and the row's words — \
                  and `external` — something outside this machine, by your own words for it. Send a \
                  row's name as a plain string, or the tagged form {\"kind\": \"row\", \"content\": \
                  \"…\"}, {\"kind\": \"child\", \"id\": \"s-…\"}, {\"kind\": \"job\", \"handle\": \
-                 \"j…\"} or {\"kind\": \"todo\", \"seat\": \"cc@…\", \"content\": \"…\"}. A kind \
+                 \"j…\"} or {\"kind\": \"todo\", \"seat\": \"lab2x1/cc-…\", \"content\": \"…\"}. A kind \
                  nobody can evaluate is refused rather than dropped: a need that cannot be answered \
                  must never read as met.",
             )),
@@ -4345,11 +4362,11 @@ fn pid_need(pid: u64, start: Option<u64>, where_: &str) -> Result<TodoNeed, (Str
 /// What a `todo` wait looks like, for the sentence a refusal ends with. The same shape in `needs`
 /// and in `wait_on`, because a wait on another board is no side effect - it is an edge.
 const OTHER_BOARD_SHAPE: &str = "a `todo` wait is {\"kind\": \"todo\", \"seat\": \
-     \"cc@<folder>\", \"content\": \"<that row's exact words>\"} — or, through `wait_on`, \
-     {\"content\": \"<your row>\", \"todo\": {\"seat\": \"cc@<folder>\", \"content\": \
-     \"…\"}}. The seat is an external seat's handle (`cc@<folder>[:name]`, what its own `todos` \
-     call answers with) or another session of this project by its id or its name; a board of \
-     another project is refused, and `external` is the wait for what nothing here can watch.";
+     \"lab2x1/cc-<session>\", \"content\": \"<that row's exact words>\"} — or, through `wait_on`, \
+     {\"content\": \"<your row>\", \"todo\": {\"seat\": \"lab2x1/cc-…\", \"content\": \
+     \"…\"}}. The seat is an ID (`<host>/<local>`, what its own `todos` call answers with) or \
+     another session of this project by its id; a name is refused with the id it means. A board \
+     of another project is refused, and `external` is the wait for what nothing here can watch.";
 
 /// A `todo` edge, checked for shape alone: a seat named and a row named. Whether that board answers
 /// is the reader's question, asked before anything is written.
@@ -4358,8 +4375,8 @@ fn other_board(seat: &str, content: &str) -> Result<TodoNeed, String> {
     let content = content.trim();
     if seat.is_empty() {
         return Err(
-            "it names no `seat` — say WHOSE board the row is on: an external seat's handle \
-             (`cc@<folder>`) or another session of this project"
+            "it names no `seat` — say WHOSE board the row is on: a seat's ID (`lab2x1/cc-…`, \
+             what its own `todos` call answers with) or another session of this project by its id"
                 .into(),
         );
     }

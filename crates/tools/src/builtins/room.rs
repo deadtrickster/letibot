@@ -80,8 +80,9 @@ impl Tool for RoomTool {
                  whom it names. Answer a dm in the dm. `ask` a `path`/`topic`; `answer`/`decline` \
                  settle it. `own` a scope; edits renew; `hand` waits for `accept`. `status` is your \
                  line; it expires. `rooms` lists them; `archive`/`unarchive` puts one away or \
-                 back. `roster` lists who is in a room and their handles. `cc@...` is a seat. `host` takes `@name` or `kind: announce`; a \
-                 refusal is etiquette. {beat} {STANDING_RULE}"
+                 back. `roster` lists who is in a room, by the id a send carries. \
+                 `host` takes `@name` or `kind: announce`; a refusal is etiquette. {beat} \
+                 {STANDING_RULE}"
             ),
             json!({
                 "type": "object",
@@ -135,7 +136,7 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: a handle or title (`roster`). `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
+                        "description": "`say`/`ask`: the seat's id (`lab2x1/cc-…`); a name is refused with its id. `rule`/`hand`: the holder."
                     },
                     "path": {
                         "type": "string",
@@ -171,7 +172,7 @@ impl Tool for RoomTool {
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "`say`: a sha or row id backing a claim, else `unbacked`."
+                        "description": "`say`: a sha backing a claim, else `unbacked`."
                     },
                     "check": {
                         "type": "boolean",
@@ -179,11 +180,11 @@ impl Tool for RoomTool {
                     },
                     "session": {
                         "type": "string",
-                        "description": "Id or name."
+                        "description": "A session's id (`s-…`)."
                     },
                     "scope": {
                         "type": "string",
-                        "description": "A path glob or a topic."
+                        "description": "A glob or a topic."
                     },
                     "ttl": {
                         "type": "integer",
@@ -916,7 +917,7 @@ mod tests {
         assert!(verbs.contains("\"roster\""), "{verbs}");
         assert!(
             s.description
-                .contains("`roster` lists who is in a room and their handles"),
+                .contains("`roster` lists who is in a room, by the id a send carries"),
             "{}",
             s.description
         );

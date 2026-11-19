@@ -117,7 +117,10 @@ impl Seated {
 }
 
 fn coordinator(s: &Scratch) -> Server {
-    Server::serve(&s.0.join("room.sock"), Room::new()).expect("a coordinator")
+    let server = Server::serve(&s.0.join("room.sock"), Room::new()).expect("a coordinator");
+    // The box's half of every id, pinned: a refusal names the id a name meant.
+    server.with_seat_host("lab2x1");
+    server
 }
 
 fn stored(s: &Scratch) -> Server {
@@ -334,8 +337,8 @@ fn a_settle_says_so_to_the_asker_and_a_wrong_answerer_learns_the_asks_state() {
     let b = seat(&server, "s-b", A, Seat::Session);
     tell(&a, vec![top("s-a", "mac"), top("s-b", "rano")]);
 
-    let one = asked(a.ask("q1", "rano", "which port?"));
-    let two = asked(a.ask("q2", "rano", "which user?"));
+    let one = asked(a.ask("q1", "s-b", "which port?"));
+    let two = asked(a.ask("q2", "s-b", "which user?"));
     let state_of = |r: Response| refused(r).to_string();
     // The asker answering its own ask is told it is still open, and whose it is.
     let open = state_of(a.reply("r0", one.seq, "never mind"));
@@ -652,7 +655,7 @@ fn an_ask_of_a_session_that_is_not_connected_escalates_at_once() {
     let a = seat(&server, "s-a", A, Seat::Session);
     // B is in the tree (a daemon reported it) and has no connection now.
     tell(&a, vec![top("s-a", "arango"), top("s-b", "serenedb")]);
-    let ask = asked(a.ask("q1", "serenedb", "which port?"));
+    let ask = asked(a.ask("q1", "s-b", "which port?"));
     assert!(ask.open());
     assert!(
         ask.gone_since_ms.is_some(),

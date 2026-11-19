@@ -187,12 +187,12 @@ impl super::AskLink for FakeRoom {
         // The id is the room's, so the fake mints a stable one per target: a test can then settle
         // it by number, which is all the edge carries.
         let (id, note) = match of {
-            "serenedb" => (4211, None),
-            "arango" => (
+            "lab2x1/s-seren" => (4211, None),
+            "lab2x1/s-arango" => (
                 4212,
                 Some("`arango` is not connected now — the question waits for it".to_string()),
             ),
-            "cc@etcd-752" => (4213, None),
+            "lab2x1/cc-etcd752" => (4213, None),
             "this session" => return Err("you cannot wait on your own answer".to_string()),
             other => return Err(format!("`{other}` is not a top-level session on this host")),
         };
@@ -205,10 +205,17 @@ impl super::AskLink for FakeRoom {
         })
     }
 
-    fn roster(&self) -> Vec<String> {
-        ["serenedb", "arango", "cc@etcd-752", "gatekeeper@letibot"]
-            .map(str::to_string)
-            .to_vec()
+    /// The labels a model's words carry, and the ids an ask takes: two facts per seat, because the
+    /// room refuses a label with the id it means.
+    fn roster(&self) -> Vec<(String, String)> {
+        [
+            ("serenedb", "lab2x1/s-seren"),
+            ("arango", "lab2x1/s-arango"),
+            ("cc@etcd-752", "lab2x1/cc-etcd752"),
+            ("gatekeeper@letibot", "lab2x1/s-gk-letibot"),
+        ]
+        .map(|(label, id)| (label.to_string(), id.to_string()))
+        .to_vec()
     }
 }
 

@@ -120,7 +120,11 @@ fn said(r: Response) -> Message {
 }
 
 fn coordinator(s: &Scratch) -> Server {
-    Server::serve(&s.0.join("room.sock"), Room::new()).expect("a coordinator")
+    let server = Server::serve(&s.0.join("room.sock"), Room::new()).expect("a coordinator");
+    // The box's half of every id, pinned: a refusal names the id a name meant, and a test must not
+    // depend on the name of the machine it runs on.
+    server.with_seat_host("lab2x1");
+    server
 }
 
 #[test]
@@ -907,10 +911,10 @@ fn say_to(s: &Seated, id: &str, to: &str, text: &str) -> Response {
     })
 }
 
-/// A named session is spoken to, and spoken as, by its handle. The log keeps the id, so the id
-/// still addresses it, and a rename changes how old lines read.
+/// A session is ADDRESSED by its id and DRAWN by its handle: the log keeps the id, so a rename
+/// changes how old lines read, and a `to` written as the handle is refused with the id it means.
 #[test]
-fn a_named_session_is_addressed_and_authored_by_its_handle() {
+fn a_named_session_is_addressed_by_its_id_and_drawn_by_its_handle() {
     let dir = Scratch::new();
     let server = coordinator(&dir);
     let named = seat(&server, "s-1", A, Seat::Session);
@@ -920,24 +924,22 @@ fn a_named_session_is_addressed_and_authored_by_its_handle() {
         vec![top("s-1", "stroppy-conformity"), top("s-2", "")],
     );
 
-    // `to` and `@` by handle reach the session, and the line reads with the handle.
-    let m = said(say_to(
-        &plain,
-        "1",
-        "@stroppy-conformity",
-        "hi @stroppy-conformity",
-    ));
+    // The handle is a label, and a label is not an address: the room says which id it meant.
+    match refused(say_to(&plain, "1", "@stroppy-conformity", "hi")) {
+        Refused::NameIsLabel { name, id } => {
+            assert_eq!(name, "stroppy-conformity");
+            assert_eq!(id, "lab2x1/s-1", "the seat the name would have meant");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // The id addresses it, and the line reads with the handle.
+    let m = said(say_to(&plain, "2", "s-1", "hi @stroppy-conformity"));
     assert_eq!(m.author, "s-2");
     assert_eq!(m.to.as_deref(), Some("stroppy-conformity"));
     let (heard, names_you) = named.next();
-    assert!(names_you, "the handle resolved to the session: {heard:?}");
+    assert!(names_you, "the id resolved to the session: {heard:?}");
     assert_eq!(heard.text, "hi @stroppy-conformity");
-
-    // The id still works.
-    said(say_to(&plain, "2", "s-1", "by id"));
-    let (heard, names_you) = named.next();
-    assert!(names_you, "{heard:?}");
-    assert_eq!(heard.to.as_deref(), Some("stroppy-conformity"));
 
     // The named session speaks under its handle.
     said(named.say("3", "", "reply"));
@@ -979,7 +981,8 @@ fn a_named_session_is_addressed_and_authored_by_its_handle() {
         refused(say_to(&plain, "4", "stroppy-conformity", "gone")),
         Refused::UnknownAddressee { .. }
     ));
-    said(say_to(&plain, "5", "renamed", "new name"));
+    // A rename does not change what addresses it: the id, and only the id.
+    said(say_to(&plain, "5", "s-1", "new name"));
 }
 
 /// A member as a daemon reports it: a handle (empty when its slug was taken) and the title.
@@ -1040,10 +1043,10 @@ fn roster_lists_sessions_and_externals_with_handles_kinds_and_titles() {
     );
 }
 
-/// `to` takes a session's title as well as its handle when exactly one member answers to it. Two
-/// that share a title are refused with both, and a name nobody answers to points at `roster`.
+/// A title and a handle are NAMES: a `to` writing either is refused with the id the name would have
+/// meant, one that fits two members is refused with both, and one nobody has points at `roster`.
 #[test]
-fn a_title_addresses_its_session_and_an_ambiguous_or_unknown_one_is_refused_in_words() {
+fn a_title_or_handle_in_a_to_is_refused_with_the_id_it_means() {
     let dir = Scratch::new();
     let server = coordinator(&dir);
     let me = seat(&server, "s-me", A, Seat::Session);
@@ -1058,29 +1061,47 @@ fn a_title_addresses_its_session_and_an_ambiguous_or_unknown_one_is_refused_in_w
         ],
     );
 
-    // The title, as a person writes it, reaches the one session it names.
-    let m = said(say_to(&me, "1", "Rano Session", "hi"));
+    // The title, as a person writes it, is a name - and a name is not an address.
+    match refused(say_to(&me, "1", "Rano Session", "hi")) {
+        Refused::NameIsLabel { name, id } => {
+            assert_eq!(name, "Rano Session");
+            assert_eq!(id, "lab2x1/s-rano");
+        }
+        other => panic!("{other:?}"),
+    }
+    // And the id it means reaches the one session it names.
+    let m = said(say_to(&me, "1b", "s-rano", "hi"));
     assert_eq!(m.to.as_deref(), Some("rano-session"));
     let (heard, names_you) = rano.next();
-    assert!(names_you, "the title resolved to `s-rano`: {heard:?}");
+    assert!(names_you, "the id resolved to `s-rano`: {heard:?}");
 
-    // Two members fold to one title: refused, naming both with their handles and ids.
+    // Two members fold to one name: refused as ambiguous, naming both with their handles and ids.
     let why = refused(say_to(&me, "2", "Fuzz Run", "which?"));
     match &why {
         Refused::Ambiguous {
             candidates, shown, ..
         } => {
-            assert_eq!(candidates, &vec!["s-f1".to_string(), "s-f2".to_string()]);
+            assert_eq!(
+                candidates,
+                &vec!["lab2x1/s-f1".to_string(), "lab2x1/s-f2".to_string()]
+            );
             assert_eq!(shown.len(), 2, "{shown:?}");
         }
         other => panic!("{other:?}"),
     }
     let sentence = why.to_string();
-    for want in ["`fuzz-run` (s-f1", "s-f2", "`roster` lists everyone"] {
+    for want in [
+        "`fuzz-run` (lab2x1/s-f1",
+        "lab2x1/s-f2",
+        "`roster` lists everyone",
+    ] {
         assert!(sentence.contains(want), "`{want}` missing: {sentence}");
     }
-    // The handle itself is exact and is not ambiguous.
-    said(say_to(&me, "3", "fuzz-run", "you"));
+    // One member's handle is a name too, so it is refused with its id rather than resolved.
+    match refused(say_to(&me, "3", "fuzz-run", "you")) {
+        Refused::NameIsLabel { id, .. } => assert_eq!(id, "lab2x1/s-f1"),
+        other => panic!("{other:?}"),
+    }
 
     // Nobody: the closest names, the roster hint and the per-host sentence.
     let why = refused(say_to(&me, "4", "ranno", "typo"));
@@ -1105,10 +1126,10 @@ fn a_title_addresses_its_session_and_an_ambiguous_or_unknown_one_is_refused_in_w
     }
 }
 
-/// The same handle in two projects: the sender's own project wins, and a sender in neither is
-/// refused with the ids.
+/// The same handle in two projects is one name for two seats, so it addresses neither: the room
+/// refuses it with both ids, whichever project the sender is in.
 #[test]
-fn a_handle_in_two_projects_is_the_senders_own_or_ambiguous() {
+fn a_handle_in_two_projects_is_ambiguous_and_addressed_by_id() {
     let dir = Scratch::new();
     let server = coordinator(&dir);
     let a1 = seat(&server, "s-a1", A, Seat::Session);
@@ -1117,17 +1138,22 @@ fn a_handle_in_two_projects_is_the_senders_own_or_ambiguous() {
     tell(&a1, vec![top("s-a1", "same")]);
     tell(&b1, vec![top("s-b1", "same")]);
 
+    let wanted = vec!["lab2x1/s-a1".to_string(), "lab2x1/s-b1".to_string()];
     let a2 = seat(&server, "s-a2", A, Seat::Session);
-    said(say_to(&a2, "1", "same", "own project"));
-    let (_, names_you) = a1.next();
-    assert!(names_you, "the sender's own project holds the handle");
-    b1.silent();
-    match refused(say_to(&op, "2", "same", "which")) {
-        Refused::Ambiguous { candidates, .. } => {
-            assert_eq!(candidates, vec!["s-a1".to_string(), "s-b1".to_string()])
-        }
+    match refused(say_to(&a2, "1", "same", "own project?")) {
+        Refused::Ambiguous { candidates, .. } => assert_eq!(candidates, wanted),
         other => panic!("{other:?}"),
     }
+    match refused(say_to(&op, "2", "same", "which")) {
+        Refused::Ambiguous { candidates, .. } => assert_eq!(candidates, wanted),
+        other => panic!("{other:?}"),
+    }
+    b1.silent();
+    // By id, each of them is reached, and only the one named hears it.
+    said(say_to(&a2, "3", "s-a1", "own project, by id"));
+    let (_, names_you) = a1.next();
+    assert!(names_you, "the id names it");
+    b1.silent();
 }
 
 /// A session invited into another project's room hears it, speaks in it and reads it, keeps the

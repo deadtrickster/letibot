@@ -301,6 +301,13 @@ pub enum Refused {
         name: String,
         sessions: Vec<String>,
     },
+    /// A seat's LABEL where an address belongs: `id` is the seat the name would have meant, and what
+    /// the sender must write instead. A label is drawn and can change; a send, a dm and an ask are
+    /// keyed on the id, so routing on a name is what a rename breaks.
+    NameIsLabel {
+        name: String,
+        id: String,
+    },
     UnknownThread {
         thread: u64,
     },
@@ -639,6 +646,11 @@ impl fmt::Display for Refused {
                  project's handles, so nothing was sent. It is {}'s: name that session id to reach \
                  it",
                 sessions.join(", ")
+            ),
+            Refused::NameIsLabel { name, id } => write!(
+                f,
+                "`{name}` is a name; address `{id}` - a label is what the room draws, and a seat's \
+                 id is what a send, a dm and an ask are keyed on"
             ),
             Refused::UnknownThread { thread } => write!(
                 f,

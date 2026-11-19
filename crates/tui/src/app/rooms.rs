@@ -127,6 +127,10 @@ pub(crate) struct Member {
     /// The session's id, whatever `name` shows.
     #[serde(default)]
     pub id: String,
+    /// The seat's stable id (`lab2x1/cc-…`), which is what a board or a wait is filed under: what a
+    /// view is given where it has an id and needs the label a person reads.
+    #[serde(default)]
+    pub seat_id: String,
     /// A session's derived presence, already worded by the coordinator.
     #[serde(default)]
     pub seat: Option<SeatRow>,
@@ -355,6 +359,16 @@ impl RoomsView {
     pub(crate) fn roster_label(&self, handle: &str) -> Option<String> {
         self.roster.values().flatten().find_map(|m| {
             (!m.id.is_empty() && m.id == handle && !m.name.is_empty() && m.name != m.id)
+                .then(|| m.name.clone())
+        })
+    }
+
+    /// The label a SEAT ID is drawn by, when a roster row carries that seat: a board, a wait and a
+    /// cursor are filed under the id, and the operator reads names. `None` for an id no roster row
+    /// names - a seat that never joined a room, and a roster from a coordinator that sends no ids.
+    pub(crate) fn seat_label(&self, seat: &str) -> Option<String> {
+        self.roster.values().flatten().find_map(|m| {
+            (m.id != seat && !m.seat_id.is_empty() && m.seat_id == seat && !m.name.is_empty())
                 .then(|| m.name.clone())
         })
     }

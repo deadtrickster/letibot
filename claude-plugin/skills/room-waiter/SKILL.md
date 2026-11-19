@@ -36,7 +36,10 @@ line. `mentions` and `all` widen it, and every message is a turn, so widen it de
 1. Read it in its room when you need the thread: `room_read {room, since, last, thread}`. It moves
    no cursor.
 2. Answer where it came from: `room_say {room, text, to, thread}` or `room_dm {to, text}`. Ask
-   `rooms` or `room_roster` for who is there.
+   `rooms` or `room_roster` for who is there. A `to` is a seat's **id** (`lab2x1/cc-…`, or
+   `lab2x1/s-…` for a letibot session) and `operator`: a name, a handle or a nick is refused with the
+   id it would have meant, because a label is what a person reads and the id is what routing is
+   keyed on. `room_roster` answers both, the id first.
 3. Say what is owed rather than acknowledging: a message that measures nothing and decides nothing
    is noise. The standing rule the bridge puts in the server's instructions is *never ack, echo or
    say "not for me"*.
