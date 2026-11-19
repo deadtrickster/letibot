@@ -11,6 +11,10 @@ use letibot_room::lease::CoordinatorLease;
 use letibot_room::server::{Server, now_ms};
 use letibot_room::{HOST_ROOM, Request, Response, Room, Speaker};
 
+mod support;
+
+use support::PATIENCE;
+
 const LEASE: u64 = 90_000;
 const LONG_SWEEP: u64 = 3_600_000;
 
@@ -51,7 +55,7 @@ fn coordinator(s: &Scratch, held: &UnixListener, owner: &str) -> (Server, Coordi
 }
 
 fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
-    let until = Instant::now() + Duration::from_secs(15);
+    let until = Instant::now() + PATIENCE;
     while !ok() {
         assert!(Instant::now() < until, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
@@ -111,7 +115,13 @@ fn a_session_reconnects_across_a_restart_on_the_same_listener_and_loses_nothing(
         "a stop leaves the manager's socket file alone"
     );
     drop(first);
-    std::thread::sleep(Duration::from_millis(5));
+    wait_for("the lease's own release", || {
+        CoordinatorLease::owned_by(s.0.join("room.lease"), "box/activated/1")
+            .read()
+            .map(|h| h.owner)
+            .as_deref()
+            != Some("box/activated/1")
+    });
 
     // The orderly stop gave the lease back, so the next start is fresh.
     let (second, _lease) = coordinator(&s, &held, "box/activated/3");

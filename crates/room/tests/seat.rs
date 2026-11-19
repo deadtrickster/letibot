@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::seat::{Call, SeatFacts, SeatState, WorkingOn};
@@ -11,6 +10,10 @@ use letibot_room::server::Server;
 use letibot_room::{
     Event, Group, Member, OPERATOR, Presence, Request, Response, Room, Seat, Speaker, room_name,
 };
+
+mod support;
+
+use support::wait_until;
 
 const A: &str = "aaaaaaaaaaaa";
 
@@ -72,17 +75,6 @@ fn row(c: &Client, id: &str) -> Presence {
         .into_iter()
         .find(|p| p.id == id)
         .unwrap_or_else(|| panic!("`{id}` is in the roster"))
-}
-
-fn until(what: &str, mut cond: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if cond() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("timed out waiting for {what}");
 }
 
 #[test]
@@ -168,7 +160,7 @@ fn the_roster_derives_each_seats_state_from_its_facts_and_the_room() {
 
     // The connection closing is the stop, whatever the last facts said.
     drop(b);
-    until("s-b is stopped", || {
+    wait_until("s-b is stopped", || {
         matches!(
             row(&op, "s-b").seat.unwrap().state,
             SeatState::Stopped { since_ms: Some(_) }

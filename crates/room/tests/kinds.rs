@@ -491,11 +491,10 @@ fn the_budget_refuses_past_its_number_and_says_when_the_next_post_is_allowed() {
     // The refusal is counted, and the room is that many posts the shorter for it.
     assert_eq!(counted(&a.signals(), "budget_refused"), 1);
 
-    // A person is not rationed, and neither is the room's own second sender.
+    // A person is not rationed, and neither is the room's own second sender. Both calls are answered
+    // before they return, so nothing of theirs can land on `s-a`'s count after this line.
     said(op.say("o1", SayKind::Post, "the operator is not rationed", None));
     said(seat(&server, "s-b", Seat::Session).say("b1", SayKind::Post, "another sender", None));
-    // One token comes back with the clock: the refill is the module's, so wait for less than it.
-    std::thread::sleep(Duration::from_millis(30));
     assert_eq!(
         counted(&a.signals(), "budget_refused"),
         1,

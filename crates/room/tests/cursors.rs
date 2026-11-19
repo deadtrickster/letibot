@@ -5,13 +5,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{
     Attention, Event, Message, Request, Response, Room, Seat, Speaker, project_room,
 };
+
+mod support;
+
+use support::wait_until;
 
 /// The project both seats are in: the host room refuses a line that names nobody, and this test is
 /// about the cursor rather than about etiquette.
@@ -107,17 +110,6 @@ impl Seated {
     }
 }
 
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
-        if done() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("{what} never happened");
-}
-
 /// The lead's own case: a bridge whose handle changed (`cc@app`, then `cc@app-abc` after a twin)
 /// is one seat, and what it read is still read.
 #[test]
@@ -142,7 +134,7 @@ fn a_seat_that_reconnects_under_another_name_keeps_its_cursor_and_its_unread() {
     drop(first);
     // The room refuses a second connection of one id under another name, so the old connection's
     // close has to be read before the seat can come back as its new self.
-    until("the first connection to close", || {
+    wait_until("the first connection to close", || {
         server
             .roster_rows(&project_room(A))
             .iter()
@@ -203,7 +195,7 @@ fn an_ask_survives_the_answerers_rename_and_is_still_answerable() {
         other => panic!("{other:?}"),
     }
     drop(answerer);
-    until("the answerer to close", || {
+    wait_until("the answerer to close", || {
         server
             .roster_rows(&project_room(A))
             .iter()

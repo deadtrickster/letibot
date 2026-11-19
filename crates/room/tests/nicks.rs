@@ -5,7 +5,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
@@ -13,6 +12,10 @@ use letibot_room::{
     Attention, Event, HOST_ROOM, Message, NICK, OPERATOR, Refused, Request, Response, Room, Seat,
     Speaker, project_room,
 };
+
+mod support;
+
+use support::wait_until;
 
 const A: &str = "aaaaaaaaaaaa";
 
@@ -108,18 +111,6 @@ fn roster(server: &Server, room: &str) -> Vec<String> {
         .into_iter()
         .map(|r| format!("{} [{}]", r.name, r.seat_id))
         .collect()
-}
-
-/// Waiting for a close the coordinator has not read yet: the read loop notices, and no tick makes it.
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
-        if done() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("{what} never happened");
 }
 
 /// The whole point of an id: a seat is the id, and the label it is drawn by is not the identity.
@@ -333,7 +324,7 @@ fn the_bare_name_is_free_once_its_holder_is_gone() {
         Response::Nicked { .. }
     ));
     drop(first);
-    until("the first seat to leave", || {
+    wait_until("the first seat to leave", || {
         server.roster_rows(HOST_ROOM).iter().all(|r| !r.connected)
     });
     let next = seated(

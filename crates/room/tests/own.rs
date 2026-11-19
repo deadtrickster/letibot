@@ -13,6 +13,10 @@ use letibot_room::{
     project_room, room_name,
 };
 
+mod support;
+
+use support::wait_until;
+
 const A: &str = "aaaaaaaaaaaa";
 
 fn scratch(tag: &str) -> std::path::PathBuf {
@@ -212,10 +216,10 @@ fn edits_in_scope_renew_and_a_stopped_owner_is_flagged_to_the_operator() {
     assert_eq!(owns, ["crates/room/**"]);
 
     drop(a);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while server.connections() > 1 && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // The room notices the close on its own read loop, and the tick below is what flags the owner.
+    wait_until("the room to forget the closed connection", || {
+        server.connections() == 1
+    });
     server.tick(letibot_room::server::now_ms());
     server.tick(letibot_room::server::now_ms() + 10);
     let m = heard(&op_heard, "stopped and still owns `crates/room/**`");

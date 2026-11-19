@@ -12,6 +12,10 @@ use letibot_room::{
     Event, Group, Member, Refused, Request, Response, Room, Seat, Speaker, room_name,
 };
 
+mod support;
+
+use support::wait_until;
+
 const A: &str = "aaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbb";
 
@@ -393,9 +397,12 @@ fn a_dm_to_a_name_reaches_every_bridge_of_it_and_one_ack_hides_nothing() {
     second.call(serde_json::json!({"type": "ack", "seq": dm.seq}));
     assert!(second.inbox().is_empty());
 
-    // And a name the first holds no more still reaches the one left.
+    // And a name the first holds no more still reaches the one left. The room has to have read the
+    // close first: three connections in, two after it.
     drop(first);
-    std::thread::sleep(Duration::from_millis(200));
+    wait_until("the room to forget the closed bridge", || {
+        server.connections() == 2
+    });
     let again = said(me.dm("2", "cc@letibot", "still there?"));
     let pushed = second
         .chat

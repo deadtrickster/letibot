@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
@@ -13,6 +13,10 @@ use letibot_room::{
     AskState, AskView, Event, Group, HOST_ROOM, Member, OPERATOR, Refused, Request, Response, Room,
     Seat, Speaker, room_name,
 };
+
+mod support;
+
+use support::wait_until;
 
 const A: &str = "aaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbb";
@@ -174,19 +178,7 @@ fn tell(s: &Seated, rows: Vec<Member>) {
     });
 }
 
-/// Wait for a fact about the room, so a close on the peer's side is not raced.
-fn until(what: &str, mut cond: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if cond() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("timed out waiting for {what}");
-}
-
-/// A question is a chat message addressed to the target, and its `seq` is the ask's id. The answer
+/// A question is chat message addressed to the target, and its `seq` is the ask's id. The answer
 /// is a thread reply in the same room, and it is the settle.
 #[test]
 fn a_question_is_a_message_and_its_answer_settles_the_ask() {
@@ -277,7 +269,7 @@ fn a_target_back_inside_the_grace_is_still_open_and_never_escalated() {
     let ask = asked(a.ask("q1", "s-b", "which port?"));
 
     drop(b);
-    until("`s-b` to be gone", || server.connections() == 1);
+    wait_until("`s-b` to be gone", || server.connections() == 1);
     server.tick(server.started_ms());
     let (by_me, _) = a.asks();
     assert!(by_me[0].open(), "a closed connection settles nothing");
@@ -308,7 +300,7 @@ fn a_target_gone_past_the_grace_escalates_and_a_reconnect_clears_it() {
     assert!(!ask.escalated, "B is connected, so nothing is owed");
 
     drop(b);
-    until("`s-b` to be gone", || server.connections() == 1);
+    wait_until("`s-b` to be gone", || server.connections() == 1);
     server.tick(server.started_ms());
     let (by_me, _) = a.asks();
     assert!(by_me[0].open(), "timeouts only escalate, they never settle");
@@ -475,7 +467,7 @@ fn an_ask_survives_a_coordinator_restart_over_its_store() {
     drop(a);
     drop(b);
     first.stop();
-    until("the first coordinator to end", || first.connections() == 0);
+    wait_until("the first coordinator to end", || first.connections() == 0);
 
     let second = stored(&dir);
     let a = seat(&second, "s-a", A, Seat::Session);

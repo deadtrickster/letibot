@@ -6,11 +6,14 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{Event, Request, Response, Room, Seat, SeatFacts, Speaker};
+
+mod support;
+
+use support::wait_until;
 
 struct Scratch(PathBuf);
 
@@ -72,17 +75,6 @@ fn seated(server: &Server, name: &str, id: &str) -> Result<Client, String> {
     .map_err(|e| e.0)
 }
 
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if done() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("never became true: {what}");
-}
-
 #[test]
 fn a_waiters_connection_and_its_bridges_are_one_seat() {
     let dir = Scratch::new();
@@ -127,7 +119,7 @@ fn a_seat_that_reconnects_takes_its_own_name_back_from_the_room() {
     let again = seated(&server, "cc@letibot", id)
         .unwrap_or_else(|e| panic!("a seat could not reconnect on its own name: {e}"));
     // The stale one is ended rather than left to hold the name, and the new one answers.
-    until("the stale connection is let go", || {
+    wait_until("the stale connection is let go", || {
         server.connections() == 1
     });
     assert!(matches!(

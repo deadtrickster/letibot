@@ -5,11 +5,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{Event, Refused, Request, Response, Room, Speaker};
+
+mod support;
+
+use support::{PATIENCE, wait_until};
 
 /// A directory of this test's own, removed when the test ends.
 struct Scratch(PathBuf);
@@ -66,18 +69,6 @@ fn post(c: &Client, id: &str, tag: &str, body: &str) -> u64 {
     }
 }
 
-/// Wait until `f` says so - for a fact that arrives on a thread rather than as a frame.
-fn until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("waited five seconds for {what}");
-}
-
 /// One read is not membership, and a standing bell is: a session that only READ the queue gets nothing
 /// more and the room knows it could not reach it, a session whose connection stands is rung for the next
 /// event, and the one that was away is told what it missed.
@@ -102,12 +93,12 @@ fn a_read_is_not_membership_and_a_gap_is_counted() {
         "the connection heard its own post"
     );
     drop(reader);
-    until("the room to notice the reader's close", || {
+    wait_until("the room to notice the reader's close", || {
         server.connections() == 0
     });
     // And it hears nothing more: a read bought no subscription, so the claim below cannot be delivered
     // to it - which is the fact the third arm's count is built on.
-    until("the reader's channel to go with its socket", || {
+    wait_until("the reader's channel to go with its socket", || {
         matches!(reader_bells.try_recv(), Err(TryRecvError::Disconnected))
     });
 
@@ -181,7 +172,7 @@ fn a_gap_is_counted_per_event_and_taken_once() {
     let (first, _bells) = client(&server, "s-away");
     let item = post(&first, "p1", "ram", "8 GB for the suite");
     drop(first);
-    until("the room to notice the close", || server.connections() == 0);
+    wait_until("the room to notice the close", || server.connections() == 0);
 
     // Two events about that item, from a session that stays: a claim, and then giving it back. `s-away`
     // is the poster of #1, so both are addressed to it and it has no socket. A `beat` produces no event at
@@ -207,7 +198,7 @@ fn a_gap_is_counted_per_event_and_taken_once() {
     // The witness goes too, or `connections()` never reaches zero and the waits below are about a socket
     // this test forgot it was holding.
     drop(other);
-    until("the room to notice the witness's close", || {
+    wait_until("the room to notice the witness's close", || {
         server.connections() == 0
     });
 
@@ -221,7 +212,7 @@ fn a_gap_is_counted_per_event_and_taken_once() {
     drop(back);
     // And nothing is left over for the NEXT connection, which is the difference between a count of a gap
     // and a running total of everything the session ever missed.
-    until("the room to notice the close", || server.connections() == 0);
+    wait_until("the room to notice the close", || server.connections() == 0);
     let (again, _bells) = client(&server, "s-away");
     assert_eq!(
         again.welcome().missed,
@@ -298,16 +289,10 @@ fn a_childs_completion_is_not_a_firing_and_a_message_to_it_is() {
 
 /// A receiver's next event, with the test's patience in the failure rather than a bare panic.
 fn recv(rx: &Receiver<Event>, what: &str) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match rx.try_recv() {
-            Ok(e) => return e,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(TryRecvError::Empty) => panic!("nothing arrived about {what}"),
-            Err(TryRecvError::Disconnected) => panic!("the client went away waiting for {what}"),
-        }
+    match rx.recv_timeout(PATIENCE) {
+        Ok(e) => e,
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("nothing arrived about {what}"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the client went away waiting for {what}"),
     }
 }
 
