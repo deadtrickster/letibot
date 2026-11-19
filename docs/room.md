@@ -401,6 +401,10 @@ sure one is serving and says what it is, `letibot --room --stop` stops it, and i
 `PATH`), so its sessions are in the rooms too. A failed start is said on stderr and the daemon starts
 anyway: a session with no room works, and its `room` tool refuses by name.
 
+A coordinator on one box can link to the coordinators of other boxes on the same LAN, on one shared
+cookie file: `docs/peering.md`. A box with no `~/.config/letibot/cookie` does not peer and is exactly
+the coordinator described here.
+
 With socket activation the operator never starts it by hand. Install it once:
 
 ```sh
