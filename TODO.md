@@ -264,6 +264,7 @@ Older backlog:
 | R381 | Heads and rano: the box pane, flow rows, a usage age | Parked | design: `docs/design/box-daemon-and-orchestration.md` section 8; after R375, R373 |
 | R382 | The model picker hides which providers have headroom | Code work | built (c48ad2861); left: no `balance $X`, a door's refusal or limit is forgotten at restart |
 | R383 | A VCS command drew as nine hand edits | Code work | built (2e2734609); left: `jj` global flags with a value hide the verb, a background job gets no git line |
+| R384 | A dm to a peer in another project goes through only with the operator's consent | Design work | open: rules from the operator, for the LAN-wide rooms work; see the section |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3064,6 +3065,24 @@ The row is built at read time: a session's harness installs a `LiveRowsSource` (
 Opening the picker polls the doors nobody watches. Protocol 80 adds `ClientFrame::PollUsage` and the `usage_poll_v1` feature (`FEATURE_USAGE_POLL`, its `compat::SINCE` row, `wire_golden/v80`). `App::open_model_pick` queues it only when the daemon echoed the feature, so it is the picker's alone and not every `Settings` sender's. The server hands it to `Registry::poll_usage`; the harness's `UsagePollSource` polls, on a thread of its own, each keyed door with a usage endpoint through `usage_poll::poll_once`, which is debounced per door by the poll period and reuses a fresh reading, then `Registry::push_settings` sends the rows.
 
 Tests. `crates/tui/src/app/tests/model_card.rs`: `the_picker_draws_each_doors_reading_and_a_limited_one`, `a_billing_refusal_shows_no_balance`, `a_provider_with_no_reading_shows_nothing`, `a_stale_reading_shows_its_age`. `crates/harnessd/src/harness/door_limits.rs`: the words for windows, age, limits, spent windows and refusals, and no row when nothing is known. `crates/sessionlog/src/registry/tests.rs`: `live_rows_are_built_at_each_read`. `crates/provider/src/usage_poll/tests.rs`: `a_door_reading_is_listed_and_readable_inside_a_tell`, `a_pickers_poll_is_debounced_per_door`. `crates/harnessd/tests/picker_usage_poll.rs`: `opening_the_picker_polls_a_door_no_session_has_watched` (an isolated HOME and XDG, every preset key variable and `LETIBOT_*` door removed, a `providers.toml` fixture pointing `kimi-code` at a loopback mock; the reading reaches the row and a second open sends nothing). `model_card.rs`: `the_picker_asks_for_a_poll_only_from_a_daemon_that_echoed_it`.
+
+## R384 - A dm to a peer in another project goes through only with the operator's consent
+
+**Status:** open, 2026-11-19. The rules are the operator's; the design belongs with the LAN-wide rooms work (lab2x1), which changes the same code.
+
+**What happened.** A Claude Code seat (`cc@letibot`) on the Mac had to reach `fuzz-findings`, another project's session. `room_dm` to the handle was refused (`HandleInAnotherProject`, `crates/room/src/room.rs:612`), and the same dm by session id went through with no question. `room_ask` to it was refused (`AskNotASession`): a seat with no board cannot ask.
+
+**The rules (operator, 2026-11-19).**
+- Every seat joins `host` and its own project's room by default, and posts in both freely. Later roles may not join `host` by default, so nothing below may depend on `host` membership.
+- A dm between peers in the same project is allowed by default.
+- A dm to a peer outside the sender's project needs the operator's consent, for every kind of seat (a leticode session, a Claude Code seat, a future role): once, or for the session, the usual pair. Session consent is persistent for that sender and peer until the sender's session ends.
+- By handle or by session id alike: today a session id crosses projects unasked, which is the hole.
+
+**Where it sits.** In the coordinator, not in a chat room: every dm passes through it whatever rooms a peer joined, and it already knows each connected seat's project. A peer with no project counts as its own project, so its dm across asks too. With LAN-wide rooms the same rule has to hold for a peer on another box.
+
+**A shape that needs no new UI first.** The coordinator holds the dm and dms the operator: who wants to reach whom, and the first line. The operator answers in that thread with `once`, `session` or `no`. A card in the head can come on the same held state later.
+
+**Pointers.** `server.rs` `resolve_name` and `resolve_handle` (`Reach::Host`, `Miss::Elsewhere`); the dm handler at `Request::Dm`; the existing consent pattern for a cross-project prompt (`PromptNeedsOperator`, `because` citing the operator's message); the decision card's once/session ladder (`crates/tui/src/ui/cards/decision.rs`, `OptionKind::AllowOnce`).
 
 ## R383 - A VCS command drew as nine hand edits
 
