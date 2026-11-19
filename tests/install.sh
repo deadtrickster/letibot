@@ -233,6 +233,13 @@ if printf '%s' "$out" | grep -qF 'source: a CLOUD-ONLY build'; then
 else
   fail "plan: a checkout with no llama.cpp is a cloud source build" "$out"
 fi
+# And the dry run says when a local request cannot be built here, rather than describing one.
+out="$(plan "$T/src/install.sh" LETIBOT_LOCAL=1)"
+if printf '%s' "$out" | grep -qF 'would be REFUSED'; then
+  note "plan: LETIBOT_LOCAL with no llama.cpp says it would be refused"
+else
+  fail "plan: LETIBOT_LOCAL with no llama.cpp says it would be refused" "$out"
+fi
 
 # A local SOURCE build with no llama.cpp to build against is a refusal, not a quiet cloud build:
 # the person asked for local models, and a cloud daemon would answer nothing they want.
@@ -261,7 +268,7 @@ case "$url" in
     note "prebuilt: the default download is the cloud asset ($url)"
     ;;
   *) fail "prebuilt: the default download is the cloud asset" "$url" ;;
- esac
+esac
 : >"$T/url-local"
 EXTRA_ENV="LETIBOT_LOCAL=1" STUB_ARCHIVE="$T/arc/a.tar.gz" STUB_URL_LOG="$T/url-local" \
   install urllocal "$bare" >/dev/null 2>&1
@@ -269,7 +276,7 @@ url=$(sed -n 1p "$T/url-local")
 case "$url" in
   *"-local.tar.gz") note "prebuilt: LETIBOT_LOCAL downloads the -local asset ($url)" ;;
   *) fail "prebuilt: LETIBOT_LOCAL downloads the -local asset" "$url" ;;
- esac
+esac
 
 # --- a cloud install carries no llama, and clears what an older local one left ----------------
 # The same archive with the four libraries taken out: what the release publishes by default.
@@ -284,7 +291,7 @@ if prebuilt_reached "$out" "cloud archive"; then
   else
     fail "cloud archive: installs with no llama library at all" "$out"
   fi
-  if ls "$T/cloud/bin" | grep -q '^libllama'; then
+  if ls "$T/cloud/bin"/libllama* >/dev/null 2>&1; then
     fail "cloud archive: no libllama lands" "$(ls "$T/cloud/bin")"
   else
     note "cloud archive: no libllama lands"
@@ -298,7 +305,10 @@ for l in $LIBS; do : >"$T/stale/bin/$l"; done
 out="$(STUB_ARCHIVE="$T/arccloud/a.tar.gz" install stale "$bare")"
 st=$?
 if prebuilt_reached "$out" "stale libraries"; then
-  left=$(ls "$T/stale/bin" | grep -c '^lib' || true)
+  left=0
+  for f in "$T/stale/bin"/lib*; do
+    [ -e "$f" ] && left=$((left + 1))
+  done
   if [ "$st" -eq 0 ] && [ "$left" -eq 0 ] && printf '%s' "$out" | grep -q 'removed the llama libraries'; then
     note "cloud install: the llama libraries an older install left are removed, and said"
   else

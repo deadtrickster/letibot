@@ -623,7 +623,16 @@ plan_lines() {
     prebuilt) say "prebuilt: the cloud asset, $(asset_name "$(asset_triple)" "$plan"), no llama.cpp" ;;
     prebuilt-local) say "prebuilt: the LOCAL asset, $(asset_name "$(asset_triple)" "$plan"), llama.cpp included" ;;
     cloud) say "source: a CLOUD-ONLY build, no llama.cpp needed" ;;
-    local) say "source: a LOCAL build against LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB" ;;
+    local)
+      # A local SOURCE build with no llama.cpp is a plan that refuses, and the dry run says so
+      # rather than describing a build this run cannot make.
+      if [ -z "${LETIBOT_LLAMA_DIR:-}" ] || [ -z "${LETIBOT_LLAMA_LIB:-}" ]; then
+        say "source: a LOCAL build is requested, and it would be REFUSED: no llama.cpp named"
+        say "  (set both LETIBOT_LLAMA_DIR and LETIBOT_LLAMA_LIB, or drop LETIBOT_LOCAL)"
+      else
+        say "source: a LOCAL build against LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB"
+      fi
+      ;;
   esac
 }
 
