@@ -44,10 +44,11 @@ Shadow jobs: a second model, on any provider, judging a session off the critical
 | `enabled` | list of turn_end \| during \| permission | [] (no job runs) | jobs that run |
 | `mode` | persistent \| stateless | persistent | persistent: each job is one running conversation fed the watched rows once, with authors, and asked only at its trigger; stateless: one fresh call per trigger, the fallback |
 | `fresh_every` | count | 10 | every Nth persistent question is also asked of a fresh stateless call, and a disagreement is a row in the shadow session; 0 is never |
-| `answer_reads` | bool | false | off: the permission job only observes. true promotes it (R316 stage 1, the operator's act): its `allow` answers a review-queue seat's relayed ask that is only a read of a path outside its view: a session read grant, one row on the main session, `/shadow revoke` takes it back; writes, exec, network, secret paths and any `ask`, timeout or void still go to the operator; two disagreements (a revoke, or a later No to the same shape) turn it off, and the trip is kept in the store until `/shadow arm` |
+| `answer_reads` | bool | false | old name of `answers`: true is `answers = ["reads"]`. off: the permission job only observes; writes, exec, network, secret paths and any `ask`, timeout or void always go to the operator |
+| `answers` | list of reads \| workspace_writes \| exec | [] (observe-only) | the stages the permission job answers for the operator, each promoted by them (R316): `reads` is a read past the shadow's read denylist, `workspace_writes` a write inside the workspace, `exec` a command whose reach is inside the workspace; never the always-ask list (destruction outside the project, credentials), never a secret path, never past the stage's reach; two disagreements (a revoke, or a later No to the same shape) turn answering off and the trip is kept in the store until `/shadow arm` |
 | `turn_end` | model | [default] | model the turn_end job runs on (asleep reminder, note capture); the `*` line of [shadow.turn_end] |
 | `during` | model | [default] | model the during job runs on (drift, skill and note offers); its skill-offer pick replaces similarity offers while it is on and not paused, drift and notes are observe-only |
-| `permission` | model | [default] | model the permission job runs on (allow or ask, never deny); observe-only except `answer_reads` |
+| `permission` | model | [default] | model the permission job runs on (allow or ask, never deny); observe-only except the stages in `answers` |
 
 ## `[shadow.<job>]`
 
@@ -142,6 +143,7 @@ The guard. leticode.toml gatekeeper_model overrides `model`.
 | `max_scope` | in_run \| host_project \| host_other \| external | host_project | furthest reach the guard may answer for |
 | `scope` | as max_scope | host_project | old name of max_scope |
 | `tools` | words | none | tools the guard may answer about |
+| `via` | endpoint \| shadow \| both | both when both are configured | which guard answers a card: `endpoint` is the local guard alone, `shadow` the permission job on its configured model (a provider will do), `both` asks the endpoint first and the shadow when the endpoint does not answer - a refused connection or a timeout, which is the box whose GPU is down |
 
 ## `[memory]`
 
