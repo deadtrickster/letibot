@@ -13,6 +13,10 @@ use letibot_room::{
     Speaker, project_room, room_name,
 };
 
+mod support;
+
+use support::{wait_socket_gone, wait_until, wait_until_by};
+
 const A: &str = "aaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbb";
 
@@ -387,7 +391,7 @@ fn chat_history_seq_cursor_and_dedup_survive_a_coordinator_restart() {
     cc.call(Request::Ack { seq: one.seq });
     first.stop();
     drop((a, cc));
-    std::thread::sleep(Duration::from_millis(20));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     let second = stored(&dir);
     let a = seat(&second, "s-a1", A, Seat::Session);
@@ -438,7 +442,7 @@ fn a_restart_without_a_store_starts_chat_over_and_changes_the_instance() {
     said(a.say("r1", "", "gone"));
     first.stop();
     drop(a);
-    std::thread::sleep(Duration::from_millis(20));
+    wait_socket_gone(&dir.0.join("room.sock"));
     let second = coordinator(&dir);
     let a = seat(&second, "s-a1", A, Seat::Session);
     assert_eq!(second.chat_head(), 0);
@@ -453,14 +457,14 @@ fn a_linked_client_redials_a_restarted_coordinator_and_hears_what_follows() {
     let a = seat(&first, "s-a1", A, Seat::Session);
     let before = instance_of(&a.client);
     first.stop();
-    std::thread::sleep(Duration::from_millis(50));
+    wait_socket_gone(&dir.0.join("room.sock"));
     let second = stored(&dir);
     // No request from `a`: the redial alone brings the connection back.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !(a.client.connected() && instance_of(&a.client) != before) {
-        assert!(std::time::Instant::now() < deadline, "never redialled");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_until_by(
+        "the client to redial the restarted coordinator",
+        std::time::Instant::now() + support::PATIENCE,
+        || a.client.connected() && instance_of(&a.client) != before,
+    );
     let b = seat(&second, "s-a2", A, Seat::Session);
     said(b.say("r1", "", "@s-a1 after the restart"));
     let (m, named) = a.next();
@@ -469,19 +473,6 @@ fn a_linked_client_redials_a_restarted_coordinator_and_hears_what_follows() {
     // And a request on the redialled connection works.
     said(a.say("r2", "", "back"));
     second.stop();
-}
-
-/// Wait until `f` says so, polling - for a fact that arrives on a thread (a connection served, a
-/// close noticed) rather than as a frame.
-fn until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("waited five seconds for {what}");
 }
 
 /// A message to a session that is not connected is neither pushed nor lost: the room keeps it and
@@ -493,7 +484,7 @@ fn a_message_to_a_session_that_is_away_is_delivered_when_it_connects() {
     // It connects once, so the room has a cursor for it, and then goes.
     let away = seat(&server, "s-away", A, Seat::Session);
     drop(away);
-    until("the away session's connection to close", || {
+    wait_until("the away session's connection to close", || {
         server.connections() == 0
     });
     let here = seat(&server, "s-here", A, Seat::Session);
@@ -537,7 +528,7 @@ fn an_absent_members_inbox_is_bounded_and_the_ring_still_has_the_rest() {
     server.with_budget(letibot_room::server::MAX_PENDING as u32 + 20);
     let away = seat(&server, "s-away", A, Seat::Session);
     drop(away);
-    until("the away session's connection to close", || {
+    wait_until("the away session's connection to close", || {
         server.connections() == 0
     });
     let here = seat(&server, "s-here", A, Seat::Session);
@@ -634,13 +625,13 @@ fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
     // The daemon's model took it, so it acks; a push alone is not a seen mark.
     let _ = away.call(Request::Ack { seq: heard.seq });
     drop(away);
-    until("the connection to close", || first.connections() == 1);
+    wait_until("the connection to close", || first.connections() == 1);
     for i in 0..10 {
         said(talker.say(&format!("m{i}"), "", &format!("missed {i}")));
     }
     first.stop();
     drop(talker);
-    std::thread::sleep(Duration::from_millis(50));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     let second = stored(&dir);
     let back = seat(&second, "s-away", A, Seat::Session);
@@ -662,10 +653,10 @@ fn a_message_pushed_but_never_acked_is_in_the_next_join_digest() {
     let talker = seat(&first, "s-talker", A, Seat::Session);
     said(talker.say("a", "", "pushed and dropped"));
     drop(away);
-    until("the connection to close", || first.connections() == 1);
+    wait_until("the connection to close", || first.connections() == 1);
     first.stop();
     drop(talker);
-    std::thread::sleep(Duration::from_millis(50));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     let second = stored(&dir);
     let back = seat(&second, "s-away", A, Seat::Session);
@@ -807,7 +798,7 @@ fn a_short_bridge_name_resolves_when_unique_and_both_show_qualified_when_two_sha
     assert!(!named, "the other bridge's qualified name is not this one");
 
     drop(two);
-    until("the second bridge to leave", || {
+    wait_until("the second bridge to leave", || {
         roster_names(&a1).len() == 1
     });
     assert_eq!(roster_names(&a1), vec!["cc@stroppy-conformity".to_string()]);
@@ -1208,7 +1199,7 @@ fn a_session_invited_into_another_projects_room_hears_it_until_it_leaves() {
     drop(a1);
     drop(b1);
     first.stop();
-    std::thread::sleep(Duration::from_millis(50));
+    wait_socket_gone(&dir.0.join("room.sock"));
     let second = stored(&dir);
     let a1 = seat(&second, "s-a1", A, Seat::Session);
     let b1 = seat(&second, "s-b1", B, Seat::Session);
@@ -1653,7 +1644,7 @@ fn a_join_digest_skips_queue_transition_lines() {
     let heard = said(talker.say("a", "", "while connected"));
     let _ = away.call(Request::Ack { seq: heard.seq });
     drop(away);
-    until("the connection to close", || first.connections() == 1);
+    wait_until("the connection to close", || first.connections() == 1);
     for i in 0..3 {
         said(talker.call(Request::Notify {
             id: format!("q{i}"),
@@ -1665,7 +1656,7 @@ fn a_join_digest_skips_queue_transition_lines() {
     }
     first.stop();
     drop(talker);
-    std::thread::sleep(Duration::from_millis(50));
+    wait_socket_gone(&dir.0.join("room.sock"));
 
     let second = stored(&dir);
     let back = seat(&second, "s-away", A, Seat::Session);
