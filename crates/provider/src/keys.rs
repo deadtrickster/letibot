@@ -75,7 +75,15 @@ pub struct Gatekeeper {
     /// Tools the guard may answer about whatever rung they land on, by name. Raising
     /// `max_scope` to reach one off-box tool reaches all of them, this names doors instead.
     pub tools: Vec<String>,
+    /// Which guard answers a card when the endpoint and the shadow both could:
+    /// `endpoint`, `shadow`, or `both` (the endpoint first, the shadow when it does not
+    /// answer). Raw because the meaning is the daemon's to parse; absent is the default
+    /// that follows what is configured.
+    pub via: Option<String>,
 }
+
+/// The spellings `[gatekeeper] via` takes.
+pub const GUARD_VIA: [&str; 3] = ["endpoint", "shadow", "both"];
 
 /// `[memory]`: the cap a tool call runs under when the model names none, and the most it may
 /// ask for without the operator. Raw strings, because what `64M` or `0.5` means is the tool
@@ -177,6 +185,7 @@ pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
             })
             .unwrap_or_default(),
         max_scope: sec.get("max_scope").or_else(|| sec.get("scope")).cloned(),
+        via: sec.get("via").cloned(),
         // Same spelling rules as `intents`: whitespace or commas, both accepted.
         tools: sec
             .get("tools")
@@ -590,6 +599,25 @@ pub struct ShadowLines {
     /// Whether the permission job answers relayed read-only view asks. `None` is the default,
     /// which is on while the permission job is.
     pub answer_reads: Option<bool>,
+    /// The stages the permission job may answer for the operator, by name. `answer_reads = true`
+    /// is this list holding `reads` alone, and writing both is one setting twice.
+    pub answers: Option<Vec<String>>,
+}
+
+/// The stages `[shadow] answers` takes, in the order they are promoted. A closed set: a stage
+/// this build does not run is a fault in the file, not a line nothing reads.
+pub const SHADOW_STAGES: [&str; 3] = ["reads", "workspace_writes", "exec"];
+
+/// A TOML list of words, as the file writes it: `["a", "b"]`. `None` is not a list at all.
+fn words(v: &str) -> Option<Vec<&str>> {
+    let inner = v.trim().strip_prefix('[')?.strip_suffix(']')?;
+    Some(
+        inner
+            .split(',')
+            .map(|w| w.trim().trim_matches(['"', '\'']).trim())
+            .filter(|w| !w.is_empty())
+            .collect(),
+    )
 }
 
 /// The spellings `[shadow] mode` takes.
@@ -614,20 +642,12 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
     if let Some(sec) = parsed.sections.get("shadow") {
         for (k, v) in sec {
             if k == "enabled" {
-                let inner = v
-                    .trim()
-                    .strip_prefix('[')
-                    .and_then(|s| s.strip_suffix(']'))
-                    .ok_or_else(|| {
-                        fault(format!(
-                            "[shadow] enabled = {v} is not a list; write `enabled = [\"turn_end\"]`"
-                        ))
-                    })?;
-                for job in inner
-                    .split(',')
-                    .map(|j| j.trim().trim_matches(['"', '\'']).trim())
-                    .filter(|j| !j.is_empty())
-                {
+                let inner = words(v).ok_or_else(|| {
+                    fault(format!(
+                        "[shadow] enabled = {v} is not a list; write `enabled = [\"turn_end\"]`"
+                    ))
+                })?;
+                for job in inner {
                     if !known(job) {
                         return Err(fault(format!(
                             "[shadow] enabled names `{job}`, and the jobs are {}",
@@ -638,6 +658,21 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                         out.enabled.push(job.to_string());
                     }
                 }
+            } else if k == "answers" {
+                let list = words(v).ok_or_else(|| {
+                    fault(format!(
+                        "[shadow] answers = {v} is not a list; write `answers = [\"reads\"]`"
+                    ))
+                })?;
+                for stage in &list {
+                    if !SHADOW_STAGES.contains(stage) {
+                        return Err(fault(format!(
+                            "[shadow] answers names `{stage}`, and the stages are {}",
+                            SHADOW_STAGES.join(", ")
+                        )));
+                    }
+                }
+                out.answers = Some(list.iter().map(|s| s.to_string()).collect());
             } else if k == "mode" {
                 let mode = v.trim().trim_matches(['"', '\'']);
                 if !SHADOW_MODES.contains(&mode) {
@@ -675,7 +710,8 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                     .insert("*".into(), model.to_string());
             } else {
                 return Err(fault(format!(
-                    "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every`, `answer_reads` and the jobs, {}",
+                    "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every`, \
+                     `answer_reads`, `answers` and the jobs, {}",
                     SHADOW_JOBS.join(", ")
                 )));
             }
