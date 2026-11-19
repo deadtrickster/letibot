@@ -200,7 +200,7 @@ fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
     let mut finished = false;
     let mut worst = Duration::ZERO;
     let mut reads = 0usize;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::testing::PATIENCE;
     std::thread::scope(|scope| {
         scope.spawn(|| {
             let out = s.acquire_queue_lease(
@@ -242,7 +242,7 @@ fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
     });
     releaser.join().unwrap();
     holder.join().unwrap();
-    assert!(finished, "the claim finished inside ten seconds");
+    assert!(finished, "the claim finished inside its deadline");
     assert!(reads > 0, "the read loop ran");
     eprintln!(
         "queue write: {reads} reads while the claim waited on another process, worst {worst:?}"
@@ -281,7 +281,7 @@ fn an_exec_write_waiting_on_another_process_leaves_the_store_readable() {
                 .expect("the start waits out another process's commit");
             done.send(()).unwrap();
         });
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + crate::testing::PATIENCE;
         while is_done.try_recv().is_err() && Instant::now() < deadline {
             let t = Instant::now();
             s.title("sess-busy")
@@ -530,18 +530,20 @@ fn number_before(line: &str, label: &str) -> u64 {
         .unwrap_or_else(|| panic!("no number before {label:?} in {line:?}"))
 }
 
-/// A write serialised behind another connection's transaction reports the WAIT.
-/// The lock is held 300 ms and the body then spends a second of its own, so the line says which
-/// of the two the call spent its time on, the handler's sleep and the ladder's pauses together.
+/// A write serialised behind another connection's transaction reports the WAIT, and its own body's
+/// time is not in it. The other connection commits the moment this one says it is waiting, so the
+/// two durations are measured rather than guessed at, and the body then spends a second of its own.
 #[test]
 fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
     let db = TempDb::new("waited");
     let s = Store::open(&db.0).unwrap();
     seed(&s);
     let (release, holder) = hold_write_lock(&db.0);
-    let releaser = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        release.send(()).unwrap();
+    let guard = super::watch_busy_waits(super::Watch {
+        stop: Box::new(|| false),
+        waiting: Box::new(move |_| {
+            let _ = release.send(());
+        }),
     });
     let (out, lines) = super::collecting(|| {
         s.write_tx(|tx| {
@@ -554,7 +556,7 @@ fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
         })
     });
     out.expect("the write waited for the other connection and then ran");
-    releaser.join().unwrap();
+    drop(guard);
     holder.join().unwrap();
 
     assert_eq!(lines.len(), 1, "one slow call, one line: {lines:?}");
@@ -562,18 +564,17 @@ fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
     eprintln!("lock wait: {line}");
     let took = number_after(line, "took ");
     let waited = number_after(line, "waited ");
-    // The 300 ms is counted from the releaser's spawn, so a loaded box starts the write late and
-    // sees less of it. 100 still tells the wait from nothing, 700 from the second-long body.
     assert!(
-        waited >= 100,
-        "the 300 ms lock wait is on the line as waited {waited} ms: {line}"
+        waited >= 1,
+        "the wait on the other connection's lock is on the line as waited {waited} ms: {line}"
     );
     assert!(
-        (100..=700).contains(&waited),
-        "and it is the wait, not the whole call: waited {waited} ms of {took} ms: {line}"
+        waited + 1000 <= took + 2,
+        "and it is the wait, not the whole call: waited {waited} ms of {took} ms, whose body alone \
+         sleeps a second: {line}"
     );
     assert!(
-        took >= 1200,
+        took >= 1000,
         "the body's own second is in the call: took {took} ms: {line}"
     );
     assert!(

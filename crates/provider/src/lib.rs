@@ -18,6 +18,9 @@ pub mod usage;
 pub mod usage_poll;
 pub mod usage_warn;
 
+#[cfg(test)]
+pub mod testing;
+
 pub use anthropic::AnthropicProvider;
 pub use keys::{Credentials, Gatekeeper, KeyError, MemorySection, gatekeeper, memory};
 pub use openai::OpenAiProvider;

@@ -1056,8 +1056,10 @@ mod tests {
                 c.execute_batch("COMMIT").unwrap();
             });
             is_held.recv().unwrap();
+            // The other process commits while this write is in its backoff, which is the wait the
+            // test is about: it cannot finish sooner, because the lock is held until this.
             let releaser = std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(600));
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 let _ = go.send(());
             });
             let r = write(&store);

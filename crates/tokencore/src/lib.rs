@@ -8,6 +8,10 @@ pub mod ledger;
 pub mod migrate_split;
 pub mod region;
 pub mod store;
+
+#[cfg(test)]
+pub mod testing;
+
 pub mod vocab;
 
 pub use control::{

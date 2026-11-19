@@ -61,14 +61,9 @@ fn preset_at(url: &str) -> Preset {
     }
 }
 
-fn until(what: impl Fn() -> bool) {
-    for _ in 0..200 {
-        if what() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("timed out");
+/// Poll `what` until it holds, and say what it was waiting for when it never does.
+fn until(what: &str, cond: impl FnMut() -> bool) {
+    crate::testing::wait_until(what, cond);
 }
 
 #[test]
@@ -204,19 +199,23 @@ fn one_poll_serves_every_watcher_and_stops_when_none_is_on_the_preset() {
         watch(&preset, &creds(), "s-a", every, watcher(&on, &told)),
         None
     );
-    until(|| told.load(Ordering::SeqCst) >= 1);
+    until("a first reading told", || told.load(Ordering::SeqCst) >= 1);
     // A second session gets the cached reading at once and starts no second poller.
     let cached = watch(&preset, &creds(), "s-b", every, watcher(&on, &told));
     assert_eq!(cached.unwrap().0[0].used, 0.44);
     assert_eq!(reading(&url).unwrap().0.len(), 2);
-    until(|| hits.load(Ordering::SeqCst) >= 3);
+    until("three requests", || hits.load(Ordering::SeqCst) >= 3);
     assert!(
         told.load(Ordering::SeqCst) >= hits.load(Ordering::SeqCst),
         "both watchers are told from one request"
     );
     on.store(false, Ordering::SeqCst);
-    until(|| !polls().get(&url).is_some_and(|p| p.running));
+    until("the poller to stop", || {
+        !polls().get(&url).is_some_and(|p| p.running)
+    });
     let after = hits.load(Ordering::SeqCst);
+    // A negative check, so it needs a beat: the request a stopped poller might still have in
+    // flight, and four periods for one it should not have sent at all.
     std::thread::sleep(every * 4);
     assert_eq!(hits.load(Ordering::SeqCst), after, "no request once unused");
     assert!(reading(&url).is_some(), "the last reading stays cached");
@@ -239,6 +238,8 @@ fn a_preset_without_a_usage_url_is_never_polled() {
     );
     assert_eq!(got, None);
     assert!(polls().values().all(|p| !p.watchers.contains_key("s-none")));
+    // A negative check: a preset with no usage URL starts no poller, so there is nothing to wait
+    // for - the beat only gives a request that should never be made time to be missed.
     std::thread::sleep(Duration::from_millis(50));
     assert!(!told.load(Ordering::SeqCst));
 }
@@ -274,7 +275,9 @@ fn a_failed_round_tells_the_kept_reading_with_its_time() {
         }),
     };
     watch(&preset, &creds(), "s-stale", Duration::from_millis(30), w);
-    until(|| told.lock().unwrap().len() >= 3);
+    until("three tellings of the kept reading", || {
+        told.lock().unwrap().len() >= 3
+    });
     assert!(hits.load(Ordering::SeqCst) >= 2, "the poll kept asking");
     let at = told.lock().unwrap().clone();
     assert!(
@@ -305,7 +308,9 @@ fn a_door_reading_is_listed_and_readable_inside_a_tell() {
         }),
     };
     watch(&p, &creds(), "s-listed", Duration::from_millis(20), w);
-    until(|| seen.load(Ordering::SeqCst));
+    until("the door's reading inside a tell", || {
+        seen.load(Ordering::SeqCst)
+    });
 }
 
 /// A picker's poll reads a door once, and a second ask inside the period sends nothing.

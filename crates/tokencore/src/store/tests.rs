@@ -2239,8 +2239,16 @@ fn the_recent_models_are_the_last_switches_newest_first_and_once_each() {
             s.set_provider_choice(id, Some(c)).unwrap();
         }
         // A session's activity is its newest row, and these have none: the fallback is the moment it
-        // was written, so two sessions written twice in one millisecond tie - the sleep spaces them.
-        std::thread::sleep(std::time::Duration::from_millis(3));
+        // was written, so two sessions written twice in one millisecond tie - wait for the clock to
+        // tick rather than guess how long that takes.
+        let now_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        };
+        let wrote_at = now_ms();
+        crate::testing::wait_until("the clock's next millisecond", || now_ms() > wrote_at);
     };
     switch("recent-a", Some("deepseek/deepseek-flash"));
     switch("recent-b", Some("glm/glm-5.3"));
@@ -4056,9 +4064,14 @@ fn a_slow_open_of_one_store_does_not_block_opening_another() {
     let dir = open_dir("other");
     let (held, release) = held_file(&dir);
     let (done, finished) = std::sync::mpsc::channel();
-    std::thread::spawn(move || done.send(Store::open(&held).is_ok()).unwrap());
-    // Long enough for the held open to be inside the busy handler.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    let (began, opening) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        began.send(()).unwrap();
+        done.send(Store::open(&held).is_ok()).unwrap()
+    });
+    // The opener is one call from the busy handler once it has said it is starting, and the lock is
+    // held until `release` - so there is a held open to measure rather than a guess at one.
+    opening.recv().unwrap();
     let t = std::time::Instant::now();
     Store::open(&dir.join("other.db")).expect("the other store opens");
     let took = t.elapsed();
@@ -4083,13 +4096,21 @@ fn a_slow_open_of_one_store_does_not_block_opening_another() {
 fn racing_opens_of_one_file_share_one_connection() {
     let dir = open_dir("same");
     let (held, release) = held_file(&dir);
+    let (began, opening) = std::sync::mpsc::channel();
     let opens: Vec<_> = (0..2)
         .map(|_| {
             let p = held.clone();
-            std::thread::spawn(move || Store::open(&p).expect("opens once released"))
+            let began = began.clone();
+            std::thread::spawn(move || {
+                began.send(()).unwrap();
+                Store::open(&p).expect("opens once released")
+            })
         })
         .collect();
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Both opens are one call from the busy handler before the lock goes, so they really do race.
+    for _ in 0..2 {
+        opening.recv().unwrap();
+    }
     release.send(()).unwrap();
     let stores: Vec<Store> = opens.into_iter().map(|h| h.join().unwrap()).collect();
     assert!(
