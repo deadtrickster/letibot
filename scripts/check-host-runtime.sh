@@ -4,10 +4,12 @@
 #     sh scripts/check-host-runtime.sh
 #
 # A fake `ldconfig` first on PATH lies about the host, then the install's verdict is checked:
-#   A. none of the three libraries       -> refuses, and names all three
-#   B. only libgomp.so.1                 -> refuses, and names the other two
-#   C. all three (no curl)               -> the host check does not fire
-# B proves each library is asked about separately. C proves the check is not refuse-all.
+#   A.  none of the three            -> refuses, and names SQLite alone (the cloud plan)
+#   A2. none of the three, LETIBOT_LOCAL=1 -> refuses, and names all three
+#   B.  only libgomp.so.1            -> refuses, naming SQLite and not the one that is there
+#   C.  all three (no curl)          -> the host check does not fire
+# B proves each library is asked about separately. C proves the check is not refuse-all. A and A2
+# are the two prebuilt plans: the cloud asset needs one host library, the local one three.
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -90,38 +92,51 @@ bad() {
 }
 
 # --- A: a host with none of them ------------------------------------------------
+# The default prebuilt plan is the CLOUD asset, whose only host library is SQLite. So a bare host
+# is refused for SQLite, and must NOT be sent after llama.cpp's two: nothing in that build loads
+# them, and naming them would refuse an install that would have worked.
 write_fake_ldconfig # prints nothing at all
 out=$(run_install) && { bad "install.sh exited 0 on a host with none of $HOST_LIBS_FOR_TEST"; }
 case "$out" in
   *"missing libraries the binaries need at run time"*) ;;
   *) bad "case A: the refusal did not appear. Output was: $out" ;;
 esac
+case "$out" in
+  *"libsqlite3.so.0"*) ;;
+  *) bad "case A: the refusal does not name libsqlite3.so.0" ;;
+esac
+case "$out" in
+  *libstdc++* | *libgomp*)
+    bad "case A: a cloud install was refused for llama.cpp's libraries, which it never loads"
+    ;;
+esac
+note "A: a host with no SQLite is refused for SQLite, and not for llama.cpp's libraries"
+
+# --- A2: the LOCAL prebuilt asset is checked for all three ----------------------
+# `LETIBOT_LOCAL=1` asks for the asset that carries llama.cpp, so that plan needs what
+# libllama and libggml link as well.
+out=$(PLAN_ENV="LETIBOT_LOCAL=1" run_install) && { bad "case A2: exited 0 for the local asset on a host with none of the three"; }
 for lib in libstdc++.so.6 libgomp.so.1 libsqlite3.so.0; do
   case "$out" in
     *"$lib"*) ;;
-    *) bad "case A: the refusal does not name $lib" ;;
+    *) bad "case A2: the local plan's refusal does not name $lib" ;;
   esac
 done
-note "A: a host with none of the three is refused, and all three are named"
+note "A2: LETIBOT_LOCAL's prebuilt asset is refused for all three, llama.cpp's included"
 
 # --- B: a host with only libgomp — the per-library check -------------------------
 write_fake_ldconfig libgomp.so.1
 out=$(run_install) && { bad "install.sh exited 0 on a host with only libgomp"; }
 case "$out" in
-  *"libstdc++.so.6"*) ;;
-  *) bad "case B: libstdc++.so.6 is missing and was not named. Output was: $out" ;;
-esac
-case "$out" in
   *"libsqlite3.so.0"*) ;;
-  *) bad "case B: libsqlite3.so.0 is missing and was not named" ;;
+  *) bad "case B: libsqlite3.so.0 is missing and was not named. Output was: $out" ;;
 esac
 # The library that IS present must not be reported — otherwise the message sends
 # somebody to install something they already have.
 case "$out" in
   *"libgomp.so.1 "*) bad "case B: libgomp.so.1 is PRESENT and was reported missing" ;;
 esac
-# No assertion that the message mentions libgomp: it lists only what is missing.
-note "B: a host with only libgomp is refused, the other two are named, and libgomp is not"
+note "B: a host with only libgomp is refused for SQLite, and libgomp is not reported"
 
 # --- C: a complete host, and the check must not fire -----------------------------
 write_fake_ldconfig libstdc++.so.6 libgomp.so.1 libsqlite3.so.0
@@ -254,14 +269,15 @@ else
   esac
 fi
 
-# A prebuilt refusal over llama's libraries names the cloud-only way out.
+# A prebuilt refusal over llama's libraries names the way out: the cloud install, which is the
+# default and needs none of them.
 write_fake_ldconfig libsqlite3.so.0
-out=$(run_install) || true
+out=$(PLAN_ENV="LETIBOT_LOCAL=1" run_install) || true
 case "$out" in
   *"missing libraries the binaries need at run time"*"llama.cpp's"*"LETIBOT_FROM_SOURCE=1"*)
-    note "J: a prebuilt refusal over llama's libraries offers the cloud-only build"
+    note "J: a local prebuilt refusal over llama's libraries offers the cloud install"
     ;;
-  *) bad "case J: the library refusal does not offer the cloud-only build. Output was: $out" ;;
+  *) bad "case J: the library refusal does not offer the cloud install. Output was: $out" ;;
 esac
 
 [ "$fail" = 0 ] || exit 1

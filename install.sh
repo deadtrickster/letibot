@@ -3,6 +3,15 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
 #
+# **THE DEFAULT INSTALL IS CLOUD-ONLY.** The daemon serves a provider - DeepSeek, GLM, Grok or any
+# OpenAI-compatible endpoint - and links no llama.cpp: no C++ runtime, no OpenMP, and no C++
+# toolchain behind a source build. A LOCAL model is opt-in, two ways:
+#
+#   LETIBOT_LOCAL=1                          the release asset that carries llama.cpp's libraries
+#   LETIBOT_LLAMA_DIR=... LETIBOT_LLAMA_LIB=...  a source build against your own llama.cpp
+#
+# `--plan` prints which of those this machine would get, and changes nothing.
+#
 # # WHAT THIS PUTS ON YOUR MACHINE, said before it does it
 #
 #   $PREFIX/harnessd           the daemon — the session, the gate, the model connection
@@ -12,6 +21,10 @@
 #   $PREFIX/letibot            the command you type: starts the daemon if needed, attaches a head
 #   $PREFIX/leticode           the same, seated as leticode (shell and web_fetch on, automode-edits)
 #   $PREFIX/letibot-mcp        the Claude Code bridge: the MCP server the `leticode` plugin runs
+#   $PREFIX/letibot-acp        the ACP adapter Zed and Neovim launch
+#
+# A LOCAL install adds llama.cpp's four libraries beside them, and a cloud one needs none of them:
+#
 #   $PREFIX/libllama.so.0      the tokenizer, which the daemon links
 #   $PREFIX/libggml.so.0       llama.cpp's compute layer, which libllama links
 #   $PREFIX/libggml-cpu.so.0   the CPU backend, which libggml links
@@ -26,7 +39,7 @@
 # --marketplace deadtrickster/letibot`. `--help` prints that line, and the closing block prints
 # it once the bridge has landed, so the one thing a person has to do next is in front of them.
 #
-# **FOUR libraries, and the fourth is easy to miss**: `libllama.so.0` needs
+# **FOUR libraries on a LOCAL install, and the fourth is easy to miss**: `libllama.so.0` needs
 # `libggml.so.0`, and `libggml.so.0` needs `libggml-cpu.so.0`. A package without
 # that last one starts, gets as far as libggml, and dies with
 # `libggml-cpu.so.0: cannot open shared object file`.
@@ -37,6 +50,11 @@
 # and runs on a machine that has no llama.cpp at all. Splitting them into
 # `~/.local/lib` would need a second mechanism to find them, and this is the one
 # that was measured to work.
+#
+# **A cloud install REMOVES those four from `$PREFIX` when an older local install left them
+# there.** They sit where `$ORIGIN` looks, so a stale `libllama.so.0` beside a daemon that links
+# none is a directory claiming this box runs a local model about a build that cannot. Nothing
+# else in `$PREFIX` is touched, and the removal is said in one line.
 #
 # # WHAT IT DOES NOT INSTALL
 #
@@ -51,19 +69,22 @@
 #   2. a build from a checkout, if this script is being run from one
 #   3. a clone of the default branch, built from source
 #
-# **(2) and (3) need MORE than a Rust toolchain.** `harnessd` links llama.cpp, so
-# the source path needs `cargo`, a C compiler, and a **built llama.cpp checkout** —
-# `LETIBOT_LLAMA_DIR` (holding `include/llama.h`) and `LETIBOT_LLAMA_LIB` (holding
-# `libllama.so.0`). That is a real prerequisite and it is named here, checked
-# before the build starts, and reported in this script's own words rather than as a
-# `llama.h not found` from inside cargo. The prebuilt path needs none of it.
+# **(1) is the cloud asset** (`letibot-<triple>.tar.gz`); `LETIBOT_LOCAL=1` asks instead for
+# `letibot-<triple>-local.tar.gz`, which is the same binaries linking llama plus its four
+# libraries. **(2) and (3) build cloud-only unless a llama.cpp is named**, and that source path
+# needs `cargo` and a C compiler (the tree-sitter grammars are C) in every case, and a **built
+# llama.cpp checkout** - `LETIBOT_LLAMA_DIR` (holding `include/llama.h`) and `LETIBOT_LLAMA_LIB`
+# (holding `libllama.so.0`) - for a local one. That is a real prerequisite and it is named here,
+# checked before the build starts, and reported in this script's own words rather than as a
+# `llama.h not found` from inside cargo.
 #
 # Environment:
 #   LETIBOT_INSTALL_DIR   where everything goes   (default: ~/.local/bin)
 #   LETIBOT_VERSION       tag or branch           (default: the default branch)
 #   LETIBOT_FROM_SOURCE   set to anything to skip the download and build instead
-#   LETIBOT_LLAMA_DIR     a llama.cpp checkout    (source builds: required)
-#   LETIBOT_LLAMA_LIB     its lib directory       (source builds: required)
+#   LETIBOT_LOCAL         set to anything for a LOCAL install (llama.cpp, local models)
+#   LETIBOT_LLAMA_DIR     a llama.cpp checkout    (a local source build: required)
+#   LETIBOT_LLAMA_LIB     its lib directory       (a local source build: required)
 
 set -eu
 
@@ -106,12 +127,21 @@ is_launcher() {
   return 1
 }
 LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
+# **What a LOCAL linux install carries; a cloud one carries none of them.** The variable keeps
+# its name because `scripts/check-dist-names.sh`, `scripts/make-dist.sh` and the release workflow
+# read this line to hold the names to each other, and the `-local` asset is that same set.
+#
 # **The same four on macOS, in Mach-O's spelling.** MEASURED 2026-10-07 with `otool -L` on
 # a CPU-only llama.cpp build: libllama needs libggml, libggml-base and libggml-cpu, all
 # `@rpath/` with an `@loader_path` rpath, which is `$ORIGIN` in dyld's words. A Metal or
 # BLAS build adds libggml-metal and libggml-blas; the release builds CPU-only for the
 # same reason Linux's does — the daemon tokenises and runs no model.
 LIBRARIES_DARWIN="libllama.0.dylib libggml.0.dylib libggml-cpu.0.dylib libggml-base.0.dylib"
+# **The two published asset names, and this is the half `install.sh` asks for.** The default is the
+# cloud one; `-local` carries the four libraries above. `scripts/check-dist-names.sh` holds this
+# suffix to `scripts/make-dist.sh`'s, because the installer is served from `main` and the asset
+# comes from a tag, so the only tie between them is that both name the same file.
+ASSET_SUFFIX_LOCAL="-local"
 HOST_OS=$(uname -s)
 if [ "$HOST_OS" = Darwin ]; then
   LIBRARIES=$LIBRARIES_DARWIN
@@ -212,15 +242,17 @@ host_has_lib() {
 # applied to the libraries that are NOT in the archive. The value is turning an
 # exit-127 mystery into a line a person can paste.
 #
-# `$1` is what is about to be installed, because the three paths need different things:
+# `$1` is what is about to be installed, because the four plans need different things:
 #
-#   prebuilt  the release asset: glibc binaries carrying llama, so a glibc loader and all
-#             of HOST_LIBS. Checked before the download.
-#   local     a source build linking the operator's llama.cpp: HOST_LIBS, and no glibc
-#             check — the binaries are built HERE, against whatever libc this is.
-#   cloud     a source build with no llama.cpp: HOST_LIBS_CLOUD only. It asked for
-#             libgomp on a box that would never load it, and refused a cloud-only
-#             install over a library only a local model needs.
+#   prebuilt        the cloud asset - the default: glibc binaries linking no llama, so a glibc
+#                   loader and HOST_LIBS_CLOUD. Checked before the download.
+#   prebuilt-local  the `-local` asset: glibc binaries carrying llama, so a glibc loader and all
+#                   of HOST_LIBS. Checked before the download.
+#   local           a source build linking the operator's llama.cpp: HOST_LIBS, and no glibc
+#                   check - the binaries are built HERE, against whatever libc this is.
+#   cloud           a source build with no llama.cpp: HOST_LIBS_CLOUD only. It asked for
+#                   libgomp on a box that would never load it, and refused a cloud-only
+#                   install over a library only a local model needs.
 require_host_runtime() {
   plan="$1"
   # **macOS needs nothing from this list.** Everything the binaries and the four
@@ -237,7 +269,10 @@ require_host_runtime() {
     fi
     return 0
   fi
-  if [ "$plan" = prebuilt ] && ! have_glibc; then
+  case "$plan" in
+    prebuilt*) prebuilt=1 ;;
+  esac
+  if [ "${prebuilt:-0}" = 1 ] && ! have_glibc; then
     die "this machine has no glibc dynamic loader, and the published binaries are
   built for glibc — they cannot run here whatever is installed. (A musl system
   such as Alpine is the usual case.) Build from source instead:
@@ -247,7 +282,7 @@ require_host_runtime() {
   build. Nothing has been downloaded or copied."
   fi
   case "$plan" in
-    cloud) want=$HOST_LIBS_CLOUD ;;
+    cloud | prebuilt) want=$HOST_LIBS_CLOUD ;;
     *) want=$HOST_LIBS ;;
   esac
   missing=""
@@ -273,11 +308,13 @@ require_host_runtime() {
   esac
   cloud_hint=""
   # shellcheck disable=SC2143 # the same test as `grep -q`, kept as one line of the condition
-  if [ "$plan" != cloud ] && [ -n "$(printf '%s' "$missing" | grep -E 'libstdc|libgomp')" ]; then
+  if plan_installs_llama "$plan" && [ -n "$(printf '%s' "$missing" | grep -E 'libstdc|libgomp')" ]; then
     cloud_hint="
 
-  libstdc++ and libgomp are llama.cpp's, which only a LOCAL model needs. For cloud
-  providers alone, a source build needs neither (it needs Rust and a C compiler):
+  libstdc++ and libgomp are llama.cpp's, which only a LOCAL model needs. The default
+  install of letibot is cloud-only and needs neither, so without LETIBOT_LOCAL:
+      sh install.sh
+  or, with no asset for this platform, a source build that links no llama:
       LETIBOT_FROM_SOURCE=1 sh install.sh"
   fi
   die "this machine is missing libraries the binaries need at run time:$missing
@@ -304,20 +341,34 @@ asset_triple() {
   printf '%s' "$triple"
 }
 
-# **What this run will install**, decided the way `main` decides it, before anything is
-# fetched: a checkout or LETIBOT_FROM_SOURCE builds from source, and so does a platform
-# with no asset; anything else is the prebuilt asset. A source build is `local` when a
-# llama.cpp is named and `cloud` when not (see `build_from_source`).
+# **What this run will install**, decided the way `main` decides it, before anything is fetched.
+# A checkout, LETIBOT_FROM_SOURCE or a platform with no asset builds from source; anything else
+# downloads. Either half is `local` when a local model is asked for (see `local_requested`):
+#
+#   prebuilt        the cloud asset, the default
+#   prebuilt-local  the `-local` asset, which carries llama.cpp's four libraries
+#   cloud           a source build linking no llama
+#   local           a source build against the llama.cpp the two variables name
 install_plan() {
   if local_checkout >/dev/null || [ -n "${LETIBOT_FROM_SOURCE:-}" ] || ! asset_triple >/dev/null; then
-    if [ -n "${LETIBOT_LLAMA_DIR:-}" ] && [ -n "${LETIBOT_LLAMA_LIB:-}" ]; then
-      printf 'local'
-    else
-      printf 'cloud'
-    fi
+    if local_requested; then printf 'local'; else printf 'cloud'; fi
   else
-    printf 'prebuilt'
+    if local_requested; then printf 'prebuilt-local'; else printf 'prebuilt'; fi
   fi
+}
+
+# 0 when this run asked for a local model: LETIBOT_LOCAL set, or a llama.cpp named by both
+# variables. One of the pair alone is not a local request; `build_from_source` refuses that
+# rather than quietly building cloud.
+local_requested() {
+  [ -n "${LETIBOT_LOCAL:-}" ] && return 0
+  [ -n "${LETIBOT_LLAMA_DIR:-}" ] && [ -n "${LETIBOT_LLAMA_LIB:-}" ]
+}
+
+# Does a plan put llama.cpp's four libraries beside the binaries?
+plan_installs_llama() {
+  case "$1" in local | prebuilt-local) return 0 ;; esac
+  return 1
 }
 
 # A checkout to build from, or nothing: the directory holding this script, if it
@@ -336,22 +387,26 @@ local_checkout() {
   fi
 }
 
-# A source build with no llama.cpp named is cloud-only (see `build_from_source`) and links
-# no llama library, so there is none to copy.
-cloud_only_libraries() {
-  if [ -z "${LETIBOT_LLAMA_DIR:-}" ] || [ -z "${LETIBOT_LLAMA_LIB:-}" ]; then
-    LIBRARIES=""
+# **The published asset this plan downloads.** The cloud one is the name the default install asks
+# for; `-local` is the one that carries the four libraries, and only LETIBOT_LOCAL asks for it.
+asset_name() { # asset_name TRIPLE PLAN
+  if plan_installs_llama "$2"; then
+    printf '%s' "letibot-$1$ASSET_SUFFIX_LOCAL.tar.gz"
+  else
+    printf '%s' "letibot-$1.tar.gz"
   fi
 }
 
 # The prebuilt release asset for this platform, extracted, or nothing.
 #
 # Returning non-zero is a normal outcome, not an error: a platform with no
-# published asset falls through to the source build.
+# published asset falls through to the source build, and so does a `-local`
+# asset a release does not carry - which the source path then refuses for the
+# llama.cpp it was not given, rather than installing a cloud build unasked.
 try_prebuilt() {
   tmp="$1"
   triple=$(asset_triple) || return 1
-  name="letibot-$triple.tar.gz"
+  name=$(asset_name "$triple" "$PLAN")
   if [ -n "$VERSION" ]; then
     url="https://github.com/$REPO/releases/download/$VERSION/$name"
   else
@@ -450,26 +505,41 @@ build_from_source() {
   llama_lib="${LETIBOT_LLAMA_LIB:-}"
   # The first of LIBRARIES is libllama in this platform's spelling.
   libllama=${LIBRARIES%% *}
+  # **A local install needs BOTH variables.** One alone is a half-spelled request, and building
+  # cloud from it would install a daemon that cannot reach the llama.cpp the person just named.
+  if [ -n "$llama_dir" ] && [ -z "$llama_lib" ]; then
+    die "LETIBOT_LLAMA_DIR is set and LETIBOT_LLAMA_LIB is not, and a local build needs both:
+  the first holds include/llama.h, the second the built libllama.so.0. Nothing has been
+  built or copied."
+  fi
+  if [ -z "$llama_dir" ] && [ -n "$llama_lib" ]; then
+    die "LETIBOT_LLAMA_LIB is set and LETIBOT_LLAMA_DIR is not, and a local build needs both:
+  the first holds the built libllama.so.0, the second include/llama.h. Nothing has been
+  built or copied."
+  fi
+  if [ -n "${LETIBOT_LOCAL:-}" ] && [ -z "$llama_dir" ]; then
+    die "LETIBOT_LOCAL asks for a local build, and there is no llama.cpp to build against.
+  A local SOURCE build needs a built llama.cpp checkout:
+      LETIBOT_LLAMA_DIR=/path/to/llama.cpp LETIBOT_LLAMA_LIB=/path/to/llama.cpp/build/bin
+  Or drop LETIBOT_LOCAL and let the install download the prebuilt binaries instead.
+  Nothing has been built or copied."
+  fi
   # **No llama.cpp named: a CLOUD-ONLY build, not a refusal.** llama.cpp is only the
   # tokenizer a LOCAL model needs; a daemon whose turns go to a provider keeps its
   # ledger in the byte vocabulary and links no llama at all (harnessd's `local` feature,
-  # off here). So a box with Rust and a provider key installs and runs — the case this
-  # used to refuse with a page about building llama.cpp.
-  if [ -z "$llama_dir" ] || [ -z "$llama_lib" ]; then
+  # off in the default build). So a box with Rust and a provider key installs and runs.
+  if [ -z "$llama_dir" ]; then
     warn "No llama.cpp named (LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB), so this is a CLOUD-ONLY
   build: turns go to a provider (--provider deepseek|glm|grok, or [default] in
   ~/.config/letibot/providers.toml) and no model runs on this machine. For local models,
   re-run with both variables pointing at a built llama.cpp."
+    # `--bin` names every artifact, so a `target/` left by some earlier build cannot stand in.
+    # `--no-default-features` is spelled out on the crate that has `local`: the default is
+    # already cloud, and a release script that depends on a default is the drift this fixes.
     warn "Building letibot (cloud-only) from $src — this takes a few minutes..."
     cargo build --release --manifest-path "$src/Cargo.toml" --no-default-features \
       -p letibot-harnessd --bin harnessd >&2
-    # The launcher too: it is one of $BINARIES, and the copy below takes every name
-    # there. Building it here rather than trusting a target/ left by some earlier build
-    # is what makes a fresh checkout install — CI's Linux job only passed because its
-    # release step had already built the whole workspace.
-    # `letibot-mcp` comes with `letibot-tui`'s call: the bridge links no llama either, so it
-    # is the same build and the same cloud-only rule.
-    cargo build --release --manifest-path "$src/Cargo.toml" \
+    cargo build --release --manifest-path "$src/Cargo.toml" --no-default-features \
       -p letibot-tui --bin letibot-tui -p letibot --bin letibot-multi -p letibot-bridge --bin letibot-mcp \
       -p letibot-acp --bin letibot-acp >&2
     out="$src/target/release"
@@ -477,9 +547,7 @@ build_from_source() {
       is_launcher "$want" && continue
       [ -x "$out/$want" ] || die "the build produced no $out/$want"
     done
-    # Nothing to carry: no binary of this build links a llama library. (`main` empties
-    # LIBRARIES on the same condition — this runs in a command substitution, so an
-    # assignment here would not reach it.)
+    # Nothing to carry: no binary of this build links a llama library.
     printf '%s' "$out"
     return 0
   fi
@@ -489,7 +557,10 @@ build_from_source() {
     die "no $libllama under LETIBOT_LLAMA_LIB=$llama_lib"
 
   warn "Building letibot from $src — this takes a few minutes..."
+  # `letibot-harnessd/local` and `letibot/local` rather than a bare `local`, so the flag is
+  # accepted whatever else `-p` selects.
   cargo build --release --manifest-path "$src/Cargo.toml" \
+    --features letibot-harnessd/local,letibot/local \
     --bin harnessd --bin letibot-tui --bin letibot-multi --bin letibot-mcp --bin letibot-acp >&2
   out="$src/target/release"
   for want in $BINARIES; do
@@ -520,22 +591,40 @@ letibot: the daemon, the head and the Claude Code bridge, into LETIBOT_INSTALL_D
          (default ~/.local/bin)
 
   sh install.sh           install
+  sh install.sh --plan    say what this machine would install, and change nothing
   sh install.sh --help    this
 
 What it installs: harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibot-acp,
-letibot-askpass (letibot-multi under the name `sudo` calls), and the four llama libraries harnessd
-links. It
-installs no model: the head asks for one on the first message.
+letibot-askpass (letibot-multi under the name `sudo` calls). It installs no model: the head asks
+for one on the first message.
+
+**The default install is CLOUD-ONLY**: the daemon links no llama.cpp and serves a provider. A
+LOCAL model is opt-in with LETIBOT_LOCAL=1, which installs the release asset carrying llama.cpp's
+four libraries, or with LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB for a source build. A cloud install
+removes those four from LETIBOT_INSTALL_DIR if an older local install left them there.
 
 Environment:
   LETIBOT_INSTALL_DIR   where everything goes   (default: ~/.local/bin)
   LETIBOT_VERSION       tag or branch           (default: the default branch)
   LETIBOT_FROM_SOURCE   set to anything to skip the download and build instead
-  LETIBOT_LLAMA_DIR     a llama.cpp checkout    (source builds: required)
-  LETIBOT_LLAMA_LIB     its lib directory       (source builds: required)
+  LETIBOT_LOCAL         set to anything for a LOCAL install (llama.cpp, local models)
+  LETIBOT_LLAMA_DIR     a llama.cpp checkout    (a local source build: required)
+  LETIBOT_LLAMA_LIB     its lib directory       (a local source build: required)
 USAGE
   say ""
   plugin_lines
+}
+
+# **What `--plan` prints: one of the four `install_plan` answers, in a sentence.** A dry run means
+# dry: nothing is downloaded, built or copied, so a person can see what this machine would get.
+plan_lines() {
+  plan=$(install_plan)
+  case "$plan" in
+    prebuilt) say "prebuilt: the cloud asset, $(asset_name "$(asset_triple)" "$plan"), no llama.cpp" ;;
+    prebuilt-local) say "prebuilt: the LOCAL asset, $(asset_name "$(asset_triple)" "$plan"), llama.cpp included" ;;
+    cloud) say "source: a CLOUD-ONLY build, no llama.cpp needed" ;;
+    local) say "source: a LOCAL build against LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB" ;;
+  esac
 }
 
 main() {
@@ -546,6 +635,10 @@ main() {
       usage
       exit 0
       ;;
+    --plan)
+      plan_lines
+      exit 0
+      ;;
     '') ;;
     *)
       warn "letibot: unknown argument: $1"
@@ -553,14 +646,21 @@ main() {
       exit 2
       ;;
   esac
+  # The plan is decided ONCE: `require_host_runtime` checks for the libraries this run installs,
+  # `try_prebuilt` asks for the asset that matches it, and the banner says which it is.
+  PLAN=$(install_plan)
   # **Before the banner, before the download, before a single file is copied.**
   # A box that cannot run the binaries should learn that in the first second,
   # not after 16 MB and six files it will have to remove.
-  require_host_runtime "$(install_plan)"
+  require_host_runtime "$PLAN"
 
   say "letibot installs into: $INSTALL_DIR"
   say "  $BINARIES"
-  say "  $LIBRARIES  (the tokenizer and llama.cpp's compute layer)"
+  if plan_installs_llama "$PLAN"; then
+    say "  $LIBRARIES  (the tokenizer and llama.cpp's compute layer)"
+  else
+    say "  (no llama.cpp libraries: a cloud-only build)"
+  fi
   say ""
 
   tmp=$(mktemp -d)
@@ -579,7 +679,6 @@ main() {
   if src=$(local_checkout); then
     from=$(build_from_source "$src")
     libs_from="${LETIBOT_LLAMA_LIB:-}"
-    cloud_only_libraries
     launcher_from="$src/scripts"
   else
     if [ -z "${LETIBOT_FROM_SOURCE:-}" ]; then
@@ -612,7 +711,6 @@ main() {
       fi
       from=$(build_from_source "$tmp/letibot")
       libs_from="${LETIBOT_LLAMA_LIB:-}"
-      cloud_only_libraries
       launcher_from="$tmp/letibot/scripts"
     fi
   fi
@@ -677,19 +775,37 @@ main() {
     fi
   done
   role_copies
-  for so in $LIBRARIES; do
-    src_so="$from/$so"
-    [ -f "$src_so" ] || src_so="${libs_from:-$from}/$so"
-    [ -f "$src_so" ] || die "cannot find $so to install: harnessd links it and will not start without it"
-    cp -L "$src_so" "$INSTALL_DIR/$so" || die "cannot write $INSTALL_DIR/$so"
-    chmod 644 "$INSTALL_DIR/$so"
-  done
+  # **What an install that carries no llama does with the four files an older one left.** They sit
+  # beside the binaries, which is where the loader's `$ORIGIN` looks, so a stale `libllama.so.0`
+  # beside a daemon that links none is a directory claiming this box runs a local model about a
+  # build that cannot. Only these four names are removed, and only from $INSTALL_DIR.
+  stale=""
+  if plan_installs_llama "$PLAN"; then
+    for so in $LIBRARIES; do
+      src_so="$from/$so"
+      [ -f "$src_so" ] || src_so="${libs_from:-$from}/$so"
+      [ -f "$src_so" ] || die "cannot find $so to install: harnessd links it and will not start without it"
+      cp -L "$src_so" "$INSTALL_DIR/$so" || die "cannot write $INSTALL_DIR/$so"
+      chmod 644 "$INSTALL_DIR/$so"
+    done
+  else
+    for so in $LIBRARIES; do
+      [ -e "$INSTALL_DIR/$so" ] || continue
+      rm -f "$INSTALL_DIR/$so" || die "cannot remove $INSTALL_DIR/$so"
+      stale="$stale $so"
+    done
+  fi
+  if [ -n "$stale" ]; then
+    say "  - removed the llama libraries an older local install left here:$stale"
+    say "    (this build links none; LETIBOT_LOCAL=1 puts them back)"
+  fi
   # **A Mac's own llama.cpp is usually a Metal build**, and its libllama then also names
   # libggml-metal and libggml-blas. The release asset is CPU-only and has none, but a
   # source install links whatever LETIBOT_LLAMA_LIB holds — so on macOS every further
   # `@rpath/` library the installed ones name is copied too, from the same place, and a
   # name that is nowhere is refused here rather than at the daemon's first exec.
-  if [ "$HOST_OS" = Darwin ]; then
+  # A cloud install has none of the four, so there is nothing to walk.
+  if [ "$HOST_OS" = Darwin ] && plan_installs_llama "$PLAN"; then
     for so in $LIBRARIES; do
       for dep in $(otool -L "$INSTALL_DIR/$so" | sed -n 's|^[[:space:]]*@rpath/\([^ ]*\) .*|\1|p'); do
         [ -f "$INSTALL_DIR/$dep" ] && continue
@@ -715,9 +831,9 @@ main() {
   got=$("$INSTALL_DIR/harnessd" --version 2>&1) || die "installed $INSTALL_DIR/harnessd, but it does not run.
   $got
 
-  If that names a library, it is the loader's own word for what is missing. The
-  four in $LIBRARIES are beside the binary; libstdc++, libgomp and libsqlite3 come
-  from the host and are listed at the top of this script."
+  If that names a library, it is the loader's own word for what is missing. The four
+  llama libraries are beside the binary on a local install; libstdc++, libgomp and
+  libsqlite3 come from the host and are listed at the top of this script."
   tui=$("$INSTALL_DIR/letibot-tui" --version 2>&1) || die "installed letibot-tui, but it does not run.
   $tui"
   # The multicall links llama through harnessd, so `--version` proves `$ORIGIN` resolved.
@@ -763,18 +879,20 @@ main() {
   # 2026-10-18: *"idk why i even have to do --provider. horrible ux - we already have
   # models chooser and keys asker"*. The head asks now, on the first message, and saves
   # the answer — so the advice is to run it, with the local server as the other door.
-  if [ -z "$LIBRARIES" ]; then
-    # The cloud-only build: the next step is a key, and the head asks for it.
-    say "What you have now: a daemon and a head for CLOUD models. On the first"
-    say "message letibot asks which model, and for its key once (saved, mode 600,"
-    say "in ~/.config/letibot/providers.toml as this box's default)."
-    say ""
-  else
+  if plan_installs_llama "$PLAN"; then
     say "What you have now: a daemon, a head, and the libraries they link — not a"
     say "MODEL. On the first message letibot asks for one: a cloud model, whose key it"
     say "asks for once and saves, or a local llama-server you give a home in"
     # shellcheck disable=SC2088 # a path printed for a person to read, not expanded
     say "~/.config/letibot/providers.toml ([model.\"local.NAME\"] with its url)."
+    say ""
+  else
+    # The cloud-only build: the next step is a key, and the head asks for it.
+    say "What you have now: a daemon and a head for CLOUD models. On the first"
+    say "message letibot asks which model, and for its key once (saved, mode 600,"
+    say "in ~/.config/letibot/providers.toml as this box's default)."
+    say "This build links no llama.cpp, so a local llama-server needs LETIBOT_LOCAL=1:"
+    say "  LETIBOT_LOCAL=1 sh install.sh"
     say ""
   fi
   if [ "$have_launcher" = 1 ]; then

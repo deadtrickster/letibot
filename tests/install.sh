@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015 # note and fail both answer 0, so `COND && note || fail` arms are exclusive
-# **install.sh against a stub cargo and a stub curl**: what lands under which name.
+# **install.sh against a stub cargo and a stub curl**: what lands under which name, and which
+# of the four installs (`prebuilt`, `prebuilt-local`, `cloud`, `local`) a machine gets.
 #
 # The launcher and the multicall are separate files, and no path through the installer may put a
 # compiled binary under a launcher's name. Each case runs the real install.sh in a throwaway tree.
@@ -50,25 +51,42 @@ mkdir -p "$out"
 for b in $STUB_BUILT; do cp "$STUB_ELF" "$out/$b"; done
 STUB
 # `curl -o FILE URL` hands over the archive the case staged; anything else fails, as offline.
+# The URL is logged, because WHICH asset is asked for is the whole of the cloud/local default.
 cat >"$T/stubs/curl" <<'STUB'
 #!/bin/sh
 out=""
+url=""
 while [ $# -gt 0 ]; do
   [ "$1" = -o ] && out="$2"
   [ "$1" = -I ] || [ "$1" = -fsSLI ] && exit 22
+  case "$1" in
+    http://* | https://*) url="$1" ;;
+  esac
   shift
 done
+[ -n "$STUB_URL_LOG" ] && printf '%s\n' "$url" >>"$STUB_URL_LOG"
 [ -n "$out" ] && [ -f "$STUB_ARCHIVE" ] || exit 22
 cp "$STUB_ARCHIVE" "$out"
 STUB
 chmod +x "$T/stubs/cargo" "$T/stubs/curl"
 
-# install CASE SCRIPT -- run SCRIPT into $T/CASE/bin and print what it said.
+# install CASE SCRIPT -- run SCRIPT into $T/CASE/bin and print what it said. `EXTRA_ENV` is a
+# list of NAME=value words handed to the empty environment, the way a person's own variables are.
 install() {
   mkdir -p "$T/$1/home"
+  # shellcheck disable=SC2086 # EXTRA_ENV is a list of words, split on purpose
   env -i PATH="$T/stubs:$PATH" HOME="$T/$1/home" LETIBOT_INSTALL_DIR="$T/$1/bin" \
     STUB_ELF="$ELF" STUB_BUILT="$BUILT" STUB_ARCHIVE="${STUB_ARCHIVE:-}" \
+    STUB_URL_LOG="${STUB_URL_LOG:-}" ${EXTRA_ENV:-} \
     sh "$2" 2>&1
+}
+
+# plan SCRIPT [NAME=value ...] -- install.sh --plan, which prints the install this machine would
+# get and changes nothing: no download, no build, no copy.
+plan() {
+  script="$1"
+  shift
+  env -i PATH="$T/stubs:$PATH" HOME="$T/plan-home" "$@" sh "$script" --plan 2>&1
 }
 
 is_script() { head -c 2 "$1" 2>/dev/null | grep -q '^#!'; }
@@ -185,6 +203,108 @@ if prebuilt_reached "$out" "old archive"; then
   [ -f "$T/old/bin/letibot-askpass" ] && ! is_script "$T/old/bin/letibot-askpass" &&
     note "old archive: its letibot-askpass is installed" ||
     fail "old archive: its letibot-askpass is installed" "$(ls -la "$T/old/bin")"
+fi
+
+# --- which install this machine gets ---------------------------------------------------------
+# **The default is CLOUD on every path.** `--plan` is the dry run: it prints the answer and
+# downloads, builds and copies nothing.
+bare="$T/bare/install.sh"
+plan_is() { # plan_is DESCRIPTION EXPECTED [NAME=value ...]
+  desc="$1"
+  want="$2"
+  shift 2
+  out="$(plan "$bare" "$@")"
+  if printf '%s' "$out" | grep -qF "$want"; then
+    note "plan: $desc"
+  else
+    fail "plan: $desc" "$out"
+  fi
+}
+plan_is "no variable set is the cloud asset" 'prebuilt: the cloud asset'
+plan_is "LETIBOT_LOCAL=1 is the -local asset" 'prebuilt: the LOCAL asset' LETIBOT_LOCAL=1
+plan_is "LETIBOT_FROM_SOURCE with no llama.cpp is a cloud source build" \
+  'source: a CLOUD-ONLY build' LETIBOT_FROM_SOURCE=1
+plan_is "a named llama.cpp is a local source build" 'source: a LOCAL build' \
+  LETIBOT_FROM_SOURCE=1 LETIBOT_LLAMA_DIR=/x LETIBOT_LLAMA_LIB=/x
+# A checkout is a source build, cloud unless a local model is asked for.
+out="$(plan "$T/src/install.sh")"
+if printf '%s' "$out" | grep -qF 'source: a CLOUD-ONLY build'; then
+  note "plan: a checkout with no llama.cpp is a cloud source build"
+else
+  fail "plan: a checkout with no llama.cpp is a cloud source build" "$out"
+fi
+
+# A local SOURCE build with no llama.cpp to build against is a refusal, not a quiet cloud build:
+# the person asked for local models, and a cloud daemon would answer nothing they want.
+out="$(EXTRA_ENV="LETIBOT_LOCAL=1" install srcnollama "$T/src/install.sh")"
+st=$?
+if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q 'there is no llama.cpp to build against'; then
+  note "source: LETIBOT_LOCAL with no llama.cpp is refused by name"
+else
+  fail "source: LETIBOT_LOCAL with no llama.cpp is refused by name" "exit $st: $out"
+fi
+# Half the pair is refused too, so a typo cannot install a cloud daemon under a local request.
+out="$(EXTRA_ENV="LETIBOT_LLAMA_DIR=/x" install srcfirstonly "$T/src/install.sh")"
+st=$?
+if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q 'LETIBOT_LLAMA_LIB is not'; then
+  note "source: LETIBOT_LLAMA_DIR alone is refused by name"
+else
+  fail "source: LETIBOT_LLAMA_DIR alone is refused by name" "exit $st: $out"
+fi
+
+# --- the asset each default downloads --------------------------------------------------------
+: >"$T/url-cloud"
+STUB_ARCHIVE="$T/arc/a.tar.gz" STUB_URL_LOG="$T/url-cloud" install urlcloud "$bare" >/dev/null 2>&1
+url=$(sed -n 1p "$T/url-cloud")
+case "$url" in
+  */letibot-*.tar.gz)
+    note "prebuilt: the default download is the cloud asset ($url)"
+    ;;
+  *) fail "prebuilt: the default download is the cloud asset" "$url" ;;
+ esac
+: >"$T/url-local"
+EXTRA_ENV="LETIBOT_LOCAL=1" STUB_ARCHIVE="$T/arc/a.tar.gz" STUB_URL_LOG="$T/url-local" \
+  install urllocal "$bare" >/dev/null 2>&1
+url=$(sed -n 1p "$T/url-local")
+case "$url" in
+  *"-local.tar.gz") note "prebuilt: LETIBOT_LOCAL downloads the -local asset ($url)" ;;
+  *) fail "prebuilt: LETIBOT_LOCAL downloads the -local asset" "$url" ;;
+ esac
+
+# --- a cloud install carries no llama, and clears what an older local one left ----------------
+# The same archive with the four libraries taken out: what the release publishes by default.
+archive "$T/arccloud"
+rm -f "$T/arccloud/stage"/lib*
+tar -czf "$T/arccloud/a.tar.gz" -C "$T/arccloud/stage" .
+out="$(STUB_ARCHIVE="$T/arccloud/a.tar.gz" install cloud "$bare")"
+st=$?
+if prebuilt_reached "$out" "cloud archive"; then
+  if [ "$st" -eq 0 ]; then
+    note "cloud archive: installs with no llama library at all"
+  else
+    fail "cloud archive: installs with no llama library at all" "$out"
+  fi
+  if ls "$T/cloud/bin" | grep -q '^libllama'; then
+    fail "cloud archive: no libllama lands" "$(ls "$T/cloud/bin")"
+  else
+    note "cloud archive: no libllama lands"
+  fi
+fi
+
+# An older local install left the four beside the binaries. A cloud install removes them, and
+# says so: they sit where the loader looks, so leaving them claims a local model this build has not.
+mkdir -p "$T/stale/bin"
+for l in $LIBS; do : >"$T/stale/bin/$l"; done
+out="$(STUB_ARCHIVE="$T/arccloud/a.tar.gz" install stale "$bare")"
+st=$?
+if prebuilt_reached "$out" "stale libraries"; then
+  left=$(ls "$T/stale/bin" | grep -c '^lib' || true)
+  if [ "$st" -eq 0 ] && [ "$left" -eq 0 ] && printf '%s' "$out" | grep -q 'removed the llama libraries'; then
+    note "cloud install: the llama libraries an older install left are removed, and said"
+  else
+    fail "cloud install: the llama libraries an older install left are removed, and said" \
+      "exit $st: $(ls "$T/stale/bin"): $out"
+  fi
 fi
 
 # --- the gate's check on a build's output -------------------------------------------------------
