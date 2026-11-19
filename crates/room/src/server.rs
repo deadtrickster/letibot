@@ -2017,6 +2017,12 @@ impl Server {
         name.to_string()
     }
 
+    /// Do two names mean one seat? An ask, a wait and a refusal belong to the seat, and a seat
+    /// keeps its id across a rename, so the answer is the ids rather than the spellings.
+    pub fn same_seat(&self, a: &str, b: &str) -> bool {
+        a == b || (!a.is_empty() && !b.is_empty() && self.principal_of(a) == self.principal_of(b))
+    }
+
     /// The label the room holds for a seat: the nick it was given, else the name it is drawn by.
     pub fn nick_of(&self, seat: &str) -> Option<String> {
         self.live_nicks().remove(seat).map(|(nick, _)| nick)
@@ -3990,9 +3996,20 @@ impl Server {
     /// the OTHER end: gone since when, and whether that is past the grace. That is the whole of the
     /// escalation, and it is why a reconnect clears it without any bookkeeping beyond `gone_since`.
     fn asks_for(&self, me: &str, now: u64) -> (Vec<chat::AskView>, Vec<chat::AskView>) {
-        let (by_me, of_me) = {
+        let (by_me, of_me): (Vec<chat::AskView>, Vec<chat::AskView>) = {
             let chat = self.inner.chat.lock().expect("the chat lock");
-            (chat.asks_by(me), chat.asks_of(me))
+            let all = chat.asks_by_any();
+            let mine: Vec<chat::AskView> = all
+                .iter()
+                .filter(|a| self.same_seat(&a.asker, me))
+                .cloned()
+                .collect();
+            let theirs: Vec<chat::AskView> = all
+                .iter()
+                .filter(|a| self.same_seat(&a.target, me))
+                .cloned()
+                .collect();
+            (mine, theirs)
         };
         (
             by_me.iter().map(|a| self.ask_view(a, me, now)).collect(),
@@ -4421,7 +4438,7 @@ impl Server {
         let Some(found) = self.inner.chat.lock().expect("the chat lock").ask(ask) else {
             return refuse(crate::Refused::UnknownAsk { ask });
         };
-        if found.target != name {
+        if !self.same_seat(&found.target, name) {
             return refuse(crate::Refused::AskNotTheTarget {
                 ask,
                 target: self.handles().remove(&found.target).unwrap_or(found.target),
@@ -4508,7 +4525,7 @@ impl Server {
         let Some(found) = self.inner.chat.lock().expect("the chat lock").ask(ask) else {
             return refuse(crate::Refused::UnknownAsk { ask });
         };
-        if found.asker != name && seat != Seat::Operator {
+        if !self.same_seat(&found.asker, name) && seat != Seat::Operator {
             return refuse(crate::Refused::AskNotYours {
                 ask,
                 asker: found.asker,
