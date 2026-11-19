@@ -983,6 +983,20 @@ impl ViewSpec {
         matches!(self.classify(path), Presence::Outside)
     }
 
+    /// The roots the operator granted beyond the toolchain's, and whether each is writable. The
+    /// boundary binds these and the file fence denies by the same list, so this IS the set a
+    /// caller asking "what may this session reach" has to read.
+    pub fn granted(&self) -> Vec<(PathBuf, bool)> {
+        self.grants
+            .iter()
+            .filter_map(|g| match g {
+                Grant::ReadOnly { path, .. } => Some((path.clone(), false)),
+                Grant::ReadWrite { path, .. } => Some((path.clone(), true)),
+                Grant::AgentSocket { .. } => None,
+            })
+            .collect()
+    }
+
     /// The roots a disclosure lists, in the order it lists them.
     pub fn summary(&self) -> String {
         if self.wide {

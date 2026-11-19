@@ -63,6 +63,48 @@ struct Granted {
     writable: bool,
 }
 
+/// The roots the operator granted into this session's view, READ AT ASK TIME. The measured view
+/// is the one authority for what a session may reach beyond its workspace - the boundary binds
+/// these and the file fence denies by the same list - so this reader is not a second source: a
+/// grant answered mid-session counts from its answer on, and a revoked one stops at once.
+#[derive(Clone, Default)]
+pub struct GrantedRoots(Option<Arc<dyn Fn() -> Vec<(PathBuf, bool)> + Send + Sync>>);
+
+impl GrantedRoots {
+    /// A fixed set: a backend with no view, or a test.
+    pub fn of(roots: Vec<(PathBuf, bool)>) -> GrantedRoots {
+        GrantedRoots::live(move || roots.clone())
+    }
+
+    /// Read on every ask, so what is granted is what the boundary holds now.
+    pub fn live(f: impl Fn() -> Vec<(PathBuf, bool)> + Send + Sync + 'static) -> GrantedRoots {
+        GrantedRoots(Some(Arc::new(f)))
+    }
+
+    /// Every root, with whether a write is covered by it. Empty when nothing is granted.
+    pub fn all(&self) -> Vec<(PathBuf, bool)> {
+        self.0.as_ref().map(|f| f()).unwrap_or_default()
+    }
+
+    /// The roots a write may land in, as the boundary spells them: a read-only grant is not one.
+    /// A caller comparing these to a path it built itself needs the raw spelling, not a key.
+    pub fn writable(&self) -> Vec<PathBuf> {
+        self.all()
+            .into_iter()
+            .filter(|(_, write)| *write)
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// Whether a root granted here covers `path` at `access`.
+    pub fn covers(&self, path: &Path, access: ViewAccess) -> bool {
+        let at = key(path);
+        self.all()
+            .into_iter()
+            .any(|(root, write)| access.covered_by(write) && at.starts_with(key(&root)))
+    }
+}
+
 /// The canonical key of a path, for every comparison made here: `..` resolved, `.` and a
 /// trailing slash dropped, and a symbol link followed as far as the path exists - so a file a
 /// command wanted to CREATE is still compared at its real place. Two spellings of one path share

@@ -1513,6 +1513,10 @@ pub struct AdjudicatedGate {
     /// asked about again by its siblings or its parent. `None` in a gate nobody wired one to,
     /// which asks as it did before the record existed.
     view: Option<std::sync::Arc<crate::view::ViewGrants>>,
+    /// The roots the measured view holds beyond the workspace, read when a call is judged: a
+    /// folder the operator granted writable IS a workspace to layer A's scope rules and to the
+    /// class, and a revoked one is not, which is why this is a reader and not a copy.
+    granted: crate::view::GrantedRoots,
     /// How far this session has read the record's revocations.
     view_revoked_seen: usize,
     /// Whose call a view ask is, when this session is a subagent's: a card that named only the
@@ -1668,6 +1672,7 @@ impl AdjudicatedGate {
             unasked: false,
             admissions: None,
             view: None,
+            granted: crate::view::GrantedRoots::default(),
             view_revoked_seen: 0,
             asker: None,
             ledger: None,
@@ -1875,6 +1880,13 @@ impl AdjudicatedGate {
     /// record a later ask is answered from without a card.
     pub fn with_view_grants(mut self, grants: std::sync::Arc<crate::view::ViewGrants>) -> Self {
         self.view = Some(grants);
+        self
+    }
+
+    /// The roots the measured view holds beyond the workspace. Read at judging time, so a grant
+    /// answered mid-session is a workspace for the next call and a revoked one stops at once.
+    pub fn with_granted_roots(mut self, granted: crate::view::GrantedRoots) -> Self {
+        self.granted = granted;
         self
     }
 
@@ -2278,11 +2290,12 @@ impl AdjudicatedGate {
     /// argument is normalised through the grammar; anything else is read as path arguments, so
     /// the flow rule applies to `read` exactly as it applies to `cat`.
     pub fn baseline_for(&self, call: &GateCall<'_>) -> crate::intent::Baseline {
+        let here = self.surroundings_here();
         if let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) {
             // The scripts this command will run travel with it, because the runtime already
             // read them through the backend for the brief. Handing layer A the same bytes is
             // what stops the classifier and the oracle disagreeing about one file.
-            return crate::intent::Baseline::of_command_with(cmd, &self.surroundings, call.scripts);
+            return crate::intent::Baseline::of_command_with(cmd, &here, call.scripts);
         }
         let paths: Vec<&str> = call
             .args
@@ -2304,8 +2317,36 @@ impl AdjudicatedGate {
             call.access == Access::Write,
             // A read tool returns the bytes it read, which is the transcript edge.
             call.access == Access::Read,
-            &self.surroundings,
+            &here,
         )
+    }
+
+    /// Layer A's surroundings for one call: the session's own, plus the roots the operator
+    /// granted writable, read now. A grant IS what makes a folder a workspace to layer A, so a
+    /// copy taken at open would judge a delete where the session is no longer allowed.
+    fn surroundings_here(&self) -> crate::intent::Surroundings {
+        let mut here = self.surroundings.clone();
+        here.granted = self
+            .granted
+            .writable()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        here
+    }
+
+    /// Whether the call's own `path` lands in a root the operator granted, at the access it asks
+    /// for: a read-only grant answers a read and not a write, so a `write` into one still lands
+    /// outside the workspace and the stage that answers it has to say so.
+    fn grant_covers(&self, call: &GateCall<'_>) -> bool {
+        let access = match call.access {
+            Access::Read => crate::view::ViewAccess::Read,
+            _ => crate::view::ViewAccess::Write,
+        };
+        call.args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| self.granted.covers(std::path::Path::new(p), access))
     }
 
     /// Layer A's reading of this call with the `adjudicate_` floor merged into it: the one place a
@@ -2369,7 +2410,10 @@ impl AdjudicatedGate {
         // for a network tool there is none, and naming the absence would describe the request
         // by what it is not.
         let target = target_of(call.args);
-        let inside = call.path_is_inside();
+        // A folder the operator granted is a workspace for the class too: it is where the
+        // session was told it may work, so a write there is the project's own work and not a
+        // reach across the host.
+        let inside = call.path_is_inside() || self.grant_covers(call);
         // Reversibility is a fact about the target, and the runtime stats it before asking.
         // `None` - no path argument at all - counts as reversible: claiming otherwise would be
         // a stronger statement than the evidence supports.
