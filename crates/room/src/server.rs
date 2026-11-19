@@ -792,7 +792,7 @@ impl Server {
                     events: Vec::new(),
                 };
             }
-            if let Some(refused) = self.hello_name_refusal(seat, who, *share) {
+            if let Some(refused) = self.hello_name_refusal(seat, who, *share, id) {
                 return Answer {
                     response: refused,
                     events: Vec::new(),
@@ -1147,8 +1147,16 @@ impl Server {
         })
     }
 
-    /// Why this `Hello` may not speak under this name in this seat, as the reply to send.
-    fn hello_name_refusal(&self, seat: Seat, who: &Speaker, share: bool) -> Option<Response> {
+    /// Why this `Hello` may not speak under this name in this seat, as the reply to send. `id` is
+    /// the seat it claims to be: an id is one seat, so a second connection that does not say it is
+    /// sharing (a bridge and its waiter do) is refused rather than becoming a second seat of one name.
+    fn hello_name_refusal(
+        &self,
+        seat: Seat,
+        who: &Speaker,
+        share: bool,
+        id: &str,
+    ) -> Option<Response> {
         let name = who.session.as_str();
         let ok = match seat {
             Seat::Session => name != chat::OPERATOR && !name.is_empty(),
@@ -1162,6 +1170,24 @@ impl Server {
                 id: None,
                 why: crate::Refused::NameInUse {
                     name: name.to_string(),
+                },
+            });
+        }
+        // Two connections of one seat must share it, as a bridge and its waiter do. A second seat
+        // claiming an id the room already keys a cursor and a wait on is refused - unless it is the
+        // same name reconnecting, which the name's own rule above already decides.
+        let id = id.trim();
+        if !share
+            && !id.is_empty()
+            && self
+                .conn_list()
+                .iter()
+                .any(|c| c.id == id && c.who.session != name)
+        {
+            return Some(Response::Refused {
+                id: None,
+                why: crate::Refused::NameInUse {
+                    name: id.to_string(),
                 },
             });
         }
