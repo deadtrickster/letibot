@@ -10,6 +10,7 @@ use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, PaneBrie
 use letibot_sessionlog::registry::{Registry, SessionWiring, TerminalDriver};
 use letibot_sessionlog::server::serve_conn;
 use letibot_sessionlog::term_command;
+use letibot_sessionlog::testing::wait_until;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 
 /// A driver that runs nothing and remembers everything. A `TerminalDriver` and not
@@ -324,14 +325,9 @@ fn the_verb_the_command_and_the_rectangle_reach_the_driver() {
     })
     .expect("open");
 
-    // The driver's `open` runs on the connection's reader thread, so give it the moment it
-    // needs before pushing what the pty's own thread would have pushed after it.
-    for _ in 0..200 {
-        if !driver.opened().is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // The driver's `open` runs on the connection's reader thread, so wait for it to have run
+    // before pushing what the pty's own thread would have pushed after it.
+    wait_until("the driver's open", || !driver.opened().is_empty());
 
     // What the pty's reader thread would push a moment later.
     driver.say(b"\x1b[2J\x1b[Hmc's screen\r\n");
@@ -379,13 +375,10 @@ fn keys_are_forwarded_as_bytes_and_are_not_decoded() {
     })
     .expect("resize");
 
-    // The reader thread is the connection's, so give it the moment it needs and then assert.
-    for _ in 0..200 {
-        if !driver.input().is_empty() && !driver.resized().is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // The reader thread is the connection's, so wait for it to have read both frames.
+    wait_until("the keys and the resize", || {
+        !driver.input().is_empty() && !driver.resized().is_empty()
+    });
     assert_eq!(
         driver.input(),
         vec![keys],
@@ -417,12 +410,7 @@ fn a_pane_writes_no_row_and_moves_no_seq() {
     })
     .expect("keys");
     w.write(&ClientFrame::TermClose { pane: 1 }).expect("close");
-    for _ in 0..200 {
-        if !driver.closed().is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_until("the pane to end", || !driver.closed().is_empty());
 
     assert_eq!(
         hub.head_seq(),
@@ -456,12 +444,7 @@ fn the_deliberate_close_ends_the_pane_and_never_reaches_the_program() {
     .expect("open");
     // The ending, as the head would report it: a close and no key.
     w.write(&ClientFrame::TermClose { pane: 1 }).expect("close");
-    for _ in 0..200 {
-        if !driver.closed().is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_until("the pane to end", || !driver.closed().is_empty());
     assert_eq!(driver.closed(), vec!["s-1".to_string()]);
     assert!(
         driver.input().is_empty(),
@@ -495,12 +478,7 @@ fn a_detach_sends_nothing_and_leaves_the_pane_live() {
         rows: 24,
     })
     .expect("open");
-    for _ in 0..200 {
-        if !driver.opened().is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_until("the driver's open", || !driver.opened().is_empty());
 
     // The operator pressed `ctrl-\`: the head hides the rectangle and writes nothing. What the
     // head does next - a moment or an hour later - is ask whether the program is still there.
