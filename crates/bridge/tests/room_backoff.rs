@@ -239,7 +239,8 @@ fn a_coordinator_that_comes_back_is_redialled_and_the_wait_starts_over() {
 /// into the same wall, and the MCP server still answers.
 #[test]
 fn an_unspeakable_coordinator_ends_the_room_channel_and_the_tools_still_answer() {
-    // The wire serves 11 through 13; a 9 coordinator would misread every frame this bridge sends.
+    // The wire serves 11 through this build's number; a 9 coordinator would misread every frame the
+    // bridge sends, and the sentence names the coordinator as the side that is out of date.
     let fake = Fake::start("unspeakable", 9);
     let bridge = Bridge::with_room_socket(&fake.path);
     bridge.rooms().stream(Arc::new(|_: &Value, _: bool| true));
@@ -253,7 +254,14 @@ fn an_unspeakable_coordinator_ends_the_room_channel_and_the_tools_still_answer()
         said.contains(&format!("this bridge speaks {}", rooms::PROTOCOL)),
         "{said}"
     );
-    assert!(said.contains("rooms are off until one restarts"), "{said}");
+    assert!(
+        said.contains("the coordinator is the older of the two"),
+        "{said}"
+    );
+    assert!(
+        said.contains("rooms are off until it is restarted"),
+        "{said}"
+    );
 
     // Nothing is redialled into it: the count stops where the welcome left it.
     let seen = fake.seen();
@@ -297,7 +305,7 @@ fn an_unspeakable_coordinator_ends_the_room_channel_and_the_tools_still_answer()
         .as_str()
         .unwrap_or_default();
     assert!(
-        text.contains("rooms are off until one restarts"),
+        text.contains("rooms are off until it is restarted"),
         "{answered}"
     );
 }
