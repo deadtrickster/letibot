@@ -85,7 +85,9 @@ fn a_seat_board_writes_to_a_split_store() {
     assert_eq!(wrote["stored"], json!(true), "{wrote}");
 
     let shared = Store::open(&dir.join(SHARED_FILE)).expect("the shared file");
-    let rows = shared.seat_todos("cc@split-store").expect("the board");
+    let rows = shared
+        .seat_todos(&letibot_bridge::rooms::seat())
+        .expect("the board");
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].content, "read the split");
 
@@ -95,7 +97,7 @@ fn a_seat_board_writes_to_a_split_store() {
     )
     .expect("the project file");
     assert!(
-        project.seat_todos("cc@split-store").is_err(),
+        project.seat_todos(&letibot_bridge::rooms::seat()).is_err(),
         "a board is in the shared file and the project file has no such table"
     );
 }
@@ -123,7 +125,9 @@ fn an_unsplit_directory_reads_its_sessions_db() {
 
     let one = Store::open(&dir.0.join("sessions.db")).expect("the single file");
     assert_eq!(
-        one.seat_todos("cc@split-store").expect("the board").len(),
+        one.seat_todos(&letibot_bridge::rooms::seat())
+            .expect("the board")
+            .len(),
         1
     );
     assert!(

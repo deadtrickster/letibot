@@ -44,8 +44,12 @@ struct Working {
 
 /// One seat's board. `Bridge` owns one, lazily, and hands its `Arc` to every call that needs it.
 pub struct Seat {
-    /// The handle the board is stored under and the nag is addressed from: `cc@<project>`.
+    /// The handle the seat speaks as and the nag is addressed from: `cc@<project>`. Display only -
+    /// nothing stored is keyed on it, because it is minted at connect and may differ next time.
     handle: String,
+    /// The seat's stable id (`<host>/cc-<session>`): what its board is stored under. A reconnect
+    /// under another handle is the same seat, and a wait naming the id finds the board either way.
+    id: String,
     board: Arc<TodoBoard>,
     clock: Mutex<TodoNagClock>,
     /// When the seat last called a tool. The seat's turn is over at that instant, so the window is
@@ -77,15 +81,20 @@ pub struct Seat {
 }
 
 impl Seat {
-    /// A seat whose board is read from `store` under `handle`, checked against `heads`.
+    /// A seat that speaks as `handle` and writes its board under `id`, read from `store` and checked
+    /// against `heads`. A board this seat left under its handle before it wrote ids is moved to the
+    /// id here, at connect: losing it would lose a live plan on the upgrade.
     pub fn new(
         handle: impl Into<String>,
+        id: impl Into<String>,
         store: impl Into<PathBuf>,
         heads: Arc<Mutex<HashMap<String, Arc<Head>>>>,
     ) -> Seat {
         let handle = handle.into();
+        let id = id.into();
         let store = store.into();
-        let board = TodoBoard::new(load(&store, &handle));
+        moved(&store, &handle, &id);
+        let board = TodoBoard::new(load(&store, &id));
         let jobs = SeatJobs::new(
             handle.clone(),
             store.clone(),
@@ -99,6 +108,7 @@ impl Seat {
         let nag = crate::seat_nag::for_seat(&store, &handle);
         Seat {
             handle,
+            id,
             board: Arc::new(board),
             clock: Mutex::new(TodoNagClock::with_window(NAG_AFTER).keyed_by_plan()),
             active: Mutex::new(Instant::now()),
@@ -149,6 +159,12 @@ impl Seat {
         &self.handle
     }
 
+    /// The id this seat writes under: what a `todo` wait on this seat's board must name, and what
+    /// the board's own answer says its seat is.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     /// The board as it stands, in the shape the store holds it.
     pub fn rows(&self) -> Vec<TodoItem> {
         self.board.snapshot()
@@ -157,7 +173,7 @@ impl Seat {
     /// The board as a tool answers it: every row with its waits, and the version they last moved at.
     pub fn board_json(&self) -> Value {
         json!({
-            "seat": self.handle,
+            "seat": self.id,
             "rows": self.board.snapshot(),
             "version": self.board.version(),
         })
@@ -261,7 +277,7 @@ impl Seat {
     fn persisted(&self, mut answer: Value) -> Value {
         let stored = opened(&self.store)
             .and_then(|s| {
-                s.put_seat_todos(&self.handle, &self.board.snapshot())
+                s.put_seat_todos(&self.id, &self.board.snapshot())
                     .map_err(|e| e.to_string())
             })
             .err();
@@ -682,6 +698,18 @@ fn arg(args: &Value, key: &str) -> Result<String, String> {
         Some(Value::String(_)) => Err(format!("`{key}` is empty")),
         Some(_) => Err(format!("`{key}` must be a string")),
         None => Err(format!("`{key}` is required")),
+    }
+}
+
+/// Move a board this seat left under its handle to the id it writes under now, at connect. Silent on
+/// every way it can fail: a store with no file, a key with nothing under it, or an id that already
+/// has a board of its own is not an error - the board it reads next is still this seat's.
+fn moved(store: &std::path::Path, from: &str, to: &str) {
+    if from == to || !crate::store::exists(store) {
+        return;
+    }
+    if let Ok(s) = crate::store::open(store, "seat_todo", None) {
+        let _ = s.move_seat_board(from, to);
     }
 }
 
