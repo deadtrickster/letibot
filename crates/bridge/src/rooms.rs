@@ -1856,13 +1856,12 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_nick",
-            "The label the room draws this seat by, beside its id: a nick is display, and the seat's \
-             id is its identity. Refused while a live seat answers to it, with whose it is and the \
-             next counter free.",
+            "The label the room draws this seat by, beside its id. Refused while a live seat answers \
+             to it, with whose it is and the next counter free.",
             json!({
                 "type": "object",
                 "properties": {
-                    "nick": { "type": "string", "description": "1-24 of a-z, 0-9 and `-`, no edge `-`." }
+                    "nick": { "type": "string", "description": "1-24 of a-z, 0-9 and `-`." }
                 },
                 "required": ["nick"]
             }),
@@ -2775,13 +2774,17 @@ mod tests {
             "Proj",
             "a b",
             "s-x",
+            "cc-x",
             "cc",
             "operator",
             "-a",
-            &"x".repeat(21),
+            &"x".repeat(letibot_room::chat::NICK_MAX + 1),
         ] {
             assert!(valid_nick(bad).is_err(), "{bad}");
         }
+        // A label at the room's own length is one: the bound is the room's constant, not a second
+        // number spelled here - two numbers would be two answers to one question.
+        assert!(valid_nick(&"x".repeat(letibot_room::chat::NICK_MAX)).is_ok());
         assert!(a_handle(&qualified(&"f".repeat(30), &"n".repeat(30))));
         let _ = std::fs::remove_dir_all(&root);
     }
