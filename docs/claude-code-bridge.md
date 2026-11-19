@@ -64,9 +64,10 @@ Not `server:leticode`. That form names a server registered by hand with `claude 
 Claude Code drops every channel notification from a server the flag does not name, silently.
 
 **Never also register a user-scope `leticode` MCP server.** With both, one session runs two
-`letibot-mcp` bridges. The second takes a suffixed name (`cc@letibot-8e0`), a DM to `cc@letibot`
-reached the plugin bridge whose channel the flag did not cover, the cursor moved, and the session saw
-nothing. The room now delivers to every bridge of a name, and one bridge is still the setup. To
+`letibot-mcp` bridges. Both mint the same seat (from `CLAUDE_CODE_SESSION_ID`) and the second says
+it shares it, so the room admits it as one more connection of one seat rather than a twin - and a
+dm reaches every connection of the name, so the copy whose channel the flag covers still gets it.
+One bridge is still the setup: two connections of one seat double the pushes and the cursors. To
 remove a hand registration: `claude mcp remove leticode -s user`, then restart the session.
 
 **The room waiter is the fallback wake.** Without the channel, or when a push is lost, the plugin's

@@ -211,9 +211,8 @@ impl Mesh {
     }
 
     /// The link is down, by a reason the operator reads. A link already down says nothing twice,
-    /// and keeps the reason it first gave: the second sentence is a consequence of the first (the
-    /// socket the tick shut down reads as *closed the link* a moment later), and the cause is what
-    /// a person needs.
+    /// and keeps the reason it first gave: the second sentence is a consequence of the first, and
+    /// the cause is what a person needs.
     pub fn down(&mut self, host: &str, why: &str) -> Option<PeerEvent> {
         let link = self.links.get_mut(host)?;
         if !link.up {

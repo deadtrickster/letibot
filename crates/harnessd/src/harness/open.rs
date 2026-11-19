@@ -3109,11 +3109,9 @@ impl Harness {
                 notes.push(said);
             }
             // And the same for the DEFAULT, which is nobody's word: a project nobody configured
-            // opens at `automode`, and a box with no oracle would otherwise refuse to open at all -
-            // a session that never starts, on every folder, until somebody writes a row that says
-            // what the absent one meant. It opens at the nearest point it can carry and says so in
-            // one line. A stored row or a flag is a person's word and still refuses (`/mode
-            // automode` says on the spot what is missing).
+            // opens at `automode`, and a box with no oracle would otherwise never open a session at
+            // all. It falls to the nearest point it can carry and says so in one line; a stored row
+            // or a `/mode` is a person's word and still refuses.
             if cfg.parent_session_id.is_none()
                 && mode_source == FLAG_SOURCE
                 && cfg.mode.name == letibot_tools::mode::UNSEEN_PROJECT.name

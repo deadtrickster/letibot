@@ -116,8 +116,14 @@ room keeps this box's copy of the line either way.
 
 ## What the first real LAN run changed
 
-Seven things the first link between lab2x1 and a Mac found, and what each is now:
+Eight things the first link between lab2x1 and a Mac found, and what each is now:
 
+- **A tick can be late on a link that is up, and nothing in the ping loop is at fault for it.** The
+  round is one thread: it pings each box and writes with a 5 s bound, so a far box that stopped
+  reading delays the next ping to every box by that much, and four of those in a row is the same
+  20 s window as four lost pings. The usual cause of a silent far side that sends no `Bye` is a
+  coordinator that was killed or crash-looped - the socket stays open on this side, so only the
+  tick can notice. That is why a link with no `Bye` is ended by the tick, not by the reader.
 - **A link that comes back says what the far box holds, even when nothing changed.** `Mesh::seats_of`
   used to answer *nothing changed* for a list it had already seen, so a box that went away and came
   back with the same seats was never marked here again and its seats stayed *away* for ever. Every
