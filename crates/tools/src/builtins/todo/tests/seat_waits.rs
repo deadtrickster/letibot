@@ -299,6 +299,24 @@ fn a_board_is_read_by_seat_by_session_and_only_of_this_project() {
             "{name} names a session of this project"
         );
     }
+    // And a BRIDGE's seat id finds the board that bridge writes under the id: the words a handle
+    // carries are not there to match, so an id is looked up whole rather than refused as another
+    // project's.
+    store
+        .put_seat_todos(
+            "lab2x1/cc-7001",
+            &[item("ship the pane", TodoStatus::InProgress)],
+        )
+        .unwrap();
+    assert!(
+        matches!(board_of(&store, &mine, "lab2x1/cc-7001").unwrap(), Board::Rows(rows) if rows.len() == 1),
+        "a bridge's seat id names its own board"
+    );
+    assert!(
+        matches!(board_of(&store, &[], "lab2x1/cc-7009").unwrap(), Board::Unknown(why) if why.contains("lab2x1/cc-7009")),
+        "a seat that wrote none is unknown, and the sentence names it"
+    );
+
     // The session of another project is refused, and the refusal names the project.
     let elsewhere = board_of(&store, &mine, "elsewhere").unwrap_err();
     assert!(elsewhere.contains("another project"), "{elsewhere}");
