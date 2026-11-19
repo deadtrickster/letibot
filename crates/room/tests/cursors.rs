@@ -172,3 +172,76 @@ fn a_seat_that_reconnects_under_another_name_keeps_its_cursor_and_its_unread() {
     assert_eq!(rows, vec![4], "and it hears what happens after it arrived");
     server.stop();
 }
+
+/// An ask is the seat's too: opened at `cc@app`, answered after the same seat came back as
+/// `cc@app-abc`, which is the whole reason a wait or a question may not be keyed on a label.
+#[test]
+fn an_ask_survives_the_answerers_rename_and_is_still_answerable() {
+    let dir = Scratch::new();
+    let server = Server::serve(&dir.0.join("room.sock"), Room::new()).expect("a socket");
+    server.with_seat_host("lab2x1");
+    let asker = seated(&server, "s-a", "", Seat::Session, A);
+    let answerer = seated(&server, "cc@app", "lab2x1/cc-7001", Seat::External, A);
+
+    let ask = match asker.call(Request::Ask {
+        id: "q1".into(),
+        room: project_room(A),
+        to: "cc@app".into(),
+        path: String::new(),
+        topic: String::new(),
+        question: "which port?".into(),
+    }) {
+        Response::Asked { ask, .. } => ask.seq,
+        other => panic!("an ask is asked: {other:?}"),
+    };
+    // It is owed to the seat under the name it had.
+    match answerer.call(Request::Asks) {
+        Response::Asks { of_me, .. } => {
+            assert_eq!(of_me.len(), 1, "{of_me:?}");
+            assert_eq!(of_me[0].asker, "s-a");
+        }
+        other => panic!("{other:?}"),
+    }
+    drop(answerer);
+    until("the answerer to close", || {
+        server
+            .roster_rows(&project_room(A))
+            .iter()
+            .all(|r| !(r.id == "cc@app" && r.connected))
+    });
+
+    // The same seat, answering under the label it took after the twin: accepted, and settled.
+    let renamed = seated(&server, "cc@app-abc", "lab2x1/cc-7001", Seat::External, A);
+    match renamed.call(Request::Asks) {
+        Response::Asks { of_me, .. } => {
+            assert_eq!(
+                of_me.len(),
+                1,
+                "the question is still this seat's: {of_me:?}"
+            );
+            assert_eq!(of_me[0].seq, ask);
+        }
+        other => panic!("{other:?}"),
+    }
+    match renamed.call(Request::Reply {
+        id: "a1".into(),
+        ask,
+        text: "5433".into(),
+    }) {
+        Response::Asked { ask: settled, .. } => {
+            assert!(!settled.open(), "the answer settled it: {settled:?}");
+            assert_eq!(
+                settled.target, "cc@app",
+                "filed under the seat it was asked of"
+            );
+        }
+        other => panic!("the seat answers its own ask after a rename: {other:?}"),
+    }
+    match asker.call(Request::Asks) {
+        Response::Asks { by_me, .. } => {
+            assert!(by_me.iter().any(|a| a.seq == ask && !a.open()), "{by_me:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    server.stop();
+}
