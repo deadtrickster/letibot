@@ -181,6 +181,24 @@ done
 # A role link is made at install time, never shipped, and never a launcher's name.
 launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
 roles=$(sed -n 's/^ROLE_LINKS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+
+# Every binary the LAUNCHER runs must be one install.sh copies, on every platform: a name it execs
+# and the installer never installs is a command that answers "no such file" on a fresh box. The
+# names are read off `$BIN/<name>` in scripts/letibot, which is the one place it spells them.
+# shellcheck disable=SC2016 # `$BIN` is the launcher's own text, not this script's variable
+launcher_bins=$(grep -oE '\$BIN/[a-z][a-z0-9-]*' "$repo/scripts/letibot" | sed 's|.*\$BIN/||' |
+  sort -u)
+for b in $launcher_bins; do
+  case " $install_files $roles " in
+    *" $b "*) ;;
+    *)
+      echo "check-dist-names: scripts/letibot runs \$BIN/$b, which install.sh never copies." >&2
+      echo "  Add it to BINARIES and to ARCHIVE_BINARIES in make-dist.sh." >&2
+      exit 1
+      ;;
+  esac
+done
+
 for r in $roles; do
   case " $launchers $packaged " in
     *" $r "*)

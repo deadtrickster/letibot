@@ -225,19 +225,29 @@ The release install loop, run in the main checkout. This box serves local models
 names the `local` feature; a box that does not can drop the flag and install the cloud build:
 
 ```sh
+# Every binary a launcher, the plugin or `letibot-askpass` names. The bridge's PACKAGE is
+# `letibot-bridge` and its binary is `letibot-mcp`, which is the name the plugin runs from PATH.
+BINS="harnessd letibot-tui letibot-mcp letibot-multi letibot-acp"
+
 git fetch -q && git merge --ff-only -q origin/main
 for o in target/release/build/letibot-builtins-*/output; do
   grep -q "rerun-if-changed=$PWD" "$o" || rm -f "$o"
 done
 nice -n 10 cargo build --release --bins --features local
-for b in harnessd letibot-tui letibot-mcp letibot-multi; do
+for b in $BINS; do
   install -m755 "target/release/$b" ~/.local/bin/$b.new && mv -f ~/.local/bin/$b.new ~/.local/bin/$b
 done
 install -m755 target/release/letibot-multi ~/.local/bin/letibot-askpass.new &&
   mv -f ~/.local/bin/letibot-askpass.new ~/.local/bin/letibot-askpass
 ln -sfn "$PWD/scripts/letibot" ~/.local/bin/letibot
+ln -sfn "$PWD/scripts/leticode" ~/.local/bin/leticode
 hash -r; type letibot   # must be the symlink to scripts/letibot
 ```
+
+The same list on macOS, where the loop is the same because the binaries are: `BINS` names every
+file `install.sh` copies, and `scripts/check-dist-names.sh` holds the three lists (installer,
+archive, launcher names) to each other. A binary missing from it is a plugin whose server is not
+on `PATH` - Claude Code answers `command not found: letibot-mcp` and the session has no rooms.
 
 The builtins loop drops build output another worktree left in a shared target dir. `install` then `mv` replaces a binary that is running, which a plain `cp` refuses with `Text file busy`. A running daemon or bridge keeps the old binary until it restarts. A `target/release/letibot` left by an older build is not used: ignore it.
 
@@ -261,6 +271,26 @@ it is weaker than Linux, is written down rather than smoothed over:
 - The runtime dir is the per-user temp dir (`getconf DARWIN_USER_TEMP_DIR`), since there is no
   `$XDG_RUNTIME_DIR` or `/run/user`.
 - The launcher needs `python3`, which comes with the Command Line Tools (`xcode-select --install`).
+
+A Mac installs the same binaries as a Linux box. From a checkout, name every one of them, so a
+missing one is a build failure rather than a plugin whose server is not on `PATH`:
+
+```sh
+cargo build --release --bin harnessd --bin letibot-tui --bin letibot-mcp --bin letibot-multi \
+    --bin letibot-acp
+for b in harnessd letibot-tui letibot-mcp letibot-multi letibot-acp; do
+  install -m755 "target/release/$b" ~/.local/bin/$b
+done
+ln -sfn "$PWD/scripts/letibot" ~/.local/bin/letibot
+ln -sfn "$PWD/scripts/leticode" ~/.local/bin/leticode
+ln -f ~/.local/bin/letibot-multi ~/.local/bin/letibot-askpass 2>/dev/null ||
+  cp ~/.local/bin/letibot-multi ~/.local/bin/letibot-askpass
+```
+
+`letibot-mcp` is the binary of `crates/bridge` (package `letibot-bridge`): the MCP server the
+`leticode` plugin runs from `PATH`, and the room waiter its monitors run. A Mac without it installs
+fine and has no rooms, which is why this list must stay one list, shared with `install.sh` and
+`scripts/make-dist.sh` by `scripts/check-dist-names.sh`.
 
 ## Running from a checkout
 

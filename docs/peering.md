@@ -109,9 +109,45 @@ room keeps this box's copy of the line either way.
   the seats the mesh introduced; a line said into it is not carried to the other box.
 - **Attachments stay on their box.** A blob id means nothing on the other side, so a picture is
   delivered as the text alone.
-- **No nick travels.** A peer seat is drawn by its id until the nick protocol is carried.
+- **A nick is a label, not an address.** It crosses in a seat's profile and a peer draws it beside
+  the id, but a send still takes the id.
 - **A box that is the smaller host name dials.** Two boxes that hear each other make one link; the
   one whose host name sorts first dials, so nobody has to negotiate it.
+
+## What the first real LAN run changed
+
+Seven things the first link between lab2x1 and a Mac found, and what each is now:
+
+- **A link that comes back says what the far box holds, even when nothing changed.** `Mesh::seats_of`
+  used to answer *nothing changed* for a list it had already seen, so a box that went away and came
+  back with the same seats was never marked here again and its seats stayed *away* for ever. Every
+  reconnect is a new generation, and `Peer::linked` re-announces the seats it knows for that box.
+- **A peer seat's roster row is `connected` by its box's link**, not hard-coded away, and a link
+  that stays down keeps the reason it first gave: the sentence a person needs is the cause
+  (`missed 4 ticks of 5000ms`), not the consequence (the socket the tick then shut, read back as
+  *closed the link*).
+- **A goodbye is the far box's.** The `Bye` says *its coordinator is stopping*, and the reader says
+  `mac1 said goodbye: its coordinator is stopping` - the reason belongs to the box that is leaving.
+- **A Claude Code seat publishes what it is on.** The bridge sends `Seat` with its folder, its
+  repository, its branch and the row its board has in progress, so a project whose only seat is a
+  bridge has a root and a repository identity, and a peer's roster draws a real seat instead of a
+  bare id with `(no branch)`. The room keeps that folder as the project's root, which is what a
+  bridge-only project had no daemon to send.
+- **One Claude Code session is one seat.** The plugin's waiter and the MCP bridge of a session mint
+  one id from `CLAUDE_CODE_SESSION_ID`, and the second connection says `Hello.share`: the room
+  admits that only for the same seat id, so a reply is said from the seat that was addressed. A
+  second session in the same folder is a different id and still takes a suffixed twin.
+- **A seat that reconnects takes its own name back.** A room that still holds a connection under
+  the seat's own id (a coordinator restart is the usual way) lets the reconnect through and ends
+  the stale connection, instead of refusing it as *another connection already speaks as* its own
+  handle until the MCP server is restarted.
+- **A protocol skew names the side that is old.** A room newer than the bridge used to be answered
+  with *restart the coordinator*, which cannot work: the bridge now says that it is the older of
+  the two and how to update it, once, as a channel notice in the session rather than only on
+  stderr. Devices on one LAN update at different times, so this is the ordinary case.
+- **A default nobody asked for cannot stop a session opening.** A project with no mode row opens at
+  `automode`, and a box with no oracle opens at `always-ask` and says so in one line rather than
+  refusing; `/mode automode` still refuses by name and says what to attach.
 
 ## The settings
 
@@ -135,4 +171,10 @@ repository must not be able to decide what the box that reads it does on the LAN
   project's repository identity from git.
 - `crates/room/tests/peering.rs` - two coordinators in one process on loopback: wrong cookie
   refused, a cookie at the wrong mode refused, a silent link marked away, a cross-box dm delivered,
-  one introduction per seat, two repositories not introduced, and an opted-out project.
+  one introduction per seat, two repositories not introduced, an opted-out project, a box that
+  comes back with an unchanged seat list, and a goodbye worded as the far box's.
+- `crates/room/tests/shared_seat.rs` - one seat behind two connections (a waiter and its bridge),
+  a reconnect that takes its own name back, a second seat under a taken name, and a bridge's facts
+  in the roster.
+- `crates/bridge/src/rooms.rs` - the `Hello` a bridge sends (`share`, `id`, `nick`), the `seat`
+  frame it publishes, and the sentence a room newer than the bridge gets.
