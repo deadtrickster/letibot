@@ -1373,6 +1373,20 @@ pub struct Chat {
     /// When each archived room was put out of sight, by room id. A room with no entry is in the
     /// list. The host room never gets one.
     archived: BTreeMap<String, u64>,
+    /// This box's half of a seat id, when the chat is kept in a store: what a cursor or seen mark
+    /// written before the split (a bare `s-…`) is read as, so an older store's keys become seat ids
+    /// on load and the next snapshot writes them that way. Empty for a chat in memory only.
+    host: String,
+}
+
+/// The key a stored cursor or seen mark is filed under. A session id (`s-...`) is its seat's, so a
+/// store written before a cursor was keyed by the seat reads as the seat it always was; a bridge's
+/// handle is not derivable from anything here and stays as it is until the room adopts it.
+fn seat_key(host: &str, name: &str) -> String {
+    if host.is_empty() || !name.starts_with("s-") {
+        return name.to_string();
+    }
+    crate::SeatId::of_session(host, name).to_string()
 }
 
 fn ring_bytes(ring: &VecDeque<Message>) -> usize {
@@ -1388,6 +1402,7 @@ impl Chat {
     /// appended. An unreadable line is skipped and said; a missing file is an empty chat.
     pub fn open(path: &Path) -> Chat {
         let mut c = Chat::new();
+        c.host = crate::id::seat_host(path.parent().unwrap_or(std::path::Path::new(".")));
         let state = state_path(path);
         let segs = segments(path);
         let kept = std::fs::metadata(&state).map(|m| m.len()).unwrap_or(0);
@@ -1447,11 +1462,11 @@ impl Chat {
         match r {
             Record::Msg { .. } => {}
             Record::Cursor { name, seq } => {
-                let cur = self.cursors.entry(name).or_insert(0);
+                let cur = self.cursors.entry(seat_key(&self.host, &name)).or_insert(0);
                 *cur = (*cur).max(seq);
             }
             Record::Seen { name, seq } => {
-                let s = self.seen.entry(name).or_insert(0);
+                let s = self.seen.entry(seat_key(&self.host, &name)).or_insert(0);
                 *s = (*s).max(seq);
             }
             // An old store's `Dropped` says its ring lost messages through `seq`, and the file
@@ -2437,6 +2452,42 @@ impl Chat {
             }
         }
         (rows, skipped)
+    }
+
+    /// File what the store holds under `name` under the seat `id`: a bridge's cursor was written
+    /// under the handle it spoke as, and the id is the seat that handle was. Nothing is moved onto a
+    /// key that already has one, and the rewrite is written, so the next start reads the seat.
+    pub fn adopt(&mut self, name: &str, id: &str) -> bool {
+        if name == id || name.is_empty() || id.is_empty() {
+            return false;
+        }
+        let mut moved = false;
+        if !self.cursors.contains_key(id)
+            && let Some(seq) = self.cursors.remove(name)
+        {
+            self.cursors.insert(id.to_string(), seq);
+            moved = true;
+        }
+        if !self.seen.contains_key(id)
+            && let Some(seq) = self.seen.remove(name)
+        {
+            self.seen.insert(id.to_string(), seq);
+            moved = true;
+        }
+        if moved {
+            let mut records = vec![Record::Cursor {
+                name: id.to_string(),
+                seq: self.cursor(id),
+            }];
+            if let Some(seq) = self.seen(id) {
+                records.push(Record::Seen {
+                    name: id.to_string(),
+                    seq,
+                });
+            }
+            self.write(&records);
+        }
+        moved
     }
 
     /// The file chat is kept in, `None` for a chat in memory only.
@@ -3740,9 +3791,19 @@ mod store_tests {
             "\n",
         );
         std::fs::write(&p, old).expect("an old store");
+        // The store wrote this cursor under the bare session id; a cursor belongs to the SEAT, so
+        // it is read back as the seat's id and the next snapshot writes it that way.
+        let seat = format!(
+            "{}/s-a",
+            crate::id::seat_host(p.parent().expect("a scratch directory"))
+        );
         let mut c = Chat::open(&p);
         assert_eq!(c.head(), 1);
-        assert_eq!(c.cursor("s-a"), 1, "the old file's own state is live");
+        assert_eq!(
+            c.cursor(&seat),
+            1,
+            "the old file's own state is live, under the seat"
+        );
         let next = say(
             &mut c,
             "2",
@@ -3760,7 +3821,16 @@ mod store_tests {
         );
         let again = Chat::open(&p);
         assert_eq!(again.head(), 2);
-        assert_eq!(again.cursor("s-a"), 1, "and it comes back from the state");
+        assert_eq!(
+            again.cursor(&seat),
+            1,
+            "and it comes back from the state, still the seat's"
+        );
+        let state_text = std::fs::read_to_string(state_path(&p)).expect("the state file");
+        assert!(
+            state_text.contains(&seat) && !state_text.contains(r#""name":"s-a""#),
+            "the snapshot writes the seat, not the bare id: {state_text}"
+        );
         let rows = again.read(HOST_ROOM, 0, None, None, None, |_| true).rows;
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0].text, "said before the split");
