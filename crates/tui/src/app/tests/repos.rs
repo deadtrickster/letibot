@@ -3,6 +3,7 @@
 //! it opens the repo card.
 
 use super::*;
+use letibot_sessionlog::testing::wait_until;
 
 struct Folder(std::path::PathBuf);
 
@@ -106,13 +107,12 @@ fn edited(a: &mut App, id: &str, path: &str) {
 fn header(a: &mut App) -> String {
     a.git_read.1 = 0;
     a.refresh_git();
-    for _ in 0..500 {
-        if a.git_job.is_none() {
-            break;
+    wait_until("the git reading", || {
+        if a.git_job.is_some() {
+            a.refresh_git();
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        a.refresh_git();
-    }
+        a.git_job.is_none()
+    });
     a.screen(140, 30)[0].clone()
 }
 

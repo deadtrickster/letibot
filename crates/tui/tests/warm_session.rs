@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+
 
 use letibot_sessionlog::Hub;
 use letibot_sessionlog::event::SessionEvent;
@@ -53,15 +53,10 @@ fn until<T>(
     what: &str,
     mut poll: impl FnMut(&mut App) -> Option<T>,
 ) -> T {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
+    letibot_sessionlog::testing::wait_for(what, || {
         step(link, a);
-        if let Some(v) = poll(a) {
-            return v;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("timed out waiting for {what}; screen was:\n{}", screen(a));
+        poll(a)
+    })
 }
 
 /// What the store would answer, without a store. The row a `ResumeSession` reads to

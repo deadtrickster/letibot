@@ -12,6 +12,7 @@ use letibot_sessionlog::event::{Envelope, SessionEvent};
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_sessionlog::server::serve_registry;
+use letibot_sessionlog::testing::{PATIENCE, wait_within};
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_transcript::{TranscriptItem, UserPart};
 
@@ -64,24 +65,20 @@ fn pump_once(link: &mut Link, a: &mut App, path: &std::path::Path) {
 }
 
 /// Read until nothing new arrives, so a frame already on the socket has landed before
-/// anything is asserted about it.
+/// anything is asserted about it. The quiet window is measured, not counted in polls: four ticks of
+/// a 2 ms wait are not the same 100 ms as four ticks of a 25 ms sleep.
 fn settle(link: &mut Link, a: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut quiet = 0;
-    while Instant::now() < deadline {
-        let before = a.seq;
+    let mut seq = a.seq;
+    let mut quiet_since = Instant::now();
+    let done = wait_within(PATIENCE, || {
         step(link, a);
-        if a.seq == before {
-            quiet += 1;
-            if quiet >= 4 {
-                return;
-            }
-        } else {
-            quiet = 0;
+        if a.seq != seq {
+            seq = a.seq;
+            quiet_since = Instant::now();
         }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("frames never stopped arriving");
+        quiet_since.elapsed() >= Duration::from_millis(100)
+    });
+    assert!(done, "frames never stopped arriving");
 }
 
 fn env(seq: u64, event: SessionEvent) -> Envelope {
@@ -250,7 +247,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     // The daemon goes away. Nothing is sent, the socket is simply closed, and the
     // head has to notice from its reader thread ending - which is the case that would
     // otherwise be undetectable at rest, because an idle head writes nothing at all.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline && !a.detached() {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(20));
@@ -292,8 +289,8 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
         "the words are still the operator's, in the field they typed them into"
     );
 
-    // It keeps trying, at its own pace, and it is still here after several rounds of
-    // that. This is the loop that ends the process.
+    // The head's own backoff is seconds long, so several rounds of this cannot produce a retry:
+    // what they prove is that being down is not a reason to leave. A negative check, with a beat.
     for _ in 0..6 {
         assert!(!a.should_quit(), "the head left while its daemon was down");
         pump_once(&mut link, &mut a, &path);
@@ -302,7 +299,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     assert!(a.detached(), "nobody has come back yet");
 
     // The daemon comes back on the same path, and the head gets it back.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline && a.detached() {
         pump_once(&mut link, &mut a, &path);
         std::thread::sleep(Duration::from_millis(50));

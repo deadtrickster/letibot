@@ -1,6 +1,7 @@
 //! The link, attaching, reconnecting, stopping, the session picker.
 
 use super::*;
+use letibot_sessionlog::testing::wait_until;
 
 /// A bare `!term` attaches: the rectangle comes up, the daemon says what is running, and the screen it kept is
 /// drawn in it. The head sends the bare verb because it cannot know what is running - the program is the
@@ -1157,15 +1158,12 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
 /// ([`App::refresh_git`]), so a test that wants its answer drives the loop's half until the
 /// job is gone. Bounded, so a reader that never answers fails the test instead of hanging it.
 fn collect_git(a: &mut App) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while a.git_job.is_some() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the git reading was never collected"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        a.refresh_git();
-    }
+    wait_until("the git reading to be collected", || {
+        if a.git_job.is_some() {
+            a.refresh_git();
+        }
+        a.git_job.is_none()
+    });
 }
 
 /// A reading of a directory that is not a repository is ABSENT, and the head remembers

@@ -4,6 +4,7 @@
 
 use super::*;
 use letibot_sessionlog::protocol::{MODEL_KEYLESS_KEY, MODEL_KEYS_KEY, SettingRow};
+use letibot_sessionlog::testing::wait_until;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -63,14 +64,10 @@ fn stub(a: &mut App, up: Arc<AtomicBool>, calls: Arc<AtomicUsize>) {
 
 /// Run the loop's half until the probe has answered - `Driver::tick` calls `poll_reach`.
 fn settle(a: &mut App) {
-    for _ in 0..500 {
+    wait_until("the reach probe's answer", || {
         a.poll_reach();
-        if a.reach.job.is_none() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("the probe never answered");
+        a.reach.job.is_none()
+    });
 }
 
 fn send(a: &mut App, text: &str) -> Option<Action> {

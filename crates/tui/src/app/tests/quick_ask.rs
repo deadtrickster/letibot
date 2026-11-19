@@ -3,9 +3,10 @@
 //! the operator's decision riding the prompt after it.
 
 use super::*;
+use letibot_sessionlog::testing::wait_until;
 use rano::term::{Event, KeyCode, KeyEvent, Mods};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// A file of three paragraphs, so the ask's target rule - the paragraph around the cursor, for
 /// prose - has an edge to find rather than the whole file.
@@ -67,13 +68,10 @@ fn asking(tag: &str) -> (Workspace, App) {
 
 /// rano's ticks until the buffer it opened has arrived: loading is rano's own thread.
 fn settle(a: &mut App) {
-    for _ in 0..10_000 {
+    wait_until("the editor's buffer", || {
         a.editor_tick(Instant::now());
-        if !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading()) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading())
+    });
     a.editor_tick(Instant::now());
 }
 

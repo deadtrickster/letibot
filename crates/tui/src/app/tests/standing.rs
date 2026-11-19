@@ -4,6 +4,7 @@
 
 use super::*;
 use letibot_sessionlog::protocol::{NoteEntry, NoteForm};
+use letibot_sessionlog::testing::wait_until;
 use rano::term::{Event, KeyCode, KeyEvent, Mods};
 use std::time::Instant;
 
@@ -48,13 +49,10 @@ fn framed(notes: Vec<NoteEntry>, dir: Option<&std::path::Path>) -> ServerFrame {
 /// reads a file asynchronously, so a test looking at it straight after the key would ask about a
 /// buffer that is still coming.
 fn settle(a: &mut App) {
-    for _ in 0..1000 {
+    wait_until("the editor's buffer", || {
         a.editor_tick(Instant::now());
-        if !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading()) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading())
+    });
     a.editor_tick(Instant::now());
 }
 

@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_harnessd::answers::{Answers, HeadAdjudicator};
 use letibot_sessionlog::hub::Hub;
@@ -19,6 +19,10 @@ use letibot_tools::{Gate, GateCall, GateDecision};
 use letibot_vt::Screen;
 
 const SIZE: (usize, usize) = (100, 32);
+
+/// The card's arming window: `DEC_ARM_MS` in the app, and the frame that opened the card ignores a
+/// key for that long. The app's own number, not one a test picked.
+const ARM_WINDOW: Duration = Duration::from_millis(550);
 
 /// A scratch directory that survives the test's own failure, so a stuck run leaves its state.
 fn scratch(tag: &str) -> PathBuf {
@@ -85,20 +89,13 @@ impl Head {
 
     /// Wait for the head to draw something, or say what it was drawing instead. The card is read
     /// before the keys are pressed, and a card a frame opened ignores the key that would answer it
-    /// for its first half second - see `DEC_ARM_MS`.
+    /// for [`ARM_WINDOW`] - so the screen is read again once that window has passed.
     fn wait_for(&self, what: &str, needle: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let drawn = self.drawn();
-            if drawn.contains(needle) {
-                std::thread::sleep(Duration::from_millis(700));
-                return self.drawn();
-            }
-            if Instant::now() > deadline {
-                panic!("timed out waiting for {what}. The head drew:\n{drawn}");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        letibot_sessionlog::testing::wait_for(what, || {
+            self.drawn().contains(needle).then_some(())
+        });
+        std::thread::sleep(ARM_WINDOW);
+        self.drawn()
     }
 
     fn press(&mut self, keys: &str) {
@@ -269,15 +266,9 @@ fn a_digit_a_typed_reason_and_an_always_allow_answer_a_real_ask() {
     let mut head = Head::start(&socket, &dir);
     // A card has somewhere to land only once a head that may decide is attached, and that is a fact
     // about the hub rather than about a screen.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while hub.deciding_heads().is_empty() {
-        assert!(
-            Instant::now() < deadline,
-            "the head never attached. It drew:\n{}",
-            head.drawn()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    letibot_sessionlog::testing::wait_until("the head to attach", || {
+        !hub.deciding_heads().is_empty()
+    });
     let gate = Driver::start(hub.clone(), answers.clone(), &workspace, &permission_file);
 
     // ── 1. The digit is the answer ────────────────────────────────────────────────────────────

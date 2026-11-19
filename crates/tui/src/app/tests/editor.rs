@@ -5,6 +5,7 @@ use super::*;
 use rano::term::{Event, KeyCode, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use letibot_sessionlog::testing::wait_until;
 
 /// A workspace on disk with the file the conversation edited, removed when the test ends.
 struct Workspace(PathBuf);
@@ -105,16 +106,12 @@ fn edited(ws: &Workspace) -> App {
 
 /// rano's ticks until the file it opened has arrived - the loop's job, done here by hand.
 fn settle(a: &mut App) {
-    // Up to ten seconds: rano loads on a thread of its own, and under the whole workspace's tests
-    // at once a second was not always enough - the frame test then read an empty buffer. It
-    // returns the moment the load is done, so a quiet run pays nothing for the bound.
-    for _ in 0..10_000 {
+    // rano loads on a thread of its own: tick until the buffer has arrived, and let the bound be
+    // the generous one rather than a count of ticks a loaded box can outlast.
+    wait_until("the editor's buffer", || {
         a.editor_tick(Instant::now());
-        if !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading()) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading())
+    });
     a.editor_tick(Instant::now());
 }
 

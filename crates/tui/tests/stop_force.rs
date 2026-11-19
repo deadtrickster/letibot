@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::protocol::{ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
+use letibot_sessionlog::testing::wait_until;
 use letibot_sessionlog::server::serve_registry;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_tui::app::{App, Key, STOP_DEADLINE_MS};
@@ -78,9 +79,7 @@ fn fixture_daemon() {
 }
 
 fn wait_closed(registry: &Registry) {
-    while !registry.is_closed() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the registry to close", || registry.is_closed());
 }
 
 /// An older build, as far as a head can tell: every `Hello` names [`OLDER`], and a `Stop`

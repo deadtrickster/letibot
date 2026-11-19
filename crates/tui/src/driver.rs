@@ -1152,10 +1152,25 @@ mod tests {
             Parentage::Ours,
             "a process this test spawned is not seen as this process's child"
         );
-        // Let it exit without waiting for it. A short sleep is the only synchronisation
-        // available: there is no event for "it has exited but not been reaped", which is
-        // exactly the state under test.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // It exits without being waited for. The state under test has an observation of its own -
+        // the kernel lists a pid whose process is gone - so the wait is for that, not for a pause.
+        let exited = || {
+            #[cfg(not(target_os = "macos"))]
+            {
+                let stat =
+                    std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                stat_state(&stat) == Some('Z')
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let alive = unsafe { libc::kill(pid, 0) } == 0;
+                alive && bsdinfo(pid) == Err(libc::ESRCH)
+            }
+        };
+        assert!(
+            letibot_sessionlog::testing::wait_within(std::time::Duration::from_secs(60), exited),
+            "the child never became an unreaped exit"
+        );
         // It is a zombie, and `/proc` says so - the observation the old test read as
         // `alive`. Asserted directly, so this test fails loudly rather than silently turning
         // into a test of something else if the timing below ever changes.

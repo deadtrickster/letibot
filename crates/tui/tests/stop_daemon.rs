@@ -15,6 +15,7 @@ use letibot_sessionlog::ScrubReport;
 use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_sessionlog::server::serve_registry;
+use letibot_sessionlog::testing::{PATIENCE, wait_for};
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_tui::app::App;
 use letibot_tui::driver::Link;
@@ -48,18 +49,6 @@ fn step(link: &mut Link, a: &mut App) {
     link.tick(a, (100, 30), &[], &[], &mut sink);
 }
 
-/// Read until the peer has said what the test is waiting for, or the deadline passes.
-fn wait_for<T>(what: &str, mut poll: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if let Some(v) = poll() {
-            return v;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("timed out waiting for {what}");
-}
-
 /// The same, ticking between polls - which is what makes it a test of the driver and not of an
 /// idle `App`: a frame the daemon wrote sits in the pump's channel until [`step`] drains it, so a
 /// wait that polled without ticking would assert that a fact arrives by itself.
@@ -69,15 +58,10 @@ fn wait_ticking<T>(
     what: &str,
     mut poll: impl FnMut(&mut App) -> Option<T>,
 ) -> T {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
+    wait_for(what, || {
         step(link, a);
-        if let Some(v) = poll(a) {
-            return v;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("timed out waiting for {what}");
+        poll(a)
+    })
 }
 
 /// What the peer does when it is asked to stop: three behaviours because there are three questions
@@ -363,7 +347,7 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     assert!(!a.should_quit(), "still waiting");
 
     // Wait the deadline and the force path out, ticking as the real loop would.
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + PATIENCE;
     while !a.should_quit() && Instant::now() < deadline {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(25));
@@ -496,7 +480,8 @@ fn the_daemons_goodbye_is_not_the_daemon_being_gone() {
     // The deadline is the head's own way out, and the sentence it leaves says what it saw. The
     // escalation runs here too and sends nothing: nothing seeded `App::daemon_pid`, and the force
     // path signals only the pid the head holds.
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Wait the deadline and the force path out, ticking as the real loop would.
+    let deadline = Instant::now() + PATIENCE;
     while !a.should_quit() && Instant::now() < deadline {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(25));
@@ -680,12 +665,14 @@ fn a_daemon_that_closes_after_a_stop_is_not_a_link_failure() {
     a.set_daemon_pid(Some(pid));
     choose_stop(&mut link, &mut a);
 
-    // The peer answers and shuts the socket down. Give the pump time to see the EOF.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The peer answers and shuts the socket down: tick until the head has read the ack.
+    let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline && a.stopping().is_some_and(|s| !s.acked) {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(25));
     }
+    // A negative check, so it needs a beat rather than a wait: the pump has to be given the chance
+    // to read the EOF and fail to mark the link down.
     for _ in 0..10 {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(10));

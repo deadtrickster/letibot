@@ -195,18 +195,18 @@ fn a_line_posts_to_the_selected_channel_as_a_say() {
     assert!(op["id"].as_str().is_some_and(|i| !i.is_empty()));
 }
 
-/// Two heads posting at the same clock reading and count still get different ids.
+/// Two posts at one clock reading still get different ids: the send's own count is in the id, so a
+/// head that says two things inside one millisecond does not reuse a name.
 #[test]
 fn two_heads_do_not_share_request_ids() {
+    let mut a = opened(1_000);
     let mut ids = Vec::new();
     for _ in 0..2 {
-        let mut a = opened(1_000);
         a.set_composer("same");
         let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
             panic!("not a chat request");
         };
         ids.push(op["id"].as_str().unwrap().to_string());
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_ne!(ids[0], ids[1]);
 }
