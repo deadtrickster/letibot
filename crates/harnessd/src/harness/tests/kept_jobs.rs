@@ -27,6 +27,22 @@ impl Drop for Scratch {
     }
 }
 
+/// Kills a kept job's tree when the test ends, a failed assertion included: a kept job outlives
+/// its daemon by design, so nothing else ends it.
+struct EndsTree(std::path::PathBuf);
+
+impl EndsTree {
+    fn of(cgroup: &str) -> Self {
+        EndsTree(std::path::Path::new(cgroup).join("cgroup.kill"))
+    }
+}
+
+impl Drop for EndsTree {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.0, "1");
+    }
+}
+
 const EARLIER: &str = "d-the-earlier-one";
 
 /// The earlier daemon: start `command` in the background, let it print, and stop for a restart.
@@ -184,6 +200,7 @@ fn a_new_daemon_adopts_a_kept_job_and_says_so_once() {
     ) else {
         return;
     };
+    let _end = EndsTree::of(&d.cgroup);
     left_behind(&dir, sid, &d);
     let out = letibot_tools::exec::detach::out_path(std::path::Path::new(&d.raw));
     let before = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
@@ -222,7 +239,6 @@ fn a_new_daemon_adopts_a_kept_job_and_says_so_once() {
         lines[0].contains("still running, reattached") && lines[0].contains(&label),
         "{text}"
     );
-    let _ = std::fs::write(std::path::Path::new(&d.cgroup).join("cgroup.kill"), "1");
 }
 
 /// A kept job that ended while no daemon watched is settled from its status file with its own
@@ -287,6 +303,7 @@ fn a_kept_job_with_no_proof_is_said_lost() {
         return;
     };
     let real = d.clone();
+    let _end = EndsTree::of(&real.cgroup);
     d.identity = "start:1".into();
     left_behind(&dir, sid, &d);
     let mut h = opened(&dir, sid);
@@ -300,7 +317,6 @@ fn a_kept_job_with_no_proof_is_said_lost() {
         text.contains("lost: no proof") && text.contains("not the process stamped"),
         "{text}"
     );
-    let _ = std::fs::write(std::path::Path::new(&real.cgroup).join("cgroup.kill"), "1");
 }
 
 /// A restart of a VM session keeps nothing: its running jobs end, and one sentence says why.
@@ -387,6 +403,7 @@ fn a_restart_keeps_the_job_and_a_plain_stop_kills_it() {
         let rec = store.process(sid, &id.0).unwrap();
         if restart {
             let rec = rec.expect("the kept job's row");
+            let _end = rec.cgroup.as_deref().map(EndsTree::of);
             assert_eq!(rec.state, ProcState::Detached);
             assert!(rec.cgroup.is_some(), "{rec:?}");
             assert_eq!(rec.identity, stamp);
@@ -396,10 +413,6 @@ fn a_restart_keeps_the_job_and_a_plain_stop_kills_it() {
             assert!(
                 letibot_tools::exec::detach::stamp_matches(view.pid, &stamp),
                 "the kept job did not survive the stop"
-            );
-            let _ = std::fs::write(
-                std::path::Path::new(rec.cgroup.as_deref().unwrap()).join("cgroup.kill"),
-                "1",
             );
         } else {
             assert!(
@@ -457,6 +470,7 @@ fn a_restart_keeps_the_job_through_every_stop_step_and_the_next_daemon_takes_it_
         .process(sid, &id.0)
         .unwrap()
         .expect("the kept job's row");
+    let _end = kept.cgroup.as_deref().map(EndsTree::of);
     assert_eq!(kept.state, ProcState::Detached, "{kept:?}");
     // Every step after it ends what a session owns through the supervisor: `close_backends` says
     // `the daemon stopping`, and a session's own close says `the session closing`.
@@ -485,10 +499,6 @@ fn a_restart_keeps_the_job_through_every_stop_step_and_the_next_daemon_takes_it_
     );
     let text = next.restore_after_restart().expect("the restart is said");
     assert!(text.contains("still running, reattached"), "{text}");
-    let _ = std::fs::write(
-        std::path::Path::new(&kept.cgroup.expect("a cgroup")).join("cgroup.kill"),
-        "1",
-    );
 }
 
 /// The marker the launcher leaves is the one the daemon takes: two spellings of one path.

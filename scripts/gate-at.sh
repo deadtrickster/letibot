@@ -36,6 +36,7 @@ R=$(mktemp -d "${TMPDIR:-/tmp}/g.XXXX") || exit 2
 chmod 700 "$R"
 trap 'rm -rf "$R"' EXIT
 # One full workspace run at a time on this box: parallel gates choke it. Later callers wait here.
+# Steps run with fd 9 closed, so a process a test leaks cannot hold the lock after the gate.
 exec 9>"$LOCK"
 echo "gate: waiting for $LOCK" >&2
 flock 9
@@ -58,7 +59,7 @@ while IFS= read -r step <&3; do
   echo "gate: step $i: $step"
   # A skip is not a pass: a test whose apparatus is missing fails instead of skipping.
   sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
-    LETIBOT_APPARATUS_REFUSALS="$refused" sh -c "$step" >"$log" 2>&1 </dev/null
+    LETIBOT_APPARATUS_REFUSALS="$refused" sh -c "$step" >"$log" 2>&1 </dev/null 9>&-
   rc=$?
   ok=$(grep -cE '^test result: ok\.' "$log")
   [ "$ok" = 0 ] || echo "gate: suites ok=$ok; skip lines: $(grep -c 'THIS IS NOT A PASS' "$log")"
