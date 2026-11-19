@@ -51,7 +51,8 @@ v41 gains the table at its next open, empty.
   package's job is named as that package's (`K1 is running j83509`) and what a row whose package is
   busy is offered is that package's TURN, which is a `child` wait (R156).
 - **`todo`** - a row on ANOTHER board: a letibot session's of this project, or another external
-  seat's (`cc@<folder>[:name]`). `{"kind": "todo", "seat": "cc@etcd-a36", "content": "<that
+  seat's, by its seat id (`lab2x1/cc-<claude session>`, or `lab2x1/s-<session>` for a session).
+  `{"kind": "todo", "seat": "lab2x1/cc-9f2a…", "content": "<that
   row's exact words>"}`, or `wait_on`'s `{"content": "<your row>", "todo": {…}}`. Rows have no
   stable id, so `content` is the whole of the name. Both boards are in the one store - `seat_todo`
   for a seat, `todo` for a session - and one reader
@@ -62,7 +63,7 @@ v41 gains the table at its next open, empty.
   the folder around the repository and the repository itself; a session names its workspace). The
   edge is quiet for the plan check - the edge IS the fact, as a `room` edge's is - and it is freed
   by `Harness::resolve_ended_waits` at open and at every nag tick, with the ordinary note:
-  `[todo] cc@etcd-a36 finished "<row>" - no longer a wait of <yours>`. A row struck off reads
+  `[todo] lab2x1/cc-9f2a… finished "<row>" - no longer a wait of <yours>`. A row struck off reads
   `struck … off`, one dropped from a replaced board `is no longer on … board`, and a board of this
   project that is gone `…'s board is gone`; a board that cannot be READ is not an ending. The seat's
   half of the same sweep is its watcher, which reads another board once a second while a row holds
@@ -214,7 +215,8 @@ code moved:
 
 The head's todo pane draws the seats' boards beside the session's. The daemon answers
 `ClientFrame::ListTodos` with `ServerFrame::Todos`, and that frame carries `seats` - one
-`SeatBoard` per handle in `seat_todo`, read by `Store::seat_boards` and converted by
+`SeatBoard` per key in `seat_todo`, which is a seat's ID (`lab2x1/cc-…`), read by
+`Store::seat_boards` and converted by
 `Harness::todo_entry`, the same conversion a session's rows take. The field is `serde(default)`,
 so a daemon from before it says nothing and an older head drops it (the version note at
 `PROTOCOL_VERSION` 67). A seat's rows are DRAWN and are not stops: the cursor walks the session's

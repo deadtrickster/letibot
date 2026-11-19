@@ -72,7 +72,7 @@ pub fn board_of(store: &Store, mine: &[String], name: &str) -> Result<Board, Str
 
 /// The local half of a seat id (`<host>/<local>`) when it is a session's: `s-...` is what this
 /// store knows a session by, and an id is what a wait should carry. A bridge's id (`cc-...`) is not
-/// a session and is left as it is - that board is found by its handle until the store holds ids.
+/// a session and is left as it is: the store keeps its board under the whole id.
 fn session_of_seat_id(name: &str) -> Option<&str> {
     let (_, local) = seat_id_parts(name)?;
     local.starts_with("s-").then_some(local)

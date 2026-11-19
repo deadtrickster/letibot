@@ -117,9 +117,12 @@ fn a_seats_rows_are_written_by_the_session_tool_and_read_back_across_a_restart()
     drop(first);
 
     // A second connection to the file - what the next bridge process opens - reads the rows with
-    // their edge, so the board outlived the process rather than the store's shared connection.
+    // their edge, so the board outlived the process rather than the store's shared connection. It is
+    // filed under the seat's ID: the handle is minted at connect and is not what a wait can name.
     let next_process = Store::open_private(&store).expect("a connection of its own");
-    let stored = next_process.seat_todos("cc@seat-todo").expect("the rows");
+    let stored = next_process
+        .seat_todos(&letibot_bridge::rooms::seat())
+        .expect("the rows");
     assert_eq!(stored.len(), 2, "{stored:?}");
     assert_eq!(
         stored[1].needs,
@@ -503,6 +506,159 @@ fn a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused() {
             .last()
             .is_some_and(|n| nag_text(n).contains("the gate somebody ran by hand")),
         "a reused pid is not the process the row waited on: {again:?}"
+    );
+}
+
+/// The board is filed under the seat's ID, not the handle it speaks as: the handle is minted at
+/// connect and may be another one next time, while the id is the same seat. A wait naming the id is
+/// what the store answers, so a board written under the handle must not be what anyone looks for.
+#[test]
+fn a_seats_board_is_stored_under_its_id_and_not_the_handle_it_speaks_as() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("seat-id");
+    let bridge = bridge(&store, &folder);
+    call(
+        &bridge,
+        "todo_write",
+        json!({"todos": [{"content": "ship the pane", "status": "in_progress"}]}),
+    )
+    .expect("the write is taken");
+    let id = letibot_bridge::rooms::seat();
+    let read = Store::open_private(&store).expect("a connection of its own");
+    assert_eq!(
+        read.seat_todos(&id).expect("the board").len(),
+        1,
+        "the board is under `{id}`"
+    );
+    assert!(
+        read.seat_board(&letibot_bridge::rooms::handle())
+            .expect("a read")
+            .is_none(),
+        "and not under the handle it speaks as"
+    );
+}
+
+/// A board a seat left under its handle before it wrote ids is moved to the id at connect, and a
+/// reconnect under ANOTHER handle reads the same board: the handle is what changed, not the seat.
+#[test]
+fn a_board_left_under_the_handle_is_moved_to_the_id_and_survives_a_new_handle() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("seat-moved");
+    let id = letibot_bridge::rooms::seat();
+    // What the previous build wrote: the board under the handle, and nothing under the id.
+    let old = letibot_bridge::rooms::handle();
+    Store::open(&store)
+        .expect("the store")
+        .put_seat_todos(
+            &old,
+            &[TodoItem {
+                content: "collect the package".into(),
+                status: TodoStatus::InProgress,
+                by: letibot_tokencore::store::TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            }],
+        )
+        .expect("the old board");
+    let bridge = bridge(&store, &folder);
+    assert_eq!(
+        rows(&bridge).len(),
+        1,
+        "the old board is this seat's, and it is read at connect"
+    );
+    let read = Store::open_private(&store).expect("a connection of its own");
+    assert_eq!(read.seat_todos(&id).expect("the board").len(), 1, "{id}");
+    assert!(
+        read.seat_board(&old).expect("a read").is_none(),
+        "the old key is gone: one board, not two"
+    );
+
+    // The next connect speaks as another handle - a re-minted suffix is what a restart does - and
+    // the board is still one board, because the id is what it is filed under.
+    let again = letibot_bridge::seat::Seat::new(
+        "cc@seat-todo:second",
+        id.clone(),
+        store.clone(),
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    );
+    assert_eq!(again.rows().len(), 1, "a new handle, the same seat");
+    assert_eq!(again.id(), id);
+    assert_eq!(
+        again.board_json()["seat"],
+        json!(id),
+        "the tool's answer names it"
+    );
+}
+
+/// A wait naming ANOTHER bridge seat's ID: quiet while that seat's row is open, and freed with one
+/// note the moment it completes - across a reconnect of the waiting seat under a new handle, because
+/// the id is what the wait carries and what both boards are filed under.
+#[test]
+fn a_wait_naming_a_bridge_seats_id_is_freed_when_it_completes_across_a_new_handle() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("seat-wait-bridge-id");
+    let theirs = "lab2x1/cc-other";
+    let mine = "lab2x1/cc-waiting";
+    let heads = || {
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            std::sync::Arc<letibot_bridge::head::Head>,
+        >::new()))
+    };
+    let other =
+        letibot_bridge::seat::Seat::new("cc@seat-todo:other", theirs, store.clone(), heads())
+            .with_folder(folder.clone());
+    other
+        .write(&json!({"todos": [{"content": "ship the pane", "status": "in_progress"}]}))
+        .expect("the other seat's board");
+
+    let first = letibot_bridge::seat::Seat::new("cc@seat-todo:first", mine, store.clone(), heads())
+        .with_folder(folder.clone())
+        .with_window(WINDOW);
+    let wrote = first
+        .write(
+            &json!({"todos": [{"content": "collect the package", "status": "in_progress",
+                "needs": [{"kind": "todo", "seat": theirs, "content": "ship the pane"}]}]}),
+        )
+        .expect("a bridge's seat id is a board this seat can wait on");
+    assert_eq!(wrote["stored"], json!(true), "{wrote}");
+    drop(first);
+
+    // The seat reconnects and speaks as another handle. The wait is still on its board - the id
+    // found the board the first handle wrote - and the note travels to this handle's watcher.
+    let again = std::sync::Arc::new(
+        letibot_bridge::seat::Seat::new("cc@seat-todo:second", mine, store.clone(), heads())
+            .with_folder(folder.clone())
+            .with_window(WINDOW),
+    );
+    assert_eq!(
+        again.rows().first().map(|r| r.needs.clone()),
+        Some(vec![TodoNeed::Todo {
+            seat: theirs.into(),
+            content: "ship the pane".into()
+        }]),
+        "the wait survived the reconnect"
+    );
+    let (tx, rx) = mpsc::channel();
+    letibot_bridge::seat::Seat::watch(&again, tx);
+    settle(&rx);
+    assert!(
+        nags(&rx, WINDOW * 2)
+            .iter()
+            .all(|n| !nag_text(n).contains("ship the pane")),
+        "a row waiting on another board's row is quiet while it is open"
+    );
+
+    other
+        .write(&json!({"todos": [{"content": "ship the pane", "status": "completed"}]}))
+        .expect("the other seat completes its row");
+    let notes = nags(&rx, Duration::from_secs(5));
+    assert!(
+        notes.iter().any(|n| {
+            let t = nag_text(n);
+            t.contains("[todo]") && t.contains("finished") && t.contains(theirs)
+        }),
+        "the id's board freed the wait and the note names it: {notes:?}"
     );
 }
 

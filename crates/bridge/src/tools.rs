@@ -289,9 +289,16 @@ impl Bridge {
             }
         };
         let seat = Arc::new(
-            crate::seat::Seat::new(crate::rooms::handle(), store, self.heads.clone())
-                .with_window(self.seat_window)
-                .with_folder(folder),
+            // The id is what the board is stored under; the handle is what the room hears. A
+            // reconnect mints a new handle and keeps the id, so the board is one board.
+            crate::seat::Seat::new(
+                crate::rooms::handle(),
+                crate::rooms::seat(),
+                store,
+                self.heads.clone(),
+            )
+            .with_window(self.seat_window)
+            .with_folder(folder),
         );
         *g = Some(seat.clone());
         Ok(seat)
