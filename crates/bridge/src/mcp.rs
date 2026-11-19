@@ -290,6 +290,17 @@ mod tests {
             .collect()
     }
 
+    /// The budget is for this build's own words. The seat handle is `cc@<folder>:<name>` out of the
+    /// working folder, so a long worktree would otherwise decide whether the test passes. This
+    /// stands in for a seat name at the width the budget assumes; it occurs in four tool
+    /// descriptions, and a change that adds text there still has to trim.
+    const HANDLE: &str = "cc@host:seat";
+
+    /// `text` with the seat handle stood in for by a fixed-length one, for a byte budget.
+    fn budgeted(text: &str) -> String {
+        text.replace(&crate::rooms::handle(), HANDLE)
+    }
+
     /// `initialize` answers the revision, the capability and the name - the three
     /// fields a client reads before it sends anything else.
     #[test]
@@ -317,7 +328,8 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("every room"), "no room is its own: {said}");
-        assert!(said.len() <= 600, "{} bytes: {said}", said.len());
+        let counted = budgeted(said);
+        assert!(counted.len() <= 600, "{} bytes: {counted}", counted.len());
         assert!(!said.contains('\u{2014}'), "no em dash: {said}");
     }
 
@@ -331,11 +343,11 @@ mod tests {
         let mut count = said.matches(rule).count();
         let mut bytes = 0;
         for t in crate::rooms::tool_list() {
-            let d = t.to_string();
+            let d = budgeted(&t.to_string());
             count += d.matches(rule).count();
             assert!(!d.contains("hold something"), "{d}");
             assert!(!d.contains('\u{2014}'), "no em dash: {d}");
-            bytes += t["description"].as_str().unwrap_or("").len();
+            bytes += budgeted(t["description"].as_str().unwrap_or("")).len();
         }
         assert_eq!(count, 1, "the rule is said once");
         assert!(bytes <= 2000, "{bytes} bytes of room tool descriptions");
