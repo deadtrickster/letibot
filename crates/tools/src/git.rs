@@ -58,6 +58,46 @@ pub fn rev_parse(dir: &Path, rev: &str) -> Option<String> {
     .filter(|s| !s.is_empty())
 }
 
+/// Every local branch's head, in one `git for-each-ref`: what a sweep over many branches reads
+/// once a pass instead of once a branch. Empty when git cannot answer.
+pub fn ref_heads(repo: &Path) -> std::collections::HashMap<String, String> {
+    git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:strip=2) %(objectname)",
+            "refs/heads",
+        ],
+    )
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|l| l.split_once(' '))
+    .map(|(b, sha)| (b.to_string(), sha.to_string()))
+    .collect()
+}
+
+/// A worktree's `HEAD` read from its files, against [`ref_heads`]: no process. `None` when the
+/// tree is not there or its `HEAD` cannot be read, which a caller treats as *changed*.
+pub fn tree_head_quick(
+    wt: &Path,
+    heads: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let dot = wt.join(".git");
+    let gitdir = if dot.is_dir() {
+        dot
+    } else {
+        let text = std::fs::read_to_string(&dot).ok()?;
+        let p = PathBuf::from(text.strip_prefix("gitdir:")?.trim());
+        if p.is_absolute() { p } else { wt.join(p) }
+    };
+    let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => heads.get(branch).cloned(),
+        None => Some(head.to_string()),
+    }
+}
+
 /// The head of local branch `branch`, by its full ref so a tag of the same name cannot answer.
 pub fn branch_head(repo: &Path, branch: &str) -> Option<String> {
     rev_parse(repo, &format!("refs/heads/{branch}"))

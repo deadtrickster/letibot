@@ -260,7 +260,16 @@ pub struct RepoQueue {
     /// The process table the in-use rules read: `/proc` in a daemon, a fixture in a test. Whether
     /// a tree is in use must not depend on what another program on the box is doing.
     proc_root: PathBuf,
+    /// Each kept tree's proof, with the branch head, target head and tree `HEAD` it was made
+    /// against: a pass proves a kept tree again only when one of the three moved. Proving every
+    /// kept row's commits on every two-second pass spawned hundreds of `git` a pass, without end.
+    proven: std::sync::Mutex<std::collections::HashMap<(String, String, String), Heads>>,
+    /// How many trees the sweep has proved, for the test that a quiet pass proves none.
+    proofs: std::sync::atomic::AtomicUsize,
 }
+
+/// What a kept tree's proof was made against: its branch's head, its target's, and its own `HEAD`.
+type Heads = (Option<String>, Option<String>, Option<String>);
 
 /// How often a target with rows in line asks `origin` where it is. A refused push fetches at once.
 const FETCH_EVERY: Duration = Duration::from_secs(30);
@@ -474,6 +483,8 @@ impl RepoQueue {
             lease_ok: Arc::new(AtomicBool::new(true)),
             fetched: Default::default(),
             proc_root: PathBuf::from("/proc"),
+            proven: Default::default(),
+            proofs: Default::default(),
         }
     }
 
@@ -482,6 +493,12 @@ impl RepoQueue {
     pub fn with_proc_root(mut self, root: PathBuf) -> Self {
         self.proc_root = root;
         self
+    }
+
+    /// How many trees the resource sweep has proved since this worker started.
+    #[cfg(test)]
+    pub(crate) fn proofs_run(&self) -> usize {
+        self.proofs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// What the in-use rules read about this box: its name, this pid, and the process table.
@@ -1579,6 +1596,7 @@ impl RepoQueue {
         // the same worktree and branch, but the decision is about commits *on a target*, so two rows
         // naming one tree and different targets are two questions.
         let mut decided: HashMap<(String, String, String), Settled> = HashMap::new();
+        let heads = letibot_tools::git::ref_heads(&self.repo);
         for m in &merges {
             if m.state.is_open() || m.worktree.is_none() {
                 continue;
@@ -1594,7 +1612,14 @@ impl RepoQueue {
                 session: session_of(&m.review_id),
                 keeps,
             };
-            self.release_one("merge", &m.id, m.state.as_str(), &held, &mut decided)?;
+            self.release_one(
+                "merge",
+                &m.id,
+                m.state.as_str(),
+                &held,
+                &heads,
+                &mut decided,
+            )?;
         }
         for r in &reviews {
             if r.state.is_open() || r.worktree.is_none() || landing_open(&r.id) {
@@ -1614,7 +1639,14 @@ impl RepoQueue {
                 session: &r.session_id,
                 keeps,
             };
-            self.release_one("review", &r.id, r.state.as_str(), &held, &mut decided)?;
+            self.release_one(
+                "review",
+                &r.id,
+                r.state.as_str(),
+                &held,
+                &heads,
+                &mut decided,
+            )?;
         }
         Ok(())
     }
@@ -1628,6 +1660,7 @@ impl RepoQueue {
         id: &str,
         state: &str,
         held: &Held<'_>,
+        heads: &HashMap<String, String>,
         decided: &mut HashMap<(String, String, String), Settled>,
     ) -> Result<(), StoreError> {
         let settled = format!("released:{}:{queue}:{id}:{state}", self.key);
@@ -1639,14 +1672,42 @@ impl RepoQueue {
             held.branch.to_string(),
             held.target.to_string(),
         );
+        // Kept on a proof, and nothing the proof read has moved: the same answer, already said.
+        let now_heads: Heads = (
+            heads.get(held.branch).cloned(),
+            heads.get(held.target).cloned(),
+            letibot_tools::git::tree_head_quick(Path::new(held.worktree), heads),
+        );
+        let unmoved = !heads.is_empty()
+            && self
+                .proven
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&tree)
+                .is_some_and(|was| *was == now_heads);
+        if unmoved {
+            return Ok(());
+        }
         let found = match decided.get(&tree) {
             Some(found) => found.clone(),
             None => {
                 let found = self.settle_tree(held);
-                decided.insert(tree, found.clone());
+                decided.insert(tree.clone(), found.clone());
                 found
             }
         };
+        {
+            let mut proven = self.proven.lock().unwrap_or_else(|e| e.into_inner());
+            match &found.kept {
+                // A live session or process is a fact about now, not about commits: asked again.
+                Some((kind, _)) if *kind != "live" => {
+                    proven.insert(tree, now_heads);
+                }
+                _ => {
+                    proven.remove(&tree);
+                }
+            }
+        }
         let now = gate::now_ms();
         let Some(note) = release_note(&found, &held.keeps, now) else {
             // Nothing was there: the tree and the branch are both gone already.
@@ -1679,6 +1740,8 @@ impl RepoQueue {
     /// commits decide, and the tree follows them - the rule `git::retire_if_empty` already
     /// applies to a superseded fix, because one queue may not hold two rules for one tree
     fn settle_tree(&self, held: &Held<'_>) -> Settled {
+        self.proofs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut found = Settled::default();
         let wt = Path::new(held.worktree);
         let there = wt.exists();

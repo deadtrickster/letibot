@@ -5171,6 +5171,43 @@ fn a_failed_landings_branch_and_tree_are_kept_and_said() {
     );
 }
 
+/// A kept tree is proved once, not on every pass: a pass with nothing moved proves none again, and a
+/// target that moved is proved again. Re-proving every kept row on every two-second pass spawned
+/// hundreds of `git` a pass on a queue with history.
+#[test]
+fn a_kept_tree_is_proved_again_only_when_a_head_it_read_moved() {
+    let w = World::new("release-memo");
+    let (wt, base, head) = branch(&w.repo, "f9", "broken");
+    w.enqueue("f9", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("f9", "test/a");
+    run(&q, 3);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Failed
+    );
+    let after_kept = q.proofs_run();
+    assert!(after_kept > 0, "the kept tree was proved");
+    run(&q, 5);
+    assert_eq!(
+        q.proofs_run(),
+        after_kept,
+        "five quiet passes proved nothing again"
+    );
+    // `main` moves: the proof read it, so the tree is proved once more.
+    std::fs::write(w.repo.join("moved.txt"), "x\n").unwrap();
+    sh(&w.repo, &["add", "moved.txt"]);
+    sh(&w.repo, &["commit", "-q", "-m", "main moves"]);
+    run(&q, 1);
+    assert!(
+        q.proofs_run() > after_kept,
+        "a moved target is proved again"
+    );
+    let notes = release_notes(&w, "merge", &m);
+    assert_eq!(notes.len(), 1, "and the keep is still said once: {notes:?}");
+}
+
 /// A pass over entries that are already on `main` is not a pass of landings: each settles as
 /// `withdrawn`, at the tip it was already in, and no row records a `landed` it did not do. A
 /// queue that logged the tip would read as one merge per row and per pass.
