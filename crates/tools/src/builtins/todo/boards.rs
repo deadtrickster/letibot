@@ -25,7 +25,10 @@ pub enum Board {
 /// or a session's, by its id or by the title exactly one of them has. `Err` is a board of ANOTHER
 /// project, which is refused by name - a wait that crosses projects is not watched yet.
 pub fn board_of(store: &Store, mine: &[String], name: &str) -> Result<Board, String> {
-    let name = name.trim();
+    // A wait should carry a seat's id, and an id is `<host>/<local>`: this store knows a session by
+    // its local half - its own id - so an id is looked up as the session it names. A bridge's id
+    // finds nothing here yet, and says so as an unknown seat rather than as a session.
+    let name = session_of_seat_id(name.trim()).unwrap_or(name.trim());
     if name.starts_with("cc@") {
         if crosses(mine, &handle_words(name)) {
             return Err(other_project(name, mine));
@@ -54,6 +57,14 @@ pub fn board_of(store: &Store, mine: &[String], name: &str) -> Result<Board, Str
     Ok(Board::Rows(
         store.todos(&session.id).map_err(|e| e.to_string())?,
     ))
+}
+
+/// The local half of a seat id (`<host>/<local>`) when it is a session's: `s-...` is what this
+/// store knows a session by, and an id is what a wait should carry. A bridge's id (`cc-...`) is not
+/// a session and is left as it is - that board is found by its handle until the store holds ids.
+fn session_of_seat_id(name: &str) -> Option<&str> {
+    let (host, local) = name.split_once('/')?;
+    (!host.is_empty() && local.starts_with("s-") && !local.contains('/')).then_some(local)
 }
 
 /// What a board says about the row a wait names: `None` while that row is still open, and the note's
