@@ -6,10 +6,14 @@
 //! `sleep` standing in for a job, a script named `firecracker` standing in for a VM.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use letibot_tokencore::migrate_split::project_key;
 use letibot_tokencore::store::{OwnerKind, OwnerRow, OwnerState, ProcState, ProcessRecord, Store};
+
+mod support;
+
+use support::{PATIENCE, TICK};
 
 /// A temp directory of this test's own.
 fn scratch(tag: &str) -> PathBuf {
@@ -146,9 +150,9 @@ impl Fixture {
         while letibot_tools::firecode::held::firecrackers(Path::new("/proc"))
             .iter()
             .all(|(_, p)| *p != child.id())
-            && began.elapsed() < Duration::from_secs(60)
+            && began.elapsed() < PATIENCE
         {
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(TICK);
         }
         child
     }
@@ -208,11 +212,11 @@ impl Drop for Fixture {
 /// on the process itself would hang the suite on the very failure it is looking for.
 fn wait_dead(pid: u32) -> bool {
     let began = Instant::now();
-    while began.elapsed() < Duration::from_secs(20) {
+    while began.elapsed() < PATIENCE {
         if letibot_tools::exec::procs::read(pid).is_none_or(|p| p.state == 'Z') {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(TICK);
     }
     false
 }

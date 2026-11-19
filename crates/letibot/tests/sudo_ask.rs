@@ -47,11 +47,13 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::serve_registry;
 use letibot_transcript::TranscriptItem;
 
-/// How long any wait in this file may take before it is a failure rather than a hang.
-const PATIENCE: Duration = Duration::from_secs(60);
+mod support;
+
+use support::PATIENCE;
 
 /// How long the head takes to type the password. Longer than `bash`'s wait loop needs to look
-/// at the run once (500 ms a beat, 250 ms of quiet) - nobody types in under half a second.
+/// at the run once (500 ms a beat, 250 ms of quiet) - nobody types in under half a second, and a
+/// card raised for that wait is what must NOT happen while the answer is pending.
 const TYPING: Duration = Duration::from_secs(3);
 
 /// `PR_SET_DUMPABLE`, from `<linux/prctl.h>`. Declared here rather than pulled in with a crate

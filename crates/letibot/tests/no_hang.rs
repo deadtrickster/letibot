@@ -7,10 +7,14 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+mod support;
+
+use support::wait_until;
+
 /// How long a case may take before the thing it proves never happened. Not a measurement of the
 /// box: a loaded box stretches every step of the launcher, and each of these cases is about a wait
 /// that must END, not about how quickly it ends.
-const NEVER: Duration = Duration::from_secs(60);
+const NEVER: Duration = support::PATIENCE;
 
 /// A launcher run as the shell sees it: its own status and how long ITS process took.
 ///
@@ -62,8 +66,8 @@ fn run_measured(cmd: &mut Command) -> Ran {
     let status = child.wait().expect("the launcher is reaped");
     let took = t.elapsed();
     // The launcher has exited, so everything it wrote is already in the pipes: this is the drain
-    // finishing, not a wait on anything it left behind.
-    let grace = Instant::now() + Duration::from_secs(2);
+    // finishing, not a wait on anything it left behind. NEVER is the never-happened bound.
+    let grace = Instant::now() + NEVER;
     let mut eof: Option<Duration> = None;
     for rx in [out_done, err_done] {
         let mut closed = false;
@@ -452,14 +456,9 @@ fn a_join_wrapper_that_forks_does_not_hold_the_callers_stdio() {
     assert_eq!(r.stdout.trim(), "ran", "{}", r.stderr);
     assert_eq!(r.status, Some(3), "{}", r.stderr);
     assert!(r.stderr.contains("made no scope"), "{}", r.stderr);
-    let until = Instant::now() + NEVER;
-    while !(r.no_join_left() && r.no_children_left()) {
-        assert!(
-            Instant::now() < until,
-            "the abandoned join is killed, children and all"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the abandoned join to be killed, children and all", || {
+        r.no_join_left() && r.no_children_left()
+    });
     assert!(
         r.eof.is_some(),
         "the launcher's caller is still reading from a child it left behind"
