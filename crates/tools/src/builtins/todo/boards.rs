@@ -25,10 +25,21 @@ pub enum Board {
 /// or a session's, by its id or by the title exactly one of them has. `Err` is a board of ANOTHER
 /// project, which is refused by name - a wait that crosses projects is not watched yet.
 pub fn board_of(store: &Store, mine: &[String], name: &str) -> Result<Board, String> {
-    // A wait should carry a seat's id, and an id is `<host>/<local>`: this store knows a session by
-    // its local half - its own id - so an id is looked up as the session it names. A bridge's id
-    // finds nothing here yet, and says so as an unknown seat rather than as a session.
-    let name = session_of_seat_id(name.trim()).unwrap_or(name.trim());
+    // A wait should carry a seat's id, and an id is `<host>/<local>`. A session is known by its
+    // local half - its own id - while a bridge writes its board under the whole id, because that is
+    // the only name of it nothing else can drift from.
+    let asked = name.trim();
+    if seat_id_parts(asked).is_some_and(|(_, local)| local.starts_with("cc-")) {
+        return match store.seat_board(asked).map_err(|e| e.to_string())? {
+            Some(rows) => Ok(Board::Rows(rows)),
+            None => Ok(Board::Unknown(format!(
+                "`{asked}` has written no board in this store{}. A bridge's board is written under \
+                 its seat id when it changes its own todos",
+                held(store, mine)
+            ))),
+        };
+    }
+    let name = session_of_seat_id(asked).unwrap_or(asked);
     if name.starts_with("cc@") {
         if crosses(mine, &handle_words(name)) {
             return Err(other_project(name, mine));
@@ -63,8 +74,16 @@ pub fn board_of(store: &Store, mine: &[String], name: &str) -> Result<Board, Str
 /// store knows a session by, and an id is what a wait should carry. A bridge's id (`cc-...`) is not
 /// a session and is left as it is - that board is found by its handle until the store holds ids.
 fn session_of_seat_id(name: &str) -> Option<&str> {
+    let (_, local) = seat_id_parts(name)?;
+    local.starts_with("s-").then_some(local)
+}
+
+/// The two halves of a seat id (`<host>/<local>`), when the name is one: one `/`, neither half
+/// empty. The spelling is the room's ([`letibot_room::SeatId`]), restated because this crate holds
+/// no room; a test in `harnessd` pins the two together.
+fn seat_id_parts(name: &str) -> Option<(&str, &str)> {
     let (host, local) = name.split_once('/')?;
-    (!host.is_empty() && local.starts_with("s-") && !local.contains('/')).then_some(local)
+    (!host.is_empty() && !local.is_empty() && !local.contains('/')).then_some((host, local))
 }
 
 /// What a board says about the row a wait names: `None` while that row is still open, and the note's
