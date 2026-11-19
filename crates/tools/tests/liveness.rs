@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use letibot_tools::exec::{
     DEAD_KILL, DEADLINE_KILL, HostProcesses, JobId, JobState, ProcessHost, ScopeKind, SpawnRequest,
 };
-use letibot_tools::testing::runner_harness;
+use letibot_tools::testing::{runner_harness, wait_within};
 use letibot_transcript::ToolOutcome;
 
 const WINDOW: Duration = Duration::from_millis(500);
@@ -55,15 +55,15 @@ fn host(window: Duration) -> Option<HostProcesses> {
 
 /// Wait until `f` says so, bounded. Only ever used to wait for a decision the check takes on its
 /// own clock; nothing here sleeps a window out and calls that a measurement.
-fn until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + limit;
-    while Instant::now() < deadline {
-        if f() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    f()
+fn until(limit: Duration, f: impl FnMut() -> bool) -> bool {
+    wait_within(limit, f)
+}
+
+/// Four windows, for the negative checks: long enough that a check which WOULD have ended this job
+/// has had four chances to. Nothing here depends on how long the wait took, only that it was at
+/// least this long, so a loaded box cannot turn one of them red.
+fn four_windows() {
+    std::thread::sleep(WINDOW * 4);
 }
 
 /// A job that writes nothing and burns nothing is dead, and it is ended for that reason — not for
@@ -108,7 +108,7 @@ fn a_job_that_prints_nothing_but_burns_cpu_is_never_ended() {
     let Some(host) = host(WINDOW) else { return };
     let id = spawn(&host, "while :; do :; done");
     // Four windows of it, which is four times the stretch a silent job gets.
-    std::thread::sleep(WINDOW * 4);
+    four_windows();
     let view = host.job(&id).expect("the row stays");
     assert!(
         view.state.is_running(),
@@ -127,7 +127,7 @@ fn a_job_that_prints_nothing_but_burns_cpu_is_never_ended() {
 fn a_job_that_keeps_talking_outlives_the_window() {
     let Some(host) = host(WINDOW) else { return };
     let id = spawn(&host, "while :; do echo tick; sleep 0.2; done");
-    std::thread::sleep(WINDOW * 4);
+    four_windows();
     let view = host.job(&id).expect("the row stays");
     assert!(
         view.state.is_running(),
@@ -207,7 +207,7 @@ fn a_job_given_a_deadline_is_not_ended_by_the_dead_check() {
         Some(Duration::from_secs(30)),
         "a running job can be bounded from now"
     );
-    std::thread::sleep(WINDOW * 4);
+    four_windows();
     assert!(
         host.job(&id).map(|v| v.state.is_running()).unwrap_or(true),
         "the dead check ended a job that was told to expect longer"
@@ -222,7 +222,7 @@ fn a_job_given_a_deadline_is_not_ended_by_the_dead_check() {
 fn the_operators_own_run_is_never_ended_by_the_dead_check() {
     let Some(host) = host(WINDOW) else { return };
     let id = spawn_run(&host, "sleep 300", true);
-    std::thread::sleep(WINDOW * 4);
+    four_windows();
     assert!(
         host.job(&id).map(|v| v.state.is_running()).unwrap_or(true),
         "a person's own shell was ended as dead"
