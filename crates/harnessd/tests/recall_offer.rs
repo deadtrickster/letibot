@@ -214,6 +214,44 @@ fn text_of(item: &TranscriptItem) -> String {
     }
 }
 
+/// A reseat forks onto a copy of every row: the old transcript's turns are all in the prompt, so
+/// none of them is offered as a turn the prompt no longer carries.
+#[test]
+fn a_turn_a_reseat_carried_over_is_not_offered_as_gone() {
+    let d = Dir::new("reseat");
+    let workspace = d.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("the workspace");
+    let (store, session_id, _compacted, prefix_id) = store_with_a_compaction(d.path(), &workspace);
+    // The reseat of the live transcript: every one of its rows, copied as stored.
+    let t1 = format!("{session_id}#t1");
+    let t2 = format!("{session_id}#t2");
+    store
+        .put_fork(&t2, &session_id, &prefix_id, &t1, 9)
+        .expect("forking");
+    let carried = [
+        user("[summary: the export work is done]"),
+        user("now the restore"),
+        assistant("the restore replays key by key"),
+    ];
+    for (seq, item) in carried.iter().enumerate() {
+        store
+            .append_item(&t2, seq as u32, item, &row(seq as u32), &[seq as u32])
+            .expect("appending to t2");
+    }
+    let built = recall_index::build(Some(&store), &workspace, Some(t2.as_str()), "", None);
+    let texts: Vec<&String> = built.units.iter().map(|u| &u.text).collect();
+    assert!(
+        !texts.iter().any(|t| t.contains("replays key by key")),
+        "a turn the live transcript carries is not offered: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("reference-format archives")),
+        "the turn the compaction really took away still is: {texts:?}"
+    );
+}
+
 /// An evicted turn about "etcd reference-format archives", and "remember how we built the etcd
 /// archives?" gets a tail hint naming `transcript`, a match on those words and the turn's session.
 /// Without a back-reference and with nothing over the floor it says nothing.

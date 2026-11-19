@@ -11,7 +11,9 @@ use std::path::Path;
 use letibot_embeddings::Tier;
 use letibot_tokencore::store::{Archived, RecallUnit, Store};
 
-use crate::recall_offer::{EMBED_MAX, ROWS_MAX, SESSIONS_MAX, TRANSCRIPTS_MAX, UNITS_MAX, units};
+use crate::recall_offer::{
+    EMBED_MAX, ROWS_MAX, SESSIONS_MAX, TRANSCRIPTS_MAX, UNITS_MAX, units, units as units_of,
+};
 
 /// What one read of the index found, and what it cost.
 #[derive(Debug, Default)]
@@ -57,7 +59,18 @@ pub fn build(
         // scores what is already indexed.
         eprintln!("  recall index: {e}");
     }
-    let units = store.recall_units(UNITS_MAX).unwrap_or_default();
+    let mut units = store.recall_units(UNITS_MAX).unwrap_or_default();
+    // A turn the live transcript carries is in the prompt, whichever transcript it was first
+    // written to: a reseat forks onto a copy of every row, and offering the old copy told the model
+    // that turns it was reading were gone.
+    if let Some(live) = live {
+        let rows = store.recall_rows(live, ROWS_MAX).unwrap_or_default();
+        let carried: std::collections::HashSet<String> = units_of(&rows, "", live, "")
+            .into_iter()
+            .map(|u| u.text)
+            .collect();
+        units.retain(|u| !carried.contains(&u.text));
+    }
     let mut vectors = store.recall_vectors(model).unwrap_or_default();
     let embedded = warm(store, model, tier, &mut vectors);
     Built {
