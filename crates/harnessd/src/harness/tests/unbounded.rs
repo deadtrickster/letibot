@@ -372,3 +372,44 @@ fn an_explicit_automode_on_a_box_with_no_oracle_still_refuses_by_name() {
         "a refused move leaves the session where it was"
     );
 }
+
+/// `--mode allow-all` is the operator's own word, given on the command line instead of on a card: it
+/// opens the same point `/mode allow-all` answered yes does, on a box with no confinement to build.
+/// The alternative was a daemon that refuses to start on the operator's own machine.
+#[test]
+fn the_flag_spelling_of_allow_all_opens_a_host_session_with_a_shell() {
+    let dir = Scratch::new("allow-all-flag");
+    let mut cfg = config(&dir, "s-allow-all-flag");
+    cfg.allow_bash = true;
+    // The name `parse` gives from `--mode allow-all`, and the one a stale row holds.
+    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
+    let (h, _cards) = open(cfg);
+
+    assert_eq!(
+        h.config().mode.name,
+        letibot_tools::mode::Mode::ALLOW_ALL_HERE.name,
+        "the flag's `allow-all` was not taken as the operator's word"
+    );
+    assert_eq!(
+        h.config().mode.boundary,
+        letibot_tools::mode::Boundary::OperatorConsented,
+        "and the box, not a VM, is what that word stands for"
+    );
+    assert!(
+        h.runtime.backend.boundary().is_none(),
+        "a boundary was built for a point that means there is none: {:?}",
+        h.runtime.backend.boundary().map(|b| b.mechanism)
+    );
+    // A box that cannot make a cgroup seats no shell (said on the hub), so the command half is
+    // asked of the boxes that can: the point is what this test is about.
+    if h.config().allow_bash {
+        let out = call(&h, "bash", serde_json::json!({ "command": "echo hi" }));
+        assert_eq!(
+            out.outcome,
+            letibot_transcript::ToolOutcome::Ok,
+            "a command at the host point did not run: {}",
+            out.payload
+        );
+        assert!(out.payload.contains("hi"), "{}", out.payload);
+    }
+}

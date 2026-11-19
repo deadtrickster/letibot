@@ -3074,6 +3074,24 @@ impl Harness {
                 exec: has_exec_tools,
                 network: has_network_tools,
             };
+            // `--mode allow-all` on a box with no confinement to build is the same act as
+            // `/mode allow-all` answered yes: `ALLOW_ALL_HERE` is that point with the operator's word
+            // where the `Confinement` prerequisite was, since 6c4713c23 there is nothing else to
+            // require. Only the flag takes this door - a stored row has its own consent record.
+            if cfg.parent_session_id.is_none()
+                && mode_source == FLAG_SOURCE
+                && cfg.mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                && !have.contains(&Prereq::Confinement)
+            {
+                cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                mode_source = format!("{FLAG_SOURCE}, on this box with nothing confining it");
+                notes.push(
+                    "`allow-all` from the command line — on this box, with nothing confining it: \
+                     no bubblewrap and no fence on the file tools, your own home and network \
+                     exactly as your own shell. `/mode <other>` takes it back."
+                        .to_string(),
+                );
+            }
             // A child's point is its parent's, clamped by this seat: `seats` and `have` do not
             // exist any earlier, which is why the clamp is not beside the mode-store lookup. It is
             // a clamp and not a refusal because a child's point is not a choice anybody makes.
