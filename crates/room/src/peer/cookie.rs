@@ -103,7 +103,8 @@ impl Cookie {
         // A file written by an editor may end in a newline or two, and one of them is not part of
         // the word two boxes agree on.
         let word = text.trim_end_matches(['\n', '\r']).trim();
-        if word.len() < MIN_LEN || word.len() > MAX_LEN || word.chars().any(char::is_whitespace) {
+        // A passphrase may hold spaces; a control character is a file that is not a word at all.
+        if word.len() < MIN_LEN || word.len() > MAX_LEN || word.chars().any(char::is_control) {
             return Err(CookieError::Length {
                 len: word.len(),
                 path: path.to_path_buf(),

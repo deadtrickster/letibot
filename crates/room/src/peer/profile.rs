@@ -35,6 +35,11 @@ impl RepoIdentity {
         }
     }
 
+    /// An identity a caller already has as text - a profile read back from a peer, or a test's.
+    pub fn named(text: &str) -> RepoIdentity {
+        RepoIdentity(text.trim().to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -177,6 +182,22 @@ impl SeatProfile {
             false => format!("{head} - {}", self.task),
         }
     }
+}
+
+/// One of this box's projects, as the mesh has to know it: the room a seat lands in, the repository
+/// that room is, and whether this project wants to be introduced to its own repository elsewhere.
+///
+/// The identity is handed in by the coordinator's owner because it is read from git, and the room
+/// crate reads no repository: what it does is compare two identities, which is the whole of
+/// matching.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectProfile {
+    /// The project key a room is named by here.
+    pub key: String,
+    pub identity: RepoIdentity,
+    /// `[peering] introduce = false` in the project's own `leticode.toml`: its seats are not
+    /// introduced to the same repository elsewhere, and nobody's are introduced here.
+    pub introduce: bool,
 }
 
 /// Which peer seats a seat has already been told about, so an introduction is said once.

@@ -119,10 +119,28 @@ impl Mesh {
         entry
     }
 
+    /// The line for `host`, made if this is the first this box has heard of it: a box that dialled
+    /// here is one nobody announced, and a link that arrived is still a link.
+    fn entry(&mut self, host: &str, addr: SocketAddr, now: u64) -> &mut Link {
+        let link = self.links.entry(host.to_string()).or_insert(Link {
+            host: host.to_string(),
+            addr,
+            up: false,
+            last_heard: now,
+            missed: 0,
+            seats: Vec::new(),
+            why: String::new(),
+        });
+        if !addr.ip().is_unspecified() {
+            link.addr = addr;
+        }
+        link
+    }
+
     /// The link is up: the handshake's two proofs held. Said twice for one link, it changes
     /// nothing and returns nothing, so a reconnecting socket is not a second arrival.
     pub fn up(&mut self, host: &str, addr: SocketAddr, now: u64) -> Option<PeerEvent> {
-        let link = self.links.get_mut(host)?;
+        let link = self.entry(host, addr, now);
         link.addr = addr;
         link.last_heard = now;
         link.missed = 0;

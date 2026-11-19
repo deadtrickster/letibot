@@ -37,6 +37,7 @@ fn family_of(seat: Seat, name: &str, family: Option<&str>) -> Option<String> {
 use crate::chat::{self, Chat, Seat};
 use crate::item::Speaker;
 use crate::lease::{CoordinatorLease, LEASE_BEAT_EVERY_MS};
+use crate::peer::{Introductions, Peer, PeerEvent, PeerFrame, SeatProfile};
 use crate::room::{Event, Room};
 use crate::wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
 
@@ -251,6 +252,12 @@ struct Inner {
     /// The seat id behind each name that has connected, by that name: what [`Server::principal_of`]
     /// answers for a bridge, whose id nothing in the room could derive. Bounded like the cursors.
     ids_of: Mutex<BTreeMap<String, String>>,
+    /// This box's peering, when an operator wrote a cookie: `None` on every box that does not peer,
+    /// which is why nothing else in this file asks whether a seat may be on another box.
+    peer: Mutex<Option<Peer>>,
+    /// The peer seats this box's seats have already been told about: an introduction is said once,
+    /// and a seat that reconnects on the same repository is not news.
+    introduced: Mutex<Introductions>,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -268,6 +275,19 @@ struct Missed {
 struct DmAwaiting {
     seq: u64,
     peer: String,
+}
+
+/// One of this box's seats as the mesh needs it: the id it answers to, the project it is in, and
+/// the branch and task line its own daemon reported. The repository identity is NOT here - it is
+/// read from git by whoever owns the coordinator, and this crate reads no repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatRow {
+    /// `<host>/<local>`: the id a peer's message is addressed to.
+    pub id: String,
+    pub project: String,
+    pub branch: String,
+    /// The one line the seat is on, as its own task line says it.
+    pub task: String,
 }
 
 /// A principal's chat while it has no connection - see [`Inner::pending`]. `dropped` is what did
@@ -382,6 +402,8 @@ impl Server {
                 accept: Mutex::new(None),
                 nicks: Mutex::new(BTreeMap::new()),
                 ids_of: Mutex::new(BTreeMap::new()),
+                peer: Mutex::new(None),
+                introduced: Mutex::new(Introductions::new()),
                 // The data directory is the socket's own: `seat_host` pins this box's half of
                 // every id it hands out there, once, and reads it back after a rename.
                 seat_host: Mutex::new(crate::id::seat_host(
@@ -452,6 +474,239 @@ impl Server {
                 self.inner.path.display()
             )),
         }
+    }
+
+    /// Give this coordinator a peer: the mesh it is one node of. `events` is [`Peer::open`]'s own
+    /// channel, and what arrives on it is acted on here on a thread of its own, so the peer's
+    /// sockets never wait for a room lock.
+    ///
+    /// A coordinator with no cookie has no peer and never calls this: every seat an id can name is
+    /// then on this box, which is exactly the behaviour this server had before peering existed.
+    pub fn with_peer(&self, peer: Peer, events: std::sync::mpsc::Receiver<PeerEvent>) -> &Self {
+        *self.inner.peer.lock().expect("the peer lock") = Some(peer);
+        let server = self.clone();
+        std::thread::spawn(move || {
+            while !server.inner.stop.load(Ordering::SeqCst) {
+                match events.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(event) => server.on_peer_event(event),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            // The peer goes with the reader: a stopped coordinator announces nothing and answers
+            // nobody, and an object left behind would keep a TCP socket for a room that is gone.
+            if let Some(peer) = server.inner.peer.lock().expect("the peer lock").take() {
+                peer.stop();
+            }
+        });
+        self
+    }
+
+    /// This box's mesh, when an operator wrote a cookie. Cloned rather than borrowed because it is
+    /// reached from the append path, which holds no other lock at that point.
+    pub fn peer(&self) -> Option<Peer> {
+        self.inner.peer.lock().expect("the peer lock").clone()
+    }
+
+    /// The boxes this one knows of and their state - what a pane draws for *the mesh*.
+    pub fn mesh(&self) -> Vec<(String, bool)> {
+        match self.peer() {
+            Some(p) => {
+                let mut rows: Vec<(String, bool)> = p.up().into_iter().map(|h| (h, true)).collect();
+                rows.extend(p.away().into_iter().map(|h| (h, false)));
+                rows.sort();
+                rows.dedup();
+                rows
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Does a box this one is linked to hold `id`? A seat on an away box is not here: a message to
+    /// it is kept (the room always keeps what it said) and nothing is sent.
+    fn peer_holds(&self, id: &crate::SeatId) -> bool {
+        self.peer().is_some_and(|p| p.holds(&id.to_string()))
+    }
+
+    /// What the mesh learned, done to the room. A refusal is said on the log rather than to the far
+    /// side: a peer cannot act on this box's refusal, and the person reading the log can.
+    fn on_peer_event(&self, event: PeerEvent) {
+        match event {
+            PeerEvent::Up { host } => {
+                eprintln!(
+                    "room: {host} is linked; its seats are in this box's roster while it stays"
+                )
+            }
+            PeerEvent::Down { why, .. } => eprintln!("room: {why}"),
+            PeerEvent::Profiles { seats, .. } => self.introduce(&seats),
+            PeerEvent::Message(message) => self.accept_remote(*message),
+        }
+    }
+
+    /// A peer seat whose repository is one of this box's lands in that project's room, once: the
+    /// line says who it now shares the room with and what it is on, and neither side is asked.
+    fn introduce(&self, seats: &[SeatProfile]) {
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        let host = self.seat_host();
+        let now = now_ms();
+        for seat in seats {
+            // The far side's list is its own seats; one that claims this box's name is not news,
+            // and a seat this box has not been told about is the whole of what is left.
+            if seat.host() == host {
+                continue;
+            }
+            // The project first: a seat on a repository this box does not hold is not a match, and
+            // it must not be filed as one that was quietly told.
+            let Some(project) = peer.project_of(seat.identity()) else {
+                continue;
+            };
+            if !self
+                .inner
+                .introduced
+                .lock()
+                .expect("the introduced lock")
+                .is_new(seat)
+            {
+                continue;
+            }
+            let room = chat::project_room(&project.key);
+            let line = seat.line();
+            let request = format!("peer-intro:{}:{}", seat.id, seat.identity());
+            let _ = self.append_and_push(
+                &request,
+                &room,
+                &seat.id,
+                Seat::External,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                &line,
+                now,
+            );
+        }
+    }
+
+    /// A line that came over a link, said here: the far side numbered it and said it in its own
+    /// room, so this box files it under the sender and its seq - a redelivery is the same message,
+    /// never a second one - and addresses it to the seat here that holds the id.
+    fn accept_remote(&self, message: chat::Message) {
+        let Some(id) = message.to.as_deref().and_then(crate::SeatId::parse) else {
+            eprintln!(
+                "room: `{}` sent a line addressed to `{}`, which is not a seat id - a peer carries \
+                 only what is addressed to a seat",
+                message.author,
+                message.to.unwrap_or_default()
+            );
+            return;
+        };
+        if id.host() != self.seat_host() {
+            eprintln!(
+                "room: `{}` sent a line for {id}, which is another box's seat - this box cannot \
+                 deliver it and did not",
+                message.author
+            );
+            return;
+        }
+        let Some(name) = self.name_of_id(&id.to_string()) else {
+            eprintln!(
+                "room: a line from `{}` arrived for {id} and no seat on this box answers to it",
+                message.author
+            );
+            return;
+        };
+        let request = format!("peer:{}:{}", message.author, message.seq);
+        let now = now_ms();
+        // The attachments stay on the box that holds their bytes: a blob id means nothing here,
+        // and a message whose pictures are missing is better than one that cannot be read at all.
+        let response = self.append_and_push(
+            &request,
+            &message.room,
+            &message.author,
+            message.kind,
+            Some(name),
+            None,
+            message.refs.clone(),
+            Vec::new(),
+            &message.text,
+            now,
+        );
+        if let Response::Refused { why, .. } = response {
+            eprintln!(
+                "room: a line from `{}` was refused here ({why})",
+                message.author
+            );
+        }
+    }
+
+    /// A line addressed to a seat on another box goes over that box's link. Called from the one
+    /// place a message is appended, so every door that can address an id is routed by it.
+    fn ship_remote(&self, message: &chat::Message) {
+        let Some(id) = message.to.as_deref().and_then(crate::SeatId::parse) else {
+            return;
+        };
+        if id.host() == self.seat_host() {
+            return;
+        }
+        // A message that came over a link is not sent back over one: only a seat on this box
+        // speaks here, and a relayed line's author is the far side's.
+        if crate::SeatId::parse(&message.author).is_some_and(|a| a.host() != self.seat_host()) {
+            return;
+        }
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        // The far side reads the author by its ID: this box's name for the seat (`s-a1`) means
+        // whatever that box's own `s-a1` is, and a line signed with it would name the wrong seat
+        // there - the one thing lead 70 says an id exists to prevent.
+        let mut shipped = message.clone();
+        let author = self.principal_of(&message.author);
+        if !author.is_empty() {
+            shipped.author = author;
+        }
+        if !peer.ship(id.host(), PeerFrame::Message { message: shipped }) {
+            eprintln!(
+                "room: {id} is on {} and its link is down - the line is in this room and that \
+                 box's seat is away",
+                id.host()
+            );
+        }
+    }
+
+    /// This box's seats as the mesh needs them: the id of every live seat, the project it is in,
+    /// and what its daemon last said it was on. `project` is the key a caller turns into a
+    /// repository identity; nothing here reads git.
+    pub fn seat_rows(&self) -> Vec<SeatRow> {
+        let host = self.seat_host();
+        let facts: BTreeMap<String, crate::seat::SeatFacts> = self
+            .inner
+            .seats
+            .lock()
+            .expect("the seats lock")
+            .iter()
+            .map(|(name, (facts, _))| (name.clone(), facts.clone()))
+            .collect();
+        self.conn_list()
+            .into_iter()
+            .filter(|c| matches!(c.seat, Seat::Session | Seat::External))
+            .map(|c| {
+                let working = facts.get(&c.who.session).map(|f| f.working.clone());
+                SeatRow {
+                    id: c.seat(&host),
+                    project: c.project.clone(),
+                    branch: working
+                        .as_ref()
+                        .map(|w| w.branch.clone())
+                        .unwrap_or_default(),
+                    task: working
+                        .as_ref()
+                        .map(|w| w.row.trim().to_string())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
     }
 
     /// Keep chat in `path`: load what it holds and append from now on. Call before the first
@@ -1107,6 +1362,11 @@ impl Server {
         {
             let _ = conn.socket.shutdown(std::net::Shutdown::Both);
         }
+        // Peering goes with the room: a box that is stopping says goodbye on every link and hears
+        // no more beacons, rather than staying a name on the LAN that answers nothing.
+        if let Some(peer) = self.inner.peer.lock().expect("the peer lock").take() {
+            peer.stop();
+        }
     }
 
     // ===== Chat =====
@@ -1312,6 +1572,14 @@ impl Server {
         {
             return Some(name);
         }
+        // A seat on another box is an ADDRESS this box can post to and nothing more: it is named
+        // by its id, no connection here answers to it, and what it is sent goes over the link.
+        if parsed.host() != host {
+            return self.peer_holds(&parsed).then(|| parsed.to_string());
+        }
+        // The local half is this box's own assumption: a session whose id this box would have
+        // minted. A host that is not this box's is never spelled as a local name - that is how a
+        // dm to another box's `s-1` would have reached this box's own `s-1`.
         (parsed.is_session() && !parsed.host().is_empty()).then(|| parsed.local().to_string())
     }
 
@@ -2336,6 +2604,10 @@ impl Server {
         {
             return true;
         }
+        // A seat a linked box holds answers to its id, and a message to it goes over that link.
+        if crate::SeatId::parse(name).is_some_and(|id| self.peer_holds(&id)) {
+            return true;
+        }
         let rooms = self.inner.rooms.lock().expect("the rooms lock");
         rooms.values().any(|r| {
             r.members()
@@ -2464,6 +2736,34 @@ impl Server {
         let display = self.bridge_display();
         let gatekeepers = self.gatekeeper_display();
         let nicks = self.inner.nicks.lock().expect("the nicks lock").clone();
+        // A linked box's seats are in this room's roster and are not here: their own box holds
+        // them, and this one draws the id it would send to. A box that is away keeps its seats in
+        // the list, away - a roster that dropped them would be a room that forgot who it shares.
+        if let Some(peer) = self.peer() {
+            for seat in peer.peer_seats() {
+                if seat.host() == host {
+                    continue;
+                }
+                let here = peer.project_of(seat.identity()).map(|p| p.key);
+                let mine = key.map(str::to_string).or(here.clone());
+                if !host_room && mine.as_deref() != here.as_deref() {
+                    continue;
+                }
+                rows.insert(
+                    seat.id.clone(),
+                    chat::Presence {
+                        name: seat.id.clone(),
+                        id: seat.id.clone(),
+                        seat_id: seat.id.clone(),
+                        kind: Seat::External,
+                        connected: false,
+                        project: here.unwrap_or_default(),
+                        label: seat.line(),
+                        seat: None,
+                    },
+                );
+            }
+        }
         for row in rows.values_mut() {
             // A label the seat was given is what it is drawn by, whatever its handle derives to:
             // the room was told, and a reader addresses nothing with it.
@@ -3977,6 +4277,9 @@ impl Server {
         if message.say_kind() == crate::SayKind::Blocker {
             self.note_count(crate::signal::Count::BlockerFlagged);
         }
+        // A line addressed to a seat on another box goes over that box's link. Here rather than in
+        // each door, because a dm, a `say` with a `to` and a reply that answers one all arrive.
+        self.ship_remote(&message);
         self.deliver(&message, now);
         Response::Said {
             id: id.to_string(),

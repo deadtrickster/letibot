@@ -45,7 +45,7 @@ pub use room::{
 };
 pub use scope::{OWNERS_MAX, Placement, Rule, Scope};
 pub use seat::{SeatFacts, SeatState, SeatView};
-pub use server::Server;
+pub use server::{SeatRow, Server};
 pub use signal::{Act, Ledger, SIGNAL_WINDOW_MS, Scorecard, SignalRow};
 pub use store::Store;
 pub use tree::{

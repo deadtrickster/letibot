@@ -19,7 +19,7 @@ use crate::peer::cookie::Cookie;
 use crate::peer::frame::{MAX_LINE, PeerFrame};
 use crate::peer::handshake::{Answerer, Dialer, Outcome, nonce};
 use crate::peer::mesh::{Mesh, PeerEvent, Tick};
-use crate::peer::profile::SeatProfile;
+use crate::peer::profile::{ProjectProfile, SeatProfile};
 
 /// How long a dial may take before the box is treated as gone.
 pub const DIAL: Duration = Duration::from_secs(3);
@@ -32,6 +32,9 @@ pub const MAX_SEATS: usize = 64;
 /// How many events may wait for the coordinator. Past it the oldest is dropped: a mesh whose
 /// reader stopped is a link to end, not memory to spend.
 pub const QUEUE: usize = 1_024;
+/// How many refusals a box keeps to show an operator: a link is refused for one of a few reasons,
+/// and a list that grew would be a log with a lock on it.
+pub const REFUSALS_KEPT: usize = 8;
 
 /// What a box needs to peer. The cookie decides whether it peers at all: a coordinator with no
 /// cookie file has no peer object and runs exactly as it did before.
@@ -105,16 +108,32 @@ struct Inner {
     links: Mutex<BTreeMap<String, Sender>>,
     dialing: Mutex<BTreeSet<String>>,
     seats: Mutex<Vec<SeatProfile>>,
+    /// This box's projects, as the mesh matches a peer's seat against them: the identity is read
+    /// from git by the coordinator's owner and handed in here.
+    projects: Mutex<Vec<ProjectProfile>>,
     /// What was last sent to each box, so a tick sends a profile list only when it changed.
     sent: Mutex<BTreeMap<String, Vec<SeatProfile>>>,
     events: SyncSender<PeerEvent>,
     stop: AtomicBool,
     dropped: AtomicU64,
+    /// The last few refusals, for the person reading the log and for a banner: a box that will not
+    /// speak to this one is a thing an operator needs named, not a silence.
+    refusals: Mutex<Vec<String>>,
 }
 
 impl Inner {
     fn now(&self) -> u64 {
         letibot_metrics::now_ms()
+    }
+
+    /// A link this box would not make, said on the log and kept for whoever asks.
+    fn refused(&self, why: &str) {
+        eprintln!("room: {why}");
+        let mut kept = self.refusals.lock().expect("the refusals lock");
+        kept.push(why.to_string());
+        while kept.len() > REFUSALS_KEPT {
+            kept.remove(0);
+        }
     }
 
     fn announce_event(&self, event: PeerEvent) {
@@ -219,10 +238,12 @@ impl Peer {
                 links: Mutex::new(BTreeMap::new()),
                 dialing: Mutex::new(BTreeSet::new()),
                 seats: Mutex::new(Vec::new()),
+                projects: Mutex::new(Vec::new()),
                 sent: Mutex::new(BTreeMap::new()),
                 events: tx,
                 stop: AtomicBool::new(false),
                 dropped: AtomicU64::new(0),
+                refusals: Mutex::new(Vec::new()),
             }),
         };
         peer.spawn_accept(listener);
@@ -262,6 +283,28 @@ impl Peer {
 
     pub fn seats(&self) -> Vec<SeatProfile> {
         self.inner.seats.lock().expect("the seats lock").clone()
+    }
+
+    /// What this box's projects are, by repository identity: what a peer's seat is matched against
+    /// before anybody is introduced.
+    pub fn publish_projects(&self, projects: Vec<ProjectProfile>) {
+        let mut mine = self.inner.projects.lock().expect("the projects lock");
+        if *mine == projects {
+            return;
+        }
+        *mine = projects;
+    }
+
+    /// The project here that is the repository `identity` names, when this box has one and it has
+    /// not opted out of being introduced.
+    pub fn project_of(&self, identity: &str) -> Option<ProjectProfile> {
+        self.inner
+            .projects
+            .lock()
+            .expect("the projects lock")
+            .iter()
+            .find(|p| p.introduce && !p.identity.is_empty() && p.identity.as_str() == identity)
+            .cloned()
     }
 
     /// Every seat a live peer holds: the mesh's half of a roster.
@@ -387,6 +430,16 @@ impl Peer {
     /// How many events were dropped for want of a reader - a number a mesh pane can say.
     pub fn dropped(&self) -> u64 {
         self.inner.dropped.load(Ordering::Relaxed)
+    }
+
+    /// The last few links this box would not make, in the words the operator reads: a wrong
+    /// cookie, a protocol neither side speaks. Newest last, oldest dropped.
+    pub fn refusals(&self) -> Vec<String> {
+        self.inner
+            .refusals
+            .lock()
+            .expect("the refusals lock")
+            .clone()
     }
 
     fn spawn_accept(&self, listener: TcpListener) {
@@ -549,7 +602,7 @@ fn answer_handshake(
         match step.outcome {
             Outcome::More => {}
             Outcome::Refused(why) => {
-                eprintln!("room: refused a box that dialled this one - {why}");
+                inner.refused(&why);
                 return Ok(None);
             }
             Outcome::Up { .. } => {
@@ -583,7 +636,7 @@ fn dial_handshake(
         match step.outcome {
             Outcome::More => {}
             Outcome::Refused(why) => {
-                eprintln!("room: refused a box this one dialled - {why}");
+                inner.refused(&why);
                 return Ok(None);
             }
             Outcome::Up { host, .. } => return Ok(Some((host, addr))),
