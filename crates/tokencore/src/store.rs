@@ -1366,6 +1366,9 @@ pub struct Store {
     /// `shared` and [`split::place_of`] decides nothing; `Some(None)` on a set whose project file
     /// is not there, which is the listing a renamed-away project must still answer.
     project: Option<Option<std::sync::Arc<Shared>>>,
+    /// A set's project key: what a session row created through this handle records as `project`,
+    /// so a reader finds the file its history is in. `None` on a single-file store.
+    key: Option<String>,
 }
 
 /// The process's store lock, held: what [`Store::connection`] answers and what every method takes
@@ -1708,6 +1711,7 @@ impl Store {
                 newer: std::sync::Mutex::new(None),
             }),
             project: None,
+            key: None,
         };
         LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(store)
@@ -1733,6 +1737,7 @@ impl Store {
             return Ok(Store {
                 shared,
                 project: None,
+                key: None,
             });
         }
         let store = Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()), file)?;
@@ -1811,11 +1816,54 @@ impl Store {
 
     /// The handle onto a set's two files, built by `split` - the one place a `Store` has more
     /// than one connection. Private to this module and its children, because `Shared` is.
-    fn of_set(shared: std::sync::Arc<Shared>, project: Option<std::sync::Arc<Shared>>) -> Self {
+    fn of_set(
+        shared: std::sync::Arc<Shared>,
+        project: Option<std::sync::Arc<Shared>>,
+        key: &str,
+    ) -> Self {
         Store {
             shared,
             project: Some(project),
+            key: Some(key.to_string()),
         }
+    }
+
+    /// The `project` column on a set's index, added where a set was created before it was part of
+    /// the schema: only the split migration added it, so a daemon's fresh `shared.db` had none.
+    pub(crate) fn ensure_project_column(&self) -> Result<()> {
+        let conn = self.conn();
+        let has: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('session') WHERE name = 'project'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            conn.execute_batch("ALTER TABLE session ADD COLUMN project TEXT")?;
+        }
+        Ok(())
+    }
+
+    /// Give this set's key to the index rows that have none and whose history is in this set's
+    /// project file: the sessions a daemon created before `put_session` recorded the key.
+    pub(crate) fn claim_unkeyed_sessions(&self) -> Result<usize> {
+        let (Some(Some(project)), Some(key)) = (&self.project, &self.key) else {
+            return Ok(0);
+        };
+        let ids: Vec<String> = {
+            let conn = project.conn();
+            let mut st = conn.prepare("SELECT DISTINCT session_id FROM transcript")?;
+            st.query_map([], |r| r.get(0))?
+                .collect::<std::result::Result<_, _>>()?
+        };
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "UPDATE session SET project = ?1 WHERE id = ?2 AND (project IS NULL OR project = '')",
+        )?;
+        let mut n = 0;
+        for id in &ids {
+            n += st.execute(params![key, id])?;
+        }
+        Ok(n)
     }
 
     /// [`Store::at`] for a statement whose table is read off its own text - the door [`exec`]
@@ -1855,6 +1903,7 @@ impl Store {
                 newer: std::sync::Mutex::new(None),
             }),
             project: None,
+            key: None,
         };
         // Taken here and not on success: `Drop` gives it back on every path, and `migrate` may
         // refuse and drop this store, so an add after the `?` would leave that drop subtracting
@@ -2901,6 +2950,23 @@ impl Store {
                 rec.parent_session_id,
             ],
         )?;
+        // A set records whose project file the history is in: the column is the index's, and a
+        // reader with only the index finds the file by it.
+        let has_column = || -> Result<bool> {
+            Ok(self.conn().query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session') WHERE name = 'project'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0)
+        };
+        if let Some(key) = &self.key
+            && has_column()?
+        {
+            self.exec(
+                "UPDATE session SET project = ?1 WHERE id = ?2",
+                params![key, rec.id],
+            )?;
+        }
         Ok(())
     }
 

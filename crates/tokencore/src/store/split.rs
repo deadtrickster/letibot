@@ -314,7 +314,8 @@ pub fn schema_sql(file: StoreFile) -> String {
         }
     }
     match file {
-        StoreFile::Shared => text,
+        // The index names the project file each session's history is in (`put_session`).
+        StoreFile::Shared => text + "ALTER TABLE session ADD COLUMN project TEXT;\n",
         StoreFile::Project => without_cross_file_keys(text),
     }
 }
@@ -543,7 +544,7 @@ pub fn open_reader_handle(dir: &Path, key: &str) -> Result<Store> {
         true => Some(Store::open_reader(&project_path)?.shared.clone()),
         false => None,
     };
-    Ok(Store::of_set(shared.shared.clone(), project))
+    Ok(Store::of_set(shared.shared.clone(), project, key))
 }
 
 /// Both of one key's files in one [`Store`], routed by [`place_of`]. `create` is the daemon's door
@@ -596,7 +597,12 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
         ),
         false => None,
     };
-    Ok(Store::of_set(shared.shared.clone(), project))
+    let store = Store::of_set(shared.shared.clone(), project, key);
+    shared.ensure_project_column()?;
+    if create {
+        store.claim_unkeyed_sessions()?;
+    }
+    Ok(store)
 }
 
 /// A directory mid-transition: an uncarved key opens `sessions.db` as its only file, but as a set's
@@ -621,7 +627,7 @@ fn open_transition(dir: &Path, key: &str) -> Result<Store> {
                 legacy.display()
             )));
         }
-        return Ok(Store::of_set(shared.shared.clone(), None));
+        return Ok(Store::of_set(shared.shared.clone(), None, key));
     }
     if !project_path.is_file() {
         return Err(StoreError::Refused(format!(
@@ -636,6 +642,7 @@ fn open_transition(dir: &Path, key: &str) -> Result<Store> {
     Ok(Store::of_set(
         shared.shared.clone(),
         Some(project.shared.clone()),
+        key,
     ))
 }
 

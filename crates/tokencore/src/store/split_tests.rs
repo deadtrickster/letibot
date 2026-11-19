@@ -626,3 +626,56 @@ fn two_openers_racing_migrate_create_no_stray_tables() {
         );
     }
 }
+
+/// A session created on a set records its project key, and a set made before the index had the
+/// column gains it and claims the sessions whose history is in its project file: a reader with only
+/// the index finds a session's file by that key.
+#[test]
+fn a_sets_session_records_its_project_key_and_an_unkeyed_one_is_claimed() {
+    let dir = temp("session-key");
+    let rec = |id: &str| super::SessionRecord {
+        id: id.into(),
+        title: None,
+        model_id: "m".into(),
+        dialect_sha: "d".into(),
+        workspace_root: "/tmp".into(),
+        owner: "op".into(),
+        approvers: Vec::new(),
+        role: None,
+        parent_session_id: None,
+    };
+    let shared = dir.join(split::SHARED_FILE);
+    let key_of = |id: &str| -> Option<String> {
+        Connection::open(&shared)
+            .unwrap()
+            .query_row("SELECT project FROM session WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    {
+        let set = Store::open_set(&dir, KEY).expect("a set");
+        set.put_session(&rec("s-new")).expect("a session row");
+        set.put_transcript("s-old#t0", "s-old", "p").ok();
+    }
+    assert_eq!(
+        key_of("s-new").as_deref(),
+        Some(KEY),
+        "a new row records its key"
+    );
+
+    // A row written before the key was recorded, with its history in this set's project file.
+    {
+        let c = Connection::open(&shared).unwrap();
+        c.execute_batch("INSERT INTO session (id, model_id, dialect_sha, workspace_root, owner, approvers_json, created_at) VALUES ('s-old', 'm', 'd', '/tmp', 'op', '[]', 1)").unwrap();
+        let p = Connection::open(dir.join(split::PROJECTS_DIR).join(format!("{KEY}.db"))).unwrap();
+        p.execute_batch("PRAGMA foreign_keys = OFF; INSERT OR IGNORE INTO transcript (id, session_id, stable_prefix_id, created_at) VALUES ('s-old#t0', 's-old', 'p', 1)").unwrap();
+    }
+    assert_eq!(key_of("s-old"), None);
+    drop(Store::open_set(&dir, KEY).expect("the daemon's open again"));
+    assert_eq!(
+        key_of("s-old").as_deref(),
+        Some(KEY),
+        "the daemon claimed it"
+    );
+}

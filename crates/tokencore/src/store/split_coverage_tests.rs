@@ -40,6 +40,7 @@ const NOT_ROW_ACCESS: &[&str] = &[
     "open_set",
     "open_set_existing",
     "open_set_reader",
+    "open_handle",
     "place_of",
     "tables_in",
     "holds",

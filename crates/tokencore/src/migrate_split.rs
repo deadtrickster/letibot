@@ -741,7 +741,12 @@ fn write_shared(from: &Connection, data_dir: &Path, plan: &Plan) -> Result<(Path
             carried.push((*table).to_string());
         }
     }
-    tx.execute_batch("ALTER TABLE session ADD COLUMN project TEXT")?;
+    if !columns(&tx, "session")?
+        .iter()
+        .any(|column| column == "project")
+    {
+        tx.execute_batch("ALTER TABLE session ADD COLUMN project TEXT")?;
+    }
     tx.execute(
         "UPDATE session SET project = (SELECT project FROM temp.mine_key WHERE id = session.id)",
         [],
@@ -884,7 +889,11 @@ fn copy_table(
     table: &str,
     filter: Option<Rows>,
 ) -> Result<()> {
-    let wanted = columns(into, table)?;
+    // `session.project` is this pass's own to write (the key it decided), not a column to copy.
+    let wanted: Vec<String> = columns(into, table)?
+        .into_iter()
+        .filter(|column| !(table == "session" && column == "project"))
+        .collect();
     let held = columns(from, table)?;
     // An index the daemon rebuilds from the transcripts: an old store without it has nothing to carry.
     if held.is_empty() && DERIVED.contains(&table) {

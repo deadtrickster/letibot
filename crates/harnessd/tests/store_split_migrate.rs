@@ -84,6 +84,8 @@ fn tables(file: &Path) -> Vec<String> {
         .expect("the table names")
 }
 
+/// The project files under `dir`: a `.db` each, and not the `-wal`/`-shm` a still-open
+/// connection keeps beside one.
 fn files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -91,6 +93,7 @@ fn files(dir: &Path) -> Vec<PathBuf> {
     entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "db"))
         .collect()
 }
 
