@@ -304,7 +304,7 @@ fn head(m: &ChatMessage, names: &BTreeMap<String, String>) -> Vec<Cell> {
     } else {
         Role::Hue(hue(&m.author))
     };
-    out.push(Cell::role(display(names, &m.author), who));
+    out.push(Cell::role(speaker(m, names), who));
     if let Some(to) = m.to.as_deref().filter(|to| *to != ME) {
         out.push(Cell::role(
             format!("to {}", display(names, to)),
@@ -326,7 +326,7 @@ fn quote(t: u64, all: &[ChatMessage], names: &BTreeMap<String, String>) -> Strin
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or_default();
             let said = truncate(first.trim(), QUOTE_COLS);
-            format!("↳ {t} {}: {said}", display(names, &target.author))
+            format!("↳ {t} {}: {said}", speaker(target, names))
         }
         None => format!("↳ {t}"),
     }
@@ -347,6 +347,19 @@ fn system_text(m: &ChatMessage) -> String {
 /// What a handle is called: the head's name for it, the handle when nobody named it.
 fn display<'a>(names: &'a BTreeMap<String, String>, handle: &'a str) -> Cow<'a, str> {
     clean_line(names.get(handle).map(String::as_str).unwrap_or(handle))
+}
+
+/// What a message's author is drawn as: the name the head holds now, and - where the label it posted
+/// under was another - that label beside it, `db-fuzz-fable (was cc@app)`. The room records that
+/// label because a seat is renamed and its id never moves, so a line's then-name survives only here.
+fn speaker(m: &ChatMessage, names: &BTreeMap<String, String>) -> String {
+    let now = display(names, &m.author);
+    match m.nick() {
+        Some(then) if now != clean_line(&m.author) && clean_line(then) != now => {
+            format!("{now} (was {})", clean_line(then))
+        }
+        _ => now.into_owned(),
+    }
 }
 
 /// The token that names the reader, spelled once: this runs on every message of the window.

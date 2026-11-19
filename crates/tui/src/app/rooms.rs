@@ -107,7 +107,7 @@ impl Msg {
     pub(crate) fn nick(&self) -> Option<&str> {
         self.refs
             .iter()
-            .find(|r| r.kind == "nick" && !r.id.trim().is_empty())
+            .find(|r| r.kind == letibot_plugin::pane::NICK && !r.id.trim().is_empty())
             .map(|r| r.id.trim())
     }
 }

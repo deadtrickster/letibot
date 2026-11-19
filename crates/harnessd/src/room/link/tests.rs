@@ -65,6 +65,14 @@ fn the_attachment_table_is_the_rooms_allowlist() {
     );
 }
 
+/// The ref kind that records the label a post's author was drawn by is one word in three crates: the
+/// room writes it, the head's adapter reads it, and the built-in chat layer reads it through the
+/// feed. Two spellings would be a then-name that reaches one reader and silently not the other.
+#[test]
+fn the_chat_feed_and_the_room_spell_the_nick_ref_alike() {
+    assert_eq!(letibot_plugin::pane::NICK, letibot_room::NICK);
+}
+
 #[test]
 fn every_verb_becomes_a_frame_with_a_request_id() {
     let cases = [
