@@ -1094,6 +1094,12 @@ impl App {
                 let rows = self.queue_lines(w);
                 self.pane_window(rows, room)
             }
+            Drawn::Surface(Surface::Keys) => {
+                // The pane's own `?`: every key it takes, read from its table, drawn through
+                // `pane_window` so a narrow terminal pages it like every other long pane.
+                let rows = self.key_card_lines(w);
+                self.pane_window(rows, room)
+            }
             Drawn::Surface(Surface::Standing) => {
                 let rows = self.standing_lines(w);
                 self.pane_window(rows, room)

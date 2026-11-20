@@ -295,3 +295,20 @@ pub(crate) fn help_lines_with(
     };
     row_strings(&pane.lines(w), cfg.palette())
 }
+
+/// A pane's own `?` card: every key that pane takes, one row each, drawn by the same help pane the
+/// whole reference uses so the two read alike. `rows` are `(keys, what it does)`, already in the
+/// pane's words.
+pub(crate) fn key_card_lines(
+    cfg: &RenderConfig,
+    w: usize,
+    pane: &str,
+    rows: &[(String, String)],
+) -> Vec<String> {
+    let card = HelpPane {
+        title: format!("the {pane}'s keys"),
+        rows: rows.to_vec(),
+        footer: "esc closes this · /help lists every pane".into(),
+    };
+    row_strings(&card.lines(w), cfg.palette())
+}

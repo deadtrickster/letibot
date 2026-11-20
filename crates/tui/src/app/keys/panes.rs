@@ -146,6 +146,8 @@ impl App {
                 ControlFlow::Break(None)
             }
             Act::Open => self.open_act(s),
+            // The pane's `?`: the card listing every key it takes.
+            Act::Keys => ControlFlow::Break(self.open_key_card(s)),
             Act::Alt => self.todos_alt(),
             // `w` opens what the selected row waits on - the keyboard's half of the click on its
             // `waits on …` link (`App::open_wait`). A row that waits on nothing declines, and the

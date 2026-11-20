@@ -169,6 +169,8 @@ pub(crate) enum Act {
     RoomTail,
     /// The rooms view's `n` and `N`: the next or the previous search hit.
     RoomSearchStep(bool),
+    /// The pane's `?`: the card listing every key the pane takes.
+    Keys,
 }
 
 /// The verb a shared key stands for. [`VERBS`] gives each shared key one class, and every list pane
@@ -377,6 +379,9 @@ const QUEUE: &[Binding] = &[
         // entry whole, and it opens the history's fold (`App::row_says`).
         Row,
     ),
+    // `?` is where a reader who does not know the pane starts. After the verbs and Enter, because
+    // a bar at eighty columns keeps its head and the keys that MOVE the row are the ones to keep.
+    b(&[On::Char('?')], Empty, Act::Keys, Text("keys")),
     b(&[On::Tab], Always, Act::View, Text("switches the queue")),
     b(
         &[On::Char('o')],
@@ -623,6 +628,7 @@ impl Surface {
             Surface::PluginDetail => PLUGIN_DETAIL,
             Surface::Listing => LISTING,
             Surface::Rooms => ROOMS,
+            Surface::Keys => READING,
         }
     }
 
@@ -635,6 +641,7 @@ impl Surface {
             Surface::SubOut => "esc back to the subagents",
             Surface::JobOut => "esc back to the jobs",
             Surface::PluginDetail => "esc back to the pane",
+            Surface::Keys => "esc back to the pane it listed",
             _ => "esc closes",
         }
     }
@@ -661,7 +668,8 @@ impl Surface {
             | Surface::QueueEntry
             | Surface::SubOut
             | Surface::JobOut
-            | Surface::PluginDetail => false,
+            | Surface::PluginDetail
+            | Surface::Keys => false,
         }
     }
 
@@ -687,6 +695,7 @@ impl Surface {
             Surface::PluginDetail => "row read whole",
             Surface::Listing => "listing",
             Surface::Rooms => "rooms",
+            Surface::Keys => "the keys",
         }
     }
 
@@ -713,6 +722,7 @@ impl Surface {
             Surface::PluginDetail => "detail",
             Surface::Listing => "listing",
             Surface::Rooms => "rooms",
+            Surface::Keys => "keys",
         }
     }
 
@@ -827,6 +837,7 @@ impl Surface {
                  a row whole"
             }
             Surface::PluginDetail => "one row of a plugin's pane, read whole",
+            Surface::Keys => "every key the pane under it takes, and what each one does",
         }
     }
 }
@@ -1008,6 +1019,75 @@ impl App {
     pub(crate) fn surface_help(&self, s: Surface) -> Option<(String, String)> {
         surface_help_keys(s, &self.key_overrides)
     }
+
+    /// The `?` card: every key of the pane it was opened over, one row each. The pane is the
+    /// surface under the card, and its table is what the rows are read from.
+    pub(crate) fn open_key_card(&mut self, pane: Surface) -> Option<Action> {
+        debug_assert_eq!(self.focused_surface(), Some(pane));
+        self.push_surface(Surface::Keys);
+        // Nothing is asked of the daemon: the rows are the head's own table.
+        None
+    }
+
+    /// The lines of that card - the pane's own table, so the card cannot name a key the pane does
+    /// not take, and each row's sentence is the verb's rather than the bar's one word.
+    pub(crate) fn key_card_lines(&self, w: usize) -> Vec<String> {
+        // The pane that pushed the card, which is the surface under it. A card with nothing under
+        // it is drawn from the queue's table: the pane that has one.
+        let s = self
+            .surfaces
+            .iter()
+            .rev()
+            .nth(1)
+            .map(|o| o.surface)
+            .unwrap_or(Surface::Queue);
+        let rows: Vec<(String, String)> = surface_key_rows(s, &self.key_overrides)
+            .into_iter()
+            .map(|r| match r.act {
+                Act::Verb(v) => (r.label, v.about().to_string()),
+                Act::Keys => (
+                    r.label,
+                    "lists every key this pane takes, which is the card you are reading"
+                        .to_string(),
+                ),
+                _ => (r.label, r.says),
+            })
+            .collect();
+        crate::ui::panes::help::key_card_lines(&self.cfg, w, s.short_name(), &rows)
+    }
+}
+
+/// One row of a pane's `?` card: the keys as the bar labels them, what it does, and the act, so a
+/// surface's own words can replace the table's when it has better ones.
+pub(crate) struct KeyRow {
+    pub(crate) label: String,
+    pub(crate) says: String,
+    pub(crate) act: Act,
+}
+
+/// Every key surface `s` takes, one [`KeyRow`] each, from the table its dispatch reads. Both
+/// directions of a switch are said: the card is read without a list in front of it.
+pub(crate) fn surface_key_rows(s: Surface, keys: &KeyOverrides) -> Vec<KeyRow> {
+    let label = |on: &[On]| {
+        let moved: Vec<On> = on.iter().map(|o| keys.moved(s, *o)).collect();
+        keys_label(&moved)
+    };
+    s.bindings()
+        .iter()
+        .filter_map(|b| {
+            let says = match b.says {
+                Says::Nothing => return None,
+                Says::Text(t) => t.to_string(),
+                Says::Row => "acts on the row under the cursor".to_string(),
+                Says::Switch(both) => both.to_string(),
+            };
+            Some(KeyRow {
+                label: label(b.on),
+                says,
+                act: b.act,
+            })
+        })
+        .collect()
 }
 
 /// [`App::surface_help`] as a function of the table and the moves - for the help screen, which is
