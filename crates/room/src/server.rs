@@ -229,6 +229,13 @@ struct Inner {
     /// The dm each principal was sent and has not answered — [`DmAwaiting`]. A line that answers
     /// it goes back as a dm however its sender spelled it.
     dms_awaiting: Mutex<BTreeMap<String, DmAwaiting>>,
+    /// Who may send whom a direct message across projects, by `(sender, addressee)`: `true` is
+    /// for the session, `false` is one message and is spent when it is used. Same-project dms never
+    /// look here, and the rule is the seat's PROJECT - not the host - so it holds between boxes.
+    dm_consent: Mutex<BTreeMap<(String, String), bool>>,
+    /// The open asks that ARE a consent request, by ask seq: `(sender, addressee)`. The answer is
+    /// the consent, and it settles here rather than in the sender's hands.
+    consent_asks: Mutex<BTreeMap<u64, (String, String)>>,
     /// How long a session may be gone before the operator is asked to restart it -
     /// [`ASK_GRACE_MS`], or what a test set. A liveness fact never settles an ask; it escalates.
     ask_grace_ms: AtomicU64,
@@ -408,6 +415,8 @@ impl Server {
                 claims: Mutex::new(BTreeMap::new()),
                 asked_absent: Mutex::new(BTreeSet::new()),
                 dms_awaiting: Mutex::new(BTreeMap::new()),
+                dm_consent: Mutex::new(BTreeMap::new()),
+                consent_asks: Mutex::new(BTreeMap::new()),
                 ask_grace_ms: AtomicU64::new(ASK_GRACE_MS),
                 blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
                 blob_rewrites: AtomicU64::new(0),
@@ -3393,6 +3402,13 @@ impl Server {
                         },
                     );
                 }
+                // A dm to another PROJECT asks that seat first - the same rule `say ... to` keeps,
+                // because a second door to one addressee is how the id form crossed unasked.
+                if let Some(asked) =
+                    self.dm_needs_consent(project, seat, name, id, "", &to, now)
+                {
+                    return asked;
+                }
                 let refs = match self.queue_seat_gate(
                     &to,
                     name,
@@ -3865,6 +3881,78 @@ impl Server {
     /// else is said in the room named - where an `@` of someone outside it invites them in, so a
     /// mention reaches them where it was said, with the thread it sits in.
     #[allow(clippy::too_many_arguments)]
+    /// The project a seat belongs to: the room that holds it as a top-level member. `None` for
+    /// the operator, a bridge-shaped handle and any name the rooms do not place.
+    fn project_of(&self, name: &str) -> Option<String> {
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        rooms.iter().find_map(|(project, r)| {
+            r.members()
+                .iter()
+                .any(|m| m.group == crate::Group::Top && m.session == name)
+                .then(|| project.clone())
+        })
+    }
+
+    /// Has `to` allowed `from` direct messages? A grant for the SESSION stays; a one-message
+    /// grant is spent by the check that reads it.
+    fn consent_given(&self, from: &str, to: &str) -> bool {
+        let mut g = self.inner.dm_consent.lock().expect("the consent lock");
+        let key = (from.to_string(), to.to_string());
+        match g.get(&key) {
+            Some(session) => {
+                let session = *session;
+                if !session {
+                    g.remove(&key);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A dm whose addressee is another PROJECT asks that seat first. It is an ask, so the answer
+    /// is a row on the addressee's own board and the rule crosses boxes as far as asks do; the
+    /// message is NOT delivered, and the sender is told to say it again once it is allowed.
+    #[allow(clippy::too_many_arguments)]
+    fn dm_needs_consent(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        id: &str,
+        room: &str,
+        to: &str,
+        now: u64,
+    ) -> Option<Response> {
+        let other = self.project_of(to)?;
+        if other == project || self.consent_given(name, to) {
+            return None;
+        }
+        let question = format!(
+            "`{name}` of `{project}` asks to send you direct messages. Answer `allow once`,              `allow for the session`, or anything else to refuse. Your answer is the consent;              the message it was sent with was not delivered."
+        );
+        // The HOST room, because a consent ask crosses projects and the two seats see no shared
+        // project room: the host room is the one both read.
+        let _ = room;
+        let asked = self.ask_to(project, seat, name, id, chat::HOST_ROOM, to, &question, now);
+        if let Response::Asked { ask, .. } = &asked {
+            self.inner
+                .consent_asks
+                .lock()
+                .expect("the consent lock")
+                .insert(ask.seq, (name.to_string(), to.to_string()));
+            return Some(Response::Refused {
+                id: Some(id.to_string()),
+                why: crate::Refused::DmNeedsConsent {
+                    to: to.to_string(),
+                    ask: ask.seq,
+                },
+            });
+        }
+        // A target the ask itself could not reach is that refusal, in the ask's own words.
+        Some(asked)
+    }
+
     fn route_say(
         &self,
         project: &str,
@@ -3939,6 +4027,13 @@ impl Server {
                 name: t.clone(),
                 known: self.closest(t),
             });
+        }
+        // A dm to another PROJECT asks that seat first: same project is free, and the rule reads
+        // the addressee's project rather than host membership, so it holds between boxes.
+        if let Some(t) = &to
+            && let Some(asked) = self.dm_needs_consent(project, seat, name, id, room, t, now)
+        {
+            return asked;
         }
         let refs = match &to {
             Some(t) => match self.queue_seat_gate(t, name, seat, project, kind, thread, refs) {
@@ -5050,6 +5145,29 @@ impl Server {
             .expect("the chat lock")
             .settle_ask(ask, state);
         self.deliver(&message, now);
+        // A consent ask's answer IS the consent: `allow once` is one message, `allow for the
+        // session` stays. Anything else, or a decline, leaves the pair where it was.
+        if let Some((from, to)) = self
+            .inner
+            .consent_asks
+            .lock()
+            .expect("the consent lock")
+            .remove(&ask)
+        {
+            let word = text.to_lowercase();
+            let allowed = answered
+                && (word.contains("allow once")
+                    || word.contains("allow for the session")
+                    || word == "allow");
+            if allowed {
+                let session = word.contains("session");
+                self.inner
+                    .dm_consent
+                    .lock()
+                    .expect("the consent lock")
+                    .insert((from, to), session);
+            }
+        }
         self.inner.signals.lock().expect("the signals lock").act(
             ask,
             crate::signal::Act::AskSettled,

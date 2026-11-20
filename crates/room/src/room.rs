@@ -467,6 +467,12 @@ pub enum Refused {
     Ownership {
         why: String,
     },
+    /// A direct message to another PROJECT, which that seat has not allowed: the consent is asked
+    /// as ask `ask`, and the message is not delivered.
+    DmNeedsConsent {
+        to: String,
+        ask: u64,
+    },
 }
 
 /// What a refused name is told after the closest names: where the full list is, and why a
@@ -853,6 +859,12 @@ impl fmt::Display for Refused {
                  can take it back"
             ),
             Refused::Ownership { why } => write!(f, "{why}"),
+            Refused::DmNeedsConsent { to, ask } => write!(
+                f,
+                "`{to}` is in another project, and a direct message across projects needs its \
+                 consent: ask #{ask} is on its board for that - it was not delivered, and nothing \
+                 is lost by saying it again once `{to}` allows it (once, or for the session)"
+            ),
             Refused::NotTheOwners { session } => write!(
                 f,
                 "`{session}` is not the session this connection speaks for: `retire` is sent by a \
