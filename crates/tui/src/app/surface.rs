@@ -278,7 +278,11 @@ impl App {
         self.surfaces.retain(|o| !gone.contains(&o.surface));
         // The key card lists the keys of the pane under it: a stack that closed that pane takes the
         // card with it rather than leaving a key list over the conversation.
-        if self.surfaces.first().is_some_and(|o| o.surface == Surface::Keys) {
+        if self
+            .surfaces
+            .first()
+            .is_some_and(|o| o.surface == Surface::Keys)
+        {
             self.surfaces.clear();
         }
         for g in gone {

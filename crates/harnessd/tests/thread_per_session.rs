@@ -14,7 +14,6 @@ use letibot_transcript::TranscriptItem;
 
 mod support;
 
-
 /// The daemon's own first session - `open_first` opens it eagerly, which is what the banner needs.
 const SLOW: &str = "s-held-turn";
 /// The second session: a head makes it while the daemon is running, which is the path that has to

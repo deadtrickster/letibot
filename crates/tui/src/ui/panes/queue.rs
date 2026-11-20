@@ -786,7 +786,9 @@ impl Verb {
             }
             Verb::Veto => "rejects the row under the cursor in your own words",
             Verb::Restart => "puts a parked row back in line, to be reviewed or gated again",
-            Verb::Rm => "takes the row under the cursor out of the queue; the branch and its tree stay",
+            Verb::Rm => {
+                "takes the row under the cursor out of the queue; the branch and its tree stay"
+            }
             Verb::Regate => "gates the target under the cursor again, now that a red cause is gone",
         }
     }

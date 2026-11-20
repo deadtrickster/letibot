@@ -372,10 +372,7 @@ fn the_queue_panes_question_mark_lists_every_key_it_takes() {
     // Twice: the bar reads the rows the last frame recorded.
     a.screen(100, 40);
     let bar = a.hint_bar(140);
-    assert!(
-        bar.contains("? keys"),
-        "the bar offers the key card: {bar}"
-    );
+    assert!(bar.contains("? keys"), "the bar offers the key card: {bar}");
     assert!(
         bar.contains("del withdraw"),
         "and still leads with the verbs: {bar}"
