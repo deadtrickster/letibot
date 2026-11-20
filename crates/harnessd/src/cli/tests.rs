@@ -422,9 +422,10 @@ fn wait_past(ms: i64) {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
     };
-    while now() <= ms {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || now() > ms),
+        "the store's clock never passed {ms}ms"
+    );
 }
 
 struct TempDir(std::path::PathBuf);

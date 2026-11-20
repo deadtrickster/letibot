@@ -310,7 +310,17 @@ fn a_queue_grant_expires_after_its_ttl() {
     let (mut first, _) = f.gate(&format!("{GATEKEEPER}-sub-1"), &cards);
     first.grant_view(&f.build(), "bash", ViewAccess::Read);
     assert_eq!(cards.count(), 1);
-    std::thread::sleep(std::time::Duration::from_millis(5));
+    // A zero TTL drops the grant at the next read, once `expire_grants` sees `granted_ms`
+    // behind the clock; the wait is for the clock, not for a duration anybody guessed.
+    let ledger = StoreLedger::new(f.at.clone()).with_queue_ttl(std::time::Duration::ZERO);
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || {
+            ledger
+                .load(&Scope::Queue(GATEKEEPER.to_string()))
+                .is_ok_and(|kept| kept.is_empty())
+        }),
+        "a zero ttl left the queue's grant behind"
+    );
 
     let id = format!("{GATEKEEPER}-sub-2");
     let mut next = AdjudicatedGate::new(Box::new(cards.clone()))

@@ -837,20 +837,19 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
             owner_dir: None,
         })
         .expect("adopted");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let state = restarted.job(&ghost).expect("still listed").state;
-        if !state.is_running() {
-            assert_eq!(
-                state,
-                letibot_tools::exec::JobState::Dead,
-                "gone, with no exit"
-            );
-            break;
-        }
-        assert!(Instant::now() < deadline, "the adopted ghost never settled");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || !restarted
+            .job(&ghost)
+            .expect("still listed")
+            .state
+            .is_running()),
+        "the adopted ghost never settled"
+    );
+    assert_eq!(
+        restarted.job(&ghost).expect("still listed").state,
+        letibot_tools::exec::JobState::Dead,
+        "gone, with no exit"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
