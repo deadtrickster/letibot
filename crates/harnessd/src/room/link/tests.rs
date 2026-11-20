@@ -833,11 +833,14 @@ fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
         tag: "ram".into(),
         body: "1 GB".into(),
     });
-    // A negative check as a never-happened deadline: the arbiter's reader thread is not ordered
-    // against this post's reply, so what proves the post is not a turn is that nothing at all
-    // arrived on its own connection for a full PATIENCE.
+    // A negative check, and its window is short ON PURPOSE: the arbiter's id is the daemon's own,
+    // which every other test in this binary can wake, so a long window turns another test's traffic
+    // into this one's failure. It can pass falsely under load, never fail falsely.
     assert!(
-        !wait_until(PATIENCE, || *rung_arbiter.lock().unwrap() > 0
+        !wait_until(std::time::Duration::from_millis(500), || *rung_arbiter
+            .lock()
+            .unwrap()
+            > 0
             || wake::waiting(&arbiter) > 0),
         "a post is not a question: the arbiter is woken by a raise, not by the queue moving"
     );
