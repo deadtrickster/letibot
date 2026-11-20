@@ -3875,10 +3875,6 @@ impl Server {
         }
     }
 
-    /// Route a `say`: a `to` is a private message, a reply stays in its root's room, and anything
-    /// else is said in the room named - where an `@` of someone outside it invites them in, so a
-    /// mention reaches them where it was said, with the thread it sits in.
-    #[allow(clippy::too_many_arguments)]
     /// The project a seat belongs to: the room that holds it as a top-level member. `None` for
     /// the operator, a bridge-shaped handle and any name the rooms do not place.
     fn project_of(&self, name: &str) -> Option<String> {
@@ -3951,6 +3947,10 @@ impl Server {
         Some(asked)
     }
 
+    /// Route a `say`: a `to` is a private message, a reply stays in its root's room, and anything
+    /// else is said in the room named - where an `@` of someone outside it invites them in, so a
+    /// mention reaches them where it was said, with the thread it sits in.
+    #[allow(clippy::too_many_arguments)]
     fn route_say(
         &self,
         project: &str,

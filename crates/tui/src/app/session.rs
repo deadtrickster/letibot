@@ -638,11 +638,11 @@ impl App {
         })
     }
 
-    /// The sentence for a DOCUMENT this head could not read at all - a pane's view, a frame's shape
-    /// - when the reason is a newer daemon. Ordinary skew is survivable and `skew_sentence` says so;
-    /// a reading that did not happen is not, and the fix is the other half of the skew: a head from
-    /// the daemon's own build. `None` when this head is not the older one, so no caller blames a
-    /// build that is not at fault.
+    /// The sentence for a DOCUMENT this head could not read at all - a pane's view, a frame's
+    /// shape - when the reason is a newer daemon. Ordinary skew is survivable and
+    /// `skew_sentence` says so; a reading that did not happen is not, and the fix is the other
+    /// half of the skew: a head from the daemon's own build. `None` when this head is not the
+    /// older one, so no caller blames a build that is not at fault.
     pub(crate) fn head_older_sentence(&self) -> Option<String> {
         let mine = letibot_sessionlog::protocol::PROTOCOL_VERSION;
         let theirs = self.daemon_protocol.filter(|d| *d > mine)?;
