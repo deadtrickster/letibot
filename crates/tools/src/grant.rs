@@ -206,13 +206,17 @@ impl Grant {
         // are one permission - the operator allowed `git` four times for want of this. A call that
         // names no program matches nothing, as it always did.
         let runs: Vec<&str> = programs(program).collect();
-        let its: Vec<&str> = runs
+        let mut its: Vec<&str> = runs
             .iter()
             .copied()
             .filter(|p| !READ_ONLY_HELPER.contains(p))
             .collect();
-        // Helpers alone are never a permission: `head notes.txt | wc -l` names nothing that does
-        // the work, so it asks like any other ungranted line.
+        // A line of NOTHING but helpers is its own permission - `sort -u /etc/hosts` is `sort`'s,
+        // and an operator allowing it means it - so it falls back to the old rule, every program
+        // granted. The exemption is for a helper riding along with the program that did the work.
+        if its.is_empty() {
+            its = runs.clone();
+        }
         let hit = !runs.is_empty()
             && !its.is_empty()
             && self.coverage.iter().any(|c| {
@@ -507,12 +511,13 @@ mod tests {
         }
     }
 
-    /// Helpers are never a permission of their own, and a program nobody granted is still a
-    /// refusal - the helper rule widens what a granted program reaches, not what is granted.
+    /// A helper nobody granted is still a refusal when the program that did the work is not the
+    /// grant's either, and a line of nothing but helpers is granted by naming those - the helper
+    /// rule widens what a granted program reaches, it does not grant what nobody named.
     #[test]
-    fn helpers_alone_are_not_a_grant_and_an_ungranted_program_still_refuses() {
+    fn an_ungranted_program_still_refuses_and_a_helper_is_granted_by_its_own_name() {
         let g = git_status_grant();
-        for line in ["head, wc", "head", "cat", "git, rm"] {
+        for line in ["wc, head", "head", "cat", "git, rm"] {
             assert_eq!(
                 g.covers(
                     &Tier::MayApprove,
@@ -525,6 +530,28 @@ mod tests {
                 "{line}"
             );
         }
+        // `sort -u /etc/hosts` is `sort`'s permission, and allowing it means it.
+        let sorter = Grant {
+            written: Written::Enumerated {
+                patterns: vec!["sort".into()],
+            },
+            coverage: vec![Coverage {
+                program: "sort".into(),
+                class: inspect_class(),
+                intents: intents(&[Intent::Inspect]),
+            }],
+            why: "reading a file through sort".into(),
+        };
+        assert_eq!(
+            sorter.covers(
+                &Tier::MayApprove,
+                true,
+                "sort",
+                inspect_class(),
+                &intents(&[Intent::Inspect])
+            ),
+            Ok(())
+        );
     }
 
     /// The difference from a bare glob: it is accepted, and its disclosure says it is a glob.
