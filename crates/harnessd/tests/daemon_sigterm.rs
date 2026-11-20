@@ -110,7 +110,8 @@ fn one_sigterm_stops_a_daemon_whose_stderr_cannot_be_written() {
     }
     // The reader goes: every later write to stderr fails with EPIPE, as on a full disk.
     drop(lines);
-    // A daemon that dies of the failed write is the same defect, said before the signal.
+    // A daemon that dies of the failed write is the same defect, said before the signal. A negative
+    // check: nothing may happen, so it waits a moment. It can pass falsely under load, never fail.
     std::thread::sleep(Duration::from_secs(2));
     if let Ok(Some(status)) = d.child.try_wait() {
         panic!(

@@ -406,6 +406,9 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
 
     // Three more passes inside the interval run no turn.
     for _ in 0..3 {
+        // A negative check, and the interval under test is the census's own repeat on the wall
+        // clock: nothing may fire, so there is no arrival to wait for. It can pass falsely under
+        // load, never fail falsely.
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(sessions.deliver_due_censuses(), 0, "nothing is due yet");
     }
@@ -462,6 +465,7 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
 
     sessions.set_stuck_repeat(Duration::from_millis(1));
     for _ in 0..2 {
+        // A negative check: with nothing stuck, the pass says nothing however long this waits.
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(
             sessions.deliver_due_censuses(),
@@ -552,6 +556,8 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     sessions.set_stuck_repeat(Duration::from_secs(600));
 
     // The census first, while the plan's check is already due - the order that could starve it.
+    // The interval under test is the 1 ms nag window shortened above: the wall clock has to pass it
+    // before either door can be due at all, and nothing is observable in between.
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(sessions.deliver_due_censuses(), 1, "the census ran");
     assert_eq!(stub.turns(), 1);
@@ -572,6 +578,7 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
         armed.is_some(),
         "the census is still armed after the plan's check ran"
     );
+    // A negative check: the anchor is 600 s away, so no pass inside this window may fire.
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(
         sessions.deliver_due_censuses(),

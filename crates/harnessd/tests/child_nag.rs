@@ -26,8 +26,8 @@ use support::qwen::a_plain_answer_turn;
 const WINDOW: Duration = Duration::from_millis(300);
 
 /// How long the driver will wait for something that should arrive within one window -
-/// generous on purpose: the assertion is the ORDER of events, not their speed.
-const PATIENCE: Duration = Duration::from_secs(20);
+/// the shared bound, so a test that fails there fails on the box and not on its own arithmetic.
+const PATIENCE: Duration = support::wait::PATIENCE;
 
 /// The row the parent writes - the work the child is to be ASKED FOR, not told about.
 const PARENTS_ROW: &str = "migrate the ledger rows to the new schema";
@@ -88,18 +88,19 @@ fn checks_timed(hub: &Hub) -> Vec<(u64, String)> {
 
 /// Wait until `what` is true on the child's hub, or panic with everything the log holds -
 /// the log IS the diagnosis for a schedule failure, and a bare timeout would hide it.
-fn wait_for<T>(hub: &Hub, what: impl Fn(&Hub) -> Option<T>) -> T {
-    let began = Instant::now();
-    while began.elapsed() < PATIENCE {
-        if let Some(found) = what(hub) {
-            return found;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+fn wait_for<T>(hub: &Hub, mut what: impl FnMut(&Hub) -> Option<T>) -> T {
+    let mut found = None;
+    let arrived = support::wait::wait_until(PATIENCE, || {
+        found = what(hub);
+        found.is_some()
+    });
+    if !arrived {
+        panic!(
+            "nothing the test waited for arrived within {PATIENCE:?} — the child's log:\n{:#?}",
+            hub.retained().iter().map(|e| &e.event).collect::<Vec<_>>()
+        );
     }
-    panic!(
-        "nothing the test waited for arrived within {PATIENCE:?} — the child's log:\n{:#?}",
-        hub.retained().iter().map(|e| &e.event).collect::<Vec<_>>()
-    );
+    found.expect("the probe answered, so it left a value")
 }
 
 /// A parked child and the parent that can write to it - the fixture both tests share, mirroring
@@ -430,7 +431,8 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
     assert_eq!(row.by, TodoBy::parent_of(parent));
 
     // And never asked: ten windows pass - an armed clock would have fired in one - and the
-    // child's log holds no check.
+    // child's log holds no check. A negative check on every pass, and the window is the interval
+    // the product measures: ten of them is how long a check would have had to appear.
     let until = Instant::now() + WINDOW * 10;
     while Instant::now() < until {
         assert!(
@@ -673,7 +675,8 @@ fn a_paused_child_is_not_checked_until_it_is_resumed() {
             &[(PARENTS_ROW.into(), TodoStatus::Pending, Vec::new())],
         )
         .expect("the parent's write is accepted");
-    // Ten windows - an armed clock would have fired in one.
+    // Ten windows - an armed clock would have fired in one. A negative check: the window is how
+    // long a check would have had to appear, and it can pass falsely under load, never fail.
     let until = Instant::now() + WINDOW * 10;
     while Instant::now() < until {
         assert!(
