@@ -11,6 +11,10 @@ use letibot_harnessd::{Dialect, Parts, Sessions};
 use letibot_sessionlog::protocol::MODEL_LIMITS_KEY;
 use letibot_sessionlog::registry::Registry;
 
+mod support;
+
+use support::wait::{PATIENCE, wait_until};
+
 const SID: &str = "s-picker-poll";
 
 /// Kimi's usages answer with 44% of the 5-hour window spent.
@@ -122,16 +126,18 @@ fn opening_the_picker_polls_a_door_no_session_has_watched() {
     assert_eq!(hits.load(Ordering::SeqCst), 0, "no poll before the picker");
 
     assert!(registry.poll_usage(SID), "the harness installed the poll");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while kimi().is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        wait_until(PATIENCE, || kimi().is_some()),
+        "the mock's reading never reached the row"
+    );
     let line = kimi().expect("the mock's reading reached the row");
     assert!(line.starts_with("kimi-code 0 5h 44% · resets "), "{line}");
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 
     // A second open inside the period is debounced: the door is not asked again.
     assert!(registry.poll_usage(SID));
+    // A negative check: the debounce window must pass before a second ask could be made, and
+    // nothing between the two calls is observable. It can pass falsely under load, never fail.
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     let _ = std::fs::remove_dir_all(&root);

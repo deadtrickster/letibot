@@ -139,6 +139,8 @@ fn a_nag_turn_arms_the_sweep_that_closes_a_call_it_stranded() {
 
     // The window, shortened so the open plan comes due now rather than in a minute.
     sessions.set_nag_window(Duration::from_millis(1));
+    // The interval under test is the nag window, shortened above to a millisecond: the wall clock
+    // has to pass it before the plan can be due at all.
     std::thread::sleep(Duration::from_millis(20));
     let _ = sessions.deliver_due_nags();
 

@@ -15,3 +15,4 @@ pub mod qwen;
 pub mod room;
 pub mod stub;
 pub mod vocab;
+pub mod wait;

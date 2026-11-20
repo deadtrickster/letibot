@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::{PATIENCE, wait_until};
 use serde_json::json;
 
 /// A scratch directory that removes itself however the test ends. The lease and the restart
@@ -458,15 +459,14 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
                 "kind": "announce"}),
         )
         .expect("a say");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut said: Vec<String> = Vec::new();
-    while std::time::Instant::now() < deadline {
-        said.extend(wake::take(me_id));
-        if said.iter().any(|s| s.contains("two questions")) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    assert!(
+        wait_until(PATIENCE, || {
+            said.extend(wake::take(me_id));
+            said.iter().any(|s| s.contains("two questions"))
+        }),
+        "the chat never reached `{me_id}`: {said:?}"
+    );
     // The room's own fact about another session's row wakes nobody it does not name.
     other.notify_in(
         "host",
@@ -475,6 +475,8 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
         "a row is done".to_string(),
         Vec::new(),
     );
+    // A negative check: nothing later than this fact can be watched for, so it waits a moment
+    // and says it never arrived. It can pass falsely under load, never fail falsely.
     std::thread::sleep(std::time::Duration::from_millis(500));
     said.extend(wake::take(me_id));
     assert!(
@@ -493,12 +495,8 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
     );
     // Taking the note is what marks it seen: a push alone left a restarted daemon's model
     // without it, and the join digest skipped it.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while server.seen(me_id).unwrap_or(0) == 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
     assert!(
-        server.seen(me_id).unwrap_or(0) > 0,
+        wait_until(PATIENCE, || server.seen(me_id).unwrap_or(0) > 0),
         "the taken note never reached the room as a seen mark"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -641,6 +639,8 @@ fn a_host_line_between_others_does_not_wake_a_project_session() {
     // The one it names is woken where it was named; the bystander of another project is not.
     let named = until_note(same_id, "did you see that?");
     assert!(named.contains("to @you"), "{named}");
+    // A negative check: the bystander's own queue is only ever filled by the pass that filled
+    // the named peer's, and its reader thread is not ordered against that one.
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert_eq!(
         wake::waiting(me_id),
@@ -691,16 +691,18 @@ fn a_host_line_between_others_does_not_wake_a_project_session() {
 
 /// The sentence `session` is woken by that carries `needle`, or a panic naming what it got.
 fn until_note(session: &str, needle: &str) -> String {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut said: Vec<String> = Vec::new();
-    while std::time::Instant::now() < deadline {
+    let found = wait_until(PATIENCE, || {
         said.extend(wake::take(session));
-        if let Some(line) = said.iter().find(|s| s.contains(needle)) {
-            return line.clone();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        said.iter().any(|s| s.contains(needle))
+    });
+    if !found {
+        panic!("`{session}` was never woken by `{needle}`: {said:?}");
     }
-    panic!("`{session}` was never woken by `{needle}`: {said:?}");
+    said.iter()
+        .find(|s| s.contains(needle))
+        .expect("the needle was found")
+        .clone()
 }
 
 /// The wake, end to end minus the harness: a real server, two real connections, and the
@@ -762,18 +764,15 @@ fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
     // Drained until the sentence this test is about arrives, not until the queue is not
     // empty: the first sentence `me` is woken by is its OWN post, and the claim lands a
     // moment later.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut said: Vec<String> = Vec::new();
-    while std::time::Instant::now() < deadline {
-        said.extend(wake::take(me_id));
-        if said
-            .iter()
-            .any(|s| s.contains("[room]") && s.contains(other_id))
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    assert!(
+        wait_until(PATIENCE, || {
+            said.extend(wake::take(me_id));
+            said.iter()
+                .any(|s| s.contains("[room]") && s.contains(other_id))
+        }),
+        "the claim never reached `{me_id}`: {said:?}"
+    );
     assert!(
         rung.lock().unwrap().iter().any(|s| s == me_id),
         "the bell must ring for the session the event is about: {:?}",
@@ -811,6 +810,7 @@ fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
         tag: "ram".into(),
         body: "1 GB".into(),
     });
+    // A negative check: the arbiter's reader thread is not ordered against this post's reply.
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
         *rung_arbiter.lock().unwrap(),
@@ -885,10 +885,7 @@ fn a_tags_agent_is_note_woken_by_its_queue_and_rung_only_by_a_dispute() {
         body: "2 TB".into(),
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline && wake::waiting(&agent) < 3 {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    wait_until(PATIENCE, || wake::waiting(&agent) >= 3);
     assert_eq!(
         rung.lock().unwrap().len(),
         0,
@@ -929,10 +926,7 @@ fn a_tags_agent_is_note_woken_by_its_queue_and_rung_only_by_a_dispute() {
         })
         .expect("a dispute");
     assert!(matches!(asked, Response::Question { .. }), "{asked:?}");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline && rung.lock().unwrap().is_empty() {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    wait_until(PATIENCE, || !rung.lock().unwrap().is_empty());
     assert_eq!(
         rung.lock().unwrap().as_slice(),
         std::slice::from_ref(&agent),
@@ -1136,16 +1130,16 @@ fn the_feed_snapshot_carries_the_rooms_identity_and_its_items() {
 
     // The picture arrives from a thread of its own, so the test waits for it rather than
     // sleeping a fixed second: a pane opened before the first read lands says *not read yet*.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut snap = me.snapshot();
     // The first read is a promise and the second is the answer - the frame it lands may be
     // the one taken BEFORE this test's post, so wait for the item as well as for the read.
-    while (snap.unreadable.is_some() || snap.items.is_empty())
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    wait_until(PATIENCE, || {
+        if snap.unreadable.is_none() && !snap.items.is_empty() {
+            return true;
+        }
         snap = me.snapshot();
-    }
+        false
+    });
     assert_eq!(snap.unreadable, None, "{:?}", snap.unreadable);
     assert!(snap.identity.contains("no item store"), "{}", snap.identity);
     assert_eq!(snap.arbiter.as_deref(), Some("s-arbiter"));

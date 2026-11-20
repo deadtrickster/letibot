@@ -12,6 +12,10 @@ use letibot_sessionlog::client::{HeadClient, pump};
 use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::registry::Registry;
 
+mod support;
+
+use support::wait::PATIENCE;
+
 const PROMPT: &str = "say hello";
 const FOLLOW_UP: &str = "and-also-mention-the-follow-up-marker";
 const ANSWER: &str = "the-retried-round-went-through";
@@ -198,9 +202,11 @@ fn a_follow_up_taken_by_a_failed_round_is_in_the_retried_round() {
                 // when the worker is back.
                 let before = Instant::now();
                 client.slash(0, "models").expect("the listing goes out");
-                while before.elapsed() < Duration::from_secs(20) && hub.turn_in_flight() {
+                while before.elapsed() < PATIENCE && hub.turn_in_flight() {
                     std::thread::sleep(Duration::from_millis(50));
                 }
+                // A negative check: the settle that clears the in-flight flag is not observable
+                // from the client, so it waits a moment. Never fails falsely, may pass falsely.
                 std::thread::sleep(Duration::from_millis(300));
             }));
             registry.close();

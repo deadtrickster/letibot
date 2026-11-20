@@ -15,6 +15,10 @@ use letibot_tokencore::store::{TodoItem, TodoNeed};
 use letibot_tools::{NullToolSink, ToolResult};
 use letibot_transcript::{ToolCall, ToolOutcome};
 
+mod support;
+
+use support::wait::{PATIENCE, wait_until};
+
 fn scratch(what: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("letibot-room-{what}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -191,13 +195,10 @@ fn an_ask_releases_a_row_escalates_when_its_target_stops_and_ends_when_the_targe
         ask_of(&a.row("name the user")).0
     };
     drop(b);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline && !server.connected().iter().any(|s| s == "s-a") {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    while std::time::Instant::now() < deadline && server.gone_since("s-b").is_none() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_until(PATIENCE, || {
+        server.connected().iter().any(|s| s == "s-a")
+    });
+    wait_until(PATIENCE, || server.gone_since("s-b").is_some());
     assert!(
         server.gone_since("s-b").is_some(),
         "the room must have noticed B's connection closing"

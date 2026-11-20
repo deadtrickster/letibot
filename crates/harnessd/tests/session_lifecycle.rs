@@ -25,7 +25,7 @@ use support::qwen::a_plain_answer_turn;
 use support::room;
 use support::stub::{read_request, write_frames, write_props};
 
-const PATIENCE: Duration = Duration::from_secs(30);
+use support::wait::PATIENCE;
 
 // ---------------------------------------------------------------------------
 // Fixtures - `message_between_turns.rs`'s shapes, kept to what this file needs
@@ -162,13 +162,10 @@ fn spawn(sessions: &Sessions<'_>, root: &str, prompt: &str) -> String {
 }
 
 fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    let began = Instant::now();
-    while !f() {
-        if began.elapsed() > PATIENCE {
-            panic!("waited {PATIENCE:?} for {what}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        support::wait::wait_until(PATIENCE, &mut f),
+        "waited {PATIENCE:?} for {what}"
+    );
 }
 
 /// Every operator row on a session's log.
@@ -751,7 +748,10 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     );
     let hub = d.registry.get(ROOT).expect("the root's hub");
     let head = hub.attach("tui", "test", Caps::default(), 0);
-    std::thread::sleep(window + Duration::from_millis(100));
+    assert!(
+        support::wait::wait_until(PATIENCE, || sessions.idle_exit_refusal().is_some()),
+        "a head attached was never named as what holds the daemon up, after {window:?}"
+    );
     assert_eq!(
         sessions.idle_exit_refusal(),
         Some(format!("{ROOT} has a head attached"))
@@ -804,6 +804,8 @@ fn a_daemon_with_no_idle_window_never_exits_on_its_own() {
     d.cfg.idle_exit_after = None;
     let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
         .expect("the daemon opens");
+    // A negative check: nothing later than this look can be watched for, so it waits a moment
+    // and says the daemon stayed up. It can pass falsely under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(sessions.idle_exit_refusal(), None, "nothing holds it");
     assert!(!sessions.idle_exit_due(), "and still it stays");
@@ -894,7 +896,8 @@ fn a_turn_whose_tool_call_outlasts_the_idle_ttl_is_not_reaped() {
 
     let beat = letibot_harnessd::reap_pass::LeaseBeat::start(d.cfg.store_at().as_ref(), ROOT);
     assert!(beat.beating(), "an owner with an idle TTL gets a beat");
-    // The tool call: longer than the TTL, with nothing else touching the lease.
+    // The tool call: longer than the TTL, with nothing else touching the lease. The interval is the
+    // lease's own TTL on the wall clock, so this sleep IS the elapsed time the pass must overlook.
     std::thread::sleep(Duration::from_millis(3 * ttl as u64));
     let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
     assert_eq!(

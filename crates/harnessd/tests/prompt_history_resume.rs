@@ -164,7 +164,9 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-        // Let the last turn land in the store before the kill.
+        // A settle before a kill: the last turn's rows are written after its answer, and this
+        // daemon is about to be stopped before it can finish them. The store write is not
+        // observable from this process without a second attach, so it waits a moment.
         std::thread::sleep(Duration::from_millis(800));
         // A head restarted against the live daemon - the other "restart".
         let (_h2, hello2, mut r2) = HeadClient::attach(

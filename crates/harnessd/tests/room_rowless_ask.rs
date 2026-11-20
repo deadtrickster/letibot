@@ -10,6 +10,10 @@ use letibot_sessionlog::hub::Hub;
 use letibot_tools::{NullToolSink, ToolResult};
 use letibot_transcript::{ToolCall, ToolOutcome};
 
+mod support;
+
+use support::wait::{PATIENCE, wait_until};
+
 fn open(workspace: &std::path::Path, id: &str) -> Harness {
     std::fs::create_dir_all(workspace).expect("a workspace");
     let mut cfg = Config::for_this_box(workspace);
@@ -81,12 +85,11 @@ fn a_rowless_ask_survives_the_pass_and_its_answer_wakes_the_asker_saying_so() {
     assert_eq!(out.outcome, ToolOutcome::Ok, "{out:?}");
 
     let want = format!("answered your ask #{ask}: 5433");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut said: Vec<String> = Vec::new();
-    while std::time::Instant::now() < deadline && !said.iter().any(|l| l.contains(&want)) {
+    wait_until(PATIENCE, || {
         said.extend(daemon_room::wake::take("s-rowless-a"));
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+        said.iter().any(|l| l.contains(&want))
+    });
     let line = said
         .iter()
         .find(|l| l.contains(&want))

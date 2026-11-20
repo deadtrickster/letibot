@@ -10,6 +10,10 @@ use letibot_harnessd::room::wake;
 use letibot_room::{Group, Member, Server};
 use serde_json::json;
 
+mod support;
+
+use support::wait::{PATIENCE, wait_until};
+
 /// A directory of this test's own, under the temp dir rather than a shared path.
 fn scratch(what: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("letibot-roomtree-{what}-{}", std::process::id()));
@@ -194,12 +198,9 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
 
     // Each session is rung for the item it made - the baseline this test measures against, because
     // a poster hearing its own post is the room working, not a leak between rooms.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline
-        && (rung_one.load(Ordering::SeqCst) == 0 || rung_two.load(Ordering::SeqCst) == 0)
-    {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_until(PATIENCE, || {
+        rung_one.load(Ordering::SeqCst) >= 1 && rung_two.load(Ordering::SeqCst) >= 1
+    });
     assert!(
         rung_one.load(Ordering::SeqCst) >= 1 && rung_two.load(Ordering::SeqCst) >= 1,
         "each session is rung for the item it made"
@@ -216,10 +217,7 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
         .expect("a claim in project one");
     assert!(claimed.contains("you hold #1"), "{claimed}");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline && rung_one.load(Ordering::SeqCst) == before_one {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_until(PATIENCE, || rung_one.load(Ordering::SeqCst) > before_one);
     assert!(
         rung_one.load(Ordering::SeqCst) > before_one,
         "project one's own session is rung for the claim on its item"
@@ -301,15 +299,11 @@ fn a_subagent_at_depth_two_and_the_gatekeeper_are_members_of_the_same_room() {
     .expect("a session");
 
     // The link sends the tree on its own poll thread; wait for it rather than sleep a guess.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut members = Vec::new();
-    while std::time::Instant::now() < deadline {
+    wait_until(PATIENCE, || {
         members = server.members_of(&project);
-        if members.len() == 4 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+        members.len() == 4
+    });
     let found: Vec<(&str, Group, u32)> = members
         .iter()
         .map(|m| (m.session.as_str(), m.group, m.depth))
