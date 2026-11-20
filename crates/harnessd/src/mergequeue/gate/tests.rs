@@ -44,10 +44,7 @@ fn a_running_steps_tail_grows_between_two_reads() {
                 got = running(&repo).filter(|g| g.tail.contains(word));
                 got.is_some()
             });
-            assert!(
-                found || got.is_some(),
-                "the step never wrote {word:?}"
-            );
+            assert!(found || got.is_some(), "the step never wrote {word:?}");
             got.expect("the step wrote it")
         };
         let first = wait_for("one");

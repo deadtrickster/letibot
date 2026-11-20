@@ -234,8 +234,7 @@ fn a_new_daemon_adopts_a_kept_job_and_says_so_once() {
         "a reattached job is not a detached holding any more"
     );
     assert!(
-        until(|| std::fs::metadata(&out)
-            .is_ok_and(|m| m.len() > before + 20)),
+        until(|| std::fs::metadata(&out).is_ok_and(|m| m.len() > before + 20)),
         "the output file stopped at {before} bytes"
     );
     let text = h.restore_after_restart().expect("the restart is said");

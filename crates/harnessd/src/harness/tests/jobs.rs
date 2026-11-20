@@ -502,9 +502,7 @@ mod job_tail {
                 let e = live_job_output(host.as_ref(), &id.0, 0, JOB_OUTPUT_WINDOW)
                     .expect("the host holds a running job");
                 let hit = match &e {
-                    SessionEvent::JobOutput { lines, .. } => {
-                        lines.iter().any(|l| l.contains(want))
-                    }
+                    SessionEvent::JobOutput { lines, .. } => lines.iter().any(|l| l.contains(want)),
                     _ => false,
                 };
                 last = Some(e);

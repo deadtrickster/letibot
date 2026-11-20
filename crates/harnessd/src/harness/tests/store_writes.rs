@@ -683,13 +683,12 @@ fn a_store_wait_is_said_while_it_waits() {
         std::thread::spawn(move || {
             // The wait is said once it has run past `STORE_WAIT_SAID_AFTER`, and that line is the
             // fact this test needs the lock held for - not a number standing in for it.
-            assert!(
-                crate::testing::wait_until(crate::testing::PATIENCE, || hub
-                    .retained()
-                    .iter()
-                    .any(|e| matches!(&e.event,
-                        SessionEvent::Warning { code, .. } if code == "store_busy_wait")))
-            );
+            assert!(crate::testing::wait_until(crate::testing::PATIENCE, || {
+                hub.retained().iter().any(|e| {
+                    matches!(&e.event,
+                        SessionEvent::Warning { code, .. } if code == "store_busy_wait")
+                })
+            }));
             release.send(()).unwrap();
         })
     };
