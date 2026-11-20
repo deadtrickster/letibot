@@ -4417,6 +4417,9 @@ impl<'a> Sessions<'a> {
                                         content: content.clone(),
                                     }
                                 }
+                                letibot_sessionlog::event::TodoNeed::Queue { id } => {
+                                    letibot_tokencore::store::TodoNeed::Queue { id: id.clone() }
+                                }
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
                                 }

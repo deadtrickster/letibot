@@ -22,14 +22,15 @@ pub trait QueueDesk: Send + Sync {
     /// Gate a target's tip again. `None`s are the session's repository and its project's target.
     fn regate(&self, repository: Option<&str>, target: Option<&str>) -> Result<String, String>;
     /// Put a pushed branch of this session's repository up for review. `None` target is the
-    /// project's; `why` is the ask or work the branch is for.
+    /// project's; `why` is the ask or work the branch is for. Answered with the row's id (what a
+    /// `todo` attach names it by) and the sentence the model reads.
     fn enqueue(
         &self,
         branch: &str,
         target: Option<&str>,
         why: &str,
         repository: Option<&str>,
-    ) -> Result<String, String>;
+    ) -> Result<(String, String), String>;
     /// A parked row back in line.
     fn restart(&self, id: &str) -> Result<String, String>;
     /// A row out of its queue, with the words why.
@@ -59,7 +60,7 @@ impl QueueDesk for NoQueue {
         _t: Option<&str>,
         _w: &str,
         _r: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, String), String> {
         Err(Self::WHY.into())
     }
     fn restart(&self, _id: &str) -> Result<String, String> {
@@ -80,14 +81,29 @@ impl NoQueue {
     const WHY: &'static str = "this session's daemon has no store, so it serves no merge queue";
 }
 
+/// Where an `enqueue` that was given a `todo` puts the wait: this session's board, when the
+/// runtime has one. `content` is the row's exact words and `id` the queue row's id, so the row
+/// waits on the queue and the idle check closes it when the branch lands.
+pub trait TodoAttach: Send + Sync {
+    fn attach(&self, content: &str, id: &str) -> Result<(), String>;
+}
+
 /// The tool.
 pub struct QueueTool {
     desk: Arc<dyn QueueDesk>,
+    /// `None` in a runtime with no board: `todo` is then refused by name rather than ignored.
+    todos: Option<Arc<dyn TodoAttach>>,
 }
 
 impl QueueTool {
     pub fn new(desk: Arc<dyn QueueDesk>) -> Self {
-        QueueTool { desk }
+        QueueTool { desk, todos: None }
+    }
+
+    /// The session's board, so `enqueue`'s `todo` can put a wait on the row it names.
+    pub fn with_todos(mut self, todos: Arc<dyn TodoAttach>) -> Self {
+        self.todos = Some(todos);
+        self
     }
 }
 
@@ -162,6 +178,7 @@ impl Tool for QueueTool {
                     "target": {"type": "string", "description": "enqueue / regate: the target branch (default: the project's). propose_target: the branch the project should land on."},
                     "repository": {"type": "string", "description": "status / stop: the repository — a path, a path's tail or its directory name (default: this session's). regate: the repository's path, when it is not this session's."},
                     "why": {"type": "string", "description": "enqueue: the ask or work the branch is for. stop / withdraw / propose_target: your reason, in a sentence the operator reads."},
+                    "todo": {"type": "string", "description": "enqueue: a row of your plan, by its exact words. It waits on the queue row, and the board closes it when the branch lands."},
                     "all": {"type": "boolean", "description": "status: one line per repository on the box, instead of this session's repository in detail."}
                 },
                 "required": ["action"]
@@ -215,8 +232,34 @@ impl Tool for QueueTool {
             "explain" => Ok(EXPLAIN.to_string()),
             "enqueue" => match (need("branch"), need("why")) {
                 (Ok(branch), Ok(why)) => {
-                    self.desk
-                        .enqueue(branch, text(args, "target"), why, text(args, "repository"))
+                    match self.desk.enqueue(
+                        branch,
+                        text(args, "target"),
+                        why,
+                        text(args, "repository"),
+                    ) {
+                        Ok((id, line)) => match text(args, "todo") {
+                            None => Ok(line),
+                            Some(row) => match self.todos.as_deref() {
+                                Some(todos) => match todos.attach(row, &id) {
+                                    Ok(()) => Ok(format!(
+                                        "{line} The row `{row}` waits on it, and closes when it \
+                                         lands."
+                                    )),
+                                    // The queue row is real and the wait is not: say which, so the
+                                    // model does not read a refusal as the enqueue having failed.
+                                    Err(why) => Ok(format!(
+                                        "{line} The `todo` wait was not attached: {why}."
+                                    )),
+                                },
+                                None => Ok(format!(
+                                    "{line} The `todo` wait was not attached: this runtime holds no \
+                                     board to put it on."
+                                )),
+                            },
+                        },
+                        Err(why) => Err(why),
+                    }
                 }
                 (Err(refused), _) | (_, Err(refused)) => return *refused,
             },
@@ -287,12 +330,12 @@ mod tests {
             t: Option<&str>,
             w: &str,
             _r: Option<&str>,
-        ) -> Result<String, String> {
+        ) -> Result<(String, String), String> {
             self.said
                 .lock()
                 .unwrap()
                 .push(format!("enqueue {b} {t:?} {w}"));
-            Ok("queued".into())
+            Ok(("m-queued".into(), "queued".into()))
         }
         fn restart(&self, id: &str) -> Result<String, String> {
             self.said.lock().unwrap().push(format!("restart {id}"));
@@ -334,6 +377,65 @@ mod tests {
 
     /// The model of the queue is in the tool, and says who may move what.
     #[test]
+    /// `enqueue` with a `todo` puts a wait on the row it names, and says which row - the seam a
+    /// session's board is reached through, since the queue desk knows nothing of a plan.
+    #[test]
+    fn enqueue_with_a_todo_attaches_the_wait_and_says_so() {
+        use crate::backend::HostBackend;
+        use crate::backend::tempdir::TempDir;
+        use crate::events::RecordingToolSink;
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::{ToolCall, ToolOutcome};
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Said {
+            attached: Mutex<Vec<(String, String)>>,
+        }
+        impl TodoAttach for Said {
+            fn attach(&self, content: &str, id: &str) -> Result<(), String> {
+                self.attached
+                    .lock()
+                    .unwrap()
+                    .push((content.to_string(), id.to_string()));
+                Ok(())
+            }
+        }
+
+        let said = Arc::new(Said::default());
+        let dir = TempDir::new();
+        let backend = HostBackend::new(dir.path()).expect("a backend");
+        let mut reg = Registry::new();
+        reg.register(Box::new(
+            QueueTool::new(Arc::new(Desk::default())).with_todos(said.clone()),
+        ))
+        .expect("registers");
+        let rt = ToolRuntime::new(reg, Box::new(backend));
+        let mut sink = RecordingToolSink::new();
+        let out = rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c0".into(),
+                name: TOOL.into(),
+                arguments: r#"{"action": "enqueue", "branch": "feat/x", "why": "the ask",
+                                "todo": "land the parser fix"}"#
+                    .into(),
+            },
+            &mut sink,
+        );
+        assert!(matches!(out.outcome, ToolOutcome::Ok), "{}", out.payload);
+        assert!(
+            out.payload
+                .contains("The row `land the parser fix` waits on it"),
+            "{}",
+            out.payload
+        );
+        assert_eq!(
+            *said.attached.lock().unwrap(),
+            vec![("land the parser fix".to_string(), "m-queued".to_string())]
+        );
+    }
+
     fn explain_states_the_model_and_the_description_fits() {
         for word in [
             "ENTRY",

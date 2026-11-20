@@ -4315,6 +4315,10 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Todo { seat, content } => {
                         letibot_sessionlog::event::TodoNeed::Todo { seat, content }
                     }
+                    // A merge-queue row, by the id `queue enqueue` answered.
+                    letibot_tokencore::store::TodoNeed::Queue { id } => {
+                        letibot_sessionlog::event::TodoNeed::Queue { id }
+                    }
                     letibot_tokencore::store::TodoNeed::Unknown => {
                         letibot_sessionlog::event::TodoNeed::Unknown
                     }

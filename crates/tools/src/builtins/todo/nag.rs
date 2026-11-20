@@ -230,6 +230,7 @@ fn a_wait_in_words(need: &letibot_tokencore::store::TodoNeed) -> String {
         N::Operator { question, .. } => format!("operator:{question}"),
         N::External { what, .. } => format!("external:{what}"),
         N::Todo { seat, content } => format!("todo:{seat}:{content}"),
+        N::Queue { id } => format!("queue:{id}"),
         N::Answered { question, .. } => format!("answered:{question}"),
         N::Ask { ask, of, .. } => format!("ask:{ask}:{of}"),
         N::Owed { ask } => format!("owed:{ask}"),

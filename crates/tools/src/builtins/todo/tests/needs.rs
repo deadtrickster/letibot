@@ -1041,3 +1041,44 @@ fn a_row_waits_on_a_monitor_until_it_ends() {
         r.payload
     );
 }
+
+/// A queue need crosses the tool as `{"kind": "queue", "id": …}`: it is stored, the reply shows it,
+/// and a row that waits on a landing is not "ready" - the board cannot land it.
+#[test]
+fn a_queue_need_is_written_shown_and_holds_the_row() {
+    let (rt, board) = runtime();
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke(
+        "t1",
+        &call(
+            r#"{"todos": [
+                    {"content": "land the parser fix", "status": "in_progress",
+                     "needs": [{"kind": "queue", "id": "m-rv-1"}]}
+                ]}"#,
+        ),
+        &mut sink,
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+    assert_eq!(
+        board.snapshot()[0].needs,
+        vec![TodoNeed::Queue {
+            id: "m-rv-1".into()
+        }]
+    );
+    assert!(
+        r.payload.contains("waiting on the queue row `m-rv-1`"),
+        "{}",
+        r.payload
+    );
+    // And an empty id is refused by name rather than stored as a wait for nothing.
+    let r = rt.invoke(
+        "t2",
+        &call(r#"{"todos": [{"content": "x", "status": "pending", "needs": [{"kind": "queue", "id": ""}]}]}"#),
+        &mut sink,
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Failed { .. }),
+        "{}",
+        r.payload
+    );
+}

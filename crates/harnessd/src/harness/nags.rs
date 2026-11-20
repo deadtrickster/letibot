@@ -240,6 +240,10 @@ impl Harness {
             String,
             Result<letibot_tools::builtins::todo::Board, String>,
         > = std::collections::BTreeMap::new();
+        // The queue rows this sweep found LANDED, keyed by the need's own handle: the row's todo is
+        // closed below, where the contents the wait freed are known.
+        let mut landed: std::collections::BTreeMap<String, (String, String, String)> =
+            std::collections::BTreeMap::new();
         let resolved = board.resolve_waits(|need| match need {
             TodoNeed::Job { handle } => {
                 let state = match self.job_fate(handle) {
@@ -290,12 +294,78 @@ impl Harness {
                     Err(_) => None,
                 }
             }
+            // A merge-queue row: LANDED closes the todo (the caller does it, once, below) and says
+            // so; a row that ended without landing frees the wait and leaves the row open, with the
+            // reason. An id that names nothing is no answer - an absence is not an ending.
+            TodoNeed::Queue { id } => {
+                let store = self.store.as_ref()?;
+                let row = merge_row_of(store, id).ok().flatten()?;
+                use letibot_tokencore::store::MergeState;
+                match row.state {
+                    MergeState::Landed | MergeState::LandedLocal => {
+                        let at = row.landed_sha.clone().unwrap_or_default();
+                        landed.insert(
+                            format!("queue {id}"),
+                            (row.branch.clone(), row.target.clone(), at),
+                        );
+                        Some("the queue row landed".to_string())
+                    }
+                    s if s.is_open() => None,
+                    // Ended without landing: refused, failed, timed out, withdrawn. The wait is
+                    // over and the row is still the reader's work, so it stays open.
+                    s => {
+                        let why = row.evidence.lines().next().unwrap_or_default().trim();
+                        Some(format!(
+                            "the queue row `{id}` ended `{}` without landing: {why}",
+                            s.as_str()
+                        ))
+                    }
+                }
+            }
             _ => None,
         });
         if resolved.is_empty() {
             return FreedWaits::default();
         }
-        let note = letibot_tools::builtins::todo::resolved_waits_note(&resolved);
+        // A LANDED queue row closes the todo it was attached to, once: the wait's own freed rows
+        // are the contents that carried it, and the sentence names the branch, the target and the
+        // sha the queue put there.
+        let mut closed: Vec<String> = Vec::new();
+        let mut updates: Vec<(String, letibot_tokencore::store::TodoStatus)> = Vec::new();
+        for r in &resolved {
+            let Some((branch, target, sha)) = landed.get(&r.handle) else {
+                continue;
+            };
+            let at = match sha.len() {
+                0 => "its commit".to_string(),
+                n if n > 10 => sha[..10].to_string(),
+                _ => sha.clone(),
+            };
+            for content in &r.rows {
+                updates.push((
+                    content.clone(),
+                    letibot_tokencore::store::TodoStatus::Completed,
+                ));
+                closed.push(format!(
+                    "{branch} landed on {target} at {at}; todo '{content}' closed"
+                ));
+            }
+        }
+        if !updates.is_empty() {
+            // A row the plan does not hold any more is nobody's to close; the sentence above still
+            // reports what landed, because that is a fact about the queue and not about the board.
+            let _ = self.todos.set_states(&updates);
+            self.flush_todos_or_say("a closed todo");
+        }
+        let note = format!(
+            "{}{}",
+            letibot_tools::builtins::todo::resolved_waits_note(&resolved),
+            if closed.is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", closed.join("\n"))
+            }
+        );
         let rows: Vec<String> = resolved.iter().flat_map(|r| r.rows.clone()).collect();
         // A freed row that can start now is work, and a note without a turn would read as ignored:
         // it rides the next turn instead, which the caller rings for.
@@ -739,5 +809,39 @@ impl Harness {
             detail.push_str(&format!(". {why}"));
         }
         self.hub.warn("nags_resumed", detail);
+    }
+}
+
+/// The merge row a queue need names: the id `queue enqueue` answered is a REVIEW row's, and the
+/// landing that answers it is the merge row that names that review. So both spellings are read, and
+/// the merge row - which is where `landed`, `failed`, `withdrawn` and the sha live - is what comes
+/// back.
+fn merge_row_of(
+    store: &letibot_tokencore::Store,
+    id: &str,
+) -> Result<Option<letibot_tokencore::store::MergeRow>, letibot_tokencore::store::StoreError> {
+    if let Some(row) = store.merge_row(id)? {
+        return Ok(Some(row));
+    }
+    Ok(store
+        .merge_rows(None)?
+        .into_iter()
+        .rev()
+        .find(|m| m.review_id == id))
+}
+
+/// This session's board, as the `queue` tool's `todo` seam sees it: one edge from a plan row to the
+/// queue row that keeps it waiting. Behind a trait object because the tool lives in `letibot-tools`
+/// and knows nothing of a daemon's board.
+pub(crate) struct SessionTodos {
+    pub(crate) board: std::sync::Arc<letibot_tools::builtins::todo::TodoBoard>,
+}
+
+impl letibot_tools::builtins::queue::TodoAttach for SessionTodos {
+    fn attach(&self, content: &str, id: &str) -> Result<(), String> {
+        self.board.attach(
+            content,
+            letibot_tokencore::store::TodoNeed::Queue { id: id.into() },
+        )
     }
 }

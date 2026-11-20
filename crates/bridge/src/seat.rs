@@ -220,7 +220,10 @@ impl Seat {
     fn free_waits(&self) -> Option<String> {
         let held = |row: &TodoItem| {
             !matches!(row.status, TodoStatus::Completed | TodoStatus::Cancelled)
-                && row.needs.iter().any(|n| matches!(n, TodoNeed::Todo { .. }))
+                && row
+                    .needs
+                    .iter()
+                    .any(|n| matches!(n, TodoNeed::Todo { .. } | TodoNeed::Queue { .. }))
         };
         if !self.board.snapshot().iter().any(held) {
             return None;
@@ -228,6 +231,9 @@ impl Seat {
         let boards = self.boards();
         let mut read: std::collections::BTreeMap<String, Result<Board, String>> =
             std::collections::BTreeMap::new();
+        // The lines of the queue rows this pass found LANDED: their todos are closed below, where
+        // the contents the waits freed are known.
+        let landing: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let resolved = self.board.resolve_waits(|need| match need {
             TodoNeed::Todo { seat, content } => {
                 let board = read
@@ -240,9 +246,62 @@ impl Seat {
                     Err(_) => None,
                 }
             }
+            // A merge-queue row: a LANDED row closes the todo it waits on (one sentence), and a row
+            // that ended without landing frees the wait and leaves the todo open, with the reason.
+            TodoNeed::Queue { id } => {
+                let store = opened(&self.store).ok()?;
+                let row = crate::queue::merge_row_of(&store, id)?;
+                use letibot_tokencore::store::MergeState;
+                match row.state {
+                    MergeState::Landed | MergeState::LandedLocal => {
+                        let at = row.landed_sha.clone().unwrap_or_default();
+                        let at: String = at.chars().take(10).collect();
+                        landing
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(format!(
+                                "{branch} landed on {target} at {at}; todo '{{row}}' closed",
+                                branch = row.branch,
+                                target = row.target
+                            ));
+                        Some("the queue row landed".to_string())
+                    }
+                    s if s.is_open() => None,
+                    s => {
+                        let why = row.evidence.lines().next().unwrap_or_default().trim();
+                        Some(format!(
+                            "the queue row `{id}` ended `{}` without landing: {why}",
+                            s.as_str()
+                        ))
+                    }
+                }
+            }
             _ => None,
         });
-        (!resolved.is_empty()).then(|| resolved_waits_note(&resolved))
+        let note = (!resolved.is_empty()).then(|| resolved_waits_note(&resolved));
+        // The landed rows close their todos here: the seat has no daemon's sweep, and a board that
+        // kept a row waiting on a branch that is on main would nag for work already done.
+        let landings = std::mem::take(&mut *landing.lock().unwrap_or_else(|e| e.into_inner()));
+        if !landings.is_empty() {
+            let mut closed: Vec<String> = Vec::new();
+            let mut updates: Vec<(String, TodoStatus)> = Vec::new();
+            for line in &landings {
+                for r in &resolved {
+                    for content in &r.rows {
+                        updates.push((content.clone(), TodoStatus::Completed));
+                        closed.push(line.replace("{row}", content));
+                    }
+                }
+            }
+            let _ = self.board.set_states(&updates);
+            let _ = self.persisted(json!({}));
+            let said = closed.join("\n");
+            return Some(match note {
+                Some(n) => format!("{n}\n{said}"),
+                None => said,
+            });
+        }
+        note
     }
 
     /// The operator's reply to a row's question, recorded on the row as the words they used. A seat
