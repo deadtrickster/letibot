@@ -257,21 +257,22 @@ impl<'a> Fixture<'a> {
     }
 
     /// Passes until `done` holds: a run is a process, so its verdict arrives on a pass after the
-    /// one that started it and never inside it. The bound is the shared patience, not a count of
-    /// passes, because a loaded box stretches a spawn past any count somebody picked.
+    /// one that started it and never inside it. The bound is the shared patience rather than a
+    /// count of passes; the pass keeps its own cadence, because a pass is what starts a process.
     fn until(&mut self, what: &str, done: impl Fn(&Store) -> bool) {
-        let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
+        let deadline = std::time::Instant::now() + crate::testing::PATIENCE;
+        loop {
             if done(self.store) {
-                return true;
+                return;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "`{what}` never happened; the row is {}",
+                self.row().failure
+            );
             self.pass();
-            false
-        });
-        assert!(
-            found,
-            "`{what}` never happened; the row is {}",
-            self.row().failure
-        );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -461,13 +462,12 @@ fn a_claude_reviewer_is_not_re_seated_by_the_upkeep() {
     // And the process this test lit is put out, so nothing outlives it.
     let now = now_ms();
     runs.keep(&[], now);
-    assert!(
-        crate::testing::wait_until(crate::testing::PATIENCE, || {
-            runs.keep(&[], now + 10_000);
-            !runs.owns(&handle)
-        }),
-        "the stub was ended"
-    );
+    let deadline = std::time::Instant::now() + crate::testing::PATIENCE;
+    while runs.owns(&handle) {
+        assert!(std::time::Instant::now() < deadline, "the stub was ended");
+        runs.keep(&[], now + 10_000);
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// The argv the stub was called with, as the lines it appended to `argv.txt` in its trees.
