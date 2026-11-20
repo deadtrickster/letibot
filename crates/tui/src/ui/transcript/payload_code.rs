@@ -20,6 +20,14 @@ const PROBE_LINES: usize = 40;
 /// Points a language needs before it is believed (see [`shape`]).
 const ENOUGH: usize = 2;
 
+/// Points a language needs when no line of the sample STARTS like it: a `sed -n` slice begins
+/// mid-function, so `fn ` and `use ` are behind the cut. Measured on 6 622 real 21-line windows of
+/// this tree's Rust — floor 2 admits 4 of them, floor 3 admits 185, and the 4 are two marks alone.
+const ENOUGH_ANYWHERE: usize = 3;
+
+/// Strong marks (see [`shape`]) two of which carry a language on their own.
+const ENOUGH_STRONG: usize = 2;
+
 /// Payloads whose grid is kept, so a resize or a fold re-draws a card without parsing it again.
 const KEEP: usize = 8;
 
@@ -120,9 +128,18 @@ fn section(sample: &str) -> bool {
     })
 }
 
-/// What the payload's own shape says, when no name does. Every mark is SYNTAX (`let mut`, `:=`) and
-/// never a word prose also uses, each counts at most twice, and a language needs [`ENOUGH`] points
-/// and more than any other — so a wrong guess costs colour and never text.
+/// What one language scored on a sample: `structural` is what its lines that START with a mark
+/// say, `strong` is how many marks only it puts inside a line, and `total` is every point earned.
+#[derive(Clone, Copy, Debug)]
+struct Points {
+    structural: usize,
+    strong: usize,
+    total: usize,
+}
+
+/// What the payload's own shape says: every mark is SYNTAX and never a word prose also uses, each
+/// counts at most twice, and a language needs more points than any other and either a line that
+/// STARTS like it or [`ENOUGH_STRONG`] marks inside the lines (a slice out of a function has none).
 fn shape(sample: &str) -> Option<Lang> {
     let lines: Vec<&str> = sample
         .lines()
@@ -137,6 +154,18 @@ fn shape(sample: &str) -> Option<Lang> {
     {
         return Some(Lang::Json);
     }
+    let scored = points_of(&lines);
+    let (lang, top) = scored[0];
+    let unique = scored.get(1).is_none_or(|(_, next)| next.total < top.total);
+    let shaped = top.structural > 0 && top.total >= ENOUGH;
+    let spoken = top.strong >= ENOUGH_STRONG && top.total >= ENOUGH_ANYWHERE;
+    (unique && (shaped || spoken)).then_some(lang)
+}
+
+/// Every language's points on a sample's non-empty lines, best first. The marks are the ones no
+/// language shares: `weak` reads alone rarely (a path, a word prose uses), `strong` is syntax only
+/// the language writes — and the second list is what a slice from inside a function is read by.
+fn points_of(lines: &[&str]) -> Vec<(Lang, Points)> {
     let count = |needle: &str, at_start: bool| -> usize {
         lines
             .iter()
@@ -150,31 +179,41 @@ fn shape(sample: &str) -> Option<Lang> {
             .count()
             .min(2)
     };
-    let score = |starts: &[&str], has: &[&str]| -> (usize, usize) {
+    let score = |starts: &[&str], weak: &[&str], strong: &[&str]| -> Points {
         let structural: usize = starts.iter().map(|m| count(m, true) * 2).sum();
-        let anywhere: usize = has.iter().map(|m| count(m, false)).sum();
-        (structural, structural + anywhere)
+        let weak: usize = weak.iter().map(|m| count(m, false)).sum();
+        let strong: usize = strong.iter().map(|m| count(m, false)).sum();
+        Points {
+            structural,
+            strong,
+            total: structural + weak + strong,
+        }
     };
     let languages = [
         (
             Lang::Rust,
             score(
                 &["fn ", "impl ", "let mut ", "#[", "pub fn ", "use "],
-                &["&self", " -> ", "::", "Ok(", "Some(", "&mut ", "pub "],
+                &["::", "pub "],
+                &[
+                    "&self", " -> ", "Ok(", "Err(", "Some(", "None", "&mut ", "unsafe ",
+                ],
             ),
         ),
         (
             Lang::Python,
             score(
                 &["def ", "class ", "import ", "from ", "elif ", "__name__"],
-                &["self.", "None", "print(", "__init__"],
+                &["None", "print("],
+                &["self.", "__init__"],
             ),
         ),
         (
             Lang::Go,
             score(
                 &["func ", "package ", "import (", "type "],
-                &[":=", "fmt.", "nil"],
+                &["nil"],
+                &[":=", "fmt."],
             ),
         ),
         (
@@ -188,19 +227,14 @@ fn shape(sample: &str) -> Option<Lang> {
                     "export ",
                     "class ",
                 ],
-                &["=>", "console.log(", "require(", "==="],
+                &["===", "require("],
+                &["=>", "console.log("],
             ),
         ),
     ];
-    let mut scored: Vec<(Lang, usize, usize)> = languages
-        .iter()
-        .map(|(lang, (structural, total))| (*lang, *structural, *total))
-        .collect();
-    scored.sort_by_key(|s| std::cmp::Reverse(s.2));
-    let (lang, structural, top) = scored[0];
-    // A line that STARTS like the language is what makes it a guess rather than a coincidence: two
-    // test names with `::` in them are a `cargo test` summary, not Rust.
-    (structural > 0 && top >= ENOUGH && scored.get(1).is_none_or(|s| s.2 < top)).then_some(lang)
+    let mut scored: Vec<(Lang, Points)> = languages.to_vec();
+    scored.sort_by_key(|(_, p)| std::cmp::Reverse(p.total));
+    scored
 }
 
 /// One cached grid: the text's hash, its row count, the language, and the roles.
@@ -264,6 +298,87 @@ mod tests {
         // openpty takes a winsize pointer on every target now
         let what = "openpty";
 "#;
+
+    /// The slice the operator's card showed as plain: a `sed -n 'A,Bp'` window that begins inside
+    /// a function, so not one line of it starts with `fn `, `use ` or `pub fn `.
+    const SLICE: &str = r#"        // mutable form for both. `&mut` is what compiles on every target this builds for.
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            // pixel size is not what a caller sets here, so leave it to the kernel
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                &size as *const libc::winsize,
+                std::ptr::null_mut(),
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((master, slave))
+"#;
+
+    /// The other card: a longer slice that happens to keep its anchor marks, and was highlighted.
+    const SLICE_WITH_ANCHORS: &str = r#"use std::time::{Duration, Instant};
+fn openpty() -> Option<(RawFd, RawFd)> {
+    let mut master = 0i32;
+    let mut slave = 0i32;
+    let mut size = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            &mut size as *mut libc::winsize,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    Some((master, slave))
+}
+
+/// The bytes a pty write may lose before the reader drains it, measured once at open.
+fn drain_window(fd: RawFd) -> Duration {
+    let mut bytes = 0i32;
+    let rc = unsafe { libc::ioctl(fd, libc::FIONREAD, &mut bytes) };
+    if rc != 0 {
+        return Duration::from_millis(0);
+    }
+    Duration::from_millis(u64::from(bytes.max(0)) / 8)
+}
+
+/// A pair whose child is the process it was opened for, and when that happened.
+pub struct Pty {
+    pub master: RawFd,
+    pub slave: RawFd,
+    opened: Instant,
+}
+
+impl Pty {
+    /// Open a pair and remember when: a read window measured from here is honest.
+    pub fn open(rows: u16, cols: u16) -> Option<(RawFd, RawFd)> {
+        let (master, slave) = openpty()?;
+        Some((master, slave))
+    }
+}
+"#;
+
+    /// The marks [`shape`] reads at the START of a line: none of these may begin a line of
+    /// [`SLICE`], which is what makes it the case the structural gate could not see.
+    const ANCHORS: [&str; 6] = ["fn ", "impl ", "let mut ", "#[", "pub fn ", "use "];
 
     fn drawn_of(text: &str) -> Vec<Line> {
         let lines: Vec<&str> = text.lines().collect();
@@ -387,6 +502,75 @@ mod tests {
             assert_eq!(lang_of(text), Some(want), "{text}");
         }
     }
+
+    /// The regression the operator found, on the card it was found on: a `sed -n 'A,Bp'` window
+    /// starts inside a function, so not one line of it STARTS like Rust — and it is Rust, on the
+    /// marks inside its lines.
+    #[test]
+    fn a_slice_from_inside_a_function_is_still_rust() {
+        assert_eq!(SLICE.lines().count(), 21, "the card's twenty-one lines");
+        for l in SLICE.lines() {
+            assert!(
+                !ANCHORS.iter().any(|m| l.trim_start().starts_with(m)),
+                "no line starts like Rust, so the structural gate cannot answer: {l:?}"
+            );
+        }
+        let rows: Vec<&str> = SLICE.lines().map(str::trim_start).collect();
+        let (lang, points) = points_of(&rows)[0];
+        assert_eq!(lang, Lang::Rust);
+        assert_eq!(
+            points.structural, 0,
+            "the anywhere path is what decides this one"
+        );
+        assert!(
+            points.strong >= ENOUGH_STRONG && points.total >= ENOUGH_ANYWHERE,
+            "`&mut `, `unsafe `, `Ok(` and `Err(` are the evidence: {points:?}"
+        );
+        assert_eq!(lang_of(SLICE), Some(Lang::Rust));
+        let drawn = drawn_of(SLICE);
+        assert_eq!(drawn.len(), 21, "one row per line");
+        assert!(
+            roles(&drawn[8]).contains(&Role::Keyword),
+            "`let rc = unsafe {{` is drawn in roles, not plain: {:?}",
+            roles(&drawn[8])
+        );
+    }
+
+    /// The card the slice was compared with keeps its answer, and so do the payloads the structural
+    /// gate was built to refuse: a run of test names, a build log, a shell transcript.
+    #[test]
+    fn an_anchored_slice_is_rust_and_a_summary_of_test_names_is_not() {
+        assert_eq!(SLICE_WITH_ANCHORS.lines().count(), 49);
+        assert_eq!(lang_of(SLICE_WITH_ANCHORS), Some(Lang::Rust));
+        for text in [SUMMARY, LONG_SUMMARY, BUILD_LOG, SHELL] {
+            assert_eq!(lang_of(text), None, "{text}");
+        }
+    }
+
+    /// A `cargo test` summary is full of `::` and is not Rust: `::` is a weak mark, and no strong
+    /// mark of any language is in these.
+    const SUMMARY: &str = "running 2 tests\ntest store::write ... ok\ntest store::read ... ok\n\
+                          test result: ok. 2 passed; 0 failed\n";
+
+    /// The same, longer: `count` stops at two marks of one kind, so the floor has to hold past that.
+    const LONG_SUMMARY: &str = "running 8 tests\n\
+        test mergequeue::serve::tests::a_row_is_taken ... ok\n\
+        test mergequeue::serve::tests::a_row_is_judged ... ok\n\
+        test mergequeue::serve::tests::a_row_is_landed ... ok\n\
+        test mergequeue::git::tests::a_ref_is_proved ... ok\n\
+        test mergequeue::git::tests::a_tree_is_reset ... ok\n\
+        test mergequeue::desk::tests::a_status_is_one_line ... ok\n\
+        test mergequeue::lease::tests::a_lease_is_taken ... ok\n\
+        test result: ok. 8 passed; 0 failed\n";
+
+    /// A build's own words: no syntax of any language, and no strong mark either.
+    const BUILD_LOG: &str =
+        "   Compiling letibot-tui v0.6.0\n    Finished `dev` profile in 12.34s\n";
+
+    /// A shell transcript: a command line, what it printed, and a path. Not a language.
+    const SHELL: &str = "$ cargo test -p letibot-tui --lib payload_code\n\
+        running 4 tests\ntest result: ok. 4 passed; 0 failed\n\
+        $ git status --short\n M crates/tui/src/ui/transcript/payload_code.rs\n";
 
     /// A grid shorter than the payload is *the rest was not understood*, never a lost line.
     #[test]
