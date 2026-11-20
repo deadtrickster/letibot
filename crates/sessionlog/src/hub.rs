@@ -792,6 +792,10 @@ pub enum Owner {
     OwnThread,
 }
 
+/// The daemon's hubs, as one session's [`Hub`] reaches them: shared, and weak so a session that
+/// closed does not keep another alive.
+pub type Peers = Arc<Mutex<Vec<std::sync::Weak<Hub>>>>;
+
 /// One session's log, view, heads and command queue.
 pub struct Hub {
     inner: Mutex<Inner>,
@@ -820,11 +824,11 @@ pub struct Hub {
     /// A package started this session's tree, so a bridge seat may answer its permission cards.
     /// Set by the registry from the session's origin; false until somebody says so.
     started_by_a_package: std::sync::atomic::AtomicBool,
-    /// Every session's hub this daemon has open, weakly, `None` until the daemon shares them. A
-    /// card raised while the operator's head is looking at ANOTHER session is posted to that
-    /// session too - the project's heads, not one session's - and the answer comes back through
-    /// the asker's own sink.
-    peers: Mutex<Option<Arc<Mutex<Vec<std::sync::Weak<Hub>>>>>>,
+    /// Every session's hub this daemon has open, `None` until the daemon shares them. A card
+    /// raised while the operator's head is looking at ANOTHER session is posted to that session
+    /// too - the project's heads, not one session's - and the answer comes back through the
+    /// asker's own sink.
+    peers: Mutex<Option<Peers>>,
 }
 
 impl Hub {
@@ -1074,7 +1078,7 @@ impl Hub {
 
     /// The daemon's hub list, so the card this session raises can reach a head attached to another
     /// session of the same daemon. Set once at open, by the daemon that owns the list.
-    pub fn share_peers(&self, peers: Arc<Mutex<Vec<std::sync::Weak<Hub>>>>) {
+    pub fn share_peers(&self, peers: Peers) {
         *self.peers.lock().unwrap_or_else(|e| e.into_inner()) = Some(peers);
     }
 

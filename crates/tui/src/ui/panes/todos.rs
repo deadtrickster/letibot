@@ -561,6 +561,9 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Todo { seat, content } => {
             format!("{}'s \"{}\"", clean_line(seat), clean_line(content))
         }
+        // A merge-queue row, by the id `queue` prints: the row is released, and the board closes
+        // it, when that branch lands.
+        TodoNeed::Queue { id } => format!("queue `{}`", clean_line(id)),
         // Kept rather than dropped - a plan is what would be lost - and said as the one thing this
         // build can honestly say about it.
         TodoNeed::Unknown => "an edge this build does not know".into(),
