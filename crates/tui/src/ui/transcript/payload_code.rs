@@ -555,6 +555,19 @@ impl Pty {
         );
     }
 
+    /// **A slice of test code is Rust by its macros alone** — no `fn`, no `&mut`, no `Ok(`; the
+    /// operator's card from `src/markdown/render/tests.rs` had six assertions and nothing else.
+    #[test]
+    fn a_slice_of_test_code_is_rust_by_its_macros() {
+        for l in TEST_SLICE.lines() {
+            assert!(
+                !ANCHORS.iter().any(|m| l.trim_start().starts_with(m)),
+                "no line starts like Rust, so the structural gate cannot answer: {l:?}"
+            );
+        }
+        assert_eq!(lang_of(TEST_SLICE), Some(Lang::Rust), "{TEST_SLICE}");
+    }
+
     /// The card the slice was compared with keeps its answer, and so do the payloads the structural
     /// gate was built to refuse: a run of test names, a build log, a shell transcript.
     #[test]
