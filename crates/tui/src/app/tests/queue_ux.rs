@@ -364,6 +364,46 @@ fn a_verdict_says_who_reviewed_what_and_how_it_went() {
     );
 }
 
+/// `?` on the queue pane is the PANE's card, not `/help`: every key the pane takes, in the pane's
+/// own words - the question the operator asked twice, "how do I remove an item from the queue".
+#[test]
+fn the_queue_panes_question_mark_lists_every_key_it_takes() {
+    let mut a = pane();
+    // Twice: the bar reads the rows the last frame recorded.
+    a.screen(100, 40);
+    let bar = a.hint_bar(140);
+    assert!(
+        bar.contains("? keys"),
+        "the bar offers the key card: {bar}"
+    );
+    assert!(
+        bar.contains("del withdraw"),
+        "and still leads with the verbs: {bar}"
+    );
+
+    a.key(Key::Char('?'));
+    assert_eq!(
+        a.focused_surface(),
+        Some(Surface::Keys),
+        "the pane's own card, not `/help`"
+    );
+    let card = joined(&a.screen(110, 40));
+    for want in [
+        "accepts the branch under the cursor",
+        "rejects the row under the cursor",
+        "takes the row under the cursor out of the queue",
+        "puts a parked row back in line",
+        "acts on the row under the cursor",
+        "switches the queue",
+        "esc closes this",
+    ] {
+        assert!(card.contains(want), "the card says `{want}`: {card}");
+    }
+    // And it is a card OVER the pane: Esc gives the pane back.
+    a.key(Key::Esc);
+    assert_eq!(a.focused_surface(), Some(Surface::Queue));
+}
+
 /// Every surface drawn, for the report - the pane at eighty and a hundred and twenty columns,
 /// and the same fixture's edge. Written under `scratch/queue-ux/`, which the build never reads.
 #[test]

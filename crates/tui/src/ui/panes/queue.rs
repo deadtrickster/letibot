@@ -776,6 +776,20 @@ impl Verb {
             Verb::Regate => "regate",
         }
     }
+
+    /// What the verb DOES, in a sentence - the `?` card's words, where the bar's one word is not
+    /// enough to answer "how do I get this row out of the queue".
+    pub(crate) fn about(self) -> &'static str {
+        match self {
+            Verb::Approve => {
+                "accepts the branch under the cursor and puts it in the merge queue to land"
+            }
+            Verb::Veto => "rejects the row under the cursor in your own words",
+            Verb::Restart => "puts a parked row back in line, to be reviewed or gated again",
+            Verb::Rm => "takes the row under the cursor out of the queue; the branch and its tree stay",
+            Verb::Regate => "gates the target under the cursor again, now that a red cause is gone",
+        }
+    }
 }
 
 /// Whether a verb moves this row - the daemon's own rule (`mergequeue::verbs`), so a verb it

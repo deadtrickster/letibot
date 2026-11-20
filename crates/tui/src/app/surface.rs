@@ -52,6 +52,9 @@ pub(crate) enum Surface {
     Listing,
     /// The chat rooms - `/rooms`: channels on the left, the selected channel on the right.
     Rooms,
+    /// Every key the pane under it takes, one row each - the pane's `?`. A reading surface: the
+    /// rows are the surface's own table, so the card cannot name a key the pane does not take.
+    Keys,
 }
 
 impl Surface {
@@ -77,7 +80,7 @@ impl Surface {
     }
 
     /// Every surface, for the tests and the generated help that walk them.
-    pub(crate) const ALL: [Surface; 19] = [
+    pub(crate) const ALL: [Surface; 20] = [
         Surface::Help,
         Surface::Stats,
         Surface::Picker,
@@ -97,6 +100,7 @@ impl Surface {
         Surface::PluginDetail,
         Surface::Listing,
         Surface::Rooms,
+        Surface::Keys,
     ];
 }
 
@@ -272,6 +276,11 @@ impl App {
             .filter(|t| *t == s || t.parent() == Some(s))
             .collect();
         self.surfaces.retain(|o| !gone.contains(&o.surface));
+        // The key card lists the keys of the pane under it: a stack that closed that pane takes the
+        // card with it rather than leaving a key list over the conversation.
+        if self.surfaces.first().is_some_and(|o| o.surface == Surface::Keys) {
+            self.surfaces.clear();
+        }
         for g in gone {
             self.forget_surface(g);
         }
@@ -421,6 +430,7 @@ impl App {
             | Surface::SubOut
             | Surface::JobOut
             | Surface::Listing
+            | Surface::Keys
             | Surface::PluginDetail => None,
         }
     }
