@@ -2178,6 +2178,15 @@ impl Harness {
         session_registry: Arc<letibot_sessionlog::registry::Registry>,
     ) -> Result<Self, HarnessError> {
         let mut notes: Vec<String> = Vec::new();
+        // This session's hub joins the daemon's list, and can reach every other one: a card raised
+        // while the operator's head is looking at a sibling session is answered by THAT head. The
+        // list is pruned as it is read, so a closed session costs nothing after the next open.
+        {
+            let mut hubs = parts.hubs.lock().unwrap_or_else(|e| e.into_inner());
+            hubs.retain(|h| h.strong_count() > 0);
+            hubs.push(std::sync::Arc::downgrade(&hub));
+        }
+        hub.share_peers(parts.hubs.clone());
         // The store first, because it may change the configuration: a session already in it
         // carries its own workspace and seat, and the backend built below follows those.
         let Opening {
@@ -2447,6 +2456,7 @@ impl Harness {
                 placed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 merge_store: Arc::new(std::sync::Mutex::new(None)),
                 plugin_slot: plugin_slot.clone(),
+                hubs: parts.hubs.clone(),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings through the same
         // subagent runner `task` uses, or a digest would be a subagent tree `task_result` cannot show.

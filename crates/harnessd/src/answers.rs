@@ -124,10 +124,35 @@ impl Answers {
         gate: Option<&letibot_sessionlog::pending_asks::AskerGate>,
     ) -> AdjudicationDecision {
         let started = Instant::now();
-        let (who, route) = match escalation(hub) {
+        let (mut who, route) = match escalation(hub) {
             Some((set, main)) => (vec![main], Some(set)),
             None => (hub.deciding_heads(), None),
         };
+        // The operator's design: a leticode session IS its project's head, so a card raised while
+        // their head is looking at a SIBLING session of this daemon goes to that head too. Every
+        // head attached to the daemon is offered the card, whatever session it shows, and the
+        // answer comes back through this session's sink. A daemon with no head at all is not an
+        // instant refusal either: the card waits out its expiry, and a head that attaches in the
+        // meantime finds it in the asking session's transcript.
+        let farther: Vec<Arc<Hub>> = if who.is_empty() {
+            let with_heads: Vec<Arc<Hub>> = hub
+                .peer_hubs()
+                .into_iter()
+                .filter(|h| !h.deciding_heads().is_empty())
+                .collect();
+            for h in &with_heads {
+                who.extend(h.deciding_heads());
+            }
+            who.sort();
+            who.dedup();
+            with_heads
+        } else {
+            Vec::new()
+        };
+        // A daemon with no head anywhere is not a wait: an unattended seat must not hang every
+        // call for the whole budget, and `gate:no-head` is the sentence that says why nothing ran.
+        // A head attached to ANY session of this daemon IS an answer on its way, and the wait is
+        // the card's own expiry.
         if who.is_empty() {
             return AdjudicationDecision::unavailable(req, "gate:no-head", &no_head(subagent));
         }
@@ -170,6 +195,11 @@ impl Answers {
                 card = queue_scoped(card);
             }
             hub.publish(card.clone());
+            // And to a head attached to another session of this daemon: posted as a RELAY, so its
+            // answer comes back to this session's sink and not into that session's gate.
+            for peer in &farther {
+                peer.post_relayed(card.clone(), self.clone());
+            }
             if let Some(set) = &route {
                 let mut shown = relayed(card, hub, set);
                 if let (Some(l), SessionEvent::DecisionRequested { shadow, .. }) =
@@ -259,7 +289,12 @@ impl Answers {
                 a.answered(&req.id, effect_of(&decision.outcome));
             }
         }
-        hub.publish(closed);
+        hub.publish(closed.clone());
+        // And off the screens of the sessions it was shown on: a card whose ask is over must not
+        // stay open in a sibling session's head.
+        for peer in &farther {
+            peer.withdraw_relayed_with(&req.id, closed.clone());
+        }
         decision
     }
 }

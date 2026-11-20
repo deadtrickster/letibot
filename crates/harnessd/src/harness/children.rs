@@ -1709,6 +1709,10 @@ pub(crate) struct HarnessTaskRunner {
     /// before the daemon opens the session's layers (`tree_watch`'s reason). `None` is a session nobody
     /// gave a host, and then a child inherits nothing and answers no hook.
     pub(crate) plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
+    /// The daemon's hubs, so a child's card reaches a head attached to any session of this daemon -
+    /// `tree_watch`'s shape, one level over.
+    pub(crate) hubs:
+        std::sync::Arc<std::sync::Mutex<Vec<std::sync::Weak<letibot_sessionlog::Hub>>>>,
 }
 
 /// One `task_start` child, as the runner remembers it: the two things the enqueue needs and nothing else in
@@ -3561,6 +3565,8 @@ impl HarnessTaskRunner {
             // No spawn runs through this constructor, so nothing ever asks what a child would
             // inherit: an empty slot is the same answer a session with no layers gives.
             plugin_slot: Default::default(),
+            // And the daemon's hub list: a test that starts no child needs no other session's.
+            hubs: parts.hubs.clone(),
             // No spawn runs through this constructor, so no child's estate is ever settled
             // here: `None` is `settle_estate`'s *there is nobody to hand it to*.
             heir: Arc::new(std::sync::Mutex::new(None)),
@@ -4245,6 +4251,9 @@ impl HarnessTaskRunner {
                 .clone(),
             // The daemon's tree table is the daemon's: a child's own entry lands in it as it opens.
             trees: self.trees.clone(),
+            // And so are the hubs: a card a child raises reaches a head attached to any session of
+            // this daemon, not just its own tree's.
+            hubs: self.hubs.clone(),
         };
 
         // The child's adjudicator: its asks surface at the tree's ROOT. A child does not deny every `ask` on a

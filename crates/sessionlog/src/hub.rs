@@ -820,6 +820,11 @@ pub struct Hub {
     /// A package started this session's tree, so a bridge seat may answer its permission cards.
     /// Set by the registry from the session's origin; false until somebody says so.
     started_by_a_package: std::sync::atomic::AtomicBool,
+    /// Every session's hub this daemon has open, weakly, `None` until the daemon shares them. A
+    /// card raised while the operator's head is looking at ANOTHER session is posted to that
+    /// session too - the project's heads, not one session's - and the answer comes back through
+    /// the asker's own sink.
+    peers: Mutex<Option<Arc<Mutex<Vec<std::sync::Weak<Hub>>>>>>,
 }
 
 impl Hub {
@@ -861,6 +866,7 @@ impl Hub {
             }),
             cv: Condvar::new(),
             started_by_a_package: std::sync::atomic::AtomicBool::new(false),
+            peers: Mutex::new(None),
             owner: std::sync::atomic::AtomicU8::new(0),
             promote: Arc::new(Mutex::new(None)),
             activity: Mutex::new(crate::activity::Activity::Quiet),
@@ -1064,6 +1070,26 @@ impl Hub {
     /// on one condition instead of polling.
     pub fn set_bell(&self, bell: Arc<crate::registry::Bell>) {
         self.lock().bell = Some(bell);
+    }
+
+    /// The daemon's hub list, so the card this session raises can reach a head attached to another
+    /// session of the same daemon. Set once at open, by the daemon that owns the list.
+    pub fn share_peers(&self, peers: Arc<Mutex<Vec<std::sync::Weak<Hub>>>>) {
+        *self.peers.lock().unwrap_or_else(|e| e.into_inner()) = Some(peers);
+    }
+
+    /// The other sessions' hubs this daemon holds, alive ones only, nearest first.
+    pub fn peer_hubs(&self) -> Vec<Arc<Hub>> {
+        let list = self.peers.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(list) = list else {
+            return Vec::new();
+        };
+        list.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .filter(|h| h.session_id() != self.session_id())
+            .collect()
     }
 
     /// Install the answer sink, so a settled decision reaches whoever is blocked on it rather
