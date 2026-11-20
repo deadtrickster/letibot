@@ -51,6 +51,11 @@ pub struct Parts {
     /// because the daemon's worker runs a PARKED child's later turn while the slot it must settle
     /// is its parent's, on a thread the worker cannot reach.
     pub(crate) trees: super::trees::Trees,
+    /// Every session's hub this daemon has open, weakly: a card one session raises reaches a head
+    /// attached to another one, whatever session that head is showing. The operator's design - a
+    /// leticode session IS its project's head - and their own report of a card refused "no head
+    /// attached" while their head was looking at a sibling session.
+    pub hubs: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Weak<letibot_sessionlog::Hub>>>>,
 }
 
 impl Parts {
@@ -127,6 +132,7 @@ impl Parts {
             claude: std::sync::Arc::new(crate::mergequeue::review::claude::Runs::new()),
             // Empty: every harness puts its own entry in as it opens.
             trees: super::trees::Trees::default(),
+            hubs: Default::default(),
         })
     }
 }

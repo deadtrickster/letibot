@@ -1281,3 +1281,74 @@ fn every_option_kind_and_timeout_has_its_own_wire_twin() {
         assert_eq!(wire_timeout(timeout), wire, "{why}");
     }
 }
+
+/// A card raised by a session whose own hub has no head reaches the heads attached to THIS
+/// daemon's other sessions - the operator's design, a leticode session is its project's head -
+/// and that head's answer settles the asking session's call.
+#[test]
+fn a_card_reaches_a_head_attached_to_another_session_of_the_daemon() {
+    // The daemon's list, as `Parts::hubs` holds it.
+    let hubs: Arc<std::sync::Mutex<Vec<std::sync::Weak<Hub>>>> = Default::default();
+    // The asking session: no head.
+    let asker = Hub::new("s-main");
+    asker.share_peers(hubs.clone());
+    hubs.lock().unwrap().push(Arc::downgrade(&asker));
+    // The session the operator's head is actually showing.
+    let sibling = Hub::new("s-shadow");
+    sibling.share_peers(hubs.clone());
+    hubs.lock().unwrap().push(Arc::downgrade(&sibling));
+    let head = sibling.attach("tui", "deadtrickster", Caps::default(), 0);
+    // One answer path for the daemon, as `open.rs` installs it once.
+    let answers = Arc::new(Answers::new());
+    asker.set_answer_sink(answers.clone());
+    sibling.set_answer_sink(answers.clone());
+
+    let budget = Duration::from_secs(10);
+    let adj = HeadAdjudicator::new(asker.clone(), answers.clone()).with_budget(budget);
+    let req = request();
+
+    let shown = sibling.clone();
+    let head_id = head.head_id.clone();
+    let answerer = std::thread::spawn(move || {
+        loop {
+            // The card is on the SIBLING's screen, posted as a relay: its answer goes to the asker's
+            // sink, which is where the blocked call is waiting.
+            let open = shown.snapshot().open_decisions;
+            if let Some(d) = open.first() {
+                let req_id = d.req_id.clone();
+                shown.submit(
+                    &head_id,
+                    "c1",
+                    0,
+                    letibot_sessionlog::hub::CommandKind::Answer {
+                        req_id,
+                        reply: Reply::Permission {
+                            option_id: "allow_once".into(),
+                            pattern: None,
+                            note: None,
+                        },
+                    },
+                );
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+
+    let d = adj.decide(&req);
+    assert!(
+        answerer.join().unwrap(),
+        "the sibling's head never saw the card: {d:?}"
+    );
+    assert_eq!(
+        d.outcome,
+        DecisionOutcome::Selected {
+            option_id: "allow_once".into()
+        },
+        "{d:?}"
+    );
+    assert!(
+        sibling.snapshot().open_decisions.is_empty(),
+        "the card is taken off the sibling's screen once the ask is over"
+    );
+}
