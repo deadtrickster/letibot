@@ -335,7 +335,10 @@ fn merge_why(f: &Facts, m: &MergeRow) -> String {
             m.evidence.lines().next().unwrap_or_default()
         ),
         MergeState::LandedLocal => {
-            "landed on the target locally; the push failed, so a person pushes it.".into()
+            "landed on the target locally; the push failed. The queue settles this row `landed` as \
+             soon as its commit is found on origin's target, so a push made by hand or by a later \
+             run closes it; `rm` withdraws it if the branch is not wanted."
+                .into()
         }
         other => other.as_str().to_string(),
     }

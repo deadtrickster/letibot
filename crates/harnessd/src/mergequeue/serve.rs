@@ -510,6 +510,17 @@ impl RepoQueue {
         }
     }
 
+    /// Is a fetch of `target` due? One per target per [`FETCH_EVERY`], shared by the two steps that
+    /// need origin's tip, so a pass that both follows and settles fetches once.
+    fn fetch_due(&self, target: &str) -> bool {
+        let mut at = self.fetched.lock().unwrap_or_else(|e| e.into_inner());
+        if at.get(target).is_some_and(|t| t.elapsed() < FETCH_EVERY) {
+            return false;
+        }
+        at.insert(target.to_string(), std::time::Instant::now());
+        true
+    }
+
     /// Follow `origin` when it moved ahead of the local target - another machine landed there - so
     /// the next landing rebases onto it and its push is a fast-forward. Only with rows in line.
     fn follow_origin(&self, target: &str) -> Result<bool, StoreError> {
@@ -518,15 +529,8 @@ impl RepoQueue {
             .merge_rows(Some(&self.key))?
             .iter()
             .any(|m| m.state == MergeState::Queued && m.target == target);
-        if !waiting {
+        if !waiting || !self.fetch_due(target) {
             return Ok(false);
-        }
-        {
-            let mut at = self.fetched.lock().unwrap_or_else(|e| e.into_inner());
-            if at.get(target).is_some_and(|t| t.elapsed() < FETCH_EVERY) {
-                return Ok(false);
-            }
-            at.insert(target.to_string(), std::time::Instant::now());
         }
         match git::follow_origin(&self.repo, target) {
             Ok(moved) => Ok(moved),
@@ -535,6 +539,56 @@ impl RepoQueue {
                 Ok(false)
             }
         }
+    }
+
+    /// A row that landed locally has a dead end no verb reached: its push failed, and nothing moved
+    /// it again. Each fetch settles it `landed` once its own commit is found on `origin`'s target -
+    /// the push went through later, or a person pushed it by hand.
+    fn settle_landed_local(&self, target: &str) -> Result<bool, StoreError> {
+        let rows: Vec<MergeRow> = self
+            .store
+            .merge_rows(Some(&self.key))?
+            .into_iter()
+            .filter(|m| m.state == MergeState::LandedLocal && m.target == target)
+            .collect();
+        if rows.is_empty() || !self.fetch_due(target) {
+            return Ok(false);
+        }
+        let theirs = match git::fetch_target(&self.repo, target) {
+            Ok(Some(theirs)) => theirs,
+            Ok(None) => return Ok(false),
+            Err(e) => {
+                eprintln!("  merge queue: `origin/{target}` could not be read: {e}");
+                return Ok(false);
+            }
+        };
+        let me = self.me().to_string();
+        let mut moved = false;
+        for m in rows {
+            let Some(landed) = m.landed_sha.as_deref().filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            if !git::is_ancestor(&self.repo, landed, &theirs).unwrap_or(false) {
+                continue;
+            }
+            moved |= self.merge_to(
+                &m,
+                MergeState::LandedLocal,
+                MergeState::Landed,
+                Move::new(
+                    &me,
+                    format!(
+                        "the push was found on origin: `{landed}` is on `origin/{target}` (at \
+                         {theirs}), so this landing is no longer local only"
+                    ),
+                )
+                .set(
+                    "pushed",
+                    format!("pushed to `origin/{target}` (found at {theirs})"),
+                ),
+            )?;
+        }
+        Ok(moved)
     }
 
     /// A push refused because origin moved: the local target goes back to origin's tip and the
@@ -748,7 +802,9 @@ impl RepoQueue {
             .store
             .merge_rows(Some(&self.key))?
             .into_iter()
-            .filter(|m| m.state.is_open())
+            // A landed-local row is terminal, and its target is still the queue's business: the
+            // settle below reads origin for it.
+            .filter(|m| m.state.is_open() || m.state == MergeState::LandedLocal)
             .map(|m| m.target)
             .collect();
         if let Some(t) = settings::target_for(&self.repo, &settings) {
@@ -761,6 +817,7 @@ impl RepoQueue {
                 return Ok(Pass::Worked);
             }
             worked |= self.follow_origin(&target)?;
+            worked |= self.settle_landed_local(&target)?;
             let h = match self.health(&target)? {
                 Health::Started => {
                     worked = true;

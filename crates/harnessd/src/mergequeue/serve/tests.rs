@@ -1617,6 +1617,66 @@ fn a_failed_push_with_no_install_step_is_said() {
     assert!(said[0].contains("FAILED"), "{}", said[0]);
 }
 
+/// Forget the fetch clock, so the next pass reads origin now rather than up to `FETCH_EVERY`
+/// later: the interval is the daemon's, not the fact's.
+fn fetch_now(q: &RepoQueue) {
+    q.fetched.lock().unwrap().clear();
+}
+
+/// A push that failed leaves the row `landed_local`, and no verb moved it again: a dead end. Each
+/// pass reads origin, and the row settles `landed` once its own commit is on `origin`'s target -
+/// the push went through later, or a person pushed it by hand.
+#[test]
+fn a_landed_local_row_settles_when_its_commit_is_found_on_origin() {
+    let w = World::new("landed-local-settles");
+    let origin = w.dir.0.join("origin.git");
+    sh(
+        &w.dir.0,
+        &["init", "-q", "--bare", &origin.to_string_lossy()],
+    );
+    sh(
+        &w.repo,
+        &["remote", "add", "origin", "/nonexistent/origin.git"],
+    );
+    let (wt, base, head) = branch(&w.repo, "p", "p.txt");
+    w.enqueue("p", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("p", "test/a");
+    run(&q, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::LandedLocal, "{row:?}");
+    let landed = row.landed_sha.clone().expect("the landing's own sha");
+    assert_eq!(landed, w.tip());
+
+    // Origin cannot be read, so the row stays where it is.
+    fetch_now(&q);
+    run(&q, 1);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::LandedLocal,
+        "origin does not hold it yet"
+    );
+
+    // Origin is reachable again and a person pushes the target by hand.
+    sh(
+        &w.repo,
+        &["remote", "set-url", "origin", &origin.to_string_lossy()],
+    );
+    sh(&w.repo, &["push", "-q", "origin", "main"]);
+    fetch_now(&q);
+    run(&q, 1);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert!(
+        row.evidence.contains("the push was found on origin"),
+        "{}",
+        row.evidence
+    );
+    assert!(row.pushed.contains("found at"), "{}", row.pushed);
+    assert_eq!(sh(&origin, &["rev-parse", "main"]), landed);
+}
+
 /// A landing that stops wakes the tree that enqueued its branch, once per entry, as a job's end
 /// wakes its session: a push refused for good leaves the row `landed_local`, and its session is rung.
 #[test]

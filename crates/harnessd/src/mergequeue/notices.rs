@@ -213,8 +213,8 @@ pub fn wakes_owner(m: MergeState) -> bool {
 pub fn landing_stuck(m: &MergeRow) -> String {
     let next = match m.state {
         MergeState::LandedLocal => format!(
-            "it is on `{}` here and not on origin - fix what the evidence names, then push `{}` \
-             to origin",
+            "it is on `{}` here and not on origin yet - fix what the evidence names and push `{}` \
+             to origin; the queue settles the row `landed` once it finds the commit there",
             m.target, m.target
         ),
         MergeState::Conflict => format!(
