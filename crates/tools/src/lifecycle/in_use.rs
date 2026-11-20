@@ -12,19 +12,30 @@ use super::autoarchive::Here;
 /// to keep (d.4 rule 8).
 pub fn why_kept(dir: &Path, store: Option<&Store>, here: &Here) -> Option<String> {
     let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    // Seat pids the store names: a cwd link of theirs that cannot be read is a keep, not a skip.
+    // Seat pids the store names: their job rows are read below, by the record that names the cwd.
     let mut known: Vec<u32> = Vec::new();
-    if let Some(store) = store
-        && let Some(why) = live_session(store, dir, &real, here, &mut known)
-    {
-        return Some(why);
+    let kept = store.and_then(|store| {
+        live_session(store, dir, &real, here, &mut known)
+            .or_else(|| running_job(store, dir, &real, &mut known))
+    });
+    let cwd = cwd_report(&real, &here.proc_root, &known);
+    let mut why = match (kept, cwd.inside) {
+        (Some(why), _) => why,
+        (None, Some(why)) => why,
+        // A process whose cwd cannot be read is UNKNOWN, not in the tree: another agent's `sleep`
+        // in its own mount namespace kept every worktree on a shared box, and took the blame for
+        // it. Nothing is kept for them alone; what was seen is said on a tree kept for a real
+        // reason, so a reader knows the check was blind for that many processes.
+        (None, None) => return None,
+    };
+    if !cwd.unknown.is_empty() {
+        why.push_str(&format!(
+            "; {} process(es) of ours have a cwd this box cannot read, so they are unknown rather \
+             than counted",
+            cwd.unknown.len()
+        ));
     }
-    if let Some(store) = store
-        && let Some(why) = running_job(store, dir, &real, &mut known)
-    {
-        return Some(why);
-    }
-    cwd_inside(&real, &here.proc_root, &known)
+    Some(why)
 }
 
 fn live_session(
@@ -143,17 +154,28 @@ fn open_processes_of(store: &Store, id: &str) -> Vec<ProcessRecord> {
     out
 }
 
-/// The first process whose cwd is `real` or inside it. An unlistable `/proc` keeps, and a missing
-/// one is a box without the check. An unreadable cwd keeps only when the process is ours, by uid
-/// or a pid the store names, since a blanket keep would keep every tree.
-fn cwd_inside(real: &Path, proc_root: &Path, known: &[u32]) -> Option<String> {
+/// What the process table says about `real`: the first process with its cwd inside it, and the
+/// pids whose cwd cannot be read at all.
+struct Cwds {
+    inside: Option<String>,
+    unknown: Vec<u32>,
+}
+
+/// The processes whose cwd is `real` or inside it, and the ones that could not be judged. An
+/// unlistable `/proc` keeps, and a missing one is a box without the check.
+fn cwd_report(real: &Path, proc_root: &Path, known: &[u32]) -> Cwds {
+    let mut out = Cwds {
+        inside: None,
+        unknown: Vec::new(),
+    };
     let entries = match std::fs::read_dir(proc_root) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
         Err(e) => {
-            return Some(format!(
+            out.inside = Some(format!(
                 "whether a process has its cwd in it could not be told: {e}"
             ));
+            return out;
         }
     };
     for entry in entries.flatten() {
@@ -163,37 +185,29 @@ fn cwd_inside(real: &Path, proc_root: &Path, known: &[u32]) -> Option<String> {
         };
         let cwd = match std::fs::read_link(entry.path().join("cwd")) {
             Ok(cwd) => cwd,
-            // Only ours and alive may be sitting in the tree. One on its way out has no cwd link
-            // either, so it is re-read once. A non-dumpable one of ours (systemd --user) that
-            // predates the tree is not a keep: every box has them.
+            // Ours, alive, and unreadable: a different mount namespace, a non-dumpable process,
+            // a pid on its way out. Which of those it is cannot be told from here, so it is
+            // UNKNOWN - recorded, and never a reason on its own.
             Err(_)
                 if !is_zombie(&entry.path())
-                    && (known.contains(&pid)
-                        || (owned_by_us(&entry.path())
-                            && !predates(&entry.path(), proc_root, real))) =>
+                    && (known.contains(&pid) || owned_by_us(&entry.path())) =>
             {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                if !entry.path().exists() || is_zombie(&entry.path()) {
-                    continue;
-                }
-                let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
-                return Some(format!(
-                    "pid {pid} ({}) is ours and its cwd cannot be read: it may be in it",
-                    comm.trim()
-                ));
+                out.unknown.push(pid);
+                continue;
             }
             Err(_) => continue,
         };
         if cwd.starts_with(real) {
             let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
-            return Some(format!(
+            out.inside = Some(format!(
                 "pid {pid} ({}) has its cwd in it ({})",
                 comm.trim(),
                 cwd.display()
             ));
+            break;
         }
     }
-    None
+    out
 }
 
 /// Is this /proc entry ours by uid? A foreign user's unreadable cwd is not a keep.
@@ -203,41 +217,6 @@ fn owned_by_us(entry: &Path) -> bool {
         (Ok(a), Ok(b)) => a.uid() == b.uid(),
         _ => false,
     }
-}
-
-/// Did the process behind this entry start before `tree` was created? `false` whenever either
-/// time cannot be read, so an unknown stays a keep.
-fn predates(entry: &Path, proc_root: &Path, tree: &Path) -> bool {
-    let Ok(born) = std::fs::metadata(tree).and_then(|m| m.created()) else {
-        return false;
-    };
-    let Ok(stat) = std::fs::read_to_string(entry.join("stat")) else {
-        return false;
-    };
-    // Field 22, `starttime`, in clock ticks since boot; the 20th after the `)` that ends comm.
-    let Some(ticks) = stat
-        .rfind(')')
-        .and_then(|close| stat[close + 1..].split_whitespace().nth(19))
-        .and_then(|t| t.parse::<u64>().ok())
-    else {
-        return false;
-    };
-    let Some(boot) = std::fs::read_to_string(proc_root.join("stat"))
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("btime "))
-                .and_then(|b| b.trim().parse::<u64>().ok())
-        })
-    else {
-        return false;
-    };
-    let hz = crate::exec::procs::clock_ticks().max(1);
-    let started = std::time::UNIX_EPOCH
-        + std::time::Duration::from_secs(boot)
-        + std::time::Duration::from_millis(ticks * 1000 / hz);
-    // A second of slack: `btime` is whole seconds.
-    started + std::time::Duration::from_secs(1) < born
 }
 
 /// Is the process behind this entry dead and unreaped? A zombie's cwd link is unreadable because
@@ -358,10 +337,12 @@ mod tests {
         assert!(why.to_lowercase().contains("could not"), "{why}");
     }
 
-    /// A process of our own uid whose cwd link cannot be read is kept: it may be sitting in the
-    /// tree. A blanket keep would keep every tree, so this is the only unreadable link that is.
+    /// A process of our own uid whose cwd link cannot be read is UNKNOWN, not in the tree: another
+    /// agent's `sleep` in its own mount namespace kept every worktree on a shared box and took the
+    /// blame for it, so an unreadable cwd is never a reason on its own - and when a tree IS kept,
+    /// the reason says how many processes the check could not judge.
     #[test]
-    fn an_unreadable_cwd_of_our_own_uid_keeps_the_tree() {
+    fn an_unreadable_cwd_is_unknown_and_never_keeps_the_tree_alone() {
         let dir = crate::backend::tempdir::TempDir::new();
         let wt = dir.path().join("wt");
         std::fs::create_dir_all(&wt).unwrap();
@@ -372,42 +353,25 @@ mod tests {
         let here = Here {
             host: crate::lifecycle::box_id(),
             pid: std::process::id(),
-            proc_root: proc,
+            proc_root: proc.clone(),
         };
-        let why = why_kept(&wt, None, &here).expect("an own-uid cwd we cannot read is a keep");
+        assert_eq!(
+            why_kept(&wt, None, &here),
+            None,
+            "an unreadable cwd is not a reason to keep"
+        );
+
+        // A second process whose cwd IS in the tree keeps it, and the sentence says what could
+        // not be judged rather than blaming 4242 for it.
+        std::fs::create_dir_all(proc.join("4343")).unwrap();
+        std::fs::write(proc.join("4343/comm"), "sleep\n").unwrap();
+        std::os::unix::fs::symlink(&wt, proc.join("4343/cwd")).unwrap();
+        let why = why_kept(&wt, None, &here).expect("a cwd inside still keeps it");
+        assert!(why.contains("pid 4343"), "{why}");
         assert!(
-            why.contains("4242") && why.to_lowercase().contains("cannot"),
+            why.contains("1 process(es) of ours have a cwd this box cannot read"),
             "{why}"
         );
-    }
-
-    /// An own-uid process whose cwd cannot be read and that started before the tree existed is
-    /// not a keep: systemd --user and the agents are on every box, and would keep every tree.
-    #[test]
-    fn an_unreadable_cwd_older_than_the_tree_does_not_keep_it() {
-        let dir = crate::backend::tempdir::TempDir::new();
-        let wt = dir.path().join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        if std::fs::metadata(&wt).and_then(|m| m.created()).is_err() {
-            return; // no birth time on this filesystem: the keep stands, as above
-        }
-        let proc = dir.path().join("proc");
-        std::fs::create_dir_all(proc.join("4242")).unwrap();
-        std::fs::write(proc.join("4242/cwd"), "not a link").unwrap();
-        // Booted at the epoch and started 100 ticks later: long before the tree.
-        let fields = ["S"; 18].join(" ");
-        std::fs::write(
-            proc.join("4242/stat"),
-            format!("4242 (ssh-agent) {fields} 0 100 0"),
-        )
-        .unwrap();
-        std::fs::write(proc.join("stat"), "cpu 0 0 0 0\nbtime 1\n").unwrap();
-        let here = Here {
-            host: crate::lifecycle::box_id(),
-            pid: std::process::id(),
-            proc_root: proc,
-        };
-        assert_eq!(why_kept(&wt, None, &here), None);
     }
 
     /// A running job of a session whose workspace is the tree keeps it, on the store's own
