@@ -1152,3 +1152,53 @@ fn a_detail_with_no_answer_does_not_call_the_gate_stuck() {
         "and it is not turned into a verdict about the gate:\n{screen}"
     );
 }
+
+/// A head older than its daemon cannot read a newer build's pane document, and the pane must say
+/// so: rano's head after a daemon upgrade showed "the queue layer did not draw the pane: its answer
+/// was not a pane this head can read" and sent the operator after a layer that was fine.
+#[test]
+fn a_head_older_than_the_daemon_says_so_instead_of_blaming_the_layer() {
+    let seen = Seen::default();
+    // A newer build's document: a shape this head cannot read.
+    let project = a_project("newer", &a_manifest("\"approve\""));
+    let mut stack = Stack::discover(
+        None,
+        Some(&project),
+        None,
+        Arc::new(ScriptedLoader {
+            seen: seen.clone(),
+            answer: Some("{\"title\":\"a queue\",\"v\":99,\"panels\":\"not a list\"}".into()),
+        }),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let mut a = a_head_with_a_queue();
+    // The daemon attached is from a NEWER build: its `Hello` said so.
+    a.daemon_protocol = Some(letibot_sessionlog::protocol::PROTOCOL_VERSION + 1);
+    let workspace = a.workspace_path();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack, workspace,
+    ));
+    let screen = a.screen(160, 30).join("\n");
+    assert!(
+        screen.contains("this head is OLDER than the daemon"),
+        "the build is named, not the layer:\n{screen}"
+    );
+    // The way out is the sentence's own half, said whole where the pane has the room for it.
+    let said = a.head_older_sentence().expect("a newer daemon is a sentence");
+    assert!(
+        said.contains("Restart the head from the daemon's own install"),
+        "{said}"
+    );
+
+    // A head at the daemon's own protocol does not say it: a broken layer is the layer's.
+    let mut same = a;
+    same.daemon_protocol = Some(letibot_sessionlog::protocol::PROTOCOL_VERSION);
+    let screen = same.screen(160, 30).join("\n");
+    assert!(
+        !screen.contains("this head is OLDER than the daemon"),
+        "a build that is not older is not blamed:\n{screen}"
+    );
+    std::fs::remove_dir_all(&project).ok();
+}
