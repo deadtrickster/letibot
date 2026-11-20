@@ -26,6 +26,16 @@ use crate::sessions::gatekeeper::ReviewerPlacement;
 
 // ===== Fixtures =====
 
+/// Wait for the queue's own clock to leave the millisecond `at`. A row stamped in one millisecond
+/// is not "before" the next pass when the pass reads the same one, so an ordering by stamp waits
+/// here rather than sleeping a number at it.
+fn clock_past(at: u64) {
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || gate::now_ms() > at),
+        "the queue's clock never left {at}ms"
+    );
+}
+
 pub(crate) struct TempDir(pub(crate) PathBuf);
 
 impl TempDir {
@@ -992,6 +1002,8 @@ fn a_queue_gate_waits_for_the_box_gate_lock() {
     let q = RepoQueue::new(store, w.repo.clone(), e);
     let stop = AtomicBool::new(false);
     assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+    // A negative check: the gate running while another process holds the box's lock is the thing
+    // that must NOT happen, and nothing follows it to wait for. It can pass falsely under load.
     std::thread::sleep(Duration::from_millis(600));
     assert!(
         gate.ran.lock().unwrap().is_empty(),
@@ -1213,6 +1225,8 @@ fn a_stopping_daemon_kills_the_gate_and_the_row_goes_back_in_line() {
     let stop = Arc::new(AtomicBool::new(false));
     let s2 = stop.clone();
     std::thread::spawn(move || {
+        // The stop has to land while the settle is working, and the settle's own progress is not
+        // readable from here: this is the work it interrupts, not a fact to wait on.
         std::thread::sleep(Duration::from_millis(500));
         s2.store(true, std::sync::atomic::Ordering::Relaxed);
     });
@@ -1544,13 +1558,17 @@ fn landing_after_origin_moves_refetches_and_lands() {
     sh(&mac, &["push", "-q", "origin", "main"]);
 
     let state = |m: &str| w.store().merge_row(m).unwrap().unwrap().state;
-    for _ in 0..40 {
-        if [state(&mp), state(&mq)].iter().all(|s| !s.is_open()) {
-            break;
-        }
-        run(&q, 1);
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || {
+            if [state(&mp), state(&mq)].iter().all(|s| !s.is_open()) {
+                return true;
+            }
+            run(&q, 1);
+            false
+        }),
+        "the two rows never closed: {:?}",
+        [state(&mp), state(&mq)]
+    );
     let rows = [
         w.store().merge_row(&mp).unwrap().unwrap(),
         w.store().merge_row(&mq).unwrap().unwrap(),
@@ -1574,15 +1592,15 @@ fn landing_after_origin_moves_refetches_and_lands() {
     commit(&mac, "mac2.txt", "again\n", "from the mac again");
     sh(&mac, &["push", "-q", "origin", "main"]);
     let mut requeued = false;
-    for _ in 0..40 {
+    crate::testing::wait_until(crate::testing::PATIENCE, || {
         let row = w.store().merge_row(&mr).unwrap().unwrap();
         requeued |= row.evidence.contains("was put back there");
         if !row.state.is_open() {
-            break;
+            return true;
         }
         run(&q, 1);
-        std::thread::sleep(Duration::from_millis(50));
-    }
+        false
+    });
     let row = w.store().merge_row(&mr).unwrap().unwrap();
     assert_eq!(row.state, MergeState::Landed, "{row:#?}");
     let history = w.store().transitions("merge", &mr).unwrap();
@@ -2545,7 +2563,8 @@ fn a_reviewer_past_its_deadline_is_counted_and_the_third_is_raised() {
                 gate::now_ms(),
             )
             .unwrap();
-            std::thread::sleep(Duration::from_millis(5));
+            // The next pass reads the clock: the move has to be behind it by a millisecond.
+            clock_past(gate::now_ms());
         }
     }
     run(&q, 1);
@@ -2588,7 +2607,8 @@ fn a_review_nobody_starts_is_raised_and_handed_over_only_where_the_project_opted
         .unwrap();
     let q = RepoQueue::new(store, w.repo.clone(), e);
     run(&q, 1);
-    std::thread::sleep(Duration::from_millis(5));
+    // The second batch of passes must read a later millisecond than the first.
+    clock_past(gate::now_ms());
     run(&q, 3);
     let r = w.store().review_row("n").unwrap().unwrap();
     assert_eq!(r.state, ReviewState::Blocked, "{r:?}");
@@ -3412,17 +3432,19 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
     // Let it finish opening. It has no model to turn to, so its first turn is refused and the child
     // ENDS - without a verdict, which is the one case this rule must still re-seat.
     props.release();
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut after = None;
-    while std::time::Instant::now() < deadline {
-        sessions.serve_reviews();
-        let now = s.review_row("opening").expect("the row").expect("a row");
-        if now.state == ReviewState::Waiting {
-            after = Some(now);
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || {
+            sessions.serve_reviews();
+            let now = s.review_row("opening").expect("the row").expect("a row");
+            if now.state == ReviewState::Waiting {
+                after = Some(now);
+                return true;
+            }
+            false
+        }),
+        "a reviewer that ended without a verdict is re-seated"
+    );
     let after = after.expect("a reviewer that ended without a verdict is re-seated");
     assert_eq!(after.attempts, 1, "the attempt is counted: {after:?}");
     assert!(after.reviewer.is_none(), "{after:?}");
@@ -3438,14 +3460,9 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
         "the transition names the reviewer that ended: {why}"
     );
     // The row can turn before the child's thread has dropped its registry entry.
-    let gone_by = std::time::Instant::now() + Duration::from_secs(30);
-    while (registry.opening(&reviewer) || registry.get(&reviewer).is_some())
-        && std::time::Instant::now() < gone_by
-    {
-        std::thread::sleep(Duration::from_millis(25));
-    }
     assert!(
-        !registry.opening(&reviewer) && registry.get(&reviewer).is_none(),
+        crate::testing::wait_until(crate::testing::PATIENCE, || !registry.opening(&reviewer)
+            && registry.get(&reviewer).is_none()),
         "and the ended child is no longer alive: {reviewer}"
     );
 }
@@ -3801,21 +3818,29 @@ fn the_service_serves_the_queues_and_stops() {
     let s = w.store();
     // A hang breaker per step, sized to the store's own budget: one call on a loaded disk can
     // stall for seconds, and the claim and the landing are each several calls.
-    let until = std::time::Instant::now() + letibot_tokencore::store::BUSY_RETRY_TOTAL;
-    while s.review_row("svc").unwrap().unwrap().state != ReviewState::Reviewing {
-        assert!(std::time::Instant::now() < until, "never claimed");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        crate::testing::wait_until(letibot_tokencore::store::BUSY_RETRY_TOTAL, || s
+            .review_row("svc")
+            .unwrap()
+            .unwrap()
+            .state
+            == ReviewState::Reviewing),
+        "never claimed"
+    );
     let carried = s.review_row("carried").unwrap().unwrap();
     assert_eq!(carried.repository, w.key(), "the carried row was resolved");
     assert_eq!(carried.head_sha, head2);
     assert_eq!(carried.target, "main");
     let m = w.accept("svc", &me);
-    let until = std::time::Instant::now() + letibot_tokencore::store::BUSY_RETRY_TOTAL;
-    while s.merge_row(&m).unwrap().unwrap().state != MergeState::Landed {
-        assert!(std::time::Instant::now() < until, "never landed");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        crate::testing::wait_until(letibot_tokencore::store::BUSY_RETRY_TOTAL, || s
+            .merge_row(&m)
+            .unwrap()
+            .unwrap()
+            .state
+            == MergeState::Landed),
+        "never landed"
+    );
     assert!(s.queue_leases().unwrap().iter().any(|l| l.owner == me));
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     h.join().unwrap();
@@ -4213,10 +4238,7 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
         let s = w.store();
         // A CEILING, not a claim about the box: the gate this waits for runs a real shell and the
         // whole library's tests run in parallel, so a red here at twenty seconds was the machine.
-        let deadline = std::time::Instant::now() + Duration::from_secs(120);
-        while !until(&s) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        crate::testing::wait_until(Duration::from_secs(120), || until(&s));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         h.join().unwrap();
     };
@@ -4289,7 +4311,8 @@ fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
         "a --no-queue daemon starts no queue thread at all"
     );
     // Four supervisor passes' worth of time - how the neighbour test measures *it did nothing*
-    // a supervisor that meant to claim would have by now.
+    // a supervisor that meant to claim would have by now. A negative check: the absence is the
+    // subject, so it waits out the window and says nothing happened.
     let started = std::time::Instant::now();
     while started.elapsed() < Duration::from_millis(4500) {
         std::thread::sleep(Duration::from_millis(100));
@@ -4316,14 +4339,14 @@ fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
         Arc::new(crate::mergequeue::review::claude::Runs::new()),
     )
     .expect("the queue's thread starts without --no-queue");
-    let until = std::time::Instant::now() + Duration::from_secs(20);
-    while w.store().queue_leases().unwrap().is_empty() {
-        assert!(
-            std::time::Instant::now() < until,
-            "a daemon seated in a worktree never claimed its repository's lease"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || !w
+            .store()
+            .queue_leases()
+            .unwrap()
+            .is_empty()),
+        "a daemon seated in a worktree never claimed its repository's lease"
+    );
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     spawned.join().unwrap();
 }
@@ -4438,12 +4461,7 @@ fn serve_until(
         move || service.run(&stop)
     });
     let s = Store::open(db).unwrap();
-    let deadline = std::time::Instant::now() + SERVE_BUDGET;
-    let mut reached = until(&s);
-    while !reached && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        reached = until(&s);
-    }
+    let reached = crate::testing::wait_until(SERVE_BUDGET, || until(&s));
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     h.join().unwrap();
     assert!(
@@ -4691,16 +4709,18 @@ impl GateRunner for Held {
 /// budget: a box slow enough to need more must fail as *a pass never did X*, not as `never happened`.
 fn pass_until(q: &RepoQueue, what: &str, done: impl Fn() -> bool) {
     let stop = AtomicBool::new(false);
-    let until = std::time::Instant::now() + SERVE_BUDGET;
-    while !done() {
-        assert!(
-            std::time::Instant::now() < until,
-            "no pass did `{what}` within {} s",
-            SERVE_BUDGET.as_secs()
-        );
+    let found = crate::testing::wait_until(SERVE_BUDGET, || {
+        if done() {
+            return true;
+        }
         assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        false
+    });
+    assert!(
+        found,
+        "no pass did `{what}` within {} s",
+        SERVE_BUDGET.as_secs()
+    );
 }
 
 /// The freeze: while the target's gate runs - here, for as long as the test keeps it
@@ -6193,19 +6213,18 @@ fn three_with_a_bad_one(w: &World, bad_at: usize) -> Vec<String> {
     ms
 }
 
-/// Passes until `done` holds, waiting out each gate. Panics if it never does.
+/// Passes until `done` holds, waiting out each gate. A gate is a shell, so the ceiling is this
+/// file's own serve budget rather than a count of passes; it is a hang detector, not a claim.
 fn until(q: &RepoQueue, done: impl Fn() -> bool) {
     let stop = AtomicBool::new(false);
-    for _ in 0..400 {
+    let found = crate::testing::wait_until(SERVE_BUDGET, || {
         if done() {
-            return;
+            return true;
         }
         q.pass(&stop).unwrap();
-        if q.gate_in_flight() {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-    assert!(done(), "the queue never got there");
+        false
+    });
+    assert!(found, "the queue never got there");
 }
 
 /// A red train lands nothing and leaves the target where it was. Its rows go back in line as

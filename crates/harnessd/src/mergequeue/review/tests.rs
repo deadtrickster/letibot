@@ -2128,14 +2128,20 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         let (repo, stem, head) = (repo.clone(), stem.clone(), head.clone());
         std::thread::spawn(move || git::clone_branch(&repo, "agent/the-work", &head, &stem))
     };
-    // Sweep until the clone is done, the way another daemon's pass would: every millisecond, with
-    // the daemon's own grace.
+    // Sweep until the clone is done, the way another daemon's pass would: as often as the wait
+    // polls, with the daemon's own grace.
     let mut sweeps = 0;
-    while !clone.is_finished() {
-        sweep_clones(&pool);
-        sweeps += 1;
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || {
+            if clone.is_finished() {
+                return true;
+            }
+            sweep_clones(&pool);
+            sweeps += 1;
+            false
+        }),
+        "the clone never finished"
+    );
     let tree = clone.join().expect("the clone thread").unwrap_or_else(|e| {
         panic!("the clone was disturbed by the sweep after {sweeps} of them: {e}")
     });

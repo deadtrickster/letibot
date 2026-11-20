@@ -256,17 +256,22 @@ impl<'a> Fixture<'a> {
         serve(&pool).expect("a pass")
     }
 
-    /// Passes until `done` holds, or the budget runs out: a run is a process, so its verdict arrives
-    /// on a pass after the one that started it and never inside it.
+    /// Passes until `done` holds: a run is a process, so its verdict arrives on a pass after the
+    /// one that started it and never inside it. The bound is the shared patience, not a count of
+    /// passes, because a loaded box stretches a spawn past any count somebody picked.
     fn until(&mut self, what: &str, done: impl Fn(&Store) -> bool) {
-        for _ in 0..150 {
+        let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
             if done(self.store) {
-                return;
+                return true;
             }
             self.pass();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("`{what}` never happened; the row is {}", self.row().failure);
+            false
+        });
+        assert!(
+            found,
+            "`{what}` never happened; the row is {}",
+            self.row().failure
+        );
     }
 }
 
@@ -456,14 +461,13 @@ fn a_claude_reviewer_is_not_re_seated_by_the_upkeep() {
     // And the process this test lit is put out, so nothing outlives it.
     let now = now_ms();
     runs.keep(&[], now);
-    for _ in 0..250 {
-        runs.keep(&[], now + 10_000);
-        if !runs.owns(&handle) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!runs.owns(&handle), "the stub was ended");
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || {
+            runs.keep(&[], now + 10_000);
+            !runs.owns(&handle)
+        }),
+        "the stub was ended"
+    );
 }
 
 /// The argv the stub was called with, as the lines it appended to `argv.txt` in its trees.
@@ -483,13 +487,7 @@ fn recorded(clones: &Path) -> Vec<String> {
 /// Wait for a file the stub writes, so a test can say *the run was up* or *the signal arrived*
 /// without guessing at a sleep.
 fn wait_for(path: &Path) -> bool {
-    for _ in 0..250 {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    false
+    crate::testing::wait_until(crate::testing::PATIENCE, || path.exists())
 }
 
 /// The verdict a run answers with in `structured_output` is the queue's verdict: the row carries the
@@ -676,13 +674,10 @@ fn a_re_review_passes_resume_with_the_stored_id() {
     f.pass();
     // The stub writes its argv after the spawn returns; wait for the second run's.
     let mut argv = recorded(&f.clones());
-    for _ in 0..250 {
-        if argv.iter().any(|a| a == "--resume") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    crate::testing::wait_until(crate::testing::PATIENCE, || {
         argv = recorded(&f.clones());
-    }
+        argv.iter().any(|a| a == "--resume")
+    });
     let at = argv
         .iter()
         .position(|a| a == "--resume")
@@ -833,14 +828,13 @@ fn the_runs_table_holds_a_process_until_it_is_dead() {
     let stopped = now_ms();
     runs.keep(&[], stopped);
     assert!(runs.owns(&handle), "not forgotten before it is dead");
-    let mut now = stopped;
-    while now.saturating_sub(stopped) < claude::STOP_GRACE_MS && runs.owns(&handle) {
-        std::thread::sleep(Duration::from_millis(20));
-        now = now_ms();
-        runs.keep(&[], now);
-    }
+    // The bound here is the product's own grace, not the shared patience: the claim is that the
+    // run ended on the SIGINT, inside that many milliseconds.
     assert!(
-        !runs.owns(&handle),
+        crate::testing::wait_until(Duration::from_millis(claude::STOP_GRACE_MS), || {
+            runs.keep(&[], now_ms());
+            !runs.owns(&handle)
+        }),
         "forgotten once it is - inside the {} ms grace, so the run ended on the SIGINT and not on \
          the SIGKILL the grace exists for",
         claude::STOP_GRACE_MS
