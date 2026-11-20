@@ -502,7 +502,8 @@ fn withdraw_merge(
 ) -> Result<String, String> {
     // `gating` is withdrawable too: *take it out of line* is the person's answer to a gate
     // that is going nowhere, and refusing it left the pane no way out of the one state a queue
-    // gets stuck in.
+    // gets stuck in. `landed_local` too: its commit is on the target here and the push failed, so
+    // `rm` is the way to say "I am done with this row" while the queue watches origin.
     if !matches!(
         m.state,
         MergeState::Queued
@@ -511,6 +512,7 @@ fn withdraw_merge(
             | MergeState::Failed
             | MergeState::TimedOut
             | MergeState::Conflict
+            | MergeState::LandedLocal
     ) {
         return Err(format!(
             "`{}` is `{}` and cannot be withdrawn",
@@ -1189,6 +1191,30 @@ mod tests {
         withdraw_by(&store, &m, "agent:s-x", "stale", &|_| {}).unwrap();
         let e = restart_by(&store, &m, "agent:s-x", &|_| {}).expect_err("withdrawn");
         assert!(e.contains("a withdrawn row"), "{e}");
+    }
+
+    /// `landed_local` was a dead end: the branch is on the target and the push failed, and both
+    /// `rm` and the queue refused it. `rm` takes it out, and the queue settles it on origin.
+    #[test]
+    fn a_landed_local_row_can_be_removed() {
+        let dir = TempDir::new("verbs-landed-local");
+        let store = Store::open(&dir.0.join("sessions.db")).unwrap();
+        let m = landing(&store, "r-ll");
+        let gating = Move::new("test/a", "gating").set("owner", "test/a");
+        assert!(
+            store
+                .move_merge(&m, MergeState::Queued, MergeState::Gating, &gating, 5)
+                .unwrap()
+        );
+        let local = Move::new("test/a", "the push FAILED").set("landed_sha", "abc");
+        assert!(
+            store
+                .move_merge(&m, MergeState::Gating, MergeState::LandedLocal, &local, 6)
+                .unwrap()
+        );
+        assert_eq!(merge_state(&store, &m), MergeState::LandedLocal);
+        withdraw_by(&store, &m, "s-op", "done with it", &|_| {}).expect("rm takes it out");
+        assert_eq!(merge_state(&store, &m), MergeState::Withdrawn);
     }
 
     /// Every verb x actor pair the table rules on, against one row of each kind.

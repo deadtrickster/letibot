@@ -806,10 +806,11 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
         (Verb::Regate, _) => true,
         // `rm` is the way out of a row that is going nowhere, `gating` included. The daemon's
         // `withdraw_merge` takes a `gating` landing too, and a landing whose row has left
-        // `gating` does not land whatever its gate said, so the offer is not a lie.
+        // `gating` does not land whatever its gate said, so the offer is not a lie. And
+        // `landed_local`: the queue settles it on origin, but a person may be done with it now.
         (Verb::Rm, Selected::Merge(m)) => matches!(
             m.state.as_str(),
-            "queued" | "gating" | "blocked" | "failed" | "timed_out" | "conflict"
+            "queued" | "gating" | "blocked" | "failed" | "timed_out" | "conflict" | "landed_local"
         ),
         (Verb::Veto, Selected::Merge(m)) => matches!(
             m.state.as_str(),

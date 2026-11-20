@@ -108,7 +108,8 @@ after a verdict goes back to waiting. A red target halts review of ordinary bran
 \n\
 LANDING ROW states: queued (held until the target is gated green at its current tip), gating (the \
 queue rebased it and runs the gate, one at a time per repository), landed, landed_local (push \
-failed), failed (gate red), timed_out, conflict (rebase), blocked. The gate is the target's \
+failed; the queue settles it `landed` once the commit is found on origin's target), failed (gate \
+red), timed_out, conflict (rebase), blocked. The gate is the target's \
 `## Merge gate` in AGENTS.md. A tip that is red lands nothing but its fix.\n\
 \n\
 LEASES. One per repository: the daemon that holds it serves both queues. It beats every few \
