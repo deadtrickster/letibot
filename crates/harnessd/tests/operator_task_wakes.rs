@@ -18,9 +18,9 @@ use support::canned;
 use support::canned::Reply;
 use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
-/// How long a correct build takes milliseconds for. Generous on purpose: the assertion is what
-/// happened, not how fast.
-const PATIENCE: Duration = Duration::from_secs(30);
+// How long a correct build takes milliseconds for. Generous on purpose: the assertion is what
+// happened, not how fast.
+use support::wait::PATIENCE;
 
 /// The child's brief, and the words the operator typed to start it.
 const BRIEF: &str = "audit the parser's error paths";
@@ -339,6 +339,8 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
         let _ = tx.send(ran.is_ok());
         h
     });
+    // The thing this waits for is the run reaching its own wait loop, which the test cannot see
+    // from here: it waits a moment instead, and a promote set early is still seen by that loop.
     std::thread::sleep(Duration::from_millis(500));
     // Exactly what Ctrl+O sets. The flag on the hub is what the `bash` wait loop polls; the
     // queued `CommandKind::Promote` is only its announcement, and this test has no worker.
@@ -439,6 +441,7 @@ fn a_bang_run_on_its_own_thread_watches_what_it_promotes() {
         watch: watch_for_run,
     });
     spawned.expect("the run's thread starts");
+    // The same race as above: the run's wait loop is not observable from this thread.
     std::thread::sleep(Duration::from_millis(500));
     // Exactly what Ctrl+O sets, on the hub the run's own wait loop polls.
     hub.request_promote("dead");

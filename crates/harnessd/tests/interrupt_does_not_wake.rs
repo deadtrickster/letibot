@@ -17,8 +17,10 @@ use letibot_sessionlog::CommandKind;
 use letibot_sessionlog::hub::{DAEMON_SUBMITTER, Hub};
 use letibot_sessionlog::registry::{Bell, Registry, SessionWiring, Work, WorkOrIdle};
 
-/// How long the turn runs before the test calls it a hang.
-const PATIENCE: Duration = Duration::from_secs(20);
+mod support;
+
+// How long the turn runs before the test calls it a hang.
+use support::wait::PATIENCE;
 
 /// How often the stub says another word while the operator is still deciding to stop it. The
 /// engine polls steering once per delta, so this is also how soon a stop is heard.

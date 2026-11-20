@@ -66,9 +66,9 @@ const CHILD_SAYS_AGAIN: &str = "the other half is done too.\nthe branch holds bo
 /// not woken for it.
 const LATER_SILENT: &str = "marker: keep going quietly";
 
-/// How long the driver waits for something a correct build produces in milliseconds -
-/// generous on purpose, because the assertion is what happened, not how fast.
-const PATIENCE: Duration = Duration::from_secs(30);
+// How long the driver waits for something a correct build produces in milliseconds -
+// generous on purpose, because the assertion is what happened, not how fast.
+use support::wait::PATIENCE;
 
 // ---------------------------------------------------------------------------
 // The fixtures
@@ -1006,7 +1006,8 @@ fn a_childs_later_turn_reaches_its_parent_too() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Long enough for a settlement that should not exist to have been queued and delivered.
+    // A negative check: the run has already happened, so there is no later point to drive to.
+    // This window is how long a settlement that should not exist has to become visible.
     let served = Instant::now();
     while served.elapsed() < Duration::from_secs(2) {
         let _ = parent.harness_mut().wake().expect("the wake");

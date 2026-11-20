@@ -337,6 +337,8 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     let w = h.job_watchers().expect("a watcher set").clone();
     w.hold(vec![settled(&cfg.session_id, "j31", "exited 0")]);
     w.turn_ended(TurnEnd::Done);
+    // A negative check: the watcher's own turn-ended bookkeeping is not observable between these
+    // two calls, so it waits a moment. It can pass falsely under load, never fail falsely.
     std::thread::sleep(std::time::Duration::from_millis(5));
     w.queue_for_test(settled(&cfg.session_id, "j30", "exited 0"));
     assert!(

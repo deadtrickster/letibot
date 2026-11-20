@@ -12,15 +12,18 @@ use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::registry::Registry;
 use letibot_transcript::TranscriptItem;
 
+mod support;
+
+
 /// The daemon's own first session - `open_first` opens it eagerly, which is what the banner needs.
 const SLOW: &str = "s-held-turn";
 /// The second session: a head makes it while the daemon is running, which is the path that has to
 /// hand it a thread too.
 const QUICK: &str = "s-quick-turn";
 
-/// How long anything in this test may take. Nothing here is a performance claim - the held turn is
-/// released by the test itself - so this is only a bound on a hang.
-const PATIENCE: Duration = Duration::from_secs(30);
+// How long anything in this test may take. Nothing here is a performance claim - the held turn is
+// released by the test itself - so this is only a bound on a hang.
+use support::wait::PATIENCE;
 
 /// The wait the daemon's own stop uses (`cli::SUBAGENT_EXIT_GRACE`'s shape, smaller so the test is
 /// quick): a turn that cannot be interrupted is what it is for.

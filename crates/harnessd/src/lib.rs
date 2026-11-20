@@ -115,6 +115,8 @@ pub mod suggest;
 pub mod supervise;
 pub mod tasks;
 pub mod term;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod transcript_source;
 pub mod turn_tail;
 pub mod vm_reap;

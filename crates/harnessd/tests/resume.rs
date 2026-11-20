@@ -190,7 +190,8 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     let cfg = config(&f.store, &f.session_id, elsewhere);
     let parts = empty_modes(Parts::load(&cfg).expect("the wiring must load"));
     let hub = Hub::new(&f.session_id);
-    // The rows were written before this instant, so a row stamped at or after it was stamped by the resume.
+    // A clock guard, not a wait for work: the rows were written before this instant, so a row
+    // stamped at or after it was stamped by the resume. One millisecond of slack, generously.
     std::thread::sleep(std::time::Duration::from_millis(20));
     let opened_at = letibot_sessionlog::event::now_ms();
     let h = Harness::open(&parts, cfg, hub.clone()).expect("the session must resume");

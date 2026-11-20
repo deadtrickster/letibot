@@ -15,6 +15,10 @@ use letibot_tokencore::store::{TodoNeed, TodoStatus};
 use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
 use letibot_tools::builtins::todo::TodoBoard;
 
+mod support;
+
+use support::wait::{PATIENCE, wait_until};
+
 /// A watcher set with nothing to watch: no process host, no runner. Enough for a settlement to be
 /// queued on - the state that matters here, and the one a caller between a job ending and its
 /// wake reads.
@@ -332,13 +336,10 @@ fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
     ));
 
     watch.watch("s-kid".into());
-    // Give the watcher thread its first pass, so the handle is really in `watching`.
-    for _ in 0..200 {
-        if !watch.watching_now().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    assert!(
+        wait_until(PATIENCE, || !watch.watching_now().is_empty()),
+        "the watcher thread never had its first pass, so the handle is not in `watching`"
+    );
     assert_eq!(
         watch.watching_now(),
         vec![("s-kid".to_string(), BackgroundKind::Subagent, None)],
@@ -545,10 +546,10 @@ fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
     )]);
 
     watch.watch("s-kid-done".into());
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while watch.watching_now().is_empty() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    assert!(
+        wait_until(PATIENCE, || !watch.watching_now().is_empty()),
+        "the watcher never became live"
+    );
     assert_eq!(
         watch.watching_now(),
         vec![("s-kid-done".to_string(), BackgroundKind::Subagent, None)],
@@ -564,11 +565,8 @@ fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
 
     // It answers, and nobody asks the hub anything afterwards.
     runner.done.store(true, std::sync::atomic::Ordering::SeqCst);
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let settled = Activity::of(vec![Waiting::Delivery]);
-    while hub.activity() != settled && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until(PATIENCE, || hub.activity() == settled);
     assert_eq!(
         hub.activity(),
         settled,

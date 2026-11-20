@@ -180,6 +180,8 @@ fn a_paused_session_is_neither_armed_nor_checked() {
         "**a paused session arms nothing** — the deadline the open armed is gone with the pause"
     );
 
+    // A negative check: an armed deadline that never fires is not observable, so it waits a
+    // moment. It can pass falsely under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(sessions.deliver_due_nags(), 0, "no check is delivered");
     let hub = registry.get(&id).expect("the session's hub");
@@ -272,6 +274,8 @@ fn a_pause_with_an_end_lifts_itself_and_re_arms() {
         "the session is paused"
     );
 
+    // A negative check, and the interval under test is the pause itself: the wall clock has to
+    // pass it before "the pause's end is not a check" can be asked at all.
     std::thread::sleep(left + Duration::from_millis(50));
     assert_eq!(
         sessions.deliver_due_nags(),

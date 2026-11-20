@@ -27,9 +27,9 @@ use support::qwen::a_plain_answer_turn;
 /// reworded `wake::sentence` fails in one place instead of two.
 const POSTED: &str = "posted #2 under `ram`";
 
-/// How long a correct build takes milliseconds - generous on purpose, because the assertion is
-/// what happened rather than how fast.
-const PATIENCE: Duration = Duration::from_secs(20);
+// How long a correct build takes milliseconds - generous on purpose, because the assertion is
+// what happened rather than how fast.
+use support::wait::PATIENCE;
 
 // ---------------------------------------------------------------------------
 // The fixtures
