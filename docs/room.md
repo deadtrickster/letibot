@@ -595,6 +595,14 @@ is the user's own process trust, and the peer check on the daemon is the other g
 
 A DM is a message with room `dm` and a `to`. It is readable by its author and `to` only.
 
+**A dm across projects needs the addressee's consent**, and the rule is the seat's PROJECT, not the
+host: a pair in one project is free, a pair in two is refused `dm_needs_consent` with the ask that
+is the request, and the message is not delivered (`allow once` is one message, `allow for the
+session` holds). The consent is ROOM STATE (`Chat::consents`, a `Record::Consent` in the chat
+store), so a coordinator restart keeps it, and every linked box is told the table when its link
+comes up and one row whenever a pair is granted or taken back - a consent given on one box holds for
+the same pair on another. A session consent ends when either of its two seats is retired.
+
 ### Presence
 
 A roster row of a session carries `seat`, derived by the coordinator from harness facts and never

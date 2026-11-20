@@ -310,11 +310,11 @@ on a session somebody else opened:
 
 **A watcher must not count as somebody who can answer.** Attaching a second head steals nothing from
 the operator's screen - the daemon publishes a card to every attached head and settles it with
-whichever answers first - but it *can* be counted: `Answers::ask` and `ask_question` read
-`Hub::deciding_heads` **before** posting anything and answer `gate:no-head` in microseconds when it
-is empty, because posting to a head that will never answer and sitting out the five-minute deadline
-is *"a real answer given for a fake reason"*. So a watching head declares `Caps { can_decide: false
-}`, and the daemon refuses any `Answer` from it.
+whichever answers first - but it *can* be counted: a card whose `Hub::deciding_heads` is empty waits
+for one, up to its own expiry (five minutes by default), because a head may attach while it waits
+and find the card in the session's snapshot. Posting to a head that will never answer is not the
+same thing: a watching head declares `Caps { can_decide: false }` and the daemon refuses any
+`Answer` from it.
 **The reviewers are child sessions, and one line each is what the parent's hub carries.**
 `SessionEvent::Subagent` becomes a `subagent` entry in `leticode_events` - the slug, the branch its
 task named (*"- branch: agent/P1"*, the only place a child's branch appears on the wire) and its
