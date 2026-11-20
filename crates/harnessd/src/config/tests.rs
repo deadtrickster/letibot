@@ -108,10 +108,10 @@ fn a_first_use_fetch_does_not_hold_the_daemon_start() {
 
     // The tier appears when the thread is done, on the same config every session reads. The wait
     // is patience, not the claim: the claim is the start above, and a loaded disk stalls the open.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while cfg.embedder.get().is_none() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || cfg.embedder.get().is_some()),
+        "the tier the fetch produced never appeared"
+    );
     assert_eq!(
         cfg.tier().expect("the tier the fetch produced").model(),
         "planted"
@@ -2545,10 +2545,10 @@ fn the_wordfreq_list_is_loaded_from_the_data_dir_and_off_falls_back() {
             )
         },
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while cfg.wordfreq.get().is_none() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || cfg.wordfreq.get().is_some()),
+        "the list on disk was never read"
+    );
     assert!(cfg.wordfreq.get().expect("loaded").contains("work"));
     assert_eq!(cfg.wordfreq.fallback_note(), None);
 

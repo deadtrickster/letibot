@@ -1251,10 +1251,9 @@ fn every_builtin_pane_is_listed_and_opens_with_no_tool_declared() {
         })
         .collect();
     assert!(want.len() >= 2, "the binary carries panes: {want:?}");
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while !want.iter().all(|p| host.panes().contains(p)) && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    crate::testing::wait_until(crate::testing::PATIENCE, || {
+        want.iter().all(|p| host.panes().contains(p))
+    });
     let listed = host.panes();
     for pane in &want {
         assert!(
@@ -3721,17 +3720,13 @@ fn shell_layer(root: &Path, program: &str, argv: Value) -> Table {
 /// Run the watch until it fires, with a deadline: a look that is a real child is polled on the
 /// next tick, so a test that called `met` once would be racing the process.
 fn until_fired(condition: &Arc<dyn letibot_tools::exec::monitor::Condition>) -> String {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(said) = condition.met() {
-            return said;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the look never came back"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let mut said = None;
+    let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
+        said = condition.met();
+        said.is_some()
+    });
+    assert!(found || said.is_some(), "the look never came back");
+    said.expect("the look came back")
 }
 
 /// A built-in's `exec` look runs freely - *"Only the builtins run freely"*, `exec` included
@@ -4244,19 +4239,13 @@ fn a_room(tag: &str) -> (PathBuf, letibot_room::Server) {
 /// own, once a second, so a test waits for it rather than sleeping a fixed second.
 fn until_the_room_is_read(link: &crate::room::link::SessionRoom, items: usize) {
     use crate::plugins::room_feed::RoomFeed as _;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
+    let mut why = None;
+    let read = crate::testing::wait_until(crate::testing::PATIENCE, || {
         let snap = link.snapshot();
-        if snap.unreadable.is_none() && snap.items.len() == items {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the room was never read: {:?}",
-            snap.unreadable
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        why = snap.unreadable.clone();
+        snap.unreadable.is_none() && snap.items.len() == items
+    });
+    assert!(read, "the room was never read: {why:?}");
 }
 
 /// A module that answers the same JSON every time, for a test that presses more keys than it
@@ -4462,14 +4451,10 @@ fn the_restart_control_asks_the_supervisor_and_its_outcome_is_said() {
     // leave the person's keys queued behind it - so the test waits for the frame.
     host.action("s-room-pane", &hub, "room/room", "restart", "restart");
     let until = |what: &str, f: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            if f() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("{what} never happened");
+        assert!(
+            crate::testing::wait_until(crate::testing::PATIENCE, f),
+            "{what} never happened"
+        );
     };
     until("the supervisor is asked", &|| {
         !asked.0.lock().unwrap().is_empty()

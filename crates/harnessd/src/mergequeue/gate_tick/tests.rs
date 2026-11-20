@@ -53,11 +53,13 @@ fn started(dir: &Path, tick: Tick) -> (Child, u32) {
         .spawn()
         .expect("a launcher");
     let pgid = child.id();
-    let until = Instant::now() + Duration::from_secs(10);
-    while !std::fs::read_to_string(&files.pid).is_ok_and(|p| p.trim() == pgid.to_string()) {
-        assert!(Instant::now() < until, "the launcher never wrote its pid");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || std::fs::read_to_string(
+            &files.pid
+        )
+        .is_ok_and(|p| p.trim() == pgid.to_string())),
+        "the launcher never wrote its pid"
+    );
     (child, pgid)
 }
 

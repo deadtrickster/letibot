@@ -39,16 +39,16 @@ fn a_running_steps_tail_grows_between_two_reads() {
             run_with_memory(&wt, &steps, &ctl, Ask::Default)
         });
         let wait_for = |word: &str| -> RunningGate {
-            let until = Instant::now() + Duration::from_secs(20);
-            loop {
-                if let Some(g) = running(&repo)
-                    && g.tail.contains(word)
-                {
-                    return g;
-                }
-                assert!(Instant::now() < until, "the step never wrote {word:?}");
-                std::thread::sleep(Duration::from_millis(20));
-            }
+            let mut got = None;
+            let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
+                got = running(&repo).filter(|g| g.tail.contains(word));
+                got.is_some()
+            });
+            assert!(
+                found || got.is_some(),
+                "the step never wrote {word:?}"
+            );
+            got.expect("the step wrote it")
         };
         let first = wait_for("one");
         assert_eq!(
@@ -1786,23 +1786,21 @@ fn gate_step_env_is_isolated() {
 /// Wait for `path` to hold the pids the step named, and read them. A step that never said where it
 /// is has its owner's own output said back, rather than a bare timeout.
 fn pids_in(path: &Path, log: &Path) -> Vec<u32> {
-    let until = Instant::now() + Duration::from_secs(120);
-    loop {
+    let mut pids: Vec<u32> = Vec::new();
+    let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
         let said = std::fs::read_to_string(path).unwrap_or_default();
-        let pids: Vec<u32> = said
+        pids = said
             .split_whitespace()
             .filter_map(|p| p.parse().ok())
             .collect();
-        if pids.len() >= 2 {
-            return pids;
-        }
-        assert!(
-            Instant::now() < until,
-            "the step never said where it is: {said:?}; its owner said {}",
-            std::fs::read_to_string(log).unwrap_or_default()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        pids.len() >= 2
+    });
+    assert!(
+        found || pids.len() >= 2,
+        "the step never said where it is: {pids:?}; its owner said {}",
+        std::fs::read_to_string(log).unwrap_or_default()
+    );
+    pids
 }
 
 /// A step whose daemon is `SIGKILL`ed ends itself: nothing is left for the next daemon, and there is
