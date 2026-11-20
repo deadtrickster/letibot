@@ -344,6 +344,24 @@ pub fn repository_of(folder: &Path) -> String {
         .to_string()
 }
 
+/// The merge row a queue need names: `queue enqueue` answers with a REVIEW row's id, and the
+/// landing that answers it is the merge row naming that review. So both spellings read, and the
+/// merge row - where `landed`, `failed` and the sha live - is what comes back.
+pub(crate) fn merge_row_of(
+    store: &letibot_tokencore::store::Store,
+    id: &str,
+) -> Option<letibot_tokencore::store::MergeRow> {
+    if let Ok(Some(row)) = store.merge_row(id) {
+        return Some(row);
+    }
+    store
+        .merge_rows(None)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|m| m.review_id == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,22 +787,4 @@ mod tests {
             "a folder git cannot place is its own key"
         );
     }
-}
-
-/// The merge row a queue need names: `queue enqueue` answers with a REVIEW row's id, and the
-/// landing that answers it is the merge row naming that review. So both spellings read, and the
-/// merge row - where `landed`, `failed` and the sha live - is what comes back.
-pub(crate) fn merge_row_of(
-    store: &letibot_tokencore::store::Store,
-    id: &str,
-) -> Option<letibot_tokencore::store::MergeRow> {
-    if let Ok(Some(row)) = store.merge_row(id) {
-        return Some(row);
-    }
-    store
-        .merge_rows(None)
-        .ok()?
-        .into_iter()
-        .rev()
-        .find(|m| m.review_id == id)
 }
