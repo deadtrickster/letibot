@@ -929,7 +929,7 @@ EOF
 removed_flags_table() {
   cat <<'EOF'
 --daemons  |`--ls` - the same listing, numbered, and it is the one `--stop N` takes
---writes   |nothing: writes-allowed is the default. `--mode writes-allowed` says it out loud
+--writes   |nothing: the project's stored mode is the one in force, and nothing is passed by default. `--mode writes-allowed` says it out loud
 --bash     |nothing: the shell is on by default, and `--no-bash` is how you seat none
 --flash    |`[default] model` in ~/.config/letibot/providers.toml (Qwen Flash-Next is the default)
 EOF
@@ -1158,18 +1158,21 @@ ADJ="${LETIBOT_ADJUDICATOR:-head}"
 
 # Approval policy, which is not the role. The mode is a daemon property, fixed at start.
 #
-# `always-ask` (harnessd's default, `letibot_tools::mode::UNSEEN_PROJECT`) has grant scope
-# `Once`, so "allow for the session" records nothing and every edit asks. `writes-allowed`
-# has grant scope `Session`: approving a class approves it until the daemon stops. It is the
-# launcher's default, and not a silent widening: the daemon prints the point and its dials at
-# startup, and commands, network and the always-ask list still ask.
+# The launcher passes NOTHING by default: the daemon's own answer is the project's stored mode
+# (`/mode` writes it), and that is `automode` where nothing is stored (`modes-two`). Choosing a
+# mode here overrode the store and sent every bash call to a head that is often not attached,
+# which fails closed - `writes-allowed` was the launcher's default and never the operator's.
 #
-#   letibot            writes allowed, approve a class once per session
-#   letibot --ask      every write asks, every time
+# `always-ask` (harnessd's default for a project nobody has answered for,
+# `letibot_tools::mode::UNSEEN_PROJECT`) has grant scope `Once`, so "allow for the session"
+# records nothing and every edit asks. `writes-allowed` has grant scope `Session`: approving a
+# class approves it until the daemon stops.
+#
 #   letibot --mode N   read-only | always-ask | writes-allowed | automode |
 #                      automode-edits | allow-all
+#   letibot --ask      every write asks, every time
 #   LETIBOT_MODE=N     the same, by env
-MODE="${LETIBOT_MODE:-writes-allowed}"
+MODE="${LETIBOT_MODE:-}"
 
 # The guard model for `supervised` (model and operator) and `automode` (model only). Both need
 # an endpoint, checked here so the refusal precedes a daemon start. The address is config
