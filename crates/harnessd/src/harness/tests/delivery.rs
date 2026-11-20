@@ -131,6 +131,18 @@ fn boundary(s: &mut HubSteering) -> Option<SteeringMessage> {
     s.try_next()
 }
 
+/// Wait until the clock is more than `window` past `since`. The product measures its own windows
+/// on the wall clock, so the wait is for that clock and not for a guess at it; `window` of zero is
+/// "the clock has moved at all", which is what an ordering by arrival stamp needs.
+fn clock_past(since: SystemTime, window: Duration) {
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || SystemTime::now()
+            .duration_since(since)
+            .is_ok_and(|d| d > window)),
+        "the clock never left {since:?} by more than {window:?}"
+    );
+}
+
 fn row(when: Option<TodoCondition>, needs: Vec<TodoNeed>) -> TodoItem {
     TodoItem {
         content: "land the release".into(),
@@ -289,7 +301,12 @@ fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
         settled("j2", "exited 0", SystemTime::now()),
     ]);
     w.turn_ended(TurnEnd::Done);
-    std::thread::sleep(Duration::from_millis(5));
+    // The idle arrival is one the turn clock puts AFTER the turn, and a coarse clock can stamp
+    // both in one tick.
+    clock_past(
+        w.last_turn_ended().expect("the turn just ended"),
+        Duration::ZERO,
+    );
     w.queue_for_test(settled("j3", "exited 0", SystemTime::now()));
 
     let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
@@ -516,11 +533,13 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
 
     w.queue_for_test(settled("j7", "exited 0", SystemTime::now()));
     w.queue_for_test(settled("j8", "exited 1", SystemTime::now()));
+    let queued_at = SystemTime::now();
     assert!(
         boundary(&mut s).is_none(),
         "inside the cap, nothing comes in"
     );
-    std::thread::sleep(cap + Duration::from_millis(50));
+    // The cap is measured from the arrival, which is stamped before `queued_at`.
+    clock_past(queued_at, cap);
     let got = boundary(&mut s).expect("past the cap, the batch is released");
     assert!(
         got.text
@@ -1137,11 +1156,12 @@ fn a_job_that_ended_between_two_room_lines_is_said_between_them() {
         Reach::Passing,
         "#1 the first line".into(),
     );
-    std::thread::sleep(Duration::from_millis(5));
+    let after_first = SystemTime::now();
     // `wake: "now"` so the door has an immediate to say at this boundary, not one to hold.
     w.want_now("j1", WantedNow::WakeNow);
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
-    std::thread::sleep(Duration::from_millis(5));
+    // The order asserted below is by arrival stamp, and a coarse clock can stamp two calls alike.
+    clock_past(after_first, Duration::ZERO);
     crate::room::wake::push_chat(
         "s-r187-between",
         2,
@@ -1171,11 +1191,13 @@ fn a_room_line_arriving_after_a_held_result_is_said_after_it_when_the_cap_releas
     let mut s = steering(&hub, d.clone());
 
     w.queue_for_test(settled("j7", "exited 0", SystemTime::now()));
+    let queued_at = SystemTime::now();
     assert!(
         boundary(&mut s).is_none(),
         "inside the cap, nothing comes in"
     );
-    std::thread::sleep(cap + Duration::from_millis(50));
+    // The cap is measured from the arrival, which is stamped before `queued_at`.
+    clock_past(queued_at, cap);
     crate::room::wake::push_chat(
         "s-r187-cap",
         9,
@@ -1263,6 +1285,8 @@ fn three_held_passing_lines_are_one_digest_turn_after_the_quiet_window() {
         3,
         "a message pushed twice is one line"
     );
+    // The quiet window is measured from the last line's own stamp, which is before this one.
+    let pushed_at = SystemTime::now();
 
     // Nothing rings before the window is out: the pen is holding, not owed.
     assert!(!crate::room::wake::due_digest(
@@ -1279,7 +1303,7 @@ fn three_held_passing_lines_are_one_digest_turn_after_the_quiet_window() {
     );
 
     // The window passes: the clock says ring, once, and the ring is a turn of this session's.
-    std::thread::sleep(quiet + Duration::from_millis(40));
+    clock_past(pushed_at, quiet);
     assert!(crate::room::wake::due_digest(
         "s-r203-digest",
         quiet,
