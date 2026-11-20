@@ -255,6 +255,10 @@ pub enum TodoNeed {
     /// (`cc@<folder>`) or another session's of this project. A head draws it as
     /// `waits on cc@<folder>'s "<row>"`, and the daemon's own wait sweep frees it.
     Todo { seat: String, content: String },
+    /// A merge-queue row, by the id `queue enqueue` answered: the row waits until that branch has
+    /// landed. Where `landed_local` counts as landed too - the queue settles it once the commit is
+    /// found on origin. A head draws it as `waits on queue <id>`.
+    Queue { id: String },
     /// An operator edge the operator has answered - met, and kept as the reply so the row still
     /// records what it waited for. `ask` is the room's id when the reply came from a peer session.
     Answered {

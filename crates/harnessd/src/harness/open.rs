@@ -2476,10 +2476,16 @@ impl Harness {
             }),
             None => Arc::new(letibot_tools::builtins::queue::NoQueue),
         };
+        // `queue enqueue`'s `todo`: the row a caller names waits on the queue row the call
+        // answered with, and the idle check closes it when the branch lands.
+        let attach: Arc<dyn letibot_tools::builtins::queue::TodoAttach> =
+            Arc::new(crate::harness::nags::SessionTodos {
+                board: todo_board.clone(),
+            });
         registry
-            .register(Box::new(letibot_tools::builtins::queue::QueueTool::new(
-                queue_desk,
-            )))
+            .register(Box::new(
+                letibot_tools::builtins::queue::QueueTool::new(queue_desk).with_todos(attach),
+            ))
             .map_err(|e| HarnessError::Setup(format!("registering the queue tool: {e}")))?;
         // The plugin loop: a pane written, built, tested and loaded at run time. The host does not
         // exist yet (the daemon builds it when it opens a session), so the desk holds a SLOT the

@@ -1173,6 +1173,11 @@ pub enum TodoNeed {
     /// completed, and also when it is struck off or no longer on that board - a board is replaced
     /// whole, so a row that is gone is a row somebody dropped.
     Todo { seat: String, content: String },
+    /// A row of the MERGE QUEUE, by the id `queue enqueue` answered (`m-…`): this row cannot start
+    /// until that branch has landed. Landed - including a landing found on origin after a failed
+    /// push - COMPLETES this todo and says so once; a row that ended without landing (failed,
+    /// timed out, conflict, withdrawn) frees the wait and leaves the todo open, with the reason.
+    Queue { id: String },
     /// An [`TodoNeed::Operator`] edge that was answered: always met, the reply kept on the row.
     /// `ask` is the room's id when a peer replied, which a settle matches on; `default` so edges
     /// written before asks existed still read back.

@@ -259,3 +259,152 @@ fn a_gone_board_is_said_to_be_gone_and_another_projects_is_not_read() {
     assert_eq!(h.resolve_ended_waits().waits, 0);
     assert_eq!(h.todos.snapshot()[0].needs.len(), 1, "the edge stands");
 }
+
+// ===== A wait on the merge queue =====
+
+/// A review row and the landing that answers it, written the way `queue enqueue` and the queue
+/// write them: `review` is the id the tool answers with, the merge row names it.
+fn a_queue_row(dir: &Scratch, review: &str, merge: &str) {
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &letibot_tokencore::store::NewReview {
+                id: review.into(),
+                repository: dir.0.display().to_string(),
+                target: "main".into(),
+                kind: letibot_tokencore::store::ReviewKind::Branch,
+                session_id: "s-r384".into(),
+                branch: "agent/one".into(),
+                worktree: None,
+                base_sha: String::new(),
+                head_sha: "aaaa".into(),
+                brief: "the work".into(),
+                priority: letibot_tokencore::store::MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .approve_review(
+                review,
+                &letibot_tokencore::store::Approval {
+                    expect: letibot_tokencore::store::ReviewState::Waiting,
+                    expect_owner: None,
+                    reviewed_sha: "aaaa".into(),
+                    by: "reviewer:r1".into(),
+                    reasons: vec!["fine".into()],
+                    files: vec![],
+                    commands: vec![],
+                    why: "accepted".into(),
+                    merge_id: merge.into(),
+                },
+                2,
+            )
+            .expect("the approval")
+    );
+}
+
+/// Move that landing to `to`, with `why` on it, as the queue's own sweep would.
+fn the_landing(dir: &Scratch, merge: &str, to: letibot_tokencore::store::MergeState, why: &str) {
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    let row = store
+        .merge_row(merge)
+        .expect("a readable queue")
+        .expect("the row");
+    let mut mv = letibot_tokencore::store::Move::new("test", why);
+    if matches!(
+        to,
+        letibot_tokencore::store::MergeState::Landed
+            | letibot_tokencore::store::MergeState::LandedLocal
+    ) {
+        mv = mv.set("landed_sha", "0123456789abcdef0123456789abcdef01234567");
+    }
+    assert!(
+        store
+            .move_merge(merge, row.state, to, &mv, 3)
+            .expect("the move")
+    );
+}
+
+/// A row that waits on the merge queue is quiet while its landing is in the queue, CLOSED with one
+/// sentence when that branch lands, and left open with the reason when the landing ends without it.
+#[test]
+fn a_row_waiting_on_the_merge_queue_is_closed_by_the_landing_and_says_why_when_it_is_not() {
+    use letibot_tokencore::store::{MergeState, TodoNeed, TodoStatus};
+    let dir = Scratch::new("queue-wait-landed");
+    a_queue_row(&dir, "rv-1", "m-rv-1");
+    let mut h = a_harness(&dir, "s-r384-landed");
+    // The need names the REVIEW id, which is what `queue enqueue` answered; the landing that
+    // answers it is the merge row that names that review.
+    h.todos.upsert_model(&[(
+        ROW.to_string(),
+        TodoStatus::InProgress,
+        vec![TodoNeed::Queue { id: "rv-1".into() }],
+    )]);
+    assert_eq!(h.resolve_ended_waits().waits, 0, "still in the queue");
+    assert_eq!(h.todos.snapshot()[0].needs.len(), 1, "the edge stands");
+
+    the_landing(&dir, "m-rv-1", MergeState::Landed, "landed on `main`");
+    let freed = h.resolve_ended_waits();
+    assert_eq!(freed.waits, 1, "the landing freed the wait");
+    // The row is closed, so there is nothing left to start: the sentence is the session's own line
+    // rather than a turn's notice, and it is written once.
+    let said: String = h
+        .session
+        .items
+        .iter()
+        .map(|i| format!("{i:?}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        said.contains("todo &apos;collect the package&apos; closed")
+            || said.contains("todo 'collect the package' closed"),
+        "the sentence the operator asked for: {said}"
+    );
+    assert!(
+        said.contains("landed on main at 0123456789"),
+        "naming the branch, the target and the sha: {said}"
+    );
+    assert_eq!(
+        h.todos.snapshot()[0].status,
+        TodoStatus::Completed,
+        "the board closed the row"
+    );
+}
+
+/// A landing that ends without landing frees the wait and leaves the todo OPEN, saying why: the
+/// work is still the model's.
+#[test]
+fn a_queue_row_that_never_landed_leaves_the_todo_open_with_the_reason() {
+    use letibot_tokencore::store::{MergeState, TodoNeed, TodoStatus};
+    let dir = Scratch::new("queue-wait-failed");
+    a_queue_row(&dir, "rv-2", "m-rv-2");
+    let mut h = a_harness(&dir, "s-r384-failed");
+    h.todos.upsert_model(&[(
+        ROW.to_string(),
+        TodoStatus::InProgress,
+        vec![TodoNeed::Queue {
+            id: "m-rv-2".into(),
+        }],
+    )]);
+    the_landing(
+        &dir,
+        "m-rv-2",
+        MergeState::Failed,
+        "the gate failed on the rebased branch: a test is red",
+    );
+    let freed = h.resolve_ended_waits();
+    assert_eq!(freed.waits, 1, "the wait is over");
+    let said = h.board_notices.join("\n");
+    assert!(
+        said.contains("ended `failed` without landing") && said.contains("a test is red"),
+        "{said}"
+    );
+    let row = &h.todos.snapshot()[0];
+    assert_eq!(row.status, TodoStatus::InProgress, "the todo stays open");
+    assert!(row.needs.is_empty(), "the edge is gone");
+}

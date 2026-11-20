@@ -159,6 +159,35 @@ impl TodoBoard {
         Ok(changed)
     }
 
+    /// Put one more edge on a row of the model's, by its exact words: what `queue enqueue` does when
+    /// it is given a `todo`, so the row it names waits on the queue row the call answered with. The
+    /// row has to be there - an edge on words nobody wrote waits for nothing.
+    pub fn attach(&self, content: &str, need: TodoNeed) -> Result<(), String> {
+        let want = content.trim();
+        let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        let hits: Vec<usize> = half
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.content.trim() == want)
+            .map(|(i, _)| i)
+            .collect();
+        match hits.as_slice() {
+            [one] => {
+                half[*one].needs.push(need);
+                self.version.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            [] => Err(format!(
+                "no row of the plan says `{want}` — a queue wait names the row's exact words, as \
+                 `todo` lists them"
+            )),
+            _ => Err(format!(
+                "`{want}` is two rows of the plan, so which one waits is not knowable; quote the \
+                 one you mean"
+            )),
+        }
+    }
+
     /// Attach a wait to a row already on the board, or take its waits off. A wait is an edge on
     /// [`TodoItem::needs`] and nothing else: words and status never move, and detach takes off
     /// the child and job edges while leaving the row edges. The caller checks the handle.
@@ -1035,6 +1064,8 @@ fn need_key(need: &TodoNeed) -> Option<String> {
         // A row of another board: one read of that board answers every edge on it, so the key is
         // the seat and the row together.
         TodoNeed::Todo { seat, content } => Some(format!("todo {seat}:{content}")),
+        // A merge-queue row: one read of the store answers every edge on it, so the key is its id.
+        TodoNeed::Queue { id } => Some(format!("queue {id}")),
         _ => None,
     }
 }
@@ -2431,6 +2462,9 @@ fn unmet_needs(
                 format!("{}'s \"{}\"", seat.trim(), content.trim()),
                 NeedFate::BoardWaiting,
             )),
+            // A merge-queue row is the same shape one queue over: this board cannot land it, and the
+            // sweep frees the edge - and closes the row - when the branch lands.
+            TodoNeed::Queue { id } => out.push((format!("queue `{id}`"), NeedFate::BoardWaiting)),
             // Nothing here can watch it, so it is not met - and the words are the name, because they
             // are all the edge has.
             TodoNeed::External { what, .. } => {
@@ -3018,7 +3052,7 @@ impl Tool for TodoWriteTool {
                                     "items": {"anyOf": [
                                         {"type": "string"},
                                         {"type": "object", "properties": {
-                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator", "external", "pid", "todo"]},
+                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator", "external", "pid", "todo", "queue"]},
                                             "name": {"type": "string"},
                                             "content": {"type": "string"},
                                             "id": {"type": "string"},
@@ -3037,13 +3071,13 @@ impl Tool for TodoWriteTool {
                                                     `monitor` (\"name\"), the `operator` \
                                                     (\"question\": …, \"options\": […], at \
                                                     least two), `external` (\"what\": …), \
-                                                    `pid` (\"pid\": N) — or `todo` \
-                                                    (\"seat\": \"lab2x1/cc-…\", \"content\": …) for a \
-                                                    row on ANOTHER board. A row naming nothing \
-                                                    is ready at once; a name matching no row, or \
-                                                    two, blocks the row and the check says which. \
-                                                    An `ask` is NOT spellable here: only \
-                                                    `wait_on` may ask."
+                                                    `pid` (\"pid\": N), `queue` (\"id\") \
+                                                    — or `todo` (\"seat\": \"lab2x1/cc-…\", \
+                                                    \"content\": …) for another board's row. A \
+                                                    row naming nothing is ready at once; a name \
+                                                    matching no row, or two, blocks it and the \
+                                                    check says which. An `ask` is NOT spellable \
+                                                    here: only `wait_on` may ask."
                                 }
                             },
                             "required": ["content", "status"]
@@ -4277,6 +4311,21 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                     Invocation::failed(format!("{where_} is refused: {why}"), OTHER_BOARD_SHAPE)
                 })
             }
+            // A MERGE-QUEUE row, by the id `queue enqueue` answered. Nothing is read here: the
+            // sweep frees the edge when the row lands, and an id that names nothing stays a wait
+            // rather than becoming a promise.
+            Some("queue") => {
+                let id = o.get("id").and_then(|i| i.as_str()).unwrap_or("").trim();
+                if id.is_empty() {
+                    return Err(Invocation::failed(
+                        format!("{where_} has kind `queue` and no `id`"),
+                        "a `queue` need names a merge-queue row by the id `queue` with `action: \
+                         \"enqueue\"` answered (`m-…`); an empty id waits for nothing while saying \
+                         it waits.",
+                    ));
+                }
+                Ok(TodoNeed::Queue { id: id.to_string() })
+            }
             // An answer is the OPERATOR's word, never the model's. The kind exists on the board
             // (it is what an answered `operator` edge becomes) and it is refused here by name, so a
             // model cannot write itself an answer and start the row on it.
@@ -4670,6 +4719,9 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                         TodoNeed::Todo { seat, content } => {
                             format!("{}'s \"{}\"", seat.trim(), content.trim())
                         }
+                        // A merge-queue row, by the id `queue` prints: the reader sees which
+                        // branch its row waits on, and the sweep closes the row when it lands.
+                        TodoNeed::Queue { id } => format!("the queue row `{id}`"),
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
                     .collect();

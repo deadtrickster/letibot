@@ -115,7 +115,7 @@ impl QueueDesk for SessionQueue {
         target: Option<&str>,
         why: &str,
         repository: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, String), String> {
         let (repo, _) = resolve(&self.workspace, repository, Some("-"))?;
         let row = super::enqueue::enqueue_branch(
             &self.store()?,
@@ -132,11 +132,14 @@ impl QueueDesk for SessionQueue {
             to: row.state.as_str().into(),
             why: row.evidence.clone(),
         });
-        Ok(format!(
-            "`{}` is in the review queue as `{}` onto `{}`: a reviewer judges it against the \
-             work you named, the merge queue then rebases it, gates it and lands it. \
-             `queue` with `action: \"status\"` shows where it is and why.",
-            row.branch, row.id, row.target
+        Ok((
+            row.id.clone(),
+            format!(
+                "`{}` is in the review queue as `{}` onto `{}`: a reviewer judges it against the \
+                 work you named, the merge queue then rebases it, gates it and lands it. \
+                 `queue` with `action: \"status\"` shows where it is and why.",
+                row.branch, row.id, row.target
+            ),
         ))
     }
 
