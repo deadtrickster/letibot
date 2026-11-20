@@ -196,7 +196,26 @@ fn points_of(lines: &[&str]) -> Vec<(Lang, Points)> {
                 &["fn ", "impl ", "let mut ", "#[", "pub fn ", "use "],
                 &["::", "pub "],
                 &[
-                    "&self", " -> ", "Ok(", "Err(", "Some(", "None", "&mut ", "unsafe ",
+                    "&self",
+                    " -> ",
+                    "Ok(",
+                    "Err(",
+                    "Some(",
+                    "None",
+                    "&mut ",
+                    "unsafe ",
+                    // **Rust's macro syntax is Rust's alone**, and it is what test code is made of:
+                    // `assert!`, `assert_eq!` and `matches!` have no twin in Python, Go or JS, so a
+                    // slice of a test file — which has no `fn`, no `&mut`, no `Ok(` in it — still
+                    // says what it is. The operator's card, `sed -n '424,450p' …/render/tests.rs`,
+                    // was six of these and nothing else recognisable.
+                    "assert!",
+                    "assert_eq!",
+                    "assert_ne!",
+                    "matches!",
+                    "vec![",
+                    "format!",
+                    "unwrap()",
                 ],
             ),
         ),
@@ -539,6 +558,19 @@ impl Pty {
     /// The card the slice was compared with keeps its answer, and so do the payloads the structural
     /// gate was built to refuse: a run of test names, a build log, a shell transcript.
     #[test]
+    /// **A slice of test code is Rust by its macros alone** — no `fn`, no `&mut`, no `Ok(`; the
+    /// operator's card from `src/markdown/render/tests.rs` had six assertions and nothing else.
+    #[test]
+    fn a_slice_of_test_code_is_rust_by_its_macros() {
+        for l in TEST_SLICE.lines() {
+            assert!(
+                !ANCHORS.iter().any(|m| l.trim_start().starts_with(m)),
+                "no line starts like Rust, so the structural gate cannot answer: {l:?}"
+            );
+        }
+        assert_eq!(lang_of(TEST_SLICE), Some(Lang::Rust), "{TEST_SLICE}");
+    }
+
     fn an_anchored_slice_is_rust_and_a_summary_of_test_names_is_not() {
         assert_eq!(SLICE_WITH_ANCHORS.lines().count(), 49);
         assert_eq!(lang_of(SLICE_WITH_ANCHORS), Some(Lang::Rust));
@@ -549,6 +581,31 @@ impl Pty {
 
     /// A `cargo test` summary is full of `::` and is not Rust: `::` is a weak mark, and no strong
     /// mark of any language is in these.
+    /// **The operator's second card**: a slice of a test file — `sed -n '424,450p'
+    /// src/markdown/render/tests.rs` — which starts mid-function, has no anchored Rust mark, and whose
+    /// only Rust-only signal is its macros (`assert!`, `assert_eq!`). It was drawn plain.
+    const TEST_SLICE: &str = r#"        assert!(
+            first_row.starts_with('│') && first_row.ends_with('│'),
+            "{screen}"
+        );
+        assert_eq!(
+            bar(header),
+            bar(first_row),
+            "header and first row disagree:\n{screen}"
+        );
+        for l in &lines {
+            assert!(l.width() <= 120, "{} columns: {:?}", l.width(), l.plain());
+        }
+        // The header text is strong, and the box has two weights: the frame's edges and
+        // the rule under the header are bold, the separators between cells are plain.
+        assert_eq!(span_of(&lines, "branch")[0].style.top(), Role::Strong);
+        assert_eq!(
+            lines[0].spans[0].style.top(),
+            Role::Strong,
+            "the top rule is the frame's edge: {}",
+            lines[0].plain()
+        );"#;
+
     const SUMMARY: &str = "running 2 tests\ntest store::write ... ok\ntest store::read ... ok\n\
                           test result: ok. 2 passed; 0 failed\n";
 
