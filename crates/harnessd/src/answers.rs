@@ -368,7 +368,8 @@ impl Answers {
                 None => {}
             }
             for peer in hub.peer_hubs() {
-                if peer.deciding_heads().is_empty() || relaid.iter().any(|h| Arc::ptr_eq(h, &peer)) {
+                if peer.deciding_heads().is_empty() || relaid.iter().any(|h| Arc::ptr_eq(h, &peer))
+                {
                     continue;
                 }
                 if peer.post_relayed(card.clone(), self.clone()) {

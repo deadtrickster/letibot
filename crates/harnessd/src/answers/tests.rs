@@ -572,7 +572,10 @@ fn a_card_raised_with_no_head_waits_for_one_and_runs_when_it_answers() {
         },
         "{d:?}"
     );
-    assert!(open_of(&hub).is_empty(), "the card came down with the answer");
+    assert!(
+        open_of(&hub).is_empty(),
+        "the card came down with the answer"
+    );
 }
 
 /// The other half of the rule: a head that never comes is the expiry, and the session is told the
@@ -626,10 +629,7 @@ fn a_head_that_cannot_decide_is_not_somebody_who_can_answer() {
     let d = adj.decide(&request());
     assert_eq!(d.outcome, DecisionOutcome::Timeout, "{d:?}");
     assert!(d.basis.contains("no head that can answer"), "{}", d.basis);
-    assert!(
-        open_of(&hub).is_empty(),
-        "the card is closed at the expiry"
-    );
+    assert!(open_of(&hub).is_empty(), "the card is closed at the expiry");
 }
 
 /// Nobody answers: `Timeout`, which the gate routes to `on_timeout` and which becomes
@@ -1443,7 +1443,8 @@ fn a_card_waiting_with_no_head_reaches_one_that_attaches_to_a_sibling_later() {
     asker.set_answer_sink(answers.clone());
     sibling.set_answer_sink(answers.clone());
 
-    let adj = HeadAdjudicator::new(asker.clone(), answers.clone()).with_budget(Duration::from_secs(30));
+    let adj =
+        HeadAdjudicator::new(asker.clone(), answers.clone()).with_budget(Duration::from_secs(30));
 
     // The person, arriving late. The card is up before they attach, so this is the no-head wait and
     // not the sibling test above.

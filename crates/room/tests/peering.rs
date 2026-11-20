@@ -17,7 +17,9 @@ use letibot_room::peer::{
     handshake::{Dialer, nonce},
 };
 use letibot_room::server::Server;
-use letibot_room::{Event, Group, Member, Message, Refused, Request, Response, Room, Seat, Speaker};
+use letibot_room::{
+    Event, Group, Member, Message, Refused, Request, Response, Room, Seat, Speaker,
+};
 
 mod support;
 
