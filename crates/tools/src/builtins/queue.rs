@@ -375,8 +375,6 @@ mod tests {
         assert_eq!(a("withdraw"), None, "the schema's Write stands");
     }
 
-    /// The model of the queue is in the tool, and says who may move what.
-    #[test]
     /// `enqueue` with a `todo` puts a wait on the row it names, and says which row - the seam a
     /// session's board is reached through, since the queue desk knows nothing of a plan.
     #[test]
@@ -436,6 +434,8 @@ mod tests {
         );
     }
 
+    /// The model of the queue is in the tool, and says who may move what.
+    #[test]
     fn explain_states_the_model_and_the_description_fits() {
         for word in [
             "ENTRY",

@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::{Dialect, Parts, Sessions};
