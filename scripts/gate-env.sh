@@ -46,8 +46,12 @@ if [ -S "$m" ]; then
 fi
 # The command line is rebuilt in front of the caller's NAME=VALUE pairs, so the caller's win. A
 # gate a test starts takes a lock of its own, never the box's one the outer gate holds.
+# TMUX_TMPDIR is the step's own runtime dir: tmux's default socket directory is /tmp/tmux-<uid>,
+# which is the OPERATOR's server - a test's `tmux kill-server` there killed their byobu on
+# 2026-11-19. TMUX itself is dropped with the rest of the environment (`env -i`), so a step
+# cannot believe it is inside a session either.
 set -- HOME="$S/home" XDG_DATA_HOME="$S/data" XDG_STATE_HOME="$S/state" XDG_RUNTIME_DIR="$S/run" \
-  LETIBOT_GATE_LOCK="$S/gate.lock" \
+  LETIBOT_GATE_LOCK="$S/gate.lock" TMUX_TMPDIR="$S/run" \
   CARGO_HOME="${CARGO_HOME:-$real/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$real/.rustup}" "$@"
 # The read-only apparatus the tests measure against, by the variables they read: the caller's
 # value, else the box's file under the real HOME, and only when it is there.
