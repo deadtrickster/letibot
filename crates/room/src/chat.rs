@@ -1332,6 +1332,15 @@ enum Record {
         room: String,
         ms: Option<u64>,
     },
+    /// `from` may send `to` direct messages across projects. Written both ways: a consent that was
+    /// spent, or that ended with a session, is a fact the store holds rather than one it forgot.
+    Consent {
+        from: String,
+        to: String,
+        /// For as long as both seats are here, rather than for one message.
+        session: bool,
+        on: bool,
+    },
 }
 
 /// The log chat is kept in. The file the caller named is its first segment; the state sits beside
@@ -1406,6 +1415,11 @@ pub struct Chat {
     /// written before the split (a bare `s-…`) is read as, so an older store's keys become seat ids
     /// on load and the next snapshot writes them that way. Empty for a chat in memory only.
     host: String,
+    /// Who may send whom a direct message across projects, by `(sender, addressee)`: `true` is for
+    /// as long as both are here (a session consent), `false` is one message and is spent by the
+    /// check that reads it. Room state, so it outlives the coordinator, and a pair learned from a
+    /// linked box is kept here the same way.
+    consents: BTreeMap<(String, String), bool>,
 }
 
 /// The key a stored cursor or seen mark is filed under. A session id (`s-...`) is its seat's, so a
@@ -1518,6 +1532,14 @@ impl Chat {
                 }
             }
             Record::Whole { seq, text } => self.keep_whole(seq, text),
+            Record::Consent {
+                from,
+                to,
+                session,
+                on,
+            } => {
+                self.apply_consent(&from, &to, session, on);
+            }
             Record::Archived { room, ms } => {
                 match ms {
                     Some(ms) => self.archived.insert(room, ms),
@@ -1758,6 +1780,14 @@ impl Chat {
             records.push(Record::Archived {
                 room: room.clone(),
                 ms: Some(*ms),
+            });
+        }
+        for ((from, to), session) in &self.consents {
+            records.push(Record::Consent {
+                from: from.clone(),
+                to: to.clone(),
+                session: *session,
+                on: true,
             });
         }
         let mut buf = String::new();
@@ -2589,6 +2619,83 @@ impl Chat {
             if g.is_empty() {
                 self.guests.remove(room);
             }
+        }
+    }
+
+    /// `from` may send `to` direct messages across projects: for one message (`session` false) or
+    /// for as long as both seats are here. Kept, so a restart is not a room that forgot.
+    pub fn allow(&mut self, from: &str, to: &str, session: bool) {
+        self.learn_consent(from, to, session, true);
+    }
+
+    /// One row as a linked box holds it, taken on trust and kept: a pair granted on another box
+    /// holds here, and a pair taken back there is taken back here.
+    pub fn learn_consent(&mut self, from: &str, to: &str, session: bool, on: bool) {
+        self.apply_consent(from, to, session, on);
+        self.write(&[Record::Consent {
+            from: from.to_string(),
+            to: to.to_string(),
+            session,
+            on,
+        }]);
+    }
+
+    /// The consent is over, whichever end said so. `false` when there was none.
+    pub fn revoke(&mut self, from: &str, to: &str) -> bool {
+        if self.apply_consent(from, to, false, false) {
+            self.write(&[Record::Consent {
+                from: from.to_string(),
+                to: to.to_string(),
+                session: false,
+                on: false,
+            }]);
+            return true;
+        }
+        false
+    }
+
+    /// Has `to` allowed `from` to write to it? A one-message consent is spent by the ask.
+    pub fn consent_given(&mut self, from: &str, to: &str) -> bool {
+        match self.consents.get(&(from.to_string(), to.to_string())) {
+            Some(true) => true,
+            Some(false) => {
+                self.revoke(from, to);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The consents this room holds, for a box that has just linked and needs all of them.
+    pub fn consents(&self) -> Vec<(String, String, bool)> {
+        self.consents
+            .iter()
+            .map(|((from, to), session)| (from.clone(), to.clone(), *session))
+            .collect()
+    }
+
+    /// Every consent `name` is an end of, taken back: a consent is between two seats, so it ends
+    /// with either of them. Returns the pairs, so a linked box can be told.
+    pub fn consents_ending_with(&mut self, name: &str) -> Vec<(String, String)> {
+        let gone: Vec<(String, String)> = self
+            .consents
+            .keys()
+            .filter(|(from, to)| from == name || to == name)
+            .cloned()
+            .collect();
+        for (from, to) in &gone {
+            self.revoke(from, to);
+        }
+        gone
+    }
+
+    fn apply_consent(&mut self, from: &str, to: &str, session: bool, on: bool) -> bool {
+        let key = (from.to_string(), to.to_string());
+        if on {
+            self.consents.insert(key, session);
+            true
+        } else {
+            self.consents.remove(&key).is_some()
         }
     }
 

@@ -523,3 +523,69 @@ fn a_dm_across_projects_asks_the_addressee_and_needs_its_yes() {
         "a new project is a new ask"
     );
 }
+
+/// The consent is the ROOM's state, not the process's memory: a coordinator that restarts keeps the
+/// pair it was told, and the seats do not have to ask again.
+#[test]
+fn a_consent_survives_a_coordinator_restart() {
+    let dir = Scratch::new();
+    let sock = dir.0.join("room.sock");
+    {
+        let server = coordinator(&dir);
+        let me = seat(&server, "s-mine", A, Seat::Session);
+        let them = seat(&server, "s-theirs", B, Seat::Session);
+        tell(&me, vec![top("s-mine", "mine")]);
+        tell(&them, vec![top("s-theirs", "theirs")]);
+        consent_to(&me, &them, "s-theirs");
+        // And it holds while this coordinator is up.
+        let dm = said(me.dm("2", "s-theirs", "one"));
+        assert_eq!(dm.to.as_deref(), Some("theirs"));
+        server.stop();
+        support::wait_socket_gone(&sock);
+    }
+
+    let server = coordinator(&dir);
+    let me = seat(&server, "s-mine", A, Seat::Session);
+    let them = seat(&server, "s-theirs", B, Seat::Session);
+    tell(&me, vec![top("s-mine", "mine")]);
+    tell(&them, vec![top("s-theirs", "theirs")]);
+    // Delivered, with no ask: the room wrote the consent down and read it back.
+    let dm = said(me.dm("3", "s-theirs", "two"));
+    assert_eq!(
+        dm.to.as_deref(),
+        Some("theirs"),
+        "the pair survived the restart"
+    );
+}
+
+/// "Allow for the session" is a sentence about a session, so it ends when one of the two seats
+/// does: the pair is asked again.
+#[test]
+fn a_session_consent_ends_with_the_session() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let me = seat(&server, "s-mine", A, Seat::Session);
+    let them = seat(&server, "s-theirs", B, Seat::Session);
+    tell(&me, vec![top("s-mine", "mine")]);
+    tell(&them, vec![top("s-theirs", "theirs")]);
+    consent_to(&me, &them, "s-theirs");
+    assert_eq!(
+        said(me.dm("2", "s-theirs", "one")).to.as_deref(),
+        Some("theirs")
+    );
+
+    // The addressee's session is DELETED, which the daemon tells the room.
+    let retired = them.call(Request::Retire {
+        id: "retire".into(),
+        session: "s-theirs".into(),
+    });
+    assert!(
+        matches!(retired, Response::Asks { .. }),
+        "a retire answers with the asks it ended: {retired:?}"
+    );
+    let again = me.dm("3", "s-theirs", "two");
+    assert!(
+        matches!(refused(again), Refused::DmNeedsConsent { .. }),
+        "a consent for the session goes with the session"
+    );
+}

@@ -56,8 +56,21 @@ pub enum PeerFrame {
     Profiles { seats: Vec<SeatProfile> },
     /// A chat message for a seat on the far side: the only thing a link carries for delivery.
     Message { message: Message },
+    /// Who may send whom direct messages across projects, as this box holds it: the whole table
+    /// when a link comes up, and one row when a consent is given or taken back.
+    Consents { rows: Vec<ConsentRow> },
     /// An orderly goodbye, so the far side reads a down link as a decision rather than a fault.
     Bye { why: String },
+}
+
+/// One row of [`PeerFrame::Consents`]: the pair, and whether it holds for one message or for as
+/// long as both seats are here. `on` false is the pair being taken back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsentRow {
+    pub from: String,
+    pub to: String,
+    pub session: bool,
+    pub on: bool,
 }
 
 impl PeerFrame {
@@ -72,6 +85,7 @@ impl PeerFrame {
             PeerFrame::Ping { .. } => "ping",
             PeerFrame::Profiles { .. } => "profiles",
             PeerFrame::Message { .. } => "message",
+            PeerFrame::Consents { .. } => "consents",
             PeerFrame::Bye { .. } => "bye",
         }
     }
@@ -153,6 +167,14 @@ mod tests {
             PeerFrame::Profiles { seats: Vec::new() },
             PeerFrame::Message {
                 message: a_message(),
+            },
+            PeerFrame::Consents {
+                rows: vec![ConsentRow {
+                    from: "lab1/s-1".to_string(),
+                    to: "lab2/s-2".to_string(),
+                    session: true,
+                    on: true,
+                }],
             },
             PeerFrame::Bye {
                 why: "stopping".to_string(),

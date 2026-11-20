@@ -229,10 +229,6 @@ struct Inner {
     /// The dm each principal was sent and has not answered — [`DmAwaiting`]. A line that answers
     /// it goes back as a dm however its sender spelled it.
     dms_awaiting: Mutex<BTreeMap<String, DmAwaiting>>,
-    /// Who may send whom a direct message across projects, by `(sender, addressee)`: `true` is
-    /// for the session, `false` is one message and is spent when it is used. Same-project dms never
-    /// look here, and the rule is the seat's PROJECT - not the host - so it holds between boxes.
-    dm_consent: Mutex<BTreeMap<(String, String), bool>>,
     /// The open asks that ARE a consent request, by ask seq: `(sender, addressee)`. The answer is
     /// the consent, and it settles here rather than in the sender's hands.
     consent_asks: Mutex<BTreeMap<u64, (String, String)>>,
@@ -415,7 +411,6 @@ impl Server {
                 claims: Mutex::new(BTreeMap::new()),
                 asked_absent: Mutex::new(BTreeSet::new()),
                 dms_awaiting: Mutex::new(BTreeMap::new()),
-                dm_consent: Mutex::new(BTreeMap::new()),
                 consent_asks: Mutex::new(BTreeMap::new()),
                 ask_grace_ms: AtomicU64::new(ASK_GRACE_MS),
                 blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
@@ -572,11 +567,14 @@ impl Server {
             PeerEvent::Up { host } => {
                 eprintln!(
                     "room: {host} is linked; its seats are in this box's roster while it stays"
-                )
+                );
+                // And what this box was told about consents while they were apart.
+                self.ship_consents(&host);
             }
             PeerEvent::Down { why, .. } => eprintln!("room: {why}"),
             PeerEvent::Profiles { seats, .. } => self.introduce(&seats),
             PeerEvent::Message(message) => self.accept_remote(*message),
+            PeerEvent::Consents(rows) => self.learn_consents(rows),
         }
     }
 
@@ -3888,19 +3886,65 @@ impl Server {
     }
 
     /// Has `to` allowed `from` direct messages? A grant for the SESSION stays; a one-message
-    /// grant is spent by the check that reads it.
+    /// grant is spent by the check that reads it. Read from the room's own state, so a restart is
+    /// not a room that forgets, and a row a linked box gave is read the same way as this one's own.
     fn consent_given(&self, from: &str, to: &str) -> bool {
-        let mut g = self.inner.dm_consent.lock().expect("the consent lock");
-        let key = (from.to_string(), to.to_string());
-        match g.get(&key) {
-            Some(session) => {
-                let session = *session;
-                if !session {
-                    g.remove(&key);
-                }
-                true
-            }
-            None => false,
+        self.inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .consent_given(from, to)
+    }
+
+    /// Tell every linked box about one pair: a consent, or the pair being taken back. The table is
+    /// room state on each box and the two boxes judge the same dm, so both have to hold it.
+    fn say_consent(&self, from: &str, to: &str, session: bool, on: bool) {
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        let frame = crate::peer::PeerFrame::Consents {
+            rows: vec![crate::peer::ConsentRow {
+                from: from.to_string(),
+                to: to.to_string(),
+                session,
+                on,
+            }],
+        };
+        for host in peer.up() {
+            peer.ship(&host, frame.clone());
+        }
+    }
+
+    /// The whole table, to one box: a link that has just come up knows nothing of what this box was
+    /// told while it was away.
+    fn ship_consents(&self, host: &str) {
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        let rows: Vec<crate::peer::ConsentRow> = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .consents()
+            .into_iter()
+            .map(|(from, to, session)| crate::peer::ConsentRow {
+                from,
+                to,
+                session,
+                on: true,
+            })
+            .collect();
+        peer.ship(host, crate::peer::PeerFrame::Consents { rows });
+    }
+
+    /// A peer's table, or the row that changed: kept, so this box honours the pair after the link
+    /// goes down and after this coordinator restarts. Not sent on: the far side already has it, and
+    /// a mesh that echoed would never stop.
+    fn learn_consents(&self, rows: Vec<crate::peer::ConsentRow>) {
+        let mut chat = self.inner.chat.lock().expect("the chat lock");
+        for row in rows {
+            chat.learn_consent(&row.from, &row.to, row.session, row.on);
         }
     }
 
@@ -5160,10 +5204,11 @@ impl Server {
             if allowed {
                 let session = word.contains("session");
                 self.inner
-                    .dm_consent
+                    .chat
                     .lock()
-                    .expect("the consent lock")
-                    .insert((from, to), session);
+                    .expect("the chat lock")
+                    .allow(&from, &to, session);
+                self.say_consent(&from, &to, session, true);
             }
         }
         self.inner.signals.lock().expect("the signals lock").act(
@@ -5275,6 +5320,17 @@ impl Server {
         // wait, and the target's nag ends with the note that it was taken back.
         for ask in by_me.iter().filter(|a| a.open()) {
             self.ask_withdrawn(session, Seat::Session, id, ask.seq, now);
+        }
+        // And a consent is between two seats, so it ends with either of them: "allow for the
+        // session" is a sentence about a session that is now gone.
+        let gone = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .consents_ending_with(session);
+        for (from, to) in gone {
+            self.say_consent(&from, &to, false, false);
         }
         let (by_me, of_me) = self.asks_for(name, now);
         Response::Asks { by_me, of_me }

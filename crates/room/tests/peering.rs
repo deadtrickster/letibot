@@ -17,7 +17,7 @@ use letibot_room::peer::{
     handshake::{Dialer, nonce},
 };
 use letibot_room::server::Server;
-use letibot_room::{Event, Message, Refused, Request, Response, Room, Seat, Speaker};
+use letibot_room::{Event, Group, Member, Message, Refused, Request, Response, Room, Seat, Speaker};
 
 mod support;
 
@@ -604,4 +604,93 @@ fn a_goodbye_is_worded_as_the_far_boxs_reason() {
         "lab2 said goodbye: its coordinator is stopping",
         "the reason is the far box's, and the sentence has to read as that box's"
     );
+}
+
+/// A seat as a project room knows it: a top-level member, which is what gives it a project.
+fn top(session: &str, handle: &str) -> Member {
+    Member {
+        session: session.into(),
+        label: handle.into(),
+        handle: handle.into(),
+        group: Group::Top,
+        parent: None,
+        depth: 0,
+        live: true,
+    }
+}
+
+fn tell(s: &Seated, rows: Vec<Member>) {
+    let said = s.call(Request::Members {
+        rows,
+        root: String::new(),
+    });
+    assert!(
+        !matches!(said, Response::Refused { .. }),
+        "a member list is taken: {said:?}"
+    );
+}
+
+/// A consent is room STATE and it travels: a pair allowed on one box is allowed on the other, so
+/// the same two seats are not asked twice. The pair is the two NAMES, which is why the rule holds
+/// for a dm that would be judged by either box.
+#[test]
+fn a_consent_given_on_one_box_is_honoured_by_the_other() {
+    let (a, b) = two_boxes("consent", "id-a", "id-b", (false, false));
+
+    // Two projects on each box, and the same pair of names in both: what a consent is about. A
+    // project key is twelve hex characters, which is what a room name may carry.
+    let ax = seat(&a.server, "s-x", "111111111111");
+    let ay = seat(&a.server, "s-y", "222222222222");
+    tell(&ax, vec![top("s-x", "x")]);
+    tell(&ay, vec![top("s-y", "y")]);
+    let bx = seat(&b.server, "s-x", "333333333333");
+    let by = seat(&b.server, "s-y", "444444444444");
+    tell(&bx, vec![top("s-x", "x")]);
+    tell(&by, vec![top("s-y", "y")]);
+
+    // Before anything is allowed, THIS box asks too: the pair is nobody's to assume.
+    let first = bx.dm("before", "s-y", "across");
+    assert!(
+        matches!(
+            first,
+            Response::Refused {
+                why: Refused::DmNeedsConsent { .. },
+                ..
+            }
+        ),
+        "lab2 has its own reason to ask: {first:?}"
+    );
+
+    // The consent is given on the OTHER box, where its addressee's word is enough for this one.
+    let asked = ax.dm("a-1", "s-y", "may I write to you?");
+    let Response::Refused {
+        why: Refused::DmNeedsConsent { ask, .. },
+        ..
+    } = asked
+    else {
+        panic!("a dm across projects asks first: {asked:?}");
+    };
+    let answered = ay.call(Request::Reply {
+        id: "consent".into(),
+        ask,
+        text: "allow for the session".into(),
+    });
+    assert!(
+        matches!(answered, Response::Asked { .. }),
+        "the consent settles: {answered:?}"
+    );
+
+    // And lab2 stops asking: the row travelled over the link and is read there as its own.
+    let mut tries = 0;
+    wait_until("the consent to reach lab2", || {
+        tries += 1;
+        match bx.dm(&format!("b-{tries}"), "s-y", "across") {
+            Response::Said { .. } => true,
+            Response::Refused {
+                why: Refused::DmNeedsConsent { .. },
+                ..
+            } => false,
+            other => panic!("lab2 answered a dm with something else: {other:?}"),
+        }
+    });
 }

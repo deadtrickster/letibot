@@ -20,7 +20,7 @@ pub mod profile;
 mod run;
 
 pub use cookie::{Cookie, CookieError};
-pub use frame::{PEER_PROTOCOL, PeerFrame};
+pub use frame::{ConsentRow, PEER_PROTOCOL, PeerFrame};
 pub use mesh::{Link, Mesh, PeerEvent, Tick};
 pub use profile::{Introductions, ProjectProfile, RepoIdentity, SeatProfile};
 pub use run::{Peer, PeerConfig, STOPPING};

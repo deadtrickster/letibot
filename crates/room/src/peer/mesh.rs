@@ -57,6 +57,8 @@ pub enum PeerEvent {
     },
     /// A chat message for a seat on this box.
     Message(Box<crate::chat::Message>),
+    /// A consent table a peer sent: its whole one when the link came up, or the row that changed.
+    Consents(Vec<crate::peer::frame::ConsentRow>),
 }
 
 /// One link, as this box reads it.

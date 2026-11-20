@@ -29,6 +29,9 @@ pub const WRITE: Duration = Duration::from_secs(5);
 /// The most seats one peer may publish. A hostile box that listed thousands is a memory leak, not
 /// a roster.
 pub const MAX_SEATS: usize = 64;
+/// The most consent rows one peer may send. Each is two names and two flags, and a table past this
+/// is a box saying everything, not a table this room needs.
+pub const MAX_CONSENTS: usize = 512;
 /// How many events may wait for the coordinator. Past it the oldest is dropped: a mesh whose
 /// reader stopped is a link to end, not memory to spend.
 pub const QUEUE: usize = 1_024;
@@ -750,6 +753,12 @@ fn read_loop(inner: &Arc<Inner>, reader: &mut BufReader<TcpStream>, far: &str) -
             PeerFrame::Message { message } => {
                 inner.announce_event(PeerEvent::Message(Box::new(message)));
             }
+            PeerFrame::Consents { mut rows } => {
+                if rows.len() > MAX_CONSENTS {
+                    rows.truncate(MAX_CONSENTS);
+                }
+                inner.announce_event(PeerEvent::Consents(rows));
+            }
             PeerFrame::Bye { why } => return format!("{far} said goodbye: {why}"),
             PeerFrame::Hello { .. }
             | PeerFrame::Challenge { .. }
@@ -769,22 +778,28 @@ fn write_frame(writer: &mut TcpStream, frame: &PeerFrame) -> std::io::Result<()>
     writer.flush()
 }
 
-/// One line as a frame. `Ok(None)` is a clean end; an unreadable line is an error, because a link
-/// whose frames do not parse is not a link that should keep reading.
+/// One line as a frame. `Ok(None)` is a clean end; a line this build does not know is said and
+/// skipped, because [`PeerFrame::of`]'s own rule is that an unknown word is a newer peer's and a
+/// link that failed to read one line keeps reading.
 fn read_frame(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<PeerFrame>> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line)?;
-    if n == 0 {
-        return Ok(None);
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        if line.len() > MAX_LINE {
+            return Err(std::io::Error::other(
+                "a frame longer than any this build sends",
+            ));
+        }
+        match PeerFrame::of(line.trim_end()) {
+            Some(frame) => return Ok(Some(frame)),
+            None => eprintln!(
+                "room: a peer sent a frame this build does not know; skipped it and kept the link"
+            ),
+        }
     }
-    if line.len() > MAX_LINE {
-        return Err(std::io::Error::other(
-            "a frame longer than any this build sends",
-        ));
-    }
-    PeerFrame::of(line.trim_end())
-        .map(Some)
-        .ok_or_else(|| std::io::Error::other("a frame this build does not read"))
 }
 
 #[cfg(test)]
