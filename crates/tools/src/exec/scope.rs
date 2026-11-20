@@ -2570,7 +2570,7 @@ mod tests {
             .expect("a scope");
         // A live member of the scope: this test's own child, in a group of its own so the kill
         // reaches it and not this process.
-        let child = std::process::Command::new("/bin/sh")
+        let mut child = std::process::Command::new("/bin/sh")
             .args(["-c", "sleep 60"])
             .process_group(0)
             .spawn()
@@ -2582,6 +2582,9 @@ mod tests {
         let _ = std::process::Command::new("kill")
             .args(["-KILL", &format!("-{pgid}")])
             .output();
+        // The child is killed by the group signal above, not by us: reap it so the test does not
+        // leave a zombie, and so clippy's `zombie_processes` sees the `wait`.
+        let _ = child.wait();
         assert!(
             reaping
                 .note

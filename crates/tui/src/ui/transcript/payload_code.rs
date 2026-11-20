@@ -196,12 +196,15 @@ fn shape(sample: &str) -> Option<Lang> {
         .iter()
         .map(|(lang, (structural, total))| (*lang, *structural, *total))
         .collect();
-    scored.sort_by(|a, b| b.2.cmp(&a.2));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.2));
     let (lang, structural, top) = scored[0];
     // A line that STARTS like the language is what makes it a guess rather than a coincidence: two
     // test names with `::` in them are a `cargo test` summary, not Rust.
     (structural > 0 && top >= ENOUGH && scored.get(1).is_none_or(|s| s.2 < top)).then_some(lang)
 }
+
+/// One cached grid: the text's hash, its row count, the language, and the roles.
+type Entry = (u64, usize, Lang, Arc<Vec<Vec<Role>>>);
 
 /// The last [`KEEP`] payloads' grids. `role_grid` costs 3 ms on 4 KiB of Rust in a debug build and
 /// 0.5 ms in release (the test `a_payload_is_highlighted_at_what_it_costs` prints both), and a row
@@ -209,7 +212,7 @@ fn shape(sample: &str) -> Option<Lang> {
 struct Cache {
     /// Oldest first. Keyed by the text's hash, its row count and the language: a hash alone would
     /// let two payloads wear each other's colours, and the row count makes that a longer bet.
-    entries: Vec<(u64, usize, Lang, Arc<Vec<Vec<Role>>>)>,
+    entries: Vec<Entry>,
 }
 
 static CACHE: Mutex<Cache> = Mutex::new(Cache {

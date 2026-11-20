@@ -1311,6 +1311,7 @@ pub fn wait_within(limit: std::time::Duration, cond: impl FnMut() -> bool) -> bo
 /// not got. A fixture repository must still commit, and the queue's landing rebases into one with
 /// the daemon's environment, so what the repository says in its own config is the whole remedy.
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod git_fixture {
     use super::*;
 
