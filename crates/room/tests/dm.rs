@@ -120,6 +120,24 @@ fn tell(s: &Seated, rows: Vec<Member>) {
     });
 }
 
+/// `to` allows `from` across projects: the ask the room raised is answered `allow for the
+/// session`, which is the consent the next dm reads.
+fn consent_to(from: &Seated, to: &Seated, id: &str) {
+    let r = refused(from.dm("0", id, "may I write to you?"));
+    let Refused::DmNeedsConsent { ask, .. } = r else {
+        panic!("a dm across projects must ask: {r:?}");
+    };
+    let answered = to.call(Request::Reply {
+        id: "consent".into(),
+        ask,
+        text: "allow for the session".into(),
+    });
+    assert!(
+        matches!(answered, Response::Asked { .. }),
+        "the consent settles: {answered:?}"
+    );
+}
+
 fn refused(r: Response) -> Refused {
     match r {
         Response::Refused { why, .. } => why,
@@ -247,12 +265,15 @@ fn the_1038_shape_a_handle_from_another_project_is_refused_and_not_re_addressed(
     );
     arango.silent();
 
-    // The id is how a session reaches another project's session, and it is what the refusal said.
+    // The id is how a session reaches another project's session, and it is what the refusal said -
+    // with that seat's consent, which is the one thing the id does not stand in for.
+    consent_to(&me, &arango, "s-arango");
+    let before = logged(&dir).len();
     said(me.dm("3", "s-arango", "cc@serenedb: two questions"));
     assert_eq!(
-        logged(&dir),
-        vec![(1, "s-dbfuzz".into(), Some("s-arango".into()), None)],
-        "naming the id reaches it, and the sender is told who it went to"
+        logged(&dir).len(),
+        before + 1,
+        "naming the id, with consent, reaches it"
     );
 }
 
@@ -269,6 +290,9 @@ fn a_say_that_names_somebody_else_does_not_ride_another_pairs_dm_thread() {
     tell(&arango, vec![top("s-arango", "arango")]);
     let _bridge = seat(&server, "cc@serenedb", "", Seat::External);
 
+    // A dm across projects asks first, and this file is about the thread: the consent is given up
+    // front, by the addressee, as it would be at a head.
+    consent_to(&me, &arango, "s-arango");
     let root = said(me.dm("1", "s-arango", "about the pin")).seq;
     match refused(me.say("2", Some("cc@serenedb"), "cc@serenedb: look", Some(root))) {
         Refused::ThreadIsAnotherDm { thread, with } => {
@@ -276,19 +300,21 @@ fn a_say_that_names_somebody_else_does_not_ride_another_pairs_dm_thread() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(
-        logged(&dir),
-        vec![(1, "s-bridge-1".into(), Some("s-arango".into()), None)],
-        "the refused say added no row"
-    );
-
     // Answering the thread's own party is the same conversation, so it is allowed - and the
     // sender reads back the handle of who it went to.
+    let before = logged(&dir).len();
     let back = said(me.say("3", Some("s-arango"), "the pin is fine", Some(root)));
     assert_eq!(back.to.as_deref(), Some("arango"), "the sender is told");
     assert_eq!(
-        logged(&dir).last(),
-        Some(&(2, "s-bridge-1".into(), Some("s-arango".into()), Some(root)))
+        logged(&dir).len(),
+        before + 1,
+        "the answer is one new row: {:?}",
+        logged(&dir)
+    );
+    assert_eq!(
+        logged(&dir).last().map(|m| m.3),
+        Some(Some(root)),
+        "and it rides the thread"
     );
 }
 
@@ -426,4 +452,74 @@ fn a_family_that_is_not_the_names_prefix_reads_nothing() {
         "nothing was pushed"
     );
     assert!(thief.inbox().is_empty());
+}
+
+/// A dm across PROJECTS needs the addressee's consent, and by SESSION ID too - which is the door
+/// the operator found open. Same project is free, and the answer is the consent: `allow for the
+/// session` lets the next one through, and a refusal leaves the pair where it was.
+#[test]
+fn a_dm_across_projects_asks_the_addressee_and_needs_its_yes() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let me = seat(&server, "s-mine", A, Seat::Session);
+    let them = seat(&server, "s-theirs", B, Seat::Session);
+    tell(&me, vec![top("s-mine", "mine")]);
+    tell(&them, vec![top("s-theirs", "theirs")]);
+
+    // The id form, which used to cross unasked.
+    let refusal = refused(me.dm("1", "s-theirs", "a word in private"));
+    assert!(
+        matches!(refusal, Refused::DmNeedsConsent { .. }),
+        "{refusal:?}"
+    );
+    let Refused::DmNeedsConsent { ask, .. } = refusal else {
+        unreachable!()
+    };
+    // What the addressee is pushed is the CONSENT REQUEST, not the message: the dm is not
+    // delivered, and the log's one row is the ask's own question.
+    let (heard, _) = them.next();
+    assert!(
+        heard.text.contains("asks to send you direct messages"),
+        "the addressee gets the ask, not the dm: {}",
+        heard.text
+    );
+    assert!(!heard.text.contains("a word in private"), "{}", heard.text);
+
+    // The ask is on the addressee's board, and its answer is the consent.
+    let asks = them.call(Request::Asks);
+    let Response::Asks { of_me, .. } = asks else {
+        panic!("the asks are a listing: {asks:?}");
+    };
+    assert!(
+        of_me.iter().any(|a| a.seq == ask),
+        "the consent request is a row of the addressee's: {of_me:?}"
+    );
+    let answered = them.call(Request::Reply {
+        id: "r1".into(),
+        ask,
+        text: "allow for the session".into(),
+    });
+    assert!(
+        matches!(answered, Response::Asked { .. }),
+        "the ask settles: {answered:?}"
+    );
+
+    // Now it goes through, and says who it went to.
+    let dm = said(me.dm("2", "s-theirs", "a word in private"));
+    assert_eq!(
+        dm.to.as_deref(),
+        Some("theirs"),
+        "the sender is told the addressee by its handle"
+    );
+    let (heard, _) = them.next();
+    assert_eq!(heard.text, "a word in private");
+
+    // A different pair is still asked: one consent is one pair.
+    let other = seat(&server, "s-third", "cccccccccccc", Seat::Session);
+    tell(&other, vec![top("s-third", "third")]);
+    let again = me.dm("3", "s-third", "hello");
+    assert!(
+        matches!(refused(again), Refused::DmNeedsConsent { .. }),
+        "a new project is a new ask"
+    );
 }
