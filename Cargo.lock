@@ -1520,7 +1520,7 @@ dependencies = [
  "letibot-transcript",
  "letibot-turn",
  "libc",
- "rano 0.10.1 (git+https://github.com/deadtrickster/rano?rev=06848a0d229ab64346ccb7416535678b56f10010)",
+ "rano",
  "serde",
  "serde_json",
  "sha2",
@@ -1547,7 +1547,7 @@ name = "letibot-code"
 version = "0.6.0"
 dependencies = [
  "letibot-transcript",
- "rano 0.10.1 (git+https://github.com/deadtrickster/rano?rev=06848a0d229ab64346ccb7416535678b56f10010)",
+ "rano",
 ]
 
 [[package]]
@@ -1660,7 +1660,7 @@ dependencies = [
  "letibot-websearch",
  "leticode-config",
  "libc",
- "rano 0.10.1 (git+https://github.com/deadtrickster/rano?rev=06848a0d229ab64346ccb7416535678b56f10010)",
+ "rano",
  "serde",
  "serde_json",
  "sha2",
@@ -1741,7 +1741,7 @@ version = "0.6.0"
 dependencies = [
  "letibot-builtins",
  "letibot-plugins",
- "rano 0.10.1 (git+https://github.com/deadtrickster/rano?rev=593f153bcc45ac30c0c1e5cd31f3fb7de3ddedc9)",
+ "rano",
  "sha2",
 ]
 
@@ -1866,7 +1866,7 @@ dependencies = [
  "letibot-vt",
  "leticode-config",
  "libc",
- "rano 0.10.1 (git+https://github.com/deadtrickster/rano?rev=593f153bcc45ac30c0c1e5cd31f3fb7de3ddedc9)",
+ "rano",
  "serde",
  "serde_json",
 ]
@@ -1895,7 +1895,7 @@ version = "0.6.0"
 dependencies = [
  "letibot-transcript",
  "letibot-vt",
- "rano 0.10.1 (git+https://github.com/deadtrickster/rano?rev=593f153bcc45ac30c0c1e5cd31f3fb7de3ddedc9)",
+ "rano",
 ]
 
 [[package]]
@@ -2450,49 +2450,7 @@ dependencies = [
 [[package]]
 name = "rano"
 version = "0.10.1"
-source = "git+https://github.com/deadtrickster/rano?rev=06848a0d229ab64346ccb7416535678b56f10010#06848a0d229ab64346ccb7416535678b56f10010"
-dependencies = [
- "cc",
- "flate2",
- "libc",
- "regex",
- "serde",
- "serde_json",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-clojure-orchard",
- "tree-sitter-commonlisp",
- "tree-sitter-css",
- "tree-sitter-diff",
- "tree-sitter-elisp",
- "tree-sitter-go",
- "tree-sitter-html",
- "tree-sitter-ini",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-json",
- "tree-sitter-language",
- "tree-sitter-lua",
- "tree-sitter-make",
- "tree-sitter-md",
- "tree-sitter-php",
- "tree-sitter-python",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-scheme",
- "tree-sitter-sequel",
- "tree-sitter-toml-ng",
- "tree-sitter-typescript",
- "tree-sitter-yaml",
- "vt100",
- "wasmtime",
-]
-
-[[package]]
-name = "rano"
-version = "0.10.1"
-source = "git+https://github.com/deadtrickster/rano?rev=593f153bcc45ac30c0c1e5cd31f3fb7de3ddedc9#593f153bcc45ac30c0c1e5cd31f3fb7de3ddedc9"
+source = "git+https://github.com/deadtrickster/rano?rev=e1baa3fdfdf8ed5511410a8b7566a8a7620a6b41#e1baa3fdfdf8ed5511410a8b7566a8a7620a6b41"
 dependencies = [
  "cc",
  "flate2",

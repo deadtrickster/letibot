@@ -67,7 +67,7 @@ letibot-builtins.workspace = true
 # every host uses now lives in `letibot-plugins-rano` - a copy per binary is what made this bridge
 # and the head compile all thirteen built-ins on every host build.
 letibot-plugins-rano.workspace = true
-rano = { git = "https://github.com/deadtrickster/rano", rev = "06848a0d229ab64346ccb7416535678b56f10010" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "e1baa3fdfdf8ed5511410a8b7566a8a7620a6b41" }
 
 # `queue`: the merge queue's own enqueue and status, so an agent's enqueue is checked exactly
 # as a session's is.
