@@ -35,6 +35,19 @@ fn a_note_is_waiting(session: &str) -> bool {
     crate::testing::wait_until(crate::testing::PATIENCE, || wake::waiting(session) > 0)
 }
 
+/// The room has the session's seen mark, so the ack for what it was pushed has landed: a server
+/// stopped before that closes the connection under an ack and the session waits ten seconds for an
+/// answer nobody will give.
+fn the_ack_landed(server: &letibot_room::Server, session: &str) {
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || server
+            .seen(session)
+            .unwrap_or(0)
+            > 0),
+        "`{session}`'s seen mark never reached the room"
+    );
+}
+
 /// The tool's list of kinds and the room's are one list: a word the schema offers is a word the
 /// room answers to, and the other way round. Two crates, so the pin is here.
 #[test]
@@ -157,6 +170,7 @@ fn an_fyi_rings_only_the_reader_it_names_and_a_blocker_is_a_full_turn() {
         "a blocker did not ring: {:?}",
         rung.lock().unwrap()
     );
+    the_ack_landed(&server, me_id);
     server.stop();
 }
 
@@ -215,5 +229,6 @@ fn an_ordinary_line_still_wakes_the_room_it_is_said_in() {
         "an ordinary line did not wake the room's session: {:?}",
         rung.lock().unwrap()
     );
+    the_ack_landed(&server, me_id);
     server.stop();
 }
