@@ -1351,7 +1351,7 @@ impl Adjudicator for HeadAdjudicator {
             // Read, not assumed: a banner that said "a head decides" for a session with no head
             // would be the disclosure claiming a safety property the session has not got.
             return format!(
-                "a head over the session socket — none attached right now, so a gated call waits \
+                "a head over the session socket: none attached right now, so a gated call waits \
                  up to {}s for one and then refuses with not_run (a head that attaches meanwhile \
                  sees the card)",
                 self.budget.as_secs()
