@@ -340,7 +340,9 @@ fn an_injected_allow_in_the_transcript_still_meets_the_denylist() {
 fn a_verdict_that_arrives_after_the_session_moved_is_stale() {
     let (go_tx, go_rx) = mpsc::channel::<()>();
     let go_rx = Mutex::new(go_rx);
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
     let judge = Stub::new(move |_, _| {
+        let _ = entered_tx.send(());
         let _ = go_rx.lock().unwrap().recv_timeout(Duration::from_secs(2));
         Ok(r#"{"verdict":"owed","promise":"I will run the gate next"}"#.into())
     });
@@ -356,7 +358,11 @@ fn a_verdict_that_arrives_after_the_session_moved_is_stale() {
     );
     pos.store(10, Ordering::SeqCst);
     r.submit(Request::new(10, shown(TURN)));
-    std::thread::sleep(Duration::from_millis(50));
+    // The staleness is the position the judge SAW against the one now, so the move below must
+    // land while the judge is out - which its own entry into the stub is the fact for.
+    entered_rx
+        .recv_timeout(crate::testing::PATIENCE)
+        .expect("the judge was never entered");
     pos.store(12, Ordering::SeqCst);
     go_tx.send(()).unwrap();
     assert_eq!(
@@ -377,7 +383,9 @@ fn a_verdict_that_arrives_after_the_session_moved_is_stale() {
 fn a_new_trigger_replaces_the_one_waiting() {
     let (go_tx, go_rx) = mpsc::channel::<()>();
     let go_rx = Mutex::new(go_rx);
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
     let judge = Stub::new(move |_, _| {
+        let _ = entered_tx.send(());
         let _ = go_rx.lock().unwrap().recv_timeout(Duration::from_secs(2));
         Ok(r#"{"verdict":"none"}"#.into())
     });
@@ -392,7 +400,11 @@ fn a_new_trigger_replaces_the_one_waiting() {
         },
     );
     r.submit(Request::new(0, shown(TURN)));
-    std::thread::sleep(Duration::from_millis(50));
+    // The three below must be replacements of a trigger already being judged, which the judge's
+    // own entry into the stub is the fact for.
+    entered_rx
+        .recv_timeout(crate::testing::PATIENCE)
+        .expect("the judge was never entered");
     for _ in 0..3 {
         r.submit(Request::new(0, shown(TURN)));
     }
@@ -464,7 +476,14 @@ fn the_breaker_pauses_after_misses_and_a_probe_resumes() {
         Outcome::Paused,
         "a paused job does not call the model"
     );
-    std::thread::sleep(Duration::from_millis(200));
+    // A pause is a backoff the runner's own clock has to leave before it probes again; the
+    // stamp is not readable from here, so the wait names the backoff rather than a number.
+    let paused_at = std::time::Instant::now();
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || paused_at.elapsed()
+            >= fast().backoff),
+        "the pause outlasted the patience"
+    );
     healthy.store(true, Ordering::SeqCst);
     r.submit(Request::new(0, shown(TURN)));
     assert!(matches!(next(&rx), Outcome::Verdict(_)));
@@ -526,7 +545,14 @@ fn a_job_that_stops_answering_says_it_once_and_again_when_it_answers() {
     r.submit(Request::new(0, shown(TURN)));
     assert_eq!(next(&rx), Outcome::Paused);
     assert!(notices.lock().unwrap().is_empty(), "a pause said twice");
-    std::thread::sleep(Duration::from_millis(200));
+    // A pause is a backoff the runner's own clock has to leave before it probes again; the
+    // stamp is not readable from here, so the wait names the backoff rather than a number.
+    let paused_at = std::time::Instant::now();
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || paused_at.elapsed()
+            >= fast().backoff),
+        "the pause outlasted the patience"
+    );
     healthy.store(true, Ordering::SeqCst);
     r.submit(Request::new(0, shown(TURN)));
     assert!(matches!(next(&rx), Outcome::Verdict(_)));
@@ -1294,6 +1320,8 @@ mod observe_only {
                 .iter()
                 .any(|t| t == "permission · operator answered admit r-1")
         );
+        // A negative check: a second judge call would have to outlast the stub's own 400 ms
+        // answer first, so there is no later fact to wait on. It can pass falsely under load.
         std::thread::sleep(Duration::from_millis(700));
         assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
     }
@@ -1308,7 +1336,16 @@ mod observe_only {
             "refuse",
             None,
         );
-        std::thread::sleep(Duration::from_millis(300));
+        // The verdict is written from the observer's own thread.
+        assert!(
+            crate::testing::wait_until(crate::testing::PATIENCE, || rows
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.starts_with("permission · ask"))),
+            "no ask row was recorded"
+        );
         let rows = rows.0.lock().unwrap();
         let row = rows
             .iter()

@@ -548,11 +548,14 @@ fn a_disagreement_between_the_persistent_and_a_fresh_call_is_recorded() {
             ..
         })
     ));
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !rows.titles().iter().any(|t| t.starts_with("fresh check")) {
-        assert!(std::time::Instant::now() < deadline, "{:?}", rows.titles());
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || rows
+            .titles()
+            .iter()
+            .any(|t| t.starts_with("fresh check"))),
+        "{:?}",
+        rows.titles()
+    );
     let titles = rows.titles();
     assert!(
         titles
@@ -607,11 +610,14 @@ fn a_stateless_config_keeps_the_old_path() {
         },
         turn_end_q(None)
     ));
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while talk.fresh.lock().unwrap().is_empty() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || !talk
+            .fresh
+            .lock()
+            .unwrap()
+            .is_empty()),
+        "the fresh check never called the model"
+    );
     assert!(
         talk.sent.lock().unwrap().is_empty(),
         "no conversation is sent"

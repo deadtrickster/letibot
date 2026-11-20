@@ -200,21 +200,20 @@ fn settlement_for(hub: &Hub, job: &str) -> Option<(String, u64, u64)> {
 /// the watcher publishes the moment the job exits, and the test ends at
 /// whichever comes first.
 fn wait_for_settlement(hub: &Hub, job: &str) -> (String, u64, u64) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(hit) = settlement_for(hub, job) {
-            return hit;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no JobSettled for {job} within 10s; log: {:?}",
-            hub.retained()
-                .iter()
-                .map(|e| e.event.kind())
-                .collect::<Vec<_>>()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let mut hit = None;
+    let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
+        hit = settlement_for(hub, job);
+        hit.is_some()
+    });
+    assert!(
+        found || hit.is_some(),
+        "no JobSettled for {job}; log: {:?}",
+        hub.retained()
+            .iter()
+            .map(|e| e.event.kind())
+            .collect::<Vec<_>>()
+    );
+    hit.expect("the settlement was found")
 }
 
 #[test]
@@ -280,6 +279,8 @@ fn a_job_watched_twice_and_again_after_settlement_publishes_once() {
     // And a watch that arrives after the settlement is a no-op too: a second settlement would be
     // a job that died twice.
     watchers.watch(id.0.clone());
+    // A negative check: a second settlement would come from the watcher just armed, and nothing
+    // later than it can be waited for. It can pass falsely under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(300));
 
     let count = hub
@@ -329,17 +330,9 @@ fn delivering_is_true_only_while_a_watcher_is_live_for_that_job() {
     // wait on it is answered by the caller's already-finished branch instead.
     host.kill_job(&id).expect("killing the job settles it");
     wait_for_settlement(&hub, &id.0);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while watchers.delivering(&id.0) {
-        assert!(
-            Instant::now() < deadline,
-            "the watcher must stop claiming delivery once it has delivered"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
     assert!(
-        !watchers.delivering(&id.0),
-        "a settled job is not being delivered any more; it HAS been"
+        crate::testing::wait_until(crate::testing::PATIENCE, || !watchers.delivering(&id.0)),
+        "the watcher must stop claiming delivery once it has delivered"
     );
 }
 
@@ -1055,18 +1048,16 @@ fn wait_for_mid_turn_completion(w: &JobWatchers) -> JobCompletion {
 }
 
 fn wait_for(w: &JobWatchers, drain: fn(&JobWatchers) -> Vec<JobCompletion>) -> JobCompletion {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(c) = drain(w).into_iter().next() {
-            return c;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no completion within 10s — nothing queued it, or it is on a queue this \
-                 session does not drain"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    let mut got = None;
+    let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
+        got = drain(w).into_iter().next();
+        got.is_some()
+    });
+    assert!(
+        found || got.is_some(),
+        "no completion: nothing queued it, or it is on a queue this session does not drain"
+    );
+    got.expect("the completion was queued")
 }
 
 /// A background job's PROCESS is written down, and its ending moves it - both halves
@@ -1418,12 +1409,10 @@ fn a_job_of_jobs_settles_through_the_jobs_channel_and_carries_its_table() {
     );
     // And the wait is over: the handle is no longer something the session waits on, which is
     // what lets `wait` say the turn is free to end.
-    let ended = Instant::now() + Duration::from_secs(5);
-    while !watchers.watching_now().is_empty() && Instant::now() < ended {
-        std::thread::sleep(Duration::from_millis(20));
-    }
     assert!(
-        watchers.watching_now().is_empty(),
+        crate::testing::wait_until(crate::testing::PATIENCE, || watchers
+            .watching_now()
+            .is_empty()),
         "a settled job is not something the session is still waiting on"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1682,7 +1671,12 @@ fn an_own_kill_is_not_announced_and_a_scope_ending_is() {
 
     let mine = spawn_a_short_job(&host, "60");
     watchers.watch(mine.0.clone());
-    std::thread::sleep(Duration::from_millis(300));
+    // The kill is the session's OWN, which the watcher only knows once it is live for the job.
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || watchers.delivering(&mine.0)),
+        "the watcher never armed for {:?}",
+        mine.0
+    );
     let rk = host.kill_job(&mine).expect("killed");
     eprintln!(
         "REAP {} state={:?}",
@@ -1691,6 +1685,8 @@ fn an_own_kill_is_not_announced_and_a_scope_ending_is() {
     );
     let (state, _, _) = wait_for_settlement(&hub, &mine.0);
     assert_eq!(state, "killed by job_kill", "the head still shows the row");
+    // A negative check: a second telling would be the settlement's own watcher finishing, which
+    // is not a fact that arrives after it. It can pass falsely under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(700));
     assert!(
         watchers.take_completions().is_empty(),
@@ -1699,7 +1695,11 @@ fn an_own_kill_is_not_announced_and_a_scope_ending_is() {
 
     let other = spawn_a_short_job(&host, "60");
     watchers.watch(other.0.clone());
-    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        crate::testing::wait_until(crate::testing::PATIENCE, || watchers.delivering(&other.0)),
+        "the watcher never armed for {:?}",
+        other.0
+    );
     let owner = host.job(&other).expect("job").owner;
     host.end_scope(&owner).expect("scope ended");
     let c = wait_for_completion(&watchers);
