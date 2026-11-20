@@ -241,6 +241,13 @@ out="$(run "$DEFAULT_ONLY" "one question")"
 refuse "a [default] provider with no local model block is not refused" "$out" "no endpoint for this run"
 expect "  ...and the daemon is started" "$out" "^harnessd "
 refuse "  ...with no local endpoint invented for it" "$out" "--endpoint"
+# A MODE IS THE STORE'S, NOT THE LAUNCHER'S: `--mode writes-allowed` was passed on every start and
+# overrode every project's `automode` row, sending each bash call to a head that is often not
+# attached (and failing closed when it is not). Nothing is passed unless the person asks.
+refuse "  ...and no --mode, so the project's stored mode (automode) is the one in force" "$out" \
+  "^harnessd .*[ ]--mode([ ]|$)"
+out="$(run "$DEFAULT_ONLY" --mode automode "one question")"
+expect "  ...and an explicit --mode still reaches the daemon" "$out" "--mode automode( |$)"
 
 # a_one_shot_with_model_runs_that_model_or_refuses: harnessd reads a bare `--model` as the
 # local binding, so a provider's model must be passed as the provider's, not dropped.
