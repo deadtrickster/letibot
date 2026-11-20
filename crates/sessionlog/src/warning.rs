@@ -1846,13 +1846,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_101_routine_16_refused_and_115_failures() {
+    fn the_table_is_103_routine_16_refused_and_115_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 232, "the table's size");
-        assert_eq!(count(Class::Routine), 101, "the seven limits are routine");
+        assert_eq!(TABLE.len(), 234, "the table's size");
+        // 101, plus the shadow's two: a job that stopped answering, and the one that says it is
+        // back.
+        assert_eq!(count(Class::Routine), 103, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 16, "the sixteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 115);
         // A code with an id is read by its family.
