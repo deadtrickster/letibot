@@ -24,6 +24,11 @@ use letibot_tools::builtins::intent::{AskError, Headless, Question, QuestionAnsw
 /// away would stop every other session on the box.
 pub const ANSWER_BUDGET: Duration = Duration::from_secs(300);
 
+/// How often a card with no head at all looks again for one. Nothing tells a session's waiter that
+/// another session of the daemon gained a head, so it looks, and a person's attach is seen within
+/// this long rather than at the deadline.
+const HEAD_WATCH: Duration = Duration::from_millis(250);
+
 /// What became of one open request.
 enum Slot {
     /// Posted, nobody has said anything.
@@ -85,7 +90,15 @@ impl Answers {
     /// publishes the question, so an answer that arrives while the publish is still fanning out
     /// has somewhere to land.
     fn wait(&self, req_id: &str, budget: Duration) -> Waited {
-        let deadline = Instant::now() + budget;
+        match self.wait_until(req_id, Instant::now() + budget) {
+            Some(w) => w,
+            None => self.take(req_id),
+        }
+    }
+
+    /// Wait until the slot is settled, or `until` passes. `None` is *still open*, which is what a
+    /// caller watching for a head to arrive looks for; the slot is left in place for it.
+    fn wait_until(&self, req_id: &str, until: Instant) -> Option<Waited> {
         let mut g = self.lock();
         // `or_insert`, never `insert`: `ask` creates the slot before it publishes, so a head
         // that answers inside that window has already set `Answered`, and an unconditional
@@ -96,9 +109,9 @@ impl Answers {
                 Some(Slot::Answered { .. }) | Some(Slot::Cancelled { .. }) | None => break,
                 Some(Slot::Waiting) => {}
             }
-            let left = deadline.saturating_duration_since(Instant::now());
+            let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                break;
+                return None;
             }
             let (next, _) = self
                 .cv
@@ -107,9 +120,19 @@ impl Answers {
             g = next;
         }
         match g.remove(req_id) {
+            Some(Slot::Answered { reply, by }) => Some(Waited::Answered { reply, by }),
+            Some(Slot::Cancelled { why }) => Some(Waited::Cancelled { why }),
+            // `Waiting` at the deadline, or gone entirely. Both are *nobody answered*.
+            _ => Some(Waited::TimedOut),
+        }
+    }
+
+    /// Take the slot out and read it. A slot still `Waiting`, or gone entirely, is *nobody
+    /// answered*; an answer that landed between the last look and this call is still read.
+    fn take(&self, req_id: &str) -> Waited {
+        match self.lock().remove(req_id) {
             Some(Slot::Answered { reply, by }) => Waited::Answered { reply, by },
             Some(Slot::Cancelled { why }) => Waited::Cancelled { why },
-            // `Waiting` at the deadline, or gone entirely. Both are *nobody answered*.
             _ => Waited::TimedOut,
         }
     }
@@ -149,14 +172,6 @@ impl Answers {
         } else {
             Vec::new()
         };
-        // A daemon with no head anywhere is not a wait: an unattended seat must not hang every
-        // call for the whole budget, and `gate:no-head` is the sentence that says why nothing ran.
-        // A head attached to ANY session of this daemon IS an answer on its way, and the wait is
-        // the card's own expiry.
-        if who.is_empty() {
-            return AdjudicationDecision::unavailable(req, "gate:no-head", &no_head(subagent));
-        }
-
         // The main session's oracle may settle a relayed read before any card goes up. Its
         // allow is the asker's gate's to keep, like any answer; anything else is the card's line.
         let call = route
@@ -183,6 +198,9 @@ impl Answers {
             )
             .is_some();
         // The slot exists before the question does. See `wait`.
+        // The hubs the card went to as a relay, so each can be taken off the screen it was shown
+        // on: the ones that had a head when it was posed, and any that gained one while it waited.
+        let mut relaid: Vec<Arc<Hub>> = farther;
         let waited = {
             let mut g = self.lock();
             g.insert(req.id.clone(), Slot::Waiting);
@@ -197,11 +215,11 @@ impl Answers {
             hub.publish(card.clone());
             // And to a head attached to another session of this daemon: posted as a RELAY, so its
             // answer comes back to this session's sink and not into that session's gate.
-            for peer in &farther {
+            for peer in &relaid {
                 peer.post_relayed(card.clone(), self.clone());
             }
             if let Some(set) = &route {
-                let mut shown = relayed(card, hub, set);
+                let mut shown = relayed(card.clone(), hub, set);
                 if let (Some(l), SessionEvent::DecisionRequested { shadow, .. }) =
                     (&line, &mut shown)
                 {
@@ -218,15 +236,28 @@ impl Answers {
             // The yellow card says why it is yellow: the call is still `Proposed`, so this
             // note is the only thing on it that explains the wait. A subagent's note lands on
             // the root's hub where its card did, and the root has no such call to hang it on.
+            let note = if who.is_empty() {
+                format!(
+                    "no head is attached yet: the card waits for one for up to {}s, then nothing \
+                     runs",
+                    budget.as_secs()
+                )
+            } else {
+                format!(
+                    "waiting for you: the ask is open for {}s, then nothing runs",
+                    budget.as_secs()
+                )
+            };
             hub.publish(SessionEvent::ToolProgress {
                 turn_id: req.turn_id.clone(),
                 call_id: req.call_id.clone(),
-                note: format!(
-                    "waiting for you: the ask is open for {}s, then nothing runs",
-                    budget.as_secs()
-                ),
+                note,
             });
-            self.wait(&req.id, budget)
+            match &route {
+                // An escalated card is for the main session's head alone.
+                Some(_) => self.wait(&req.id, budget),
+                None => self.wait_watching_peers(&req.id, budget, hub, &card, &mut relaid),
+            }
         };
 
         let latency_ms = started.elapsed().as_millis() as u64;
@@ -259,18 +290,36 @@ impl Answers {
             // Nobody decided, so `by` is the gate and not the heads that were asked - the
             // heads are named in the basis. A `human:` here would file timeouts in the corpus
             // as a person's refusals.
-            Waited::TimedOut => AdjudicationDecision {
-                request_id: req.id.clone(),
-                outcome: DecisionOutcome::Timeout,
-                by: "gate:timeout".into(),
-                basis: format!(
-                    "nobody answered within {}s (asked {}). This is not a denial — nobody decided.",
-                    budget.as_secs(),
-                    who.join(",")
-                ),
-                latency_ms,
-                grant_at: None,
-            },
+            Waited::TimedOut => {
+                // Read again rather than assume: a head may have attached and stayed silent, and
+                // the sentence that says who was asked must be the ones who were there at the end.
+                let mut asked = hub.deciding_heads();
+                for peer in &relaid {
+                    asked.extend(peer.deciding_heads());
+                }
+                asked.sort();
+                asked.dedup();
+                let basis = if asked.is_empty() {
+                    // The card expired with nobody there. Said in the words the no-head refusal
+                    // always used, because it is the same fact with a deadline on it.
+                    one_line(&no_head(subagent, budget))
+                } else {
+                    format!(
+                        "nobody answered within {}s (asked {}). This is not a denial — nobody \
+                         decided.",
+                        budget.as_secs(),
+                        asked.join(",")
+                    )
+                };
+                AdjudicationDecision {
+                    request_id: req.id.clone(),
+                    outcome: DecisionOutcome::Timeout,
+                    by: "gate:timeout".into(),
+                    basis,
+                    latency_ms,
+                    grant_at: None,
+                }
+            }
             Waited::Cancelled { why } => AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Cancelled,
@@ -292,10 +341,41 @@ impl Answers {
         hub.publish(closed.clone());
         // And off the screens of the sessions it was shown on: a card whose ask is over must not
         // stay open in a sibling session's head.
-        for peer in &farther {
+        for peer in &relaid {
             peer.withdraw_relayed_with(&req.id, closed.clone());
         }
         decision
+    }
+
+    /// Wait for an answer, and for a head: a card raised before any head was attached is not
+    /// refused, it waits out its expiry. The asking session's own hub already carries it, so a
+    /// head attaching THERE finds it in its snapshot; a session of this daemon that had nobody
+    /// when the card was posed has to be looked at again, because nothing tells us it gained one.
+    fn wait_watching_peers(
+        self: &Arc<Self>,
+        req_id: &str,
+        budget: Duration,
+        hub: &Arc<Hub>,
+        card: &SessionEvent,
+        relaid: &mut Vec<Arc<Hub>>,
+    ) -> Waited {
+        let until = Instant::now() + budget;
+        loop {
+            let slice = until.min(Instant::now() + HEAD_WATCH);
+            match self.wait_until(req_id, slice) {
+                Some(w) => return w,
+                None if Instant::now() >= until => return self.take(req_id),
+                None => {}
+            }
+            for peer in hub.peer_hubs() {
+                if peer.deciding_heads().is_empty() || relaid.iter().any(|h| Arc::ptr_eq(h, &peer)) {
+                    continue;
+                }
+                if peer.post_relayed(card.clone(), self.clone()) {
+                    relaid.push(peer);
+                }
+            }
+        }
     }
 }
 
@@ -1027,15 +1107,18 @@ fn settle(
     }
 }
 
-/// The sentence a gate gets when nobody at the head can answer. A fact, not a policy - and
-/// for a subagent a different fact, told differently
-fn no_head(subagent: Option<&SubagentAsk>) -> String {
+/// The sentence a gate gets when nobody at the head can answer: the card waited out its whole
+/// expiry with no head attached. A fact, not a policy - and for a subagent a different fact, told
+/// differently
+fn no_head(subagent: Option<&SubagentAsk>, budget: Duration) -> String {
+    let secs = budget.as_secs();
     let Some(s) = subagent else {
-        return "no head that can answer is attached to this session, so nothing was \
-                asked and nobody decided. The gate fails closed: nothing ran and \
-                nothing changed. Attach a head, or run this seat in a foreground \
-                terminal where the console adjudicator can reach a person."
-            .to_string();
+        return format!(
+            "no head that can answer was attached to this session for the {secs}s the card was \
+             open, so nobody was asked and nobody decided. The gate fails closed: nothing ran and \
+             nothing changed. Attach a head, or run this seat in a foreground terminal where the \
+             console adjudicator can reach a person."
+        );
     };
     let task = if s.task.is_empty() {
         String::new()
@@ -1045,9 +1128,9 @@ fn no_head(subagent: Option<&SubagentAsk>) -> String {
     format!(
         "this is subagent `{}`'s call{task}, and its card belongs on session `{}`: the root \
          of its tree, which is the only session in a subagent tree with a head to draw it \
-         (a child has none of its own). No head that can answer is attached there, so \
-         nothing was asked and nobody decided. The gate fails closed: nothing ran and \
-         nothing changed. Attaching a head to that session is the operator's move; the \
+         (a child has none of its own). No head that can answer was attached there for the {secs}s \
+         the card was open, so nobody was asked and nobody decided. The gate fails closed: nothing \
+         ran and nothing changed. Attaching a head to that session is the operator's move; the \
          subagent's is to STOP AND REPORT this call rather than retry it — a retry reaches \
          the same unattended session.",
         s.handle, s.root
@@ -1267,8 +1350,9 @@ impl Adjudicator for HeadAdjudicator {
             // Read, not assumed: a banner that said "a head decides" for a session with no head
             // would be the disclosure claiming a safety property the session has not got.
             return format!(
-                "a head over the session socket — none attached right now, so every gated \
-                 call refuses with not_run until one is (deadline {}s)",
+                "a head over the session socket — none attached right now, so a gated call waits \
+                 up to {}s for one and then refuses with not_run (a head that attaches meanwhile \
+                 sees the card)",
                 self.budget.as_secs()
             );
         }

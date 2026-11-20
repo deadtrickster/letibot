@@ -523,10 +523,93 @@ fn a_question_nobody_answers_is_unanswered_and_the_card_comes_down() {
     );
 }
 
-/// A read-only head is not somebody who can answer, and finding that out must cost
-/// microseconds rather than a deadline.
+/// A card raised with no head attached is not refused: it waits for one, and a head that attaches
+/// while it waits sees it (its snapshot carries the open card) and its answer runs the call.
 #[test]
-fn a_session_with_nobody_who_can_answer_refuses_at_once() {
+fn a_card_raised_with_no_head_waits_for_one_and_runs_when_it_answers() {
+    let hub = Hub::new("s");
+    let answers = Arc::new(Answers::new());
+    hub.set_answer_sink(answers.clone());
+    let budget = Duration::from_secs(30);
+    let adj = HeadAdjudicator::new(hub.clone(), answers.clone()).with_budget(budget);
+
+    // The person arrives a second after the card is up: the delay is the thing under test, so it
+    // is a sleep and not a wait on a fact.
+    let late = hub.clone();
+    let answerer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        let head = late.attach("tui", "alice", Caps::default(), 0);
+        let open = late.snapshot().open_decisions;
+        let Some(d) = open.first() else {
+            return false;
+        };
+        let req_id = d.req_id.clone();
+        late.submit(
+            &head.head_id,
+            "c1",
+            0,
+            letibot_sessionlog::hub::CommandKind::Answer {
+                req_id,
+                reply: Reply::Permission {
+                    option_id: "allow_once".into(),
+                    pattern: None,
+                    note: None,
+                },
+            },
+        );
+        true
+    });
+
+    let d = adj.decide(&request());
+    assert!(
+        answerer.join().unwrap(),
+        "the head that attached during the wait was not handed the card: {d:?}"
+    );
+    assert_eq!(
+        d.outcome,
+        DecisionOutcome::Selected {
+            option_id: "allow_once".into()
+        },
+        "{d:?}"
+    );
+    assert!(open_of(&hub).is_empty(), "the card came down with the answer");
+}
+
+/// The other half of the rule: a head that never comes is the expiry, and the session is told the
+/// card was waiting rather than that nothing was asked.
+#[test]
+fn a_card_raised_with_no_head_is_refused_at_its_expiry() {
+    let hub = Hub::new("s");
+    let answers = Arc::new(Answers::new());
+    hub.set_answer_sink(answers.clone());
+    let budget = Duration::from_millis(60);
+    let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(budget);
+    let d = adj.decide(&request());
+    assert_eq!(d.outcome, DecisionOutcome::Timeout, "{d:?}");
+    assert!(d.basis.contains("no head that can answer"), "{}", d.basis);
+    assert!(d.basis.contains("nothing ran"), "{}", d.basis);
+    assert!(
+        open_of(&hub).is_empty(),
+        "the card is closed at the expiry, so no screen keeps a dead ask"
+    );
+    // What the session was told while it waited: a head is what is missing, and the wait has a
+    // bound. The call is still `Proposed`, so `ToolProgress` is the only door onto it.
+    let note = hub
+        .retained()
+        .iter()
+        .find_map(|e| match &e.event {
+            SessionEvent::ToolProgress { note, .. } => Some(note.clone()),
+            _ => None,
+        })
+        .expect("waiting with no head is still a wait, and says so");
+    assert!(note.contains("no head is attached yet"), "{note}");
+    assert!(note.contains("nothing runs"), "{note}");
+}
+
+/// A read-only head is not somebody who can answer. It is not an instant refusal either: the card
+/// waits out its expiry, because a head that CAN decide may attach in the meantime.
+#[test]
+fn a_head_that_cannot_decide_is_not_somebody_who_can_answer() {
     let hub = Hub::new("s");
     let answers = Arc::new(Answers::new());
     hub.set_answer_sink(answers.clone());
@@ -539,17 +622,13 @@ fn a_session_with_nobody_who_can_answer_refuses_at_once() {
         },
         0,
     );
-    let budget = Duration::from_secs(30);
-    let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(budget);
-    let started = Instant::now();
+    let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_millis(60));
     let d = adj.decide(&request());
-    // Half the budget, for the reason the sibling test above writes down.
-    assert!(started.elapsed() < budget / 2, "it waited");
-    assert_eq!(d.outcome, DecisionOutcome::Unavailable);
-    assert!(d.basis.contains("nothing was asked"), "{}", d.basis);
+    assert_eq!(d.outcome, DecisionOutcome::Timeout, "{d:?}");
+    assert!(d.basis.contains("no head that can answer"), "{}", d.basis);
     assert!(
         open_of(&hub).is_empty(),
-        "nothing was posted, so nothing is open"
+        "the card is closed at the expiry"
     );
 }
 
@@ -685,9 +764,9 @@ fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
     assert!(open_of(&child).is_empty());
 }
 
-/// Nobody at the root to answer: the refusal is a fact, by name. It names the child, the
-/// session its card belongs to, that no head is attached there, and that the child should
-/// stop and report rather than retry.
+/// Nobody at the root to answer: the refusal is a fact, by name, at the expiry. It names the child,
+/// the session its card belongs to, that no head attached there, and that the child should stop
+/// and report rather than retry.
 #[test]
 fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
     let root = Hub::new("root");
@@ -705,29 +784,24 @@ fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
         0,
     );
     let child = Hub::new("s-sub-3");
-    let budget = Duration::from_secs(30);
     let adj = SubagentAdjudicator::new(
         child_ask(),
-        Some(HeadAdjudicator::new(root.clone(), answers).with_budget(budget)),
+        Some(HeadAdjudicator::new(root.clone(), answers).with_budget(Duration::from_millis(60))),
     );
-    let started = Instant::now();
     let d = adj.decide(&request());
-    // Half the budget, not 5 s - see `a_session_with_nobody_who_can_answer_refuses_at_once`.
-    assert!(started.elapsed() < budget / 2, "it waited");
-    assert_eq!(d.outcome, DecisionOutcome::Unavailable);
-    assert!(d.by.starts_with("gate:no-head"), "{}", d.by);
-    // Which child, which session the card belongs to, that nothing was asked, and what to
-    // do about it.
+    assert_eq!(d.outcome, DecisionOutcome::Timeout, "{d:?}");
+    // Which child, which session the card belongs to, that nobody was asked, and what to do about
+    // it.
     for want in [
         "s-sub-3",
         "root",
-        "nothing was asked",
+        "nobody was asked",
         "STOP AND REPORT",
         "rather than retry",
     ] {
         assert!(d.basis.contains(want), "{want:?} is not in {:?}", d.basis);
     }
-    // Refused before the post, so no card is left open on a session nothing will answer.
+    // Nothing is left open once the ask is over.
     assert!(open_of(&root).is_empty());
     assert!(open_of(&child).is_empty());
 }
@@ -1350,5 +1424,77 @@ fn a_card_reaches_a_head_attached_to_another_session_of_the_daemon() {
     assert!(
         sibling.snapshot().open_decisions.is_empty(),
         "the card is taken off the sibling's screen once the ask is over"
+    );
+}
+
+/// The same, one moment later: no head anywhere when the card was raised, and the person arrives at
+/// a SIBLING session while the card waits. Nothing tells the waiter that another session gained a
+/// head, so the card has to be looked at again and relayed there.
+#[test]
+fn a_card_waiting_with_no_head_reaches_one_that_attaches_to_a_sibling_later() {
+    let hubs: Arc<std::sync::Mutex<Vec<std::sync::Weak<Hub>>>> = Default::default();
+    let asker = Hub::new("s-main");
+    asker.share_peers(hubs.clone());
+    hubs.lock().unwrap().push(Arc::downgrade(&asker));
+    let sibling = Hub::new("s-shadow");
+    sibling.share_peers(hubs.clone());
+    hubs.lock().unwrap().push(Arc::downgrade(&sibling));
+    let answers = Arc::new(Answers::new());
+    asker.set_answer_sink(answers.clone());
+    sibling.set_answer_sink(answers.clone());
+
+    let adj = HeadAdjudicator::new(asker.clone(), answers.clone()).with_budget(Duration::from_secs(30));
+
+    // The person, arriving late. The card is up before they attach, so this is the no-head wait and
+    // not the sibling test above.
+    let shown = sibling.clone();
+    let waiting = asker.clone();
+    let person = std::thread::spawn(move || {
+        if !crate::testing::wait_until(crate::testing::PATIENCE, || {
+            !waiting.snapshot().open_decisions.is_empty()
+        }) {
+            return false;
+        }
+        let head = shown.attach("tui", "deadtrickster", Caps::default(), 0);
+        if !crate::testing::wait_until(crate::testing::PATIENCE, || {
+            !shown.snapshot().open_decisions.is_empty()
+        }) {
+            return false;
+        }
+        let open = shown.snapshot().open_decisions;
+        let Some(d) = open.first() else {
+            return false;
+        };
+        shown.submit(
+            &head.head_id,
+            "c1",
+            0,
+            letibot_sessionlog::hub::CommandKind::Answer {
+                req_id: d.req_id.clone(),
+                reply: Reply::Permission {
+                    option_id: "allow_once".into(),
+                    pattern: None,
+                    note: None,
+                },
+            },
+        );
+        true
+    });
+
+    let d = adj.decide(&request());
+    assert!(
+        person.join().unwrap(),
+        "the card waiting for a head never reached the sibling's: {d:?}"
+    );
+    assert_eq!(
+        d.outcome,
+        DecisionOutcome::Selected {
+            option_id: "allow_once".into()
+        },
+        "{d:?}"
+    );
+    assert!(
+        sibling.snapshot().open_decisions.is_empty(),
+        "and it comes off that screen when the ask is over"
     );
 }

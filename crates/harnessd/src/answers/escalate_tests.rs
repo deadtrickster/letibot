@@ -255,15 +255,19 @@ fn a_queue_sessions_question_reaches_the_main_session() {
     assert!(open_of(&w.main).is_empty());
 }
 
-/// With no main session the gate still fails closed at once.
+/// With no main session AND no head, nothing can answer: the card waits out its expiry and then
+/// fails closed. It is not refused at the door, because a head attaching to the queue session while
+/// it waits is a person who can decide it.
 #[test]
-fn with_no_main_session_a_queue_card_still_fails_closed() {
+fn with_no_main_session_a_queue_card_waits_its_expiry_and_fails_closed() {
     let gatekeeper = Hub::new(GATEKEEPER);
     let answers = Arc::new(Answers::new());
     gatekeeper.set_answer_sink(answers.clone());
     gatekeeper.set_escalation(PendingAsks::new());
-    let d = HeadAdjudicator::new(gatekeeper, answers).decide(&request());
-    assert_eq!(d.by, "gate:no-head", "{d:?}");
+    let adj = HeadAdjudicator::new(gatekeeper, answers).with_budget(Duration::from_millis(60));
+    let d = adj.decide(&request());
+    assert_eq!(d.outcome, DecisionOutcome::Timeout, "{d:?}");
+    assert!(d.basis.contains("no head that can answer"), "{}", d.basis);
 }
 
 const CLONE: &str = "/tmp/letibot-review-clones/review-agent-p2-followups-34db3e56";
