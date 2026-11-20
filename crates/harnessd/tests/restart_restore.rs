@@ -34,7 +34,7 @@ use support::qwen::{IM_END, THINK_CLOSE};
 use support::room;
 use support::stub::{read_request, write_props};
 
-const PATIENCE: Duration = Duration::from_secs(30);
+const PATIENCE: Duration = support::wait::PATIENCE;
 const PARENT: &str = "s-restart-parent";
 const OLD: &str = "d-old-daemon";
 const ANSWER: &str = "finished the restored work";
@@ -171,12 +171,11 @@ impl Daemon {
     }
 }
 
-fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    let began = Instant::now();
-    while !f() {
-        assert!(began.elapsed() < PATIENCE, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(25));
-    }
+fn wait_until(what: &str, f: impl FnMut() -> bool) {
+    assert!(
+        support::wait::wait_until(PATIENCE, f),
+        "timed out waiting for {what}"
+    );
 }
 
 fn user_rows(hub: &Hub) -> Vec<String> {
@@ -435,6 +434,8 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     std::thread::spawn({
         let stub_release = stub.gate.clone();
         move || {
+            // Pacing the stub: the release has to land while the stop is still under way, and no
+            // fact on this side says when that is.
             std::thread::sleep(Duration::from_millis(200));
             let (lock, cv) = &*stub_release;
             lock.lock().unwrap().1 = usize::MAX;
@@ -639,6 +640,8 @@ fn launcher_interrupt_before_close_keeps_child_resumable() {
     std::thread::spawn({
         let stub_release = stub.gate.clone();
         move || {
+            // Pacing the stub: the release has to land while the stop is still under way, and no
+            // fact on this side says when that is.
             std::thread::sleep(Duration::from_millis(200));
             let (lock, cv) = &*stub_release;
             lock.lock().unwrap().1 = usize::MAX;
@@ -648,7 +651,9 @@ fn launcher_interrupt_before_close_keeps_child_resumable() {
     let _ = one.parent.stop_children();
     let child = one.registry.get(&handle).expect("the child's hub");
     wait_until("the child's turn to end", || !child.turn_in_flight());
-    // Its settlement is written by the child's thread just after the turn ends.
+    // Its settlement is written by the child's thread just after the turn ends. A negative check:
+    // the row below must still read `running`, so there is no arrival to wait for - only a window
+    // for a wrong write to become visible. It can pass falsely under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(500));
     let store = Store::open(&dir.store()).unwrap();
     let row = store.subagent_run(&handle).unwrap().unwrap();
@@ -748,6 +753,8 @@ fn a_child_stopped_in_a_later_turn_is_resumed_not_left_as_finished() {
     std::thread::spawn({
         let gate = stub.gate.clone();
         move || {
+            // Pacing the stub: the release has to land while the stop is still under way, and no
+            // fact on this side says when that is.
             std::thread::sleep(Duration::from_millis(200));
             let (lock, cv) = &*gate;
             lock.lock().unwrap().1 = usize::MAX;
@@ -964,7 +971,8 @@ fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
         "{}",
         resumed.payload
     );
-    // Nothing was delivered to the model.
+    // Nothing was delivered to the model. A negative check: no row is the claim, and it waits a
+    // moment for one that should not exist to appear. It can pass falsely under load, never fail.
     std::thread::sleep(Duration::from_millis(300));
     let _ = d.parent.wake();
     assert!(
@@ -1768,6 +1776,8 @@ fn past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back() 
         "{notice}"
     );
     assert!(notice.contains("on branch `agent/paused`"), "{notice}");
+    // A negative check: nothing is resumed, so there is no arrival to wait for. It can pass falsely
+    // under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         d.registry.get("s-restart-parent-sub-a").is_none(),
@@ -1858,7 +1868,8 @@ fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
     store
         .put_subagent_run(&run("s-restart-parent-sub-a", PARENT, "running", &spec))
         .unwrap();
-    // The open is a moment after the stop, and past the one-millisecond threshold.
+    // The open is a moment after the stop, and past the one-millisecond threshold: the interval is
+    // the wall clock the product reads, not something the test could observe.
     std::thread::sleep(Duration::from_millis(20));
 
     let notice = d.parent.restore_after_restart().expect("a reminder");
@@ -1871,6 +1882,7 @@ fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
         notice.contains(r#"call `task_resume {"task": "s-restart-parent-sub-a"}`"#),
         "{notice}"
     );
+    // A negative check: the child must stay un-resumed. It can pass falsely under load, never fail.
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         d.registry.get("s-restart-parent-sub-a").is_none(),
@@ -2010,6 +2022,8 @@ fn what_must_not_be_respawned_is_reported_or_delivered() {
     );
     assert!(notice.contains("3 times in a row"), "{notice}");
     assert!(!notice.contains("sub-killed"), "{notice}");
+    // A negative check: the window in which a respawn would show up. It can pass falsely under load,
+    // never fail falsely.
     std::thread::sleep(Duration::from_millis(300));
     for h in [
         "s-restart-parent-sub-gone",
@@ -2696,6 +2710,7 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     assert!(again.restore_after_restart().is_none());
     assert!(warnings(&hub, "restart_restored").is_empty());
     assert!(warnings(&hub3, "restart_reminded").is_empty());
+    // A negative check: nothing was respawned, and the window is how long one would take to appear.
     std::thread::sleep(Duration::from_millis(200));
     assert!(registry.get("s-restart-parent-sub-mine").is_none());
     // The orderly stop, for the reason `Daemon::stop` is one: the registry closes and every

@@ -83,6 +83,8 @@ fn a_project_row_written_after_the_sessions_own_wins_at_reopen() {
     modes.set_session("s-later", Mode::READ_ONLY, None).unwrap();
     // The operator moves the PROJECT afterwards - from another session of it, or from `/mode` on
     // a root. Only the project's row is touched here, which is the case that came back wrong.
+    // A clock guard, not a wait for work: the two rows must be stamped apart, so the later write is
+    // the later `set_at`.
     std::thread::sleep(std::time::Duration::from_millis(5));
     modes.set(&ws, Mode::ALWAYS_ASK).unwrap();
 
@@ -98,6 +100,7 @@ fn a_project_row_written_after_the_sessions_own_wins_at_reopen() {
     let cfg = config(&dir, "s-earlier");
     let mut modes = ModeStore::load(&db);
     modes.set(&ws, Mode::ALWAYS_ASK).unwrap();
+    // The same clock guard the other way round: the session's row has to be the LATER one.
     std::thread::sleep(std::time::Duration::from_millis(5));
     modes
         .set_session("s-earlier", Mode::READ_ONLY, None)

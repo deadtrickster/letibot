@@ -14,6 +14,10 @@ use letibot_room::{Request, Response, Room, Speaker, State};
 use letibot_sessionlog::hub::Hub;
 use letibot_turn::steering::SteeringSource;
 
+mod support;
+
+use support::wait::PATIENCE;
+
 /// Rule 1 - listen before working. A sentence pushed while a turn is running comes out of
 /// the steering source at the next round boundary, and it comes out ONCE. The push is what
 /// the room's reader thread does, so this is the same queue the real path fills.
@@ -316,7 +320,8 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
 
     // And nothing is left for the next turn. The count was taken by the `Welcome`, so the reader's
     // next pass finds zero - a client that re-reported the same gap would tell the model the room had
-    // gone quiet again every few seconds.
+    // gone quiet again every few seconds. A negative check: the pass that must find nothing is not
+    // observable, so it waits a moment. It can pass falsely under load, never fail falsely.
     std::thread::sleep(std::time::Duration::from_millis(400));
     assert_eq!(wake::waiting(session), 0, "the gap is said once: {said:?}");
     drop(back);
@@ -378,6 +383,8 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
             body: "the other 8 GB".into(),
         })
         .expect("the observer posts, which makes it a member of the tag");
+    // A drain, not a wait: the observer's channel must be empty before the turn below is measured,
+    // and its own post is what has to arrive and be thrown away first.
     std::thread::sleep(std::time::Duration::from_millis(150));
     seen.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let rung_before = rung.load(Ordering::SeqCst);
@@ -385,8 +392,11 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
     // ---- a turn, begun and ended ------------------------------------------
     // The whole of what "the subagent finished" is on this side of the socket.
     me.turn_started();
+    // Pacing the stub's two frames apart, so a turn has really begun before it ends; the product
+    // measures nothing on this interval.
     std::thread::sleep(std::time::Duration::from_millis(120));
     me.turn_ended();
+    // A negative check: nothing arriving is the claim, and no later fact could stand for it.
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let events = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -439,13 +449,9 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
 }
 
 /// Wait until `f` says so - for a fact that arrives on a thread rather than as a frame.
-fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if f() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("waited ten seconds for {what}");
+fn wait_until(what: &str, f: impl FnMut() -> bool) {
+    assert!(
+        support::wait::wait_until(PATIENCE, f),
+        "waited {PATIENCE:?} for {what}"
+    );
 }

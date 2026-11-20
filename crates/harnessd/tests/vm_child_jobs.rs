@@ -1005,7 +1005,9 @@ fn the_kill_is_reported(sessions: &mut Sessions<'_>, scene: &Scene, child: &str)
         "the job's row is not the kill it was"
     );
     // The watcher settles the client after `down` has already written the kill; give it that
-    // window and read the row again, because the defect was the settle overwriting this.
+    // window and read the row again, because the defect was the settle overwriting this. A negative
+    // check: the row must still read the kill, so there is no arrival to wait for. It can pass
+    // falsely under load, never fail falsely.
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(
         row(&handle).as_deref(),

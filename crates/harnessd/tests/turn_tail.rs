@@ -248,6 +248,8 @@ fn every_door_of_a_session_the_daemon_holds_runs_one_tail() {
     });
     door("the idle plan-check", &mut sessions, &|s| {
         s.set_nag_window(Duration::from_millis(1));
+        // The 1 ms nag window is the interval on the wall clock, so this is the wait for it to pass,
+        // not a wait for anything the test can see.
         std::thread::sleep(Duration::from_millis(20));
         let _ = s.deliver_due_nags();
     });

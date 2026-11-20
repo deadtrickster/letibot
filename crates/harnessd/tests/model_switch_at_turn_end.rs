@@ -29,6 +29,8 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::Registry;
 use letibot_transcript::{TranscriptItem, UserPart};
 
+mod support;
+
 /// The answer the new model streams. A marker, so the row can be found.
 const ANSWER: &str = "the-round-went-through";
 
@@ -188,6 +190,8 @@ fn model(script: &'static [Act]) -> Model {
                             // The interrupt closed the connection. Nothing to answer.
                             break;
                         }
+                        // Pacing the stub's stream: a turn the test wants in flight has to stay open
+                        // long enough for the switch to land mid-round.
                         std::thread::sleep(Duration::from_millis(200));
                     }
                 }
@@ -429,14 +433,11 @@ fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
 /// in this file that moves on the model's side of the wire, and every scenario's window is opened by
 /// one of them.
 fn until(what: &str, cond: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        if cond() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("waited 30s for {what}");
+    assert!(
+        support::wait::wait_until(support::wait::PATIENCE, cond),
+        "waited {:?} for {what}",
+        support::wait::PATIENCE
+    );
 }
 
 /// Is the model's answer a row yet - the proof a turn finished successfully, read off the

@@ -474,6 +474,8 @@ fn drive(tag: &str, turns: usize, prompt_bytes: usize, window: Option<u64>, cap:
         head.compact(0).expect("the compaction reaches the daemon");
         wait_compaction(&frames, &asked, want, &scratch);
         // The failure path publishes its warning after the refusal, and that row is part of the turn.
+        // Pacing a report, not asserting: this is the sample's window, and the test's claims are about
+        // the numbers it prints afterwards.
         std::thread::sleep(Duration::from_millis(200));
         let watch = last_memwatch(&scratch).unwrap_or_default();
         rows.push(Row {
@@ -528,6 +530,8 @@ fn the_daemon_probe() {
         let start = rss(pid);
         println!("\nidle for {idle}s from rss {}", mb(start as f64));
         for i in 0..idle {
+            // The measurement itself: the daemon is watched for its own idle period, one second at
+            // a time, and nothing is waited FOR.
             std::thread::sleep(Duration::from_secs(1));
             if (i + 1) % 10 == 0 || i + 1 == idle {
                 println!("  idle {:>4}s · rss {}", i + 1, mb(rss(pid) as f64));

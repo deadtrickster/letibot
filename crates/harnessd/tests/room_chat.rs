@@ -3,7 +3,7 @@
 //! row, a queue row) arrive as messages.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use letibot_harnessd::room::link::SessionRoom;
 use letibot_harnessd::room::operator::OperatorSeat;
@@ -13,18 +13,19 @@ use letibot_room::{Room, project_room};
 use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
 use serde_json::json;
 
+mod support;
+
 const A: &str = "aaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbb";
 
 fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        if let Some(v) = probe() {
-            return v;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("timed out waiting for {what}");
+    let mut found = None;
+    let arrived = support::wait::wait_until(support::wait::PATIENCE, || {
+        found = probe();
+        found.is_some()
+    });
+    assert!(arrived, "timed out waiting for {what}");
+    found.expect("the probe answered, so it left a value")
 }
 
 fn todo(content: &str, status: TodoStatus) -> TodoEntry {
@@ -86,6 +87,8 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
         &json!({"room": "host", "text": "just thinking aloud", "kind": "announce"}),
     )
     .unwrap();
+    // A negative check: no wake is the claim, and a wake that never comes has no later fact to
+    // drive to. It can pass falsely under load, never fail falsely.
     std::thread::sleep(std::time::Duration::from_millis(500));
     let woken = wake::take("s-chat-b1");
     assert!(
@@ -248,6 +251,8 @@ fn an_fyi_rings_only_the_session_it_names() {
         &json!({"text": "the disk is fine again", "kind": "fyi"}),
     )
     .expect("a say");
+    // A count, not an arrival: `== 1` says the line rang the peer once and the second one rang it
+    // not at all, and only a settling window can say "not again". It can pass falsely under load.
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         rung.lock()
