@@ -497,21 +497,21 @@ mod job_tail {
             })
             .expect("spawn");
         let read = |want: &str| -> SessionEvent {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            loop {
+            let mut last = None;
+            let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
                 let e = live_job_output(host.as_ref(), &id.0, 0, JOB_OUTPUT_WINDOW)
                     .expect("the host holds a running job");
-                if let SessionEvent::JobOutput { lines, .. } = &e
-                    && lines.iter().any(|l| l.contains(want))
-                {
-                    return e;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "never saw {want:?}: {e:?}"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
+                let hit = match &e {
+                    SessionEvent::JobOutput { lines, .. } => {
+                        lines.iter().any(|l| l.contains(want))
+                    }
+                    _ => false,
+                };
+                last = Some(e);
+                hit
+            });
+            assert!(found, "never saw {want:?}: {last:?}");
+            last.expect("a window was read")
         };
         let SessionEvent::JobOutput {
             job, state, lines, ..

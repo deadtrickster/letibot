@@ -633,6 +633,8 @@ fn an_interrupt_ends_a_real_store_wait_within_a_second() {
     let stopper = {
         let hub = h.hub.clone();
         std::thread::spawn(move || {
+            // A stop only means anything while the write is waiting, and the waiter's own state is
+            // not readable from here: this is the wait it is racing, not a fact to wait on.
             std::thread::sleep(std::time::Duration::from_millis(300));
             hub.submit(
                 &head.head_id,
@@ -676,10 +678,21 @@ fn a_store_wait_is_said_while_it_waits() {
         return;
     };
     let (release, holder) = hold_the_write_lock(&path);
-    let releaser = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1800));
-        release.send(()).unwrap();
-    });
+    let releaser = {
+        let hub = h.hub.clone();
+        std::thread::spawn(move || {
+            // The wait is said once it has run past `STORE_WAIT_SAID_AFTER`, and that line is the
+            // fact this test needs the lock held for - not a number standing in for it.
+            assert!(
+                crate::testing::wait_until(crate::testing::PATIENCE, || hub
+                    .retained()
+                    .iter()
+                    .any(|e| matches!(&e.event,
+                        SessionEvent::Warning { code, .. } if code == "store_busy_wait")))
+            );
+            release.send(()).unwrap();
+        })
+    };
     let n = h
         .store_patiently("title", |s| {
             s.write_tx(|tx| {
@@ -723,6 +736,8 @@ fn esc_during_busy_store_wait_does_not_mark_batch_stored() {
     let stopper = {
         let hub = h.hub.clone();
         std::thread::spawn(move || {
+            // A stop only means anything while the write is waiting, and the waiter's own state is
+            // not readable from here: this is the wait it is racing, not a fact to wait on.
             std::thread::sleep(std::time::Duration::from_millis(300));
             hub.submit(
                 &head.head_id,
@@ -763,6 +778,8 @@ fn an_idle_pass_stores_the_rows_a_stopped_turn_left() {
     let stopper = {
         let hub = h.hub.clone();
         std::thread::spawn(move || {
+            // A stop only means anything while the write is waiting, and the waiter's own state is
+            // not readable from here: this is the wait it is racing, not a fact to wait on.
             std::thread::sleep(std::time::Duration::from_millis(300));
             hub.submit(
                 &head.head_id,

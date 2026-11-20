@@ -68,7 +68,15 @@ fn kept_by_an_earlier_daemon(dir: &Scratch, command: &str, settle: Duration) -> 
             env_trailer: false,
         })
         .expect("the job starts");
-    std::thread::sleep(settle);
+    // The job gets `settle` to print before this daemon stops, and the `.out` file the wrapper grows
+    // is that fact. A job that prints later (one that ends while detached) simply spends the window.
+    let out = letibot_tools::exec::detach::out_path(&letibot_tools::exec::detach::raw_path(
+        &dir.0.join("scratch"),
+        &id.0,
+    ));
+    let _ = crate::testing::wait_until(settle, || {
+        std::fs::metadata(&out).is_ok_and(|m| m.len() > 0)
+    });
     let (kept, _) = host.detach_for_restart("the daemon stopping");
     drop(host);
     let d = kept.into_iter().next().expect("the job was kept");
@@ -176,31 +184,20 @@ fn opened(dir: &Scratch, sid: &str) -> Harness {
     Harness::open(&parts, cfg, Hub::new(sid)).expect("the session opens")
 }
 
-fn until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now() + limit;
-    while std::time::Instant::now() < deadline {
-        if f() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    f()
+fn until(f: impl FnMut() -> bool) -> bool {
+    crate::testing::wait_until(crate::testing::PATIENCE, f)
 }
 
 /// A job's stamp, `start:<ticks>`, which `/proc/<pid>/stat` answers only once the process is
 /// really there: a spawn that has returned is not yet a pid this box can read.
 fn stamp_of(pid: u32) -> String {
-    let until = std::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(p) = letibot_tools::exec::procs::read(pid) {
-            return format!("start:{}", p.start);
-        }
-        assert!(
-            std::time::Instant::now() < until,
-            "pid {pid} never had a stamp"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let mut stamp = None;
+    let found = crate::testing::wait_until(crate::testing::PATIENCE, || {
+        stamp = letibot_tools::exec::procs::read(pid).map(|p| format!("start:{}", p.start));
+        stamp.is_some()
+    });
+    assert!(found || stamp.is_some(), "pid {pid} never had a stamp");
+    stamp.expect("the pid had a stamp")
 }
 
 /// The next daemon adopts a kept job: its rows read `running` and name this daemon, its output
@@ -237,7 +234,7 @@ fn a_new_daemon_adopts_a_kept_job_and_says_so_once() {
         "a reattached job is not a detached holding any more"
     );
     assert!(
-        until(Duration::from_secs(30), || std::fs::metadata(&out)
+        until(|| std::fs::metadata(&out)
             .is_ok_and(|m| m.len() > before + 20)),
         "the output file stopped at {before} bytes"
     );
@@ -273,7 +270,7 @@ fn a_kept_job_that_ended_while_detached_is_delivered_with_its_code() {
     left_behind(&dir, sid, &d);
     let status = letibot_tools::exec::detach::status_path(std::path::Path::new(&d.raw));
     assert!(
-        until(Duration::from_secs(30), || {
+        until(|| {
             letibot_tools::exec::detach::prove(&d) == letibot_tools::exec::detach::Proof::Ended(3)
         }),
         "no status at {}",
@@ -282,9 +279,7 @@ fn a_kept_job_that_ended_while_detached_is_delivered_with_its_code() {
     let mut h = opened(&dir, sid);
     let store = Store::open(&dir.0.join("sessions.db")).unwrap();
     assert!(
-        until(Duration::from_secs(30), || job_state(
-            &store, sid, &d.handle
-        ) == "exited 3"),
+        until(|| job_state(&store, sid, &d.handle) == "exited 3"),
         "{}",
         job_state(&store, sid, &d.handle)
     );
@@ -423,6 +418,8 @@ fn a_restart_keeps_the_job_and_a_plain_stop_kills_it() {
             assert_eq!(rec.identity, stamp);
             drop(h);
             drop(host);
+            // A negative check: the job is supposed to be STILL there, and nothing is followed by
+            // its absence. It can pass falsely under load, never fail falsely.
             std::thread::sleep(Duration::from_millis(200));
             assert!(
                 letibot_tools::exec::detach::stamp_matches(view.pid, &stamp),
@@ -434,9 +431,7 @@ fn a_restart_keeps_the_job_and_a_plain_stop_kills_it() {
                 "a plain stop kept it"
             );
             assert!(
-                until(Duration::from_secs(30), || {
-                    !letibot_tools::exec::detach::stamp_matches(view.pid, &stamp)
-                }),
+                until(|| !letibot_tools::exec::detach::stamp_matches(view.pid, &stamp)),
                 "a plain stop left the job running"
             );
         }

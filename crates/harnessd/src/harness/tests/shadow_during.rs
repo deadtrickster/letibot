@@ -38,6 +38,8 @@ impl letibot_backend::MessagesBackend for Reads {
             t.len()
         };
         if round == 2 {
+            // The stub's job here is to be slow: the shadow's during job runs on its own thread and
+            // its verdict has to land before this round returns. Nothing in the stub can see it.
             std::thread::sleep(Duration::from_millis(500));
         }
         let tool_calls = match round {

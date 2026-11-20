@@ -82,10 +82,21 @@ fn a_round_is_stored_before_reviews_run() {
     );
 
     let (release, holder) = hold_the_write_lock(&path);
-    let releaser = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1600));
-        release.send(()).unwrap();
-    });
+    let releaser = {
+        let hub = h.hub.clone();
+        std::thread::spawn(move || {
+            // The seam's write waits on the held lock, and the wait is only said once it has run
+            // past a second: that line is the fact, not a number standing in for it.
+            assert!(
+                crate::testing::wait_until(crate::testing::PATIENCE, || hub
+                    .retained()
+                    .iter()
+                    .any(|e| matches!(&e.event,
+                        SessionEvent::Warning { code, .. } if code == "store_busy_wait")))
+            );
+            release.send(()).unwrap();
+        })
+    };
     let results = vec![TranscriptItem::ToolResult {
         call_id: "call-seam".into(),
         name: "read".into(),
