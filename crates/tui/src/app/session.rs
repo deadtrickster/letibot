@@ -638,6 +638,22 @@ impl App {
         })
     }
 
+    /// The sentence for a DOCUMENT this head could not read at all - a pane's view, a frame's shape
+    /// - when the reason is a newer daemon. Ordinary skew is survivable and `skew_sentence` says so;
+    /// a reading that did not happen is not, and the fix is the other half of the skew: a head from
+    /// the daemon's own build. `None` when this head is not the older one, so no caller blames a
+    /// build that is not at fault.
+    pub(crate) fn head_older_sentence(&self) -> Option<String> {
+        let mine = letibot_sessionlog::protocol::PROTOCOL_VERSION;
+        let theirs = self.daemon_protocol.filter(|d| *d > mine)?;
+        Some(format!(
+            "this head is OLDER than the daemon: it speaks protocol {mine} and the daemon speaks \
+             {theirs}, so a document from its build cannot be read here. Restart the head from the \
+             daemon's own install - quit this one and run `letibot` again; nothing is lost, since \
+             the session lives in the daemon."
+        ))
+    }
+
     /// `ctrl-^`: attach anyway. Nothing is re-sent, since a refused line was held in the composer and not queued,
     /// and re-sending somebody's words after they moved on is an act nobody asked for. What it sends are the reads
     /// the seating owes.

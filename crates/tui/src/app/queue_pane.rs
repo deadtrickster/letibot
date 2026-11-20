@@ -409,13 +409,16 @@ impl App {
         let input = self.queue_input(host.state_of(HOOK));
         let answered = host.ask(HOOK, PANE, &input);
         let Some(view) = answered.view else {
-            return (
-                None,
-                Some(
-                    host.peek_problem()
-                        .unwrap_or_else(|| "its answer was not a pane this head can read".into()),
-                ),
-            );
+            let mut why = host
+                .peek_problem()
+                .unwrap_or_else(|| "its answer was not a pane this head can read".into());
+            // A newer daemon's answer is not a broken layer: it is a document this build cannot
+            // read, and saying "the layer did not draw" sends the operator after the wrong thing.
+            if let Some(older) = self.head_older_sentence() {
+                why.push_str("; ");
+                why.push_str(&older);
+            }
+            return (None, Some(why));
         };
         host.remember(HOOK, view.state.clone());
         // The host's rules, and the acts the layer declared (C3). A view that reaches a verb the
