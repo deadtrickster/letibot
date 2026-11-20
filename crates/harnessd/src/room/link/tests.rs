@@ -467,7 +467,9 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
         }),
         "the chat never reached `{me_id}`: {said:?}"
     );
-    // The room's own fact about another session's row wakes nobody it does not name.
+    // The room's own fact about another session's row wakes nobody it does not name. No moment is
+    // slept for: another line to the same room is pushed by the same reader thread, so the todo's
+    // own delivery is behind it and the wait is on a fact that comes AFTER the negative.
     other.notify_in(
         "host",
         "todo",
@@ -475,10 +477,20 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
         "a row is done".to_string(),
         Vec::new(),
     );
-    // A negative check: nothing later than this fact can be watched for, so it waits a moment
-    // and says it never arrived. It can pass falsely under load, never fail falsely.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    said.extend(wake::take(me_id));
+    other
+        .call(
+            "say",
+            &serde_json::json!({"room": "host", "text": "the row is behind us",
+                "kind": "announce"}),
+        )
+        .expect("a say");
+    assert!(
+        wait_until(PATIENCE, || {
+            said.extend(wake::take(me_id));
+            said.iter().any(|s| s.contains("the row is behind us"))
+        }),
+        "the line said after the todo never reached `{me_id}`: {said:?}"
+    );
     assert!(
         !said.iter().any(|s| s.contains("a row is done")),
         "a todo fact woke `{me_id}`: {said:?}"
@@ -639,17 +651,10 @@ fn a_host_line_between_others_does_not_wake_a_project_session() {
     // The one it names is woken where it was named; the bystander of another project is not.
     let named = until_note(same_id, "did you see that?");
     assert!(named.contains("to @you"), "{named}");
-    // A negative check: the bystander's own queue is only ever filled by the pass that filled
-    // the named peer's, and its reader thread is not ordered against that one.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert_eq!(
-        wake::waiting(me_id),
-        0,
-        "host chatter between others woke `{me_id}`: {:?}",
-        wake::take(me_id)
-    );
 
-    // A `to` is a private message: the tool answer says where it went, and it wakes the one.
+    // A `to` is a private message: the tool answer says where it went, and it wakes the one. It is
+    // also the fact the negative above waits on - the dm rides the same queue the host chatter
+    // would have, so every line drained on the way to it is kept and the chatter is absent from it.
     let answer = other
         .call(
             "say",
@@ -658,7 +663,25 @@ fn a_host_line_between_others_does_not_wake_a_project_session() {
         .expect("a say");
     assert!(answer.contains("in dm"), "{answer}");
     assert!(answer.contains("only the two of you read it"), "{answer}");
-    let line = until_note(me_id, "just between us");
+    let mut drained: Vec<String> = Vec::new();
+    assert!(
+        wait_until(PATIENCE, || {
+            drained.extend(wake::take(me_id));
+            drained.iter().any(|s| s.contains("just between us"))
+        }),
+        "the dm never woke `{me_id}`: {drained:?}"
+    );
+    assert!(
+        !drained
+            .iter()
+            .any(|s| s.contains("fleet key") || s.contains("did you see that?")),
+        "host chatter between others woke `{me_id}`: {drained:?}"
+    );
+    let line = drained
+        .iter()
+        .find(|s| s.contains("just between us"))
+        .expect("the needle was found")
+        .clone();
     assert!(
         line.contains(") to dm\n"),
         "a dm does not read as private: {line}"
@@ -810,14 +833,14 @@ fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
         tag: "ram".into(),
         body: "1 GB".into(),
     });
-    // A negative check: the arbiter's reader thread is not ordered against this post's reply.
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    assert_eq!(
-        *rung_arbiter.lock().unwrap(),
-        0,
+    // A negative check as a never-happened deadline: the arbiter's reader thread is not ordered
+    // against this post's reply, so what proves the post is not a turn is that nothing at all
+    // arrived on its own connection for a full PATIENCE.
+    assert!(
+        !wait_until(PATIENCE, || *rung_arbiter.lock().unwrap() > 0
+            || wake::waiting(&arbiter) > 0),
         "a post is not a question: the arbiter is woken by a raise, not by the queue moving"
     );
-    assert_eq!(wake::waiting(&arbiter), 0);
     drop(host);
     drop(me);
     server.stop();

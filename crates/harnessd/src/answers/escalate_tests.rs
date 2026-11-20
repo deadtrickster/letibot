@@ -1560,10 +1560,10 @@ fn a_shadow_timeout_is_not_asked_again_beside_the_card() {
     );
     let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::from_millis(900));
     assert!(card.is_some(), "{d:?}");
-    std::thread::sleep(Duration::from_millis(700));
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
+    // The card carries the judge's line, so its first call has happened; what the wait below is
+    // for is the SECOND one, which must never come. A never-happened deadline, not a moment slept.
+    assert!(
+        !crate::testing::wait_until(crate::testing::PATIENCE, || calls.load(Ordering::SeqCst) > 1),
         "one call reached the judge"
     );
     let exchanges: Vec<String> = rows

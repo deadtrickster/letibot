@@ -29,10 +29,10 @@ impl Drop for Scratch {
     }
 }
 
-/// Everything the room pushes to a session, once the pushes have had time to arrive. The sleep is
-/// the room's own reader thread: a note that has not landed yet is not a note this test can judge.
-fn settle() {
-    std::thread::sleep(std::time::Duration::from_millis(600));
+/// The room's own reader thread, waited for as the fact it is: a note that has not landed yet is
+/// not a note this test can judge, and how long a push takes is not something to guess.
+fn a_note_is_waiting(session: &str) -> bool {
+    crate::testing::wait_until(crate::testing::PATIENCE, || wake::waiting(session) > 0)
 }
 
 /// The tool's list of kinds and the room's are one list: a word the schema offers is a word the
@@ -83,7 +83,7 @@ fn an_fyi_rings_only_the_reader_it_names_and_a_blocker_is_a_full_turn() {
             &json!({"room": "host", "text": "@s-a-kinds the port moved to 5433", "kind": "fyi"}),
         )
         .expect("an fyi");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + crate::testing::PATIENCE;
     while std::time::Instant::now() < deadline && !rung.lock().unwrap().iter().any(|s| s == me_id) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -108,7 +108,12 @@ fn an_fyi_rings_only_the_reader_it_names_and_a_blocker_is_a_full_turn() {
             &json!({"text": "the cache key moved", "kind": "fyi"}),
         )
         .expect("an fyi");
-    settle();
+    // The note is the fact: a note that has not landed yet is not one this test can judge, and the
+    // bell it did NOT ring is read once the note is there.
+    assert!(
+        a_note_is_waiting(me_id),
+        "the unnamed fyi never reached `{me_id}`'s queue"
+    );
     assert!(
         !rung.lock().unwrap().iter().any(|s| s == me_id),
         "an fyi that names nobody rang the bell: {:?}",
@@ -134,7 +139,7 @@ fn an_fyi_rings_only_the_reader_it_names_and_a_blocker_is_a_full_turn() {
             &json!({"text": "the disk is full on lubuntu1", "kind": "blocker"}),
         )
         .expect("a blocker");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + crate::testing::PATIENCE;
     while std::time::Instant::now() < deadline && wake::waiting(me_id) == 0 {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -194,7 +199,7 @@ fn an_ordinary_line_still_wakes_the_room_it_is_said_in() {
             &json!({"room": "host", "text": "the build is green", "kind": "announce"}),
         )
         .expect("an announcement");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + crate::testing::PATIENCE;
     while std::time::Instant::now() < deadline && wake::waiting(me_id) == 0 {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
