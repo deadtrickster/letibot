@@ -40,6 +40,17 @@ fn programs(key: &str) -> impl Iterator<Item = &str> {
         .filter(|p| !p.is_empty())
 }
 
+/// The programs that only read or rewrite a stream, so a grant for the program that DID the work
+/// covers them: `git log | head` is `git`'s permission, and asking again for `git status && git
+/// diff` because the helper changed is the same permission asked four times.
+///
+/// They are never enough on their own - a call whose every program is here names nothing granted -
+/// and the class still has to match, so a program that became a vehicle (`less` with a shell escape
+/// on a tty) lands in a different class and falls out with the program that carried it.
+pub const READ_ONLY_HELPER: [&str; 10] = [
+    "head", "tail", "grep", "wc", "sort", "cat", "cut", "uniq", "tr", "less",
+];
+
 impl Coverage {
     /// How it reads to a person: *"git - reads and writes inside the project, NOT code
     /// execution."*
@@ -190,9 +201,20 @@ impl Grant {
         }
         // Every program the call runs must be one the grant names: a grant taken while `cat`,
         // `ip` and `nmcli` were on the card covered those three, and a bare `cat` is not a hole
-        // in it. A call that names no program matches nothing, as it always did.
+        // in it. Read-only helpers are the exception (see [`READ_ONLY_HELPER`]): what `head` does
+        // to a stream is not the command's effect, so `git log | head` and `git status && git diff`
+        // are one permission - the operator allowed `git` four times for want of this. A call that
+        // names no program matches nothing, as it always did.
         let runs: Vec<&str> = programs(program).collect();
+        let its: Vec<&str> = runs
+            .iter()
+            .copied()
+            .filter(|p| !READ_ONLY_HELPER.contains(p))
+            .collect();
+        // Helpers alone are never a permission: `head notes.txt | wc -l` names nothing that does
+        // the work, so it asks like any other ungranted line.
         let hit = !runs.is_empty()
+            && !its.is_empty()
             && self.coverage.iter().any(|c| {
                 let granted: Vec<&str> = programs(&c.program).collect();
                 c.class == class
@@ -200,7 +222,7 @@ impl Grant {
                     // most of it; this catches the rest, because two calls can share a class
                     // and differ in what they do - exactly what a vehicle flag adds.
                     && intents.is_subset(&c.intents)
-                    && runs.iter().all(|p| granted.contains(p))
+                    && its.iter().all(|p| granted.contains(p))
             });
         if hit {
             Ok(())
@@ -447,6 +469,61 @@ mod tests {
             for b in seen.iter().skip(i + 1) {
                 assert_ne!(a, b, "two refusals read identically");
             }
+        }
+    }
+
+    /// A pipeline's read-only helpers ride the grant for the program that did the work: the
+    /// operator's `git log | head`, `git status && git diff` and the rest were one permission asked
+    /// four times, because each call's program list was a different key.
+    #[test]
+    fn a_granted_program_covers_a_pipeline_of_read_only_helpers() {
+        let g = git_status_grant();
+        for line in [
+            "git",
+            "git, head",
+            "git, tail",
+            "git, grep",
+            "git, wc",
+            "git, sort",
+            "git, cat",
+            "git, cut",
+            "git, uniq",
+            "git, tr",
+            "git, less",
+            // The whole line the operator actually ran: two gits, no helper between them.
+            "git, git",
+        ] {
+            assert_eq!(
+                g.covers(
+                    &Tier::MayApprove,
+                    true,
+                    line,
+                    inspect_class(),
+                    &intents(&[Intent::Inspect])
+                ),
+                Ok(()),
+                "{line}"
+            );
+        }
+    }
+
+    /// Helpers are never a permission of their own, and a program nobody granted is still a
+    /// refusal - the helper rule widens what a granted program reaches, not what is granted.
+    #[test]
+    fn helpers_alone_are_not_a_grant_and_an_ungranted_program_still_refuses() {
+        let g = git_status_grant();
+        for line in ["head, wc", "head", "cat", "git, rm"] {
+            assert_eq!(
+                g.covers(
+                    &Tier::MayApprove,
+                    true,
+                    line,
+                    inspect_class(),
+                    &intents(&[Intent::Inspect])
+                ),
+                Err(NotCovered::ClassNotGranted),
+                "{line}"
+            );
         }
     }
 
