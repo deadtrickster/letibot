@@ -476,6 +476,66 @@ fn the_breaker_pauses_after_misses_and_a_probe_resumes() {
     );
 }
 
+/// A job that stops answering says so on the session ONCE, and once more when it answers again:
+/// the shadow's own record is a log nobody reads while it is silent, so a silent shadow reads as
+/// "checked, and fine".
+#[test]
+fn a_job_that_stops_answering_says_it_once_and_again_when_it_answers() {
+    use std::sync::atomic::AtomicU64;
+    let healthy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let h = healthy.clone();
+    let judge = Stub::new(move |_, _| {
+        if h.load(Ordering::SeqCst) {
+            Ok(r#"{"verdict":"none"}"#.into())
+        } else {
+            Err("connection refused".into())
+        }
+    });
+    let rows = Arc::new(Rows::default());
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let notices: Arc<Mutex<Vec<(&'static str, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let r = JobRunner::sharing(
+        Job::TurnEnd,
+        judge,
+        rows,
+        Arc::new(AtomicU64::new(0)),
+        fast(),
+        prompts::builtin(Job::TurnEnd).to_string(),
+        "builtin".into(),
+        Box::new(move |p, o| {
+            let _ = tx.lock().unwrap().send((p, o.clone()));
+        }),
+        None,
+        notices.clone(),
+    );
+    for _ in 0..3 {
+        r.submit(Request::new(0, shown(TURN)));
+        assert!(matches!(next(&rx), Outcome::Failed(_)));
+    }
+    // One line for the whole blind stretch, not one per miss.
+    let said: Vec<(&'static str, String)> = notices.lock().unwrap().drain(..).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0].0, "shadow_not_answering");
+    assert!(
+        said[0].1.contains("no answer") && said[0].1.contains("regex intent nudge"),
+        "{}",
+        said[0].1
+    );
+    // A paused job's request never calls the model, so it is not a new miss and not a new line.
+    r.submit(Request::new(0, shown(TURN)));
+    assert_eq!(next(&rx), Outcome::Paused);
+    assert!(notices.lock().unwrap().is_empty(), "a pause said twice");
+    std::thread::sleep(Duration::from_millis(200));
+    healthy.store(true, Ordering::SeqCst);
+    r.submit(Request::new(0, shown(TURN)));
+    assert!(matches!(next(&rx), Outcome::Verdict(_)));
+    let said: Vec<(&'static str, String)> = notices.lock().unwrap().drain(..).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0].0, "shadow_answering");
+    assert!(said[0].1.contains("answering again"), "{}", said[0].1);
+}
+
 #[test]
 fn a_slow_median_pauses_the_job_too() {
     let judge = Stub::new(|_, _| {

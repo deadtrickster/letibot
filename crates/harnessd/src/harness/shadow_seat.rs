@@ -178,6 +178,14 @@ impl Harness {
     /// The shadow as the operator sees it: on the watched session's bar and on the shadow's own
     /// row. Republished at each tend, which is every point a verdict can be acted on.
     pub(crate) fn publish_shadow(&self) {
+        // A job that stopped answering says it once here, and once when it answers again: the
+        // shadow's own record is a log nobody reads while it is silent, and silence from a shadow
+        // reads as "checked, and fine".
+        if let Some(s) = self.shadow.get() {
+            for (code, line) in s.take_notices() {
+                self.warn(code, line);
+            }
+        }
         let brief = self.shadow.get().map(|s| {
             let states = s.states();
             letibot_sessionlog::ShadowBrief {

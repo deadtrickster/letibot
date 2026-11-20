@@ -193,6 +193,10 @@ struct Inner {
     asked: AtomicU64,
     /// The newest verdict's word and when it came, for the operator's view of the shadow.
     said: Mutex<Option<(Instant, &'static str)>>,
+    /// The watched session's lines, one per job transition: the model stopped answering, and it
+    /// answered again. Shared by every runner, drained by the harness at its next publish; each
+    /// carries the warning code it is published under.
+    notices: Arc<Mutex<Vec<(&'static str, String)>>>,
 }
 
 pub struct JobRunner {
@@ -221,7 +225,36 @@ impl JobRunner {
         on_outcome: OnOutcome,
     ) -> JobRunner {
         Self::launch(
-            job, judge, recorder, position, timing, system, source, on_outcome, None,
+            job,
+            judge,
+            recorder,
+            position,
+            timing,
+            system,
+            source,
+            on_outcome,
+            None,
+            Arc::new(Mutex::new(Vec::new())),
+        )
+    }
+
+    /// [`JobRunner::start`] whose notices go to `notices`, the queue a whole [`Shadow`] shares: one
+    /// session line per job transition, drained by the harness at its next publish.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sharing(
+        job: Job,
+        judge: Arc<dyn Judge>,
+        recorder: Arc<dyn Recorder>,
+        position: Arc<AtomicU64>,
+        timing: Timing,
+        system: String,
+        source: String,
+        on_outcome: OnOutcome,
+        persist: Option<Persist>,
+        notices: Arc<Mutex<Vec<(&'static str, String)>>>,
+    ) -> JobRunner {
+        Self::launch(
+            job, judge, recorder, position, timing, system, source, on_outcome, persist, notices,
         )
     }
 
@@ -248,6 +281,7 @@ impl JobRunner {
             source,
             on_outcome,
             Some(persist),
+            Arc::new(Mutex::new(Vec::new())),
         )
     }
 
@@ -262,6 +296,7 @@ impl JobRunner {
         source: String,
         on_outcome: OnOutcome,
         persist: Option<Persist>,
+        notices: Arc<Mutex<Vec<(&'static str, String)>>>,
     ) -> JobRunner {
         let budget = persist
             .as_ref()
@@ -297,6 +332,7 @@ impl JobRunner {
             convo: Mutex::new(convo),
             asked: AtomicU64::new(0),
             said: Mutex::new(None),
+            notices,
         });
         let worker = inner.clone();
         std::thread::Builder::new()
@@ -698,6 +734,15 @@ impl Inner {
                     ),
                     "",
                 );
+                // And the watched session hears that the shadow is looking again, once.
+                self.say(
+                    "shadow_answering",
+                    format!(
+                        "the shadow's `{job}` job is answering again: `{}` replied in {:.1}s.",
+                        self.judge.label(),
+                        took.as_secs_f64()
+                    ),
+                );
             } else {
                 h.backoff = (h.backoff * 2).min(self.timing.backoff_max);
                 let wait = h.backoff;
@@ -722,12 +767,37 @@ impl Inner {
         };
         if let Some(why) = why {
             let wait = h.backoff;
+            // Edge-triggered: the session hears that this job went blind once, not once per
+            // miss. That job's own log row says the same thing in its own words.
+            let blind = h.paused_until.is_none();
             h.paused_until = Some(Instant::now() + wait);
             h.misses = 0;
             h.latencies.clear();
             drop(h);
             self.paused_row(&why, wait);
+            if blind {
+                self.say(
+                    "shadow_not_answering",
+                    format!(
+                        "the shadow's `{}` job got no answer from `{}` ({why}), so it is paused \
+                         for {}s; meanwhile {}.",
+                        self.job.as_str(),
+                        self.judge.label(),
+                        wait.as_secs(),
+                        self.job.fallback()
+                    ),
+                );
+            }
         }
+    }
+
+    /// One line for the watched session, which the harness publishes as a warning at its next
+    /// publish: the shadow's own record is a log nobody reads while it is silent.
+    fn say(&self, code: &'static str, line: String) {
+        self.notices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((code, line));
     }
 
     fn paused_row(&self, why: &str, wait: Duration) {
@@ -766,6 +836,8 @@ pub struct Shadow {
     position: Arc<AtomicU64>,
     /// The rows every persistent job is fed; `None` for a stateless shadow.
     log: Option<Arc<Mutex<Log>>>,
+    /// The watched session's lines, shared by every runner: see [`Shadow::take_notices`].
+    notices: Arc<Mutex<Vec<(&'static str, String)>>>,
 }
 
 impl Shadow {
@@ -784,6 +856,7 @@ impl Shadow {
         }
         let position = Arc::new(AtomicU64::new(0));
         let mut runners = BTreeMap::new();
+        let notices: Arc<Mutex<Vec<(&'static str, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let mut said = cfg.disclose(watched_model);
         let budget = super::conversation::BUDGET;
         let log = cfg
@@ -799,7 +872,7 @@ impl Shadow {
             said.push(format!("{} prompt: {source}", job.as_str()));
             let (judge, timing, on) = (judge_for(job, &model), timing_for(job), on_outcome(job));
             let r = match &log {
-                Some(log) => JobRunner::start_persistent(
+                Some(log) => JobRunner::sharing(
                     job,
                     judge,
                     recorder.clone(),
@@ -808,14 +881,15 @@ impl Shadow {
                     system,
                     source,
                     on,
-                    Persist {
+                    Some(Persist {
                         log: log.clone(),
                         fresh_every: cfg.fresh_every(),
                         budget,
                         resume: super::resume::kept_of(bodies.iter().map(String::as_str), job),
-                    },
+                    }),
+                    notices.clone(),
                 ),
-                None => JobRunner::start(
+                None => JobRunner::sharing(
                     job,
                     judge,
                     recorder.clone(),
@@ -824,6 +898,8 @@ impl Shadow {
                     system,
                     source,
                     on,
+                    None,
+                    notices.clone(),
                 ),
             };
             runners.insert(job, r);
@@ -836,7 +912,15 @@ impl Shadow {
             runners,
             position,
             log,
+            notices,
         })
+    }
+
+    /// What a job said for the WATCHED session since the last drain, with the warning code each
+    /// line is published under: one per transition into and out of blindness. Drained by the
+    /// harness's publish - the shadow's own record is a log nobody reads while it is silent.
+    pub fn take_notices(&self) -> Vec<(&'static str, String)> {
+        std::mem::take(&mut *self.notices.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Whether the jobs are running conversations that need the watched rows fed.

@@ -1055,6 +1055,15 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     ("title_not_stored", Class::Failure, Action::Nothing),
     // The shadow's offer or verdict rows reached the ledger and not the store.
     ("offer_rows_not_stored", Class::Failure, Action::Nothing),
+    // A shadow job's model stopped answering, said once when it happened and once when it came
+    // back: a blind shadow is not a fault in the session, but a reader who is told nothing would
+    // read its silence as "checked, and fine".
+    (
+        "shadow_not_answering",
+        Class::Routine,
+        Action::Do("the job's fallback runs meanwhile; `/shadow` says which"),
+    ),
+    ("shadow_answering", Class::Routine, Action::Nothing),
     (
         "resume_failed",
         Class::Failure,
