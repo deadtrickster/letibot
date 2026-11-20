@@ -195,9 +195,7 @@ fn an_ask_releases_a_row_escalates_when_its_target_stops_and_ends_when_the_targe
         ask_of(&a.row("name the user")).0
     };
     drop(b);
-    wait_until(PATIENCE, || {
-        server.connected().iter().any(|s| s == "s-a")
-    });
+    wait_until(PATIENCE, || server.connected().iter().any(|s| s == "s-a"));
     wait_until(PATIENCE, || server.gone_since("s-b").is_some());
     assert!(
         server.gone_since("s-b").is_some(),

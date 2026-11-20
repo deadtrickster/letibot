@@ -1186,7 +1186,9 @@ fn a_head_older_than_the_daemon_says_so_instead_of_blaming_the_layer() {
         "the build is named, not the layer:\n{screen}"
     );
     // The way out is the sentence's own half, said whole where the pane has the room for it.
-    let said = a.head_older_sentence().expect("a newer daemon is a sentence");
+    let said = a
+        .head_older_sentence()
+        .expect("a newer daemon is a sentence");
     assert!(
         said.contains("Restart the head from the daemon's own install"),
         "{said}"

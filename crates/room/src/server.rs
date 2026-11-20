@@ -3404,9 +3404,7 @@ impl Server {
                 }
                 // A dm to another PROJECT asks that seat first - the same rule `say ... to` keeps,
                 // because a second door to one addressee is how the id form crossed unasked.
-                if let Some(asked) =
-                    self.dm_needs_consent(project, seat, name, id, "", &to, now)
-                {
+                if let Some(asked) = self.dm_needs_consent(project, seat, name, id, "", &to, now) {
                     return asked;
                 }
                 let refs = match self.queue_seat_gate(
