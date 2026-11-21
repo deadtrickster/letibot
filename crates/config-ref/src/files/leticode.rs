@@ -314,6 +314,7 @@ pub const LETICODE: File = File {
                 k("gate_carry", "list of paths", "[]", P, "gitignored inputs copied into the landing tree", "[\"config/local.toml\"]"),
                 k("reviewers", "\"host\" | \"vm\"", "host", P, "where reviewers run", "\"host\""),
                 k("gate_host", "hosts.toml name", "this machine", P, "machine the gate runs on", "\"lab\""),
+                k("gate_poll_seconds", "seconds, 0.1 to 9", "5.0", P, "wait between two polls of a running step; each poll is also the step's heartbeat", "1.0"),
                 k("gate_in", "\"host\" | \"firecode\"", "host", P, "gate steps run in a firecode VM", "\"host\""),
                 k("reviewer_skills", "list of skills", "[]", P, "skills preloaded into reviewers", "[\"code-review\"]"),
                 k("gate_train", "int >= 1", "1", P, "approved branches gated as one stack; a red stack is bisected", "4"),

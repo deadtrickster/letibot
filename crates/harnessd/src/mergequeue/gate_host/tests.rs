@@ -699,3 +699,28 @@ fn the_host_directory_is_named_like_the_landing_directory() {
     );
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// The wait between two polls is the project's number moved by a tenth either way, and by a
+/// different amount each time - a poll that landed on the host's own periodic work must not land
+/// there on the next one.
+#[test]
+fn the_wait_between_polls_is_the_projects_number_moved_by_a_tenth() {
+    let poll = Duration::from_secs(10);
+    let mut rng = letibot_http::retry::fresh_seed();
+    let drawn: Vec<Duration> = (0..200).map(|_| jittered(poll, &mut rng)).collect();
+    for d in &drawn {
+        assert!(
+            *d >= Duration::from_secs(9) && *d <= Duration::from_secs(11),
+            "{d:?} is outside ±10% of {poll:?}"
+        );
+    }
+    // Both sides of the number are used, and not always the same one: a constant wait is the thing
+    // this is not, and a wait that only ever grew would still march in step.
+    assert!(drawn.iter().any(|d| *d < poll), "the wait never came in");
+    assert!(drawn.iter().any(|d| *d > poll), "the wait never went out");
+    assert!(
+        drawn.iter().any(|d| *d != drawn[0]),
+        "every wait was {:?}",
+        drawn[0]
+    );
+}

@@ -275,6 +275,34 @@ pub fn gate_host() -> Option<String> {
     gate_host_slot().clone()
 }
 
+/// The gate's poll interval when `[queue] gate_poll_seconds` says nothing: five seconds, which is
+/// also the step's heartbeat ([`super::gate_tick::TICK`]) - each poll is what tells the step's
+/// watchdog the daemon is still there.
+pub const GATE_POLL_DEFAULT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The longest `gate_poll_seconds` may be: one wait plus a poll's own bound (`gate_host::POLL_BOUND`)
+/// has to fit inside the watchdog's window (`gate_tick::Tick::default`), or a slow host's healthy step
+/// ends itself while its next poll is still in flight.
+pub const GATE_POLL_LONGEST: std::time::Duration = std::time::Duration::from_secs(9);
+
+static GATE_POLL: std::sync::Mutex<Option<std::time::Duration>> = std::sync::Mutex::new(None);
+
+fn gate_poll_slot() -> std::sync::MutexGuard<'static, Option<std::time::Duration>> {
+    GATE_POLL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `[queue] gate_poll_seconds`: how long the gate waits between two polls of a step on a declared
+/// host. Read at every gate for [`set_gate_memory`]'s reason. A zero keeps the default; the range
+/// itself is the project file's to enforce ([`GATE_POLL_LONGEST`]).
+pub fn set_gate_poll(every: std::time::Duration) {
+    *gate_poll_slot() = (!every.is_zero()).then_some(every);
+}
+
+/// How long the gate waits between two polls - [`set_gate_poll`]'s value, else [`GATE_POLL_DEFAULT`].
+pub fn gate_poll() -> std::time::Duration {
+    gate_poll_slot().unwrap_or(GATE_POLL_DEFAULT)
+}
+
 // ===== The step running now, and the tail of its log =====
 
 /// How much of a running step's log a snapshot reads - 4 KiB from the END, so a `cargo test` that

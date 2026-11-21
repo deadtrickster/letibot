@@ -358,6 +358,10 @@ struct Remote {
     free_kb: Option<u64>,
     /// The tick this gate's steps are poked on - the default here, a short one in a test.
     tick: Tick,
+    /// How long this gate waits between two polls of a running step - `[queue]
+    /// gate_poll_seconds` ([`super::gate::gate_poll`]), each drawn ±10% so a poll does not land on
+    /// the same point of the host's own periodic work.
+    poll: Duration,
     seq: AtomicU64,
 }
 
@@ -434,6 +438,7 @@ impl Remote {
             cold,
             free_kb,
             tick: Tick::default(),
+            poll: super::gate::gate_poll(),
             ssh,
             name: name.to_string(),
             local: worktree.to_path_buf(),
@@ -803,6 +808,8 @@ impl Remote {
         let mut missed: u32 = 0;
         let mut last_miss = String::new();
         let mut last_within = POLL_BOUND;
+        // One seed for this gate's jitter: two daemons gating at once draw different waits.
+        let mut rng = letibot_http::retry::fresh_seed();
         loop {
             if Instant::now() >= ctl.deadline {
                 self.kill(n);
@@ -831,7 +838,7 @@ impl Remote {
             // is left of it, so the verdict arrives when the deadline says and not a bound later.
             let within = POLL_BOUND.min(ctl.deadline.saturating_duration_since(Instant::now()));
             last_within = within;
-            match self.poll(n, offset, within) {
+            let answered = match self.poll(n, offset, within) {
                 Ok(poll) => {
                     missed = 0;
                     if !poll.bytes.is_empty() {
@@ -849,6 +856,7 @@ impl Remote {
                         let tail = read_excerpt(log);
                         return ended(code, tail);
                     }
+                    true
                 }
                 Err(miss) if miss.unreached => {
                     // No machine answered, so there is nothing to wait for - this is not a slow host.
@@ -864,9 +872,18 @@ impl Remote {
                 Err(miss) => {
                     missed += 1;
                     last_miss = miss.why;
+                    false
                 }
-            }
-            std::thread::sleep(files.tick.every);
+            };
+            // Not a backoff: a poll IS the poke, so this spacing is the step's heartbeat, and the
+            // project's number is only what the watchdog's window can carry. A miss keeps the tick,
+            // because a retry is worth making at once where the last one found the host busy.
+            let nap = if answered {
+                jittered(self.poll, &mut rng)
+            } else {
+                files.tick.every
+            };
+            super::sleep_unless_stopped(nap, ctl.stop);
         }
     }
 
@@ -1229,6 +1246,14 @@ fn bundle_refspecs(bundle: &Path, head: &str) -> Result<Vec<String>, String> {
         specs.push(format!("+{head}:refs/gate/tip"));
     }
     Ok(specs)
+}
+
+/// `poll` moved by ±10%: a poll that landed on the host's own periodic work (a compile every N
+/// seconds) lands elsewhere next time. Half of it drawn by the tree's ±20% jitter is ±10% of the
+/// whole, so one rule for "must not act in step" serves and nothing is copied.
+fn jittered(poll: Duration, rng: &mut u64) -> Duration {
+    let half = poll / 2;
+    half + letibot_http::retry::spread(half, rng)
 }
 
 /// One shell word, quoted.

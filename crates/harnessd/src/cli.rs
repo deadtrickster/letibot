@@ -1086,6 +1086,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // for the whole daemon (`QueueEnv::production`), so this is the seam and
     // `mergequeue::gate` reads it. `None` is this machine and is today's behaviour exactly.
     crate::mergequeue::gate::set_gate_host(cfg.gate_host.clone());
+    crate::mergequeue::gate::set_gate_poll(cfg.gate_poll);
 
     // The box's room coordinator (the room's slice 2). Configured here, after every flag
     // and file has spoken and before anything is loaded or bound
