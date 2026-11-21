@@ -1574,7 +1574,8 @@ impl RepoQueue {
     }
 
     /// A merge row whose branch is already on its target settles - landed by hand, or by the
-    /// project's main session after a handover.
+    /// project's main session after a handover. The commit on the target answers the common case;
+    /// a merge that rewrote every sha leaves the branch off it with all its patches there.
     fn settle_landed_by_hand(&self) -> Result<bool, StoreError> {
         let me = self.me().to_string();
         let mut moved = false;
@@ -1593,20 +1594,44 @@ impl RepoQueue {
             let Some(tip) = git::branch_head(&self.repo, &m.target) else {
                 continue;
             };
-            if git::is_ancestor(&self.repo, &head, &tip).unwrap_or(false) {
-                moved |= self.merge_to(
-                    &m,
-                    m.state,
-                    MergeState::Withdrawn,
-                    Move::new(
-                        &me,
-                        format!(
-                            "`{}` is already on `{}` (at {tip}): it landed some other way, so \
-                             there is nothing to merge",
-                            m.branch, m.target
-                        ),
+            // The cheap rung first - an ancestor check is 12 ms where `git cherry` over a target
+            // thousands of commits ahead is 0.3 s, measured - and the two agree wherever the
+            // commit is on the target (`mergequeue/git/tests.rs` holds them together).
+            let patches_only = !git::is_ancestor(&self.repo, &head, &tip).unwrap_or(false);
+            let why = if patches_only {
+                match git::unlanded_patches(&self.repo, &tip, &head) {
+                    Ok(0) => format!(
+                        "`{}` is already on `{}` (at {tip}): every patch it approved is on the \
+                         target under another commit, so its work landed outside the queue and \
+                         there is nothing to merge",
+                        m.branch, m.target
                     ),
-                )?;
+                    // A branch that still carries work waits its turn, whatever else is owed.
+                    _ => continue,
+                }
+            } else {
+                format!(
+                    "`{}` is already on `{}` (at {tip}): it landed some other way, so \
+                     there is nothing to merge",
+                    m.branch, m.target
+                )
+            };
+            if !self.merge_to(&m, m.state, MergeState::Withdrawn, Move::new(&me, why))? {
+                continue;
+            }
+            moved = true;
+            if patches_only {
+                // Said rather than swallowed: the row goes without the queue gating it, and the
+                // author is the one who landed it - they should see that it was noticed.
+                self.raise(
+                    "queue_already_on_target",
+                    format!(
+                        "the queue settled `{}`'s row for `{}` at {tip}: every patch it approved \
+                         is already on the target under another commit, so the branch was merged \
+                         outside the queue and nothing is left to land",
+                        m.branch, m.target
+                    ),
+                );
             }
         }
         Ok(moved)

@@ -1109,3 +1109,58 @@ fn a_whitespace_change_after_approval_is_not_the_approved_patch() {
     );
     let _ = head;
 }
+
+/// The two rungs of *is this work on the target?* - the commit on it, and the patches on it under
+/// other commits - held together: wherever ancestry says yes, the patch count says zero, and a
+/// target carrying the same patches under new shas is the case only the second one sees.
+#[test]
+fn the_patch_check_agrees_with_ancestry_and_sees_a_merge_that_rewrote_the_shas() {
+    let dir = TempDir::new("cherry");
+    let repo = repo(&dir.0);
+    let (wt, _, _) = branch(&repo, "ch", "ch.txt");
+    let two = commit(&wt, "ch2.txt", "two\n", "work on ch, again");
+    let before = sh(&repo, &["rev-parse", "main"]);
+    assert_eq!(
+        unlanded_patches(&repo, &before, &two).unwrap(),
+        2,
+        "nothing of the branch is on the target yet"
+    );
+    assert!(
+        !is_ancestor(&repo, &two, &before).unwrap(),
+        "and the commit is not an ancestor either"
+    );
+
+    // The common case: a `--no-ff` merge puts the commits themselves on the target.
+    sh(
+        &repo,
+        &["merge", "-q", "--no-ff", "-m", "merge ch", "agent/ch"],
+    );
+    let merged = sh(&repo, &["rev-parse", "main"]);
+    assert!(
+        is_ancestor(&repo, &two, &merged).unwrap(),
+        "the tip is on it"
+    );
+    assert_eq!(
+        unlanded_patches(&repo, &merged, &two).unwrap(),
+        0,
+        "and the patch count agrees with ancestry wherever ancestry holds"
+    );
+
+    // The case only the patch check sees: the work on the target under new shas. The target is
+    // moved first, so the replay has a parent the branch's own base is not - two commits with one
+    // parent, tree, message and second are ONE commit object, and that is no rebase at all.
+    let (wt2, _, head2) = branch(&repo, "rb", "rb.txt");
+    let last2 = commit(&wt2, "rb2.txt", "again\n", "work on rb, again");
+    commit(&repo, "moved.txt", "x\n", "main moves");
+    sh(&repo, &["cherry-pick", &head2, &last2]);
+    let picked = sh(&repo, &["rev-parse", "main"]);
+    assert!(
+        !is_ancestor(&repo, &last2, &picked).unwrap(),
+        "a cherry-pick leaves the branch's own sha off the target"
+    );
+    assert_eq!(
+        unlanded_patches(&repo, &picked, &last2).unwrap(),
+        0,
+        "but every patch of it is there, so the branch owes the target nothing"
+    );
+}

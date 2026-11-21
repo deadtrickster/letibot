@@ -47,6 +47,17 @@ pub fn change_id(dir: &Path, onto: &str, head: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// How many of `head`'s patches `tip` does not have, by patch id: `git cherry tip head`'s `+`
+/// lines. Zero is the answer that matters - every patch is on the target under SOME commit,
+/// however its sha was rewritten - and a `-` line is a patch the target already carries.
+pub fn unlanded_patches(dir: &Path, tip: &str, head: &str) -> Result<usize, String> {
+    let out = git(dir, &["cherry", tip, head])?;
+    Ok(out
+        .lines()
+        .filter(|l| l.trim_start().starts_with('+'))
+        .count())
+}
+
 /// The top of the checkout `path` is in.
 pub fn repo_root(path: &Path) -> Result<PathBuf, String> {
     let out = git(path, &["rev-parse", "--show-toplevel"])?;
