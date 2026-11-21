@@ -568,6 +568,10 @@ pub struct Config {
     /// [`crate::mergequeue::gate::gate_host`]. `None` is this machine, which is what a fixture must
     /// get; the daemon is the one caller that reads the file.
     pub gate_host: Option<String>,
+    /// How long the daemon's gate waits between two polls of a running step on that host -
+    /// `[queue] gate_poll_seconds`, and [`crate::mergequeue::gate::gate_poll`]. A fixture gets
+    /// the default; the daemon is the one caller that reads the project file.
+    pub gate_poll: std::time::Duration,
     /// The daemon's one pool of reviewer machines and what it has running on them, shared by the
     /// queue's workers and the review pool. A fixture's pool probes nothing and places nowhere.
     pub review_hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
@@ -1843,6 +1847,9 @@ impl Config {
             // its gate on another machine because a file on the operator's box said so - see the
             // field, and `Config::for_the_daemon` for the one caller that reads it.
             gate_host: None,
+            // A fixture polls on the production cadence, which is a constant and not a file's
+            // answer - see the field, and `Config::for_the_daemon`.
+            gate_poll: crate::mergequeue::gate::GATE_POLL_DEFAULT,
             // A fixture starts no session with a skill it did not name. The reviewer's list is
             // the daemon's (`for_the_daemon` reads `[queue] reviewer_skills`), and a child's is its
             // spec's - see the fields.
@@ -1911,6 +1918,7 @@ impl Config {
         cfg.reviewers = queue.reviewers;
         cfg.reviewer_skills = queue.reviewer_skills.clone();
         cfg.gate_host = queue.gate_host.clone();
+        cfg.gate_poll = queue.gate_poll;
         cfg.reviewer_hosts = queue.reviewer_hosts.clone();
         // `reviewers_at_once` is not copied: the claiming pass reads it per repository.
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets

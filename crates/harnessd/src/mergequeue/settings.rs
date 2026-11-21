@@ -20,6 +20,9 @@
 //! gate_host = "lab2x1"             # the gate's machine, when it is not this one: the gate's
 //!                                 #   steps run on a host the operator declared in
 //!                                 #   `hosts.toml` (default: empty - this machine)
+//! gate_poll_seconds = 5.0         # how long the gate waits between two polls of a running
+//!                                 #   step there, ±10% each time so a poll does not land on
+//!                                 #   the same point of the host's own work (default: 5.0)
 //! gate_train = 3                  # how many approved branches one gate may judge together:
 //!                                 #   they are rebased one onto the last, gated ONCE, and
 //!                                 #   landed one commit at a time. A red stack is bisected
@@ -158,6 +161,10 @@ pub struct QueueSettings {
     /// `hosts.toml`, or `None` for this machine (the default, and what every project gets until
     /// it says otherwise). The name is not checked here
     pub gate_host: Option<String>,
+    /// How long the gate waits between two polls of a running step - `[queue]
+    /// gate_poll_seconds`. [`super::gate::GATE_POLL_DEFAULT`] unless the project says otherwise;
+    /// the poll is also the step's poke, so [`super::gate::GATE_POLL_LONGEST`] is a ceiling.
+    pub gate_poll: std::time::Duration,
     /// Whether the gate's steps run in a firecode VM - `[queue] gate_in`.
     pub gate_in: GateIn,
     /// The skills this project's reviewers are started with - `[queue] reviewer_skills`. The
@@ -196,6 +203,7 @@ impl Default for QueueSettings {
             reviewers: Reviewers::Host,
             gate_train: 1,
             gate_host: None,
+            gate_poll: super::gate::GATE_POLL_DEFAULT,
             gate_in: GateIn::Host,
             reviewer_skills: Vec::new(),
             reviewers_at_once: None,
@@ -224,6 +232,10 @@ struct QueueTable {
     reviewers: Option<String>,
     #[serde(default)]
     gate_host: Option<String>,
+    /// A real number, because a poll every second and a half is a setting an operator may want.
+    /// `f64` so that a zero, a negative and a nonsense are refused by name below.
+    #[serde(default)]
+    gate_poll_seconds: Option<f64>,
     #[serde(default)]
     gate_in: Option<String>,
     /// The reviewer's declared skills; a name that resolves to nothing is refused by the `task`
@@ -362,6 +374,27 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             ));
         }
     };
+    // A poll is also the step's poke, so an interval the watchdog's window cannot carry would end
+    // a healthy step: two polls, one of them missed, have to fit inside that window.
+    let gate_poll = match q.gate_poll_seconds {
+        None => super::gate::GATE_POLL_DEFAULT,
+        Some(s) => {
+            let longest = super::gate::GATE_POLL_LONGEST.as_secs_f64();
+            // 0.1 s is below one ssh round trip, so a smaller number could only mean a tighter
+            // loop - the one setting that would spend the CPU this parameter exists to save.
+            if !(s.is_finite() && s >= 0.1 && s <= longest) {
+                return Err(format!(
+                    "{}: [queue] gate_poll_seconds = {s} - it is how long the gate waits between \
+                     two polls of a running step, so it is a number of seconds from 0.1 to {longest} \
+                     (the default is {}). Each poll is also what tells the step that the daemon is \
+                     still there, and a longer gap than that ends a healthy step",
+                    path.display(),
+                    super::gate::GATE_POLL_DEFAULT.as_secs_f64()
+                ));
+            }
+            std::time::Duration::from_secs_f64(s)
+        }
+    };
     let mut gate_carry = Vec::new();
     for entry in &q.gate_carry {
         let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -423,6 +456,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             .gate_host
             .map(|h| h.trim().to_string())
             .filter(|h| !h.is_empty()),
+        gate_poll,
         reviewers_at_once,
         reviewer_hosts,
         reviewers_run_suites: q.reviewers_run_suites.unwrap_or(false),
@@ -652,6 +686,38 @@ mod tests {
         );
         std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_host = \"  \"\n").unwrap();
         assert_eq!(for_repository(&repo).unwrap().gate_host, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `gate_poll_seconds` is the wait between two polls: five seconds unless named, a real number
+    /// (not a whole one), and refused BY NAME where the step's watchdog would read the gap as a
+    /// dead daemon rather than a slow one.
+    #[test]
+    fn gate_poll_is_seconds_and_refused_past_the_watchdog_window() {
+        let (dir, repo) = file("main_model = \"local\"\n[queue]\ntarget = \"main\"\n");
+        assert_eq!(
+            for_repository(&repo).unwrap().gate_poll,
+            crate::mergequeue::gate::GATE_POLL_DEFAULT,
+            "the default is the tick every step's watchdog already counts"
+        );
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\ngate_poll_seconds = 1.5\n",
+        )
+        .unwrap();
+        assert_eq!(
+            for_repository(&repo).unwrap().gate_poll,
+            std::time::Duration::from_millis(1500)
+        );
+        for bad in ["0", "-2", "0.01", "60"] {
+            std::fs::write(
+                dir.join("leticode.toml"),
+                format!("[queue]\ngate_poll_seconds = {bad}\n"),
+            )
+            .unwrap();
+            let e = for_repository(&repo).unwrap_err();
+            assert!(e.contains("gate_poll_seconds"), "{bad}: {e}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
