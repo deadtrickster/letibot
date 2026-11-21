@@ -199,8 +199,11 @@ fn every_door_of_a_session_the_daemon_holds_runs_one_tail() {
     let hub = registry.get(id).expect("the hub");
     let head = hub.attach("tui", "dead", Caps::default(), 0);
 
-    // Each door: spend the sweep first (what the idle arm does), run the door, check the list.
+    // Each door: spend the sweep first (what the idle arm does), run the door, check the list. The
+    // pass spends a clock that has come DUE and leaves one that has not, so the slate is cleared by
+    // making the previous door's arm due rather than by waiting out its grace.
     let door = |name: &str, sessions: &mut Sessions<'_>, run: &dyn Fn(&mut Sessions<'_>)| {
+        sessions.arm_sweep(Duration::ZERO);
         sessions.sweep_abandoned_calls();
         assert!(
             sessions.sweep_due_at().is_none(),

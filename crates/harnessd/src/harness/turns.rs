@@ -5161,9 +5161,24 @@ pub(crate) struct SweptCalls {
     asked: Vec<(String, String)>,
     /// The ids an answer settled since the last sweep, dropped from `asked` by it.
     answered: std::collections::HashSet<String>,
+    /// When this transcript was last read, or `None` for one no sweep has looked at.
+    last: Option<std::time::Instant>,
 }
 
 impl SweptCalls {
+    /// Whether a sweep of `rows` rows could find anything: rows no earlier sweep has read (or a
+    /// transcript that SHRANK, which the next sweep re-reads from the top), or a call still waiting
+    /// for an answer. O(1), so a pass over every session the daemon holds costs a compare each
+    /// rather than a walk - the rule `Sessions::sweep_abandoned_calls` spends its pass by.
+    pub(crate) fn has_work(&self, rows: usize) -> bool {
+        self.upto != rows || !self.asked.is_empty()
+    }
+
+    /// When this transcript was last read, or `None` for one no sweep has looked at yet.
+    pub(crate) fn last_swept(&self) -> Option<std::time::Instant> {
+        self.last
+    }
+
     /// The unanswered calls, having read only the rows no earlier sweep has.
     pub(crate) fn sweep(&mut self, items: &[TranscriptItem]) -> Vec<(String, String)> {
         // A compaction replaces the transcript with a summary and a tail, so a cursor into the old
@@ -5188,6 +5203,7 @@ impl SweptCalls {
             }
         }
         self.upto = items.len();
+        self.last = Some(std::time::Instant::now());
         // A call asked twice and answered once is answered: the set difference, not a count - and
         // an answer that arrives after its call settles it whichever sweep reads which row.
         let answered = std::mem::take(&mut self.answered);
@@ -5203,8 +5219,8 @@ impl SweptCalls {
 // The sweep runs after every turn: one probe per asked call, one row read per row appended since the last sweep.
 #[cfg(test)]
 thread_local! {
-    static ANSWER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static SWEPT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static ANSWER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static SWEPT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// One answer lookup - counted under test, and nothing at all in a shipped build.

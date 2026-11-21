@@ -67,8 +67,16 @@ pub(crate) use letibot_tools::builtins::todo::{
 };
 
 /// How long after a turn the idle arm looks for a tool call nothing answered. A grace and
-/// not zero, because the turn has returned and its last append may not be published yet.
+/// not zero, because the turn has returned and its last append may not be published yet. It is the
+/// FAST rung: only a turn can strand a call, so only a turn arms the sweep.
 pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
+
+/// How long a session a sweep has nothing new for is left alone before the net looks again. A
+/// stranded call is closed out by the turn's own sweep 2 s later; this is for the one whose turn's
+/// sweep was already spent when its executor died, which is why it is a minute and not two seconds.
+/// The daemon's pass therefore costs a session at most once a minute, and nothing at all when the
+/// session has no row unread and no call outstanding.
+pub const SWEEP_STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// How long the orderly stop waits for one session's thread to settle its placement. A session
 /// mid-turn answers when the interrupt lands; one that never answers is said rather than waited
@@ -425,6 +433,51 @@ struct OwnSession {
 /// one name, one mind under it at a time.
 fn is_root(registry: &Registry, session_id: &str) -> bool {
     registry.parent_of(session_id).is_none()
+}
+/// Whether a session's calls are swept on this pass, and why. The daemon holds hundreds of
+/// sessions and a sweep is only worth spending on one that can have something to find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sweep {
+    /// A turn ended and its grace ([`SWEEP_AFTER`]) has passed: whatever that turn stranded is closed
+    /// out now, which is the rung a live conversation is on.
+    Now,
+    /// Nothing armed it, but the session still has something a sweep could find and has not been
+    /// looked at for [`SWEEP_STALE_AFTER`]: the net under a turn whose own sweep was already spent
+    /// when its executor died. This is the slow rung.
+    Net,
+    /// Nothing to sweep for, which is every session that has not turned.
+    NotYet,
+}
+
+/// [`Sweep`] for one session. `armed` is this `Sessions`' sweep clock, `work` the session's
+/// [`Harness::sweep_has_work`] and `swept` its [`Harness::swept_at`] - all O(1), so a pass over
+/// every session costs a compare each and walks only the transcripts it names.
+fn sweep_choice(armed: Option<Instant>, now: Instant, work: bool, swept: Option<Instant>) -> Sweep {
+    // A sweep of a transcript with no row unread and no call outstanding returns nothing and appends
+    // nothing, so it is not a cheaper sweep - it is not a sweep. This is what makes the pass cost a
+    // compare per session rather than a walk: the 880 sessions a long-lived daemon holds are mostly
+    // here with nothing to read.
+    if !work {
+        return Sweep::NotYet;
+    }
+    if armed.is_some_and(|at| at <= now) {
+        return Sweep::Now;
+    }
+    if swept.is_none_or(|at| now.saturating_duration_since(at) >= SWEEP_STALE_AFTER) {
+        return Sweep::Net;
+    }
+    Sweep::NotYet
+}
+
+/// The sweep clock after a pass: spent when it has come due, untouched before then. A court or a
+/// worker is woken by whatever clock falls first, and one woken by the room's or the plan-check's
+/// must not swallow the sweep a turn armed - the call that turn stranded would then wait for the
+/// net, a minute wide, instead of two seconds.
+fn sweep_clock_after(armed: Option<Instant>, now: Instant) -> Option<Instant> {
+    match armed {
+        Some(at) if at <= now => None,
+        other => other,
+    }
 }
 
 /// What the daemon can do with a wake for a session - and which of the three it is. Pure
@@ -3187,21 +3240,74 @@ impl<'a> Sessions<'a> {
         self.nags.get(session_id).and_then(|c| c.census_due_at())
     }
 
-    /// Sweep every session for a tool call nothing will ever answer. Called from the daemon's
-    /// own idle arm, and that placement is the whole liveness test
+    /// Sweep the sessions this daemon holds for a tool call nothing will ever answer. Called from
+    /// the daemon's own idle arm and by each session's thread, and that placement is the whole
+    /// liveness test: a round in flight holds the thread it runs on, so a sweep that runs at all is a
+    /// sweep at a moment when no round owns a call.
     pub fn sweep_abandoned_calls(&mut self) -> usize {
-        // The sweep is the thread that owns the harness's to run, and that placement is the
-        // liveness test: a round in flight holds the thread, so a sweep that runs at all is a
-        // sweep at a moment when no round owns a call.
-        let mut settled = self.ask_courts(|s| s.sweep_abandoned_calls());
-        self.sweep_at = None;
-        let ids: Vec<String> = self.open.keys().cloned().collect();
-        for id in ids {
+        // Every thread that owns a harness sweeps its own, so the daemon's pass asks the courts and
+        // then does what it holds itself - the same two halves either way.
+        let now = Instant::now();
+        let mut settled = self.ask_courts(move |s| s.sweep_what_is_due(now));
+        settled += self.sweep_what_is_due(now);
+        settled
+    }
+
+    /// The pass over the sessions THIS struct holds: [`sweep_choice`] decides each one, so a session
+    /// with nothing new costs a compare and is not walked. The clock is spent when it comes due and
+    /// left alone before then - a wake for another clock must not swallow a turn's sweep.
+    ///
+    /// A child is not here to skip: a `task` child's harness moves onto its own thread
+    /// (`harness::serve_child`), which sweeps it in `harness::children`, so it is not in this map at
+    /// all - and a court's session, which IS in the map, is this thread's own to sweep.
+    fn sweep_what_is_due(&mut self, now: Instant) -> usize {
+        let armed = self.sweep_at;
+        self.sweep_at = sweep_clock_after(armed, now);
+        // The candidates first, so a session with nothing to sweep costs a compare and not an id
+        // clone: this is the pass's whole cost for the sessions a daemon holds and never touches.
+        let due: Vec<(String, Sweep)> = self
+            .open
+            .iter()
+            .filter_map(|(id, h)| {
+                match sweep_choice(armed, now, h.sweep_has_work(), h.swept_at()) {
+                    Sweep::NotYet => None,
+                    rung => Some((id.clone(), rung)),
+                }
+            })
+            .collect();
+        let mut settled = 0;
+        for (id, rung) in due {
+            // Only the net asks the store: an armed sweep follows a turn, and a session that has
+            // just turned is being served, so a row that says it was put away is about to be moot.
+            if rung == Sweep::Net && self.put_away(&id) {
+                continue;
+            }
             if let Some(h) = self.open.get_mut(&id) {
                 settled += h.sweep_abandoned_calls();
             }
         }
         settled
+    }
+
+    /// Whether this session's row says it was put out of sight. Archiving CLOSES a session and
+    /// opening one by id clears the row, so a session this daemon holds is normally unarchived by
+    /// construction - but a second process (`letibot gc`, another daemon's archive verb) can archive
+    /// a session this one is holding, and then a pass is the only thing that would notice. Asked of
+    /// the store rather than remembered, for the reason [`Sessions::owners_with_no_compute`] gives.
+    fn put_away(&self, session_id: &str) -> bool {
+        let Some(store) = self.base.store_at().and_then(|at| at.open().ok()) else {
+            return false;
+        };
+        match store.session(session_id) {
+            Ok(row) => row.is_some_and(|s| s.archived_ms.is_some()),
+            Err(e) => {
+                // A row that cannot be read is not a row that says "archived": the sweep runs.
+                eprintln!(
+                    "  {session_id} · the sweep could not tell whether this session was put away ({e})"
+                );
+                false
+            }
+        }
     }
 
     /// Close one session this worker holds: its harness, every per-session table and its registry entry.
@@ -6813,5 +6919,218 @@ mod seat_slots {
         assert!(!sessions.seated.contains_key("s-broken"));
         registry.close();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+/// What a daemon holding hundreds of sessions spends on the sweep - the rules, and what they cost.
+/// Pure: no store, no vocabulary, no daemon, so the numbers are the pass's own and a box that
+/// cannot load a GGUF still measures them.
+#[cfg(test)]
+mod sweep_cadence {
+    use super::*;
+    use crate::harness::{SWEPT_ROWS, SweptCalls};
+    use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem};
+
+    fn assistant(call_id: &str) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: call_id.into(),
+                name: "grep".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        }
+    }
+
+    fn result_for(call_id: &str) -> TranscriptItem {
+        TranscriptItem::ToolResult {
+            call_id: call_id.into(),
+            name: "grep".into(),
+            outcome: ToolOutcome::NotRun { why: "x".into() },
+            payload: String::new(),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+            ran_ms: None,
+            decision: None,
+        }
+    }
+
+    /// `rows` rows of answered calls: a transcript every sweep has already read, which is what
+    /// most of a long-lived daemon's sessions hold.
+    fn a_conversation(rows: usize) -> Vec<TranscriptItem> {
+        (0..rows / 2)
+            .flat_map(|i| [assistant(&format!("c{i}")), result_for(&format!("c{i}"))])
+            .collect()
+    }
+
+    /// The three rungs, and the one that is not a rung: nothing to read is not a cheaper sweep.
+    #[test]
+    fn a_session_is_swept_for_a_turn_that_ended_or_for_the_net() {
+        let now = Instant::now();
+        assert_eq!(
+            sweep_choice(None, now, false, None),
+            Sweep::NotYet,
+            "no row unread and no call outstanding: a sweep here finds nothing and appends nothing"
+        );
+        assert_eq!(
+            sweep_choice(None, now, true, Some(now - Duration::from_secs(1))),
+            Sweep::NotYet,
+            "work, but it was read a second ago: the net is a minute wide, not two seconds"
+        );
+        assert_eq!(
+            sweep_choice(None, now, true, Some(now - SWEEP_STALE_AFTER)),
+            Sweep::Net,
+            "work and a minute unread: the net looks again"
+        );
+        assert_eq!(
+            sweep_choice(Some(now), now, true, Some(now)),
+            Sweep::Now,
+            "the turn's own clock, due: close out whatever it stranded"
+        );
+    }
+
+    /// The clock is spent when it comes due and never before: a court or a worker woken by another
+    /// clock must not swallow the sweep a turn armed, or the call it stranded waits for a net a
+    /// minute wide. This is the bug the pass at the base had.
+    #[test]
+    fn a_clock_that_is_not_due_is_left_alone() {
+        let now = Instant::now();
+        let later = now + SWEEP_AFTER;
+        assert_eq!(
+            sweep_clock_after(Some(later), now),
+            Some(later),
+            "a wake for the room's clock cancelled a turn's sweep"
+        );
+        assert_eq!(sweep_clock_after(Some(now), now), None, "due is spent");
+        assert_eq!(sweep_clock_after(None, now), None);
+    }
+
+    /// The number the operator asked for: 100 sessions of 1000 rows, and what a pass walks. Three
+    /// of them have a turn that just ended; the other 97 have every row read and nothing
+    /// outstanding, which is what a daemon that has been up a while holds.
+    #[test]
+    fn a_pass_over_a_hundred_long_sessions_walks_the_three_that_have_work() {
+        const SESSIONS: usize = 100;
+        const ROWS: usize = 1_000;
+        const LIVE: usize = 3;
+        let now = Instant::now();
+        let transcripts: Vec<Vec<TranscriptItem>> =
+            (0..SESSIONS).map(|_| a_conversation(ROWS)).collect();
+        // Every session has been swept once already: the state a daemon reaches seconds after it
+        // opens its sessions, and the state it stays in.
+        let mut swept: Vec<SweptCalls> = transcripts
+            .iter()
+            .map(|items| {
+                let mut c = SweptCalls::default();
+                assert!(c.sweep(items).is_empty());
+                c
+            })
+            .collect();
+
+        // BEFORE - the pass at the base: every held session is entered and swept.
+        SWEPT_ROWS.with(|n| n.set(0));
+        let before = Instant::now();
+        for (i, items) in transcripts.iter().enumerate() {
+            swept[i].sweep(items);
+        }
+        let before_took = before.elapsed();
+        let before_rows = SWEPT_ROWS.with(|n| n.get());
+
+        // AFTER - the same pass through `sweep_choice`: only a session that can have something to
+        // sweep is entered, and the three live ones are swept because their turn's clock is due.
+        SWEPT_ROWS.with(|n| n.set(0));
+        let after = Instant::now();
+        let mut entered = 0;
+        for (i, items) in transcripts.iter().enumerate() {
+            let live = i < LIVE;
+            let work = swept[i].has_work(items.len());
+            if sweep_choice(live.then_some(now), now, work, swept[i].last_swept()) != Sweep::NotYet
+            {
+                entered += 1;
+                swept[i].sweep(items);
+            }
+        }
+        let after_took = after.elapsed();
+        let after_rows = SWEPT_ROWS.with(|n| n.get());
+
+        println!(
+            "{SESSIONS} sessions x {ROWS} rows, every row already read: before {before_took:?} over \
+             {before_rows} rows swept ({SESSIONS} sessions entered); after {after_took:?} over \
+             {after_rows} rows, {entered} of {SESSIONS} sessions entered"
+        );
+        assert_eq!(
+            before_rows, 0,
+            "a cursor read once is not read again - the base's own rule"
+        );
+        assert_eq!(after_rows, 0, "and this pass does not read either");
+        assert_eq!(
+            entered, 0,
+            "but the base ENTERED all {SESSIONS} of them to find that out, and this pass enters none"
+        );
+    }
+
+    /// And the case the operator's rule is about: 100 sessions that HAVE something to read - a
+    /// turn's rows nothing has swept yet - named by the clock, against the same 100 read cold.
+    #[test]
+    fn only_the_sessions_a_turn_stranded_are_walked_against_a_cold_pass() {
+        const SESSIONS: usize = 100;
+        const ROWS: usize = 1_000;
+        const LIVE: usize = 3;
+        let now = Instant::now();
+        let transcripts: Vec<Vec<TranscriptItem>> =
+            (0..SESSIONS).map(|_| a_conversation(ROWS)).collect();
+
+        // Cold: no session has been swept, so every one of them has 1000 rows nobody has read.
+        SWEPT_ROWS.with(|n| n.set(0));
+        let before = Instant::now();
+        for items in &transcripts {
+            SweptCalls::default().sweep(items);
+        }
+        let before_took = before.elapsed();
+        let before_rows = SWEPT_ROWS.with(|n| n.get());
+
+        // The daemon has been up a while: the 97 quiet sessions are read, three just turned.
+        let mut swept: Vec<SweptCalls> = (0..SESSIONS)
+            .map(|i| {
+                let mut c = SweptCalls::default();
+                c.sweep(&a_conversation(if i < LIVE { 0 } else { ROWS }));
+                c
+            })
+            .collect();
+        SWEPT_ROWS.with(|n| n.set(0));
+        let after = Instant::now();
+        let mut entered = 0;
+        for (i, items) in transcripts.iter().enumerate() {
+            let live = i < LIVE;
+            if sweep_choice(
+                live.then_some(now),
+                now,
+                swept[i].has_work(items.len()),
+                swept[i].last_swept(),
+            ) != Sweep::NotYet
+            {
+                entered += 1;
+                swept[i].sweep(items);
+            }
+        }
+        let after_took = after.elapsed();
+        let after_rows = SWEPT_ROWS.with(|n| n.get());
+
+        println!(
+            "{SESSIONS} sessions x {ROWS} rows, {LIVE} of them turning: cold pass {before_took:?} over \
+             {before_rows} rows; armed pass {after_took:?} over {after_rows} rows, {entered} sessions entered"
+        );
+        assert_eq!(
+            before_rows,
+            SESSIONS * ROWS,
+            "the cold pass reads every session's transcript"
+        );
+        assert_eq!(
+            after_rows,
+            LIVE * ROWS,
+            "the armed pass reads only the sessions whose turn ended"
+        );
+        assert_eq!(entered, LIVE);
     }
 }
