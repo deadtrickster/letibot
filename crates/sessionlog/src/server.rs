@@ -351,6 +351,7 @@ fn control_seat(
                 title,
                 workspace,
                 id,
+                parent_session_id,
             }) => {
                 let id = match named_id(id, &registry) {
                     Ok(id) => id,
@@ -368,12 +369,13 @@ fn control_seat(
                     workspace,
                     ..SessionWiring::default()
                 };
-                // WHO ASKED, as on a seated connection: a session's own row cannot say.
+                // WHO ASKED, as on a seated connection: a session's own row cannot say. And that
+                // is the session this one is under, when the head named it.
                 match registry.create_as(
                     &id,
                     title,
                     wiring,
-                    None,
+                    parent_session_id,
                     SessionOrigin::of_opener(&kind, &identity),
                 ) {
                     Ok(_) => ServerFrame::Sessions {
@@ -1293,6 +1295,7 @@ pub fn serve_conn_on(
                 title,
                 workspace,
                 id,
+                parent_session_id,
             }) => {
                 // The id is the daemon's to mint unless the caller has already written it down -
                 // a package's owner row and branch are named by it. A name collision is refused
@@ -1318,12 +1321,13 @@ pub fn serve_conn_on(
                     wiring.workspace = workspace;
                 }
                 // WHO ASKED, which a session's row cannot otherwise say: a terminal and a package
-                // make the same shape of row.
+                // make the same shape of row. And WHOSE WORK IT IS, when the head named the session
+                // that asked - a session made to serve another belongs to it.
                 let f = match registry.create_as(
                     &id,
                     title,
                     wiring,
-                    None,
+                    parent_session_id,
                     SessionOrigin::of_opener(&kind, &identity),
                 ) {
                     Ok(_) => ServerFrame::Sessions {

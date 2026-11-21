@@ -112,6 +112,15 @@ prompt, the model reads it under that handle, and no gate, offer, reminder or sh
 the operator's words. Agents talk to sessions through the bridge or the room, never by typing into a
 head over tmux - a head cannot tell that from the operator.
 
+**A session `leticode_start` opens is the SEAT's child.** `NewSession` carries `parent_session_id`,
+and the bridge fills it with the local half of its own seat - `cc-<the Claude Code session id>`, the
+id that conversation's transcript is imported under. So a worker is drawn under the conversation
+that asked for it, `letibot --sessions` lists it as a subagent, and `--continue` does not offer
+somebody's worker as the latest conversation. Two edges: a daemon the call STARTS opens its own
+first session from its command line, which is the seat's package (`--parent-seat`) and not a child;
+and a session whose parent names no live session still stops its chain there, so the head's picker
+draws it at its project's top level until that conversation is imported as a session.
+
 ### Where the words live: one-line tools, one guide, three documents
 
 A tool's description is ONE sentence saying what it does (`"Dry-run the script to check for parse

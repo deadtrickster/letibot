@@ -689,6 +689,9 @@ fn every_frame_round_trips() {
             title: "the cache question".into(),
             workspace: "/home/dead/Projects/letibot".into(),
             id: None,
+            // The session that asked for this one: the field a bridge fills and a head with
+            // nothing to say leaves out, so both spellings have to survive the wire.
+            parent_session_id: Some("cc-b7b1c0de-4c2a-4c5e-9b8a-1b2c3d4e5f60".into()),
         },
         ClientFrame::ResumeSession {
             client_request_id: "r5".into(),

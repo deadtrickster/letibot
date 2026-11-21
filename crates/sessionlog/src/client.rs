@@ -842,12 +842,26 @@ impl HeadClient {
         workspace: &str,
         id: Option<&str>,
     ) -> Result<String, ClientError> {
+        self.new_session_under(title, workspace, id, None)
+    }
+
+    /// The same, with the session that ASKED for this one. A head that serves another session - a
+    /// bridge answering a Claude Code conversation - knows whose work it is; `None` is the operator
+    /// opening a conversation of their own.
+    pub fn new_session_under(
+        &mut self,
+        title: &str,
+        workspace: &str,
+        id: Option<&str>,
+        parent: Option<&str>,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::NewSession {
             client_request_id: client_request_id.clone(),
             title: title.to_string(),
             workspace: workspace.to_string(),
             id: id.map(str::to_string),
+            parent_session_id: parent.map(str::to_string),
         })?;
         Ok(client_request_id)
     }

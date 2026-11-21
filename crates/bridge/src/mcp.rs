@@ -242,6 +242,10 @@ fn resources_read(params: &Value) -> Result<Value, (i64, String)> {
 /// `tools/call`: run the verb and wrap what it said. A caller's mistake (unknown tool, missing
 /// name) is a JSON-RPC error `-32602`; a tool that ran and failed is `isError: true`, since an
 /// error object would look like a broken server.
+///
+/// The wire names no session: `tools/call` carries a tool and its arguments, so WHO ASKED is not on
+/// it. The caller is this bridge's own seat - the Claude Code conversation this server was started
+/// for - and that is what `leticode_start` files a session it opens under ([`Bridge::caller`]).
 fn call_tool(bridge: &Bridge, params: &Value) -> Result<Value, (i64, String)> {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return Err((-32602, "tools/call needs a `name`".into()));

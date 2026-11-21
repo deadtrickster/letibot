@@ -80,9 +80,21 @@ pub struct Bridge {
     rules: Mutex<Option<Arc<crate::push::Rules>>>,
     /// The sessions `start` opened: their caller is this bridge's client, so they close with it.
     leased: Mutex<std::collections::HashSet<String>>,
+    /// The session this bridge serves, asked once: the local half of its own seat, which is the
+    /// Claude Code conversation a session it makes is FOR. `Some(None)` remembers that nothing named
+    /// one, so a folder's records are read once rather than on every call.
+    caller: Mutex<Option<Option<String>>>,
 }
 
 /// A session dropped because its daemon ended it, with what a reopen needs.
+/// The session a bridge whose seat is `seat` speaks for: the seat's own local half when that seat is
+/// a bridge's (`<host>/cc-<Claude Code session id>`), and nothing for a seat that is not one - a
+/// bridge that cannot say who asked leaves the session a root, which is what that is.
+fn seated_caller(seat: &str) -> Option<String> {
+    let id = letibot_room::SeatId::parse(seat)?;
+    id.is_bridge().then_some(id.local)
+}
+
 struct Gone {
     said: String,
     outbox: Option<Arc<crate::push::Outbox>>,
@@ -112,6 +124,7 @@ impl Default for Bridge {
             plugins: Mutex::new(crate::plugins::Layers::default()),
             rules: Mutex::new(None),
             leased: Mutex::default(),
+            caller: Mutex::new(None),
         }
     }
 }
@@ -347,6 +360,22 @@ impl Bridge {
         }
     }
 
+    /// The session a call this bridge serves is made FOR, or `None` when nothing names one: the local
+    /// half of this bridge's own seat - `cc-<the Claude Code session id>` - which is the id the same
+    /// conversation's transcript is imported under. Asked once, then kept.
+    pub fn caller(&self) -> Option<String> {
+        let mut g = self.caller.lock().unwrap_or_else(|e| e.into_inner());
+        g.get_or_insert_with(|| seated_caller(&crate::rooms::seat()))
+            .clone()
+    }
+
+    /// The same, said rather than asked. A test's bridge has no Claude Code session behind it, and
+    /// minting a seat would read and write the operator's own data directory.
+    pub fn with_caller(self, who: Option<&str>) -> Bridge {
+        *self.caller.lock().unwrap_or_else(|e| e.into_inner()) = Some(who.map(str::to_string));
+        self
+    }
+
     /// This folder's plugin stack, built on first use. `None` when nothing could be loaded, which is
     /// what a box with no engine or an unreadable plugins directory comes to.
     pub fn plugin_stack(&self) -> Option<Arc<letibot_plugins::Stack>> {
@@ -446,6 +475,11 @@ impl Bridge {
         // for it.
         let placement = placement_arg(host, vm, &Hosts::load())?;
         let d = daemon::ensure_with(Path::new(&worktree), model, mode, &placement, id.as_deref())?;
+        // WHOSE WORK THIS IS: the session that asked for it, which is this bridge's own seat - a
+        // Claude Code conversation. A daemon this call STARTED opened its own first session from its
+        // command line, and that one is the seat's package (`--parent-seat`), not a child; nothing
+        // here is told, so the parent is claimed only for a session this call made.
+        let parent = if d.started { None } else { self.caller() };
         let (session, opened) = if d.started {
             // The daemon opened its own first session, and a package's was told which id to use.
             (head::open_default(&d)?, "daemon")
@@ -455,7 +489,14 @@ impl Bridge {
                 .map(|p| p.name.clone())
                 .unwrap_or_default();
             (
-                head::create_session_as(&d, &title, &worktree, id.as_deref(), "")?,
+                head::create_session_under(
+                    &d,
+                    &title,
+                    &worktree,
+                    id.as_deref(),
+                    "",
+                    parent.as_deref(),
+                )?,
                 "new",
             )
         };
@@ -501,6 +542,9 @@ impl Bridge {
             // and a caller that expected to have opened one should be able to see that it
             // inherited the daemon's.
             "session_opened": opened,
+            // Whose work this is, as the session's own row says it: the session that asked for it,
+            // or null for one the daemon opened from its own command line.
+            "parent": parent,
             // Where this session's tools run, from the daemon's own record and not from the
             // argument: the fact is the daemon's, and a head that cannot tell would report a
             // package's work as being somewhere it is not.
@@ -2326,6 +2370,33 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The session a bridge speaks for is the local half of its own seat, and nothing else: a seat
+    /// that is not a bridge's names no session that asked.
+    #[test]
+    fn a_bridges_caller_is_its_own_seats_local_half() {
+        assert_eq!(
+            seated_caller("lab2x1/cc-b7b1c0de-4c2a-4c5e-9b8a-1b2c3d4e5f60").as_deref(),
+            Some("cc-b7b1c0de-4c2a-4c5e-9b8a-1b2c3d4e5f60")
+        );
+        // A letibot session's seat is not a Claude Code conversation, and neither is nonsense.
+        assert_eq!(seated_caller("lab2x1/s-1788987496351498881"), None);
+        assert_eq!(seated_caller(""), None);
+    }
+
+    /// A bridge told who it speaks for says so, and one told nobody keeps answering nobody - the
+    /// answer does not fall through to a seat this machine happens to have minted.
+    #[test]
+    fn a_caller_that_was_said_is_the_one_that_is_answered() {
+        assert_eq!(
+            Bridge::new()
+                .with_caller(Some("cc-abc"))
+                .caller()
+                .as_deref(),
+            Some("cc-abc")
+        );
+        assert_eq!(Bridge::new().with_caller(None).caller(), None);
+    }
 
     fn a_repo(tag: &str) -> std::path::PathBuf {
         let dir = letibot_sessionlog::testing::scratch_root()

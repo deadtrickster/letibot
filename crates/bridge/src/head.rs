@@ -2746,6 +2746,20 @@ pub fn create_session_as(
     id: Option<&str>,
     what: &str,
 ) -> Result<String, String> {
+    create_session_under(d, title, workspace, id, what, None)
+}
+
+/// [`create_session_as`] with the session that ASKED for this one: a bridge serving a Claude Code
+/// conversation makes a worker for it, and a session that says nothing about who asked is drawn as
+/// that person's own. `None` is the operator opening one.
+pub fn create_session_under(
+    d: &Daemon,
+    title: &str,
+    workspace: &str,
+    id: Option<&str>,
+    what: &str,
+    parent: Option<&str>,
+) -> Result<String, String> {
     // A daemon whose last session closed stays up holding none, and serves this bare attach as a
     // control connection: no seat, and only the frames that give it one. This socket claims
     // no session, so it cannot break the rule that a head's socket is its session's from frame one.
@@ -2768,7 +2782,7 @@ pub fn create_session_as(
         .spawn(move || pump(reader, tx))
         .ok();
     client
-        .new_session_with_id(title, workspace, id)
+        .new_session_under(title, workspace, id, parent)
         .map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
