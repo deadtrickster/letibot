@@ -125,9 +125,10 @@ fn line_suffix(ps: &[pointer::Piece<'_>], j: usize) -> Option<(usize, String)> {
     (!digits.is_empty()).then(|| (k - j, digits))
 }
 
-/// The characters a path in prose is made of - rano's `link_words` word without `#`, and without
-/// `:`: the colon is the line's, which is the whole of what this pass is for.
-fn path_char(c: char) -> bool {
+/// The characters a path in prose is made of — rano's `link_words` word without `#` and without
+/// `:` (the colon is the line's). Read by the payload's highlighter too, which takes a command's
+/// file names out of the same runs.
+pub(crate) fn path_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | '+')
 }
 

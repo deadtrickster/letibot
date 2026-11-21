@@ -87,7 +87,13 @@ pub(crate) fn tool_result_row_lines(
     } else {
         sentences
     };
-    let payload = payload_lines(&sentences, !unchanged && cfg.color);
+    let payload = payload_lines(
+        &sentences,
+        !unchanged && cfg.color,
+        // The command the call ran, or the file it read: this row draws what that produced, so the
+        // call's own target is the one place its language is stated rather than guessed.
+        targets.get(call_id).map(String::as_str),
+    );
     let p = cfg.palette();
     let w = cfg.width.saturating_sub(ind).max(20);
     // A call the person ran says so: a tool row names its call and never its author, which is right
@@ -199,9 +205,10 @@ fn reason_first<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     body.into_iter().chain(harness).collect()
 }
 
-/// A payload as the rows of its card: a spill seam drawn short, the rest in the roles the whole
-/// payload's one parse gives it — and the text as it came when there is no grid to draw it in.
-fn payload_lines(sentences: &[&str], colour: bool) -> Vec<rano::render::Line> {
+/// A payload as the rows of its card: a spill seam drawn short, the rest in the roles of the whole
+/// payload's one parse — and the text as it came when there is no grid. `named` is the command that
+/// made it, which decides the language where the payload's own shape cannot.
+fn payload_lines(sentences: &[&str], colour: bool, named: Option<&str>) -> Vec<rano::render::Line> {
     // What a terminal would show of each line, which for a line carrying control bytes is
     // `letibot_ui::ansi::line`'s own reading of it (`sanitize::pieces`: a control byte becomes a
     // space). The grid is built over THESE, so no tab reaches a span whose width would be a guess.
@@ -224,7 +231,7 @@ fn payload_lines(sentences: &[&str], colour: bool) -> Vec<rano::render::Line> {
             }
         })
         .collect();
-    let grid = payload_code::grid(&code, colour && !coloured);
+    let grid = payload_code::grid(&code, colour && !coloured, named);
     sentences
         .iter()
         .zip(&shown)
@@ -352,7 +359,7 @@ mod tests {
             hash: "0123456789abcdef".into(),
             offset: 25_000,
         };
-        let drawn = payload_lines(&[&seam.render()], true).remove(0);
+        let drawn = payload_lines(&[&seam.render()], true, None).remove(0);
         assert_eq!(
             drawn.plain(),
             "··· 148.8 KB · 3011 lines not shown · read_spill 0123456789abcdef ···"
@@ -363,14 +370,14 @@ mod tests {
                 .iter()
                 .all(|s| s.style == rano::render::Style::of(rano::style::Role::Info))
         );
-        assert_eq!(payload_lines(&["line 7"], true)[0].plain(), "line 7");
+        assert_eq!(payload_lines(&["line 7"], true, None)[0].plain(), "line 7");
     }
 
     /// The card the operator photographed: `Ran "cd rano && sed -n ..."` over Rust, drawn as code.
     /// Two roles on one line is what says the row is highlighted rather than plain.
     #[test]
     fn a_rust_payload_is_drawn_in_its_roles() {
-        let payload = payload_lines(&sentences(RUST), true);
+        let payload = payload_lines(&sentences(RUST), true, None);
         let got = roles(&payload[3]);
         assert!(
             got.contains(&rano::style::Role::Keyword)
@@ -389,11 +396,11 @@ mod tests {
     /// grid nor the ANSI walk may move a character of it.
     #[test]
     fn highlighting_moves_no_character_of_the_payload() {
-        let plain: Vec<String> = payload_lines(&sentences(RUST), false)
+        let plain: Vec<String> = payload_lines(&sentences(RUST), false, None)
             .iter()
             .map(|l| l.plain())
             .collect();
-        let lit: Vec<String> = payload_lines(&sentences(RUST), true)
+        let lit: Vec<String> = payload_lines(&sentences(RUST), true, None)
             .iter()
             .map(|l| l.plain())
             .collect();
@@ -406,7 +413,7 @@ mod tests {
     #[test]
     fn a_payload_with_no_language_is_drawn_plain() {
         let out = "   Compiling letibot-tui v0.6.0\n    Finished dev profile in 12.3s\n";
-        let drawn = payload_lines(&sentences(out), true);
+        let drawn = payload_lines(&sentences(out), true, None);
         for l in &drawn {
             assert!(
                 l.spans
@@ -424,7 +431,7 @@ mod tests {
     #[test]
     fn a_tab_is_drawn_as_the_space_it_has_always_been() {
         let out = "func main() {\n\tx := 1\n}\n";
-        let drawn = payload_lines(&sentences(out), true);
+        let drawn = payload_lines(&sentences(out), true, None);
         assert_eq!(drawn[1].plain(), " x := 1", "the tab, read as a space");
         assert_eq!(
             drawn[1].plain(),
@@ -452,7 +459,7 @@ mod tests {
             "    pub fn spawn(&mut self) -> io::Result<()> {{\n{}\n    let what = \"openpty\";\n",
             seam.render()
         );
-        let drawn = payload_lines(&sentences(&text), true);
+        let drawn = payload_lines(&sentences(&text), true, None);
         assert_eq!(drawn.len(), 3, "three rows in, three rows out");
         assert_eq!(
             drawn[1].plain(),
@@ -482,7 +489,7 @@ mod tests {
     #[test]
     fn a_payload_with_ansi_is_drawn_exactly_as_the_ansi_walk_draws_it() {
         let out = "\x1b[31mlet mut master = 0;\x1b[0m\n    pub fn spawn(&mut self) {}\n";
-        let drawn = payload_lines(&sentences(out), true);
+        let drawn = payload_lines(&sentences(out), true, None);
         for (n, l) in drawn.iter().enumerate() {
             let want = letibot_ui::ansi::line(sentences(out)[n]);
             assert_eq!(l.plain(), want.plain(), "row {n}, text");
@@ -505,7 +512,7 @@ mod tests {
                 "bash",
                 "c1",
                 rano::agent::outcome::Outcome::Ok,
-                payload_lines(&sentences(RUST), lit),
+                payload_lines(&sentences(RUST), lit, None),
             );
             row_strings(&row.layout(120).lines, p)
         };

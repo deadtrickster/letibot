@@ -32,14 +32,18 @@ const ENOUGH_STRONG: usize = 2;
 const KEEP: usize = 8;
 
 /// One role per character, one row per line, for `lines` read as one text — or `None`, which means
-/// *draw this plain*: no palette to paint a role in, no language the highlighter knows, or a
-/// grammar that failed under it. The caller decides whether the text is code at all.
-pub(crate) fn grid(lines: &[&str], colour: bool) -> Option<Arc<Vec<Vec<Role>>>> {
+/// *draw this plain*: no palette, no language, or a grammar that failed under it. `named` is the
+/// command the call ran (or the file it read), which decides the language where the lines cannot.
+pub(crate) fn grid(
+    lines: &[&str],
+    colour: bool,
+    named: Option<&str>,
+) -> Option<Arc<Vec<Vec<Role>>>> {
     if !colour {
         return None;
     }
     let shown = within_budget(lines);
-    let lang = lang_of(&sample(shown))?;
+    let lang = lang_of(&sample(shown), named)?;
     cached(shown, lang)
 }
 
@@ -99,18 +103,59 @@ fn sample(lines: &[&str]) -> String {
         .join("\n")
 }
 
-/// The language a payload is in: rano's ladder first (a shebang, a diff header, a section), then the
-/// payload's own shape. The ladder's last rung is not believed — it answers `Ini` for `let mut x =
-/// 0;`, because `key = value` is what fires it — and a diff is left to rano's own painter.
-fn lang_of(sample: &str) -> Option<Lang> {
-    match rano::syntax::detect_sample(None, sample) {
-        Some(Lang::Diff) => None,
+/// The language a payload is in: what the command named, then rano's ladder, then the payload's
+/// shape. The ladder's `Ini` rung is not believed (it fires on `let mut x = 0;`), and a diff keeps
+/// rano's own painting whatever made it — `git diff a.rs` names Rust and prints a patch.
+fn lang_of(sample: &str, named: Option<&str>) -> Option<Lang> {
+    let ladder = rano::syntax::detect_sample(None, sample);
+    if ladder == Some(Lang::Diff) {
+        return None;
+    }
+    // A statement beats an argument: `sed -n 'A,Bp' src/x.rs` is Rust because of its `.rs`, and
+    // nothing the cut lines look like outranks the file the command said it read.
+    if let Some(lang) = named.and_then(named_lang) {
+        return Some(lang);
+    }
+    match ladder {
         Some(Lang::Ini) => section(sample)
             .then_some(Lang::Ini)
             .or_else(|| shape(sample)),
         Some(lang) => Some(lang),
         None => shape(sample),
     }
+}
+
+/// The language a command names: the first word that is a file rano's table knows, by name
+/// (`Makefile`) or extension (`.rs`). `detect` gets no sample, so it never reads contents; a
+/// command naming nothing (`cargo test`) leaves the answer to the shape probe.
+fn named_lang(named: &str) -> Option<Lang> {
+    named_paths(named)
+        .into_iter()
+        .find_map(|p| rano::syntax::detect(Some(std::path::Path::new(p)), None))
+        .filter(|lang| *lang != Lang::Diff)
+}
+
+/// The file names one command line gives, in order. A word is a run of the head's own path
+/// characters (`app::links::path_char`) plus `*`, so no shell is parsed: a quote, `&&`, `,` and a
+/// `:` all separate words, and `grep "fn " *.go` names `*.go`.
+fn named_paths(command: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (at, c) in command.char_indices() {
+        let in_word = crate::app::links::path_char(c) || c == '*';
+        match (in_word, start) {
+            (true, None) => start = Some(at),
+            (false, Some(from)) => {
+                out.push(&command[from..at]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        out.push(&command[from..]);
+    }
+    out
 }
 
 /// `[Unit]`, `[package]`, `[dependencies.rano]`: a name in brackets on a line of its own. An array
@@ -400,8 +445,12 @@ impl Pty {
     const ANCHORS: [&str; 6] = ["fn ", "impl ", "let mut ", "#[", "pub fn ", "use "];
 
     fn drawn_of(text: &str) -> Vec<Line> {
+        drawn_named(text, None)
+    }
+
+    fn drawn_named(text: &str, named: Option<&str>) -> Vec<Line> {
         let lines: Vec<&str> = text.lines().collect();
-        let grid = grid(&lines, true);
+        let grid = grid(&lines, true, named);
         lines
             .iter()
             .enumerate()
@@ -456,7 +505,7 @@ impl Pty {
     fn prose_has_no_language_and_is_drawn_plain() {
         let out = "   Compiling letibot-tui v0.6.0\n    Finished dev profile in 12.3s\n";
         let lines: Vec<&str> = out.lines().collect();
-        assert!(grid(&lines, true).is_none());
+        assert!(grid(&lines, true, None).is_none());
         for l in drawn_of(out) {
             assert!(
                 l.spans
@@ -474,7 +523,7 @@ impl Pty {
     #[test]
     fn a_head_with_no_palette_parses_nothing() {
         let lines: Vec<&str> = RUST.lines().collect();
-        assert!(grid(&lines, false).is_none());
+        assert!(grid(&lines, false, None).is_none());
     }
 
     /// A directory of English is not an ini file, `[1, 2]` is not a section, and a sentence with the
@@ -483,18 +532,28 @@ impl Pty {
     fn the_ladders_weakest_rungs_are_not_believed() {
         assert!(section("[dependencies.rano]\nrano = { git = \"x\" }\n"));
         assert!(!section("let v: [u8; 4] = [1, 2, 3];\n"));
-        assert_eq!(lang_of("[package]\nname = \"letibot\"\n"), Some(Lang::Ini));
         assert_eq!(
-            lang_of("   Compiling letibot-tui v0.4.0\n    Finished in 12.3s\n"),
+            lang_of("[package]\nname = \"letibot\"\n", None),
+            Some(Lang::Ini)
+        );
+        assert_eq!(
+            lang_of(
+                "   Compiling letibot-tui v0.4.0\n    Finished in 12.3s\n",
+                None
+            ),
             None
         );
-        assert_eq!(lang_of("we should impl this later\nand check it\n"), None);
+        assert_eq!(
+            lang_of("we should impl this later\nand check it\n", None),
+            None
+        );
         // A cargo test summary is full of `::` and is not Rust: a language needs a line that STARTS
         // like it.
         assert_eq!(
             lang_of(
                 "running 2 tests\ntest store::write ... ok\ntest store::read ... ok\n\
-                 test result: ok. 2 passed; 0 failed\n"
+                 test result: ok. 2 passed; 0 failed\n",
+                None
             ),
             None
         );
@@ -518,7 +577,7 @@ impl Pty {
             ),
             (Lang::Json, "{\n  \"name\": \"letibot\",\n  \"n\": 3\n}\n"),
         ] {
-            assert_eq!(lang_of(text), Some(want), "{text}");
+            assert_eq!(lang_of(text, None), Some(want), "{text}");
         }
     }
 
@@ -545,7 +604,7 @@ impl Pty {
             points.strong >= ENOUGH_STRONG && points.total >= ENOUGH_ANYWHERE,
             "`&mut `, `unsafe `, `Ok(` and `Err(` are the evidence: {points:?}"
         );
-        assert_eq!(lang_of(SLICE), Some(Lang::Rust));
+        assert_eq!(lang_of(SLICE, None), Some(Lang::Rust));
         let drawn = drawn_of(SLICE);
         assert_eq!(drawn.len(), 21, "one row per line");
         assert!(
@@ -565,7 +624,7 @@ impl Pty {
                 "no line starts like Rust, so the structural gate cannot answer: {l:?}"
             );
         }
-        assert_eq!(lang_of(TEST_SLICE), Some(Lang::Rust), "{TEST_SLICE}");
+        assert_eq!(lang_of(TEST_SLICE, None), Some(Lang::Rust), "{TEST_SLICE}");
     }
 
     /// The card the slice was compared with keeps its answer, and so do the payloads the structural
@@ -573,9 +632,9 @@ impl Pty {
     #[test]
     fn an_anchored_slice_is_rust_and_a_summary_of_test_names_is_not() {
         assert_eq!(SLICE_WITH_ANCHORS.lines().count(), 49);
-        assert_eq!(lang_of(SLICE_WITH_ANCHORS), Some(Lang::Rust));
+        assert_eq!(lang_of(SLICE_WITH_ANCHORS, None), Some(Lang::Rust));
         for text in [SUMMARY, LONG_SUMMARY, BUILD_LOG, SHELL] {
-            assert_eq!(lang_of(text), None, "{text}");
+            assert_eq!(lang_of(text, None), None, "{text}");
         }
     }
 
@@ -642,6 +701,146 @@ impl Pty {
         assert_eq!(line("let x = 1;", &[]).plain(), "let x = 1;");
     }
 
+    /// A `sed -n` window cut out of a file has only the shape of the lines it happened to slice,
+    /// and `let n = 0;` twice is the JavaScript probe's OWN structural mark — so the shape answers
+    /// JavaScript here, which is the wrong answer a command's `.rs` corrects.
+    const CUT: &str = "        let n = 0;\n        let m = n + 1;\n";
+
+    /// The command the operator's card drew, as the head receives it: `display_target` puts a
+    /// debug-quoted label round a command with spaces in it, and the quotes are just separators.
+    const SED: &str = "\"cd rano && sed -n '424,450p' src/markdown/render/tests.rs\"";
+
+    /// A few lines of a Go file, which is what `grep "func " *.go` hands back.
+    const GO: &str = "package main\n\nfunc main() {\n\tx := 1\n}\n";
+
+    /// A unified diff, whose own header rano's ladder reads.
+    const PATCH: &str =
+        "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,2 +1,2 @@\n-let n = 0;\n+let n = 1;\n";
+
+    /// The operator's insight, on the card that made it: the command says `…/tests.rs`, so the
+    /// payload is Rust although forty lines of it read as JavaScript.
+    #[test]
+    fn the_command_names_the_language_of_a_slice() {
+        assert_eq!(
+            lang_of(CUT, None),
+            Some(Lang::JavaScript),
+            "the premise: the shape probe is WRONG about this slice without the command"
+        );
+        assert_eq!(named_lang(SED), Some(Lang::Rust));
+        assert_eq!(lang_of(CUT, Some(SED)), Some(Lang::Rust));
+        let drawn = drawn_named(CUT, Some(SED));
+        assert_eq!(drawn.len(), 2, "one row per line");
+        assert!(
+            roles(&drawn[0]).contains(&Role::Keyword),
+            "`let` is drawn as Rust's keyword, not as plain text: {:?}",
+            roles(&drawn[0])
+        );
+        assert_eq!(
+            drawn[0].plain(),
+            "        let n = 0;",
+            "and not a byte moved"
+        );
+    }
+
+    /// The words fall out of the command where a shell puts its punctuation, and a glob names the
+    /// language of the files it stands for.
+    #[test]
+    fn a_glob_and_a_quoted_pattern_name_the_language_of_their_files() {
+        assert_eq!(
+            named_paths(SED),
+            [
+                "cd",
+                "rano",
+                "sed",
+                "-n",
+                "424",
+                "450p",
+                "src/markdown/render/tests.rs"
+            ],
+            "a quote, a comma and an `&&` are all separators"
+        );
+        assert_eq!(
+            named_paths("head -3 ../src/x.rs:120"),
+            ["head", "-3", "../src/x.rs", "120"],
+            "a `:NN` rides beside its path, and `../` is part of it"
+        );
+        assert_eq!(named_lang("grep -n \"func \" *.go"), Some(Lang::Go));
+        assert_eq!(
+            lang_of(BUILD_LOG, Some("grep -n \"func \" *.go")),
+            Some(Lang::Go)
+        );
+        assert!(
+            roles(&drawn_named(GO, Some("grep -n \"func \" *.go"))[2]).contains(&Role::Keyword),
+            "`func` is drawn in Go's own roles"
+        );
+    }
+
+    /// The first name rano knows wins, and a name it does not know is passed over — so a command
+    /// naming two files of different languages answers with the one it read first.
+    #[test]
+    fn the_first_name_rano_knows_wins() {
+        assert_eq!(named_lang("cat a.py b.rs"), Some(Lang::Python));
+        assert_eq!(
+            named_lang("cat notes.txt b.rs"),
+            Some(Lang::Rust),
+            "`.txt` is no grammar's, so the next word answers"
+        );
+        assert_eq!(
+            named_lang("cat Makefile"),
+            Some(Lang::Make),
+            "a name is a statement too, and not only an extension"
+        );
+    }
+
+    /// A command naming no file leaves the payload to its shape, exactly as before this rung
+    /// existed: `cargo test` and `echo hello` name nothing a grammar knows.
+    #[test]
+    fn a_command_naming_no_file_leaves_the_shape_probe_to_answer() {
+        assert_eq!(named_lang("cargo test -p letibot-tui --lib"), None);
+        assert_eq!(named_lang("echo hello"), None);
+        assert_eq!(named_lang("cat notes.txt"), None);
+        assert_eq!(
+            lang_of(CUT, Some("echo hello")),
+            lang_of(CUT, None),
+            "the shape probe's answer, unchanged"
+        );
+        assert_eq!(
+            lang_of(RUST, Some("cargo test -p letibot-tui --lib")),
+            Some(Lang::Rust),
+            "a payload with a shape of its own is still read by its shape"
+        );
+        assert_eq!(
+            lang_of(SUMMARY, Some("cargo test")),
+            None,
+            "a summary is not code"
+        );
+        // `.yaml` is a name rano's own table carries (`syntax.rs`'s hand-written extensions), so
+        // this answers Yaml: the rung reports what rano knows, and the shape probe only speaks
+        // when rano does not.
+        assert_eq!(named_lang("cat config.yaml"), Some(Lang::Yaml));
+        assert_eq!(
+            lang_of("a: 1\nb: 2\n", Some("cat config.yaml")),
+            Some(Lang::Yaml)
+        );
+    }
+
+    /// The one rule the command cannot overrule: a payload that IS a diff keeps rano's own
+    /// painting, because `git diff src/x.rs` names Rust and prints a patch.
+    #[test]
+    fn a_diff_is_not_code_whatever_command_made_it() {
+        assert_eq!(
+            rano::syntax::detect_sample(None, PATCH),
+            Some(Lang::Diff),
+            "the premise: the payload says what it is"
+        );
+        assert_eq!(lang_of(PATCH, Some("git diff src/x.rs")), None);
+        assert_eq!(
+            lang_of(PATCH, None),
+            None,
+            "and it was None before this rung"
+        );
+    }
+
     /// The budget, which is what bounds a payload's cost: a prefix of a log, and no grid at all for
     /// a single line bigger than the whole of it.
     #[test]
@@ -674,11 +873,11 @@ impl Pty {
         let first = t.elapsed();
         assert_eq!(g.len(), lines.len());
         let t = std::time::Instant::now();
-        let _ = grid(&lines, true);
+        let _ = grid(&lines, true, None);
         let cold = t.elapsed();
         let t = std::time::Instant::now();
         for _ in 0..10 {
-            let _ = grid(&lines, true);
+            let _ = grid(&lines, true, None);
         }
         let warm = t.elapsed() / 10;
         println!(

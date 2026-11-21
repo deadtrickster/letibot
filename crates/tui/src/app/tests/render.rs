@@ -1074,3 +1074,72 @@ fn an_unknown_slash_answer_is_on_the_status_row() {
         "the answer leads the notice: {frame}"
     );
 }
+
+/// The whole chain on a screen: the call's own arguments reach its result row's highlighter, so a
+/// `sed -n` window of a `.rs` file is painted where the same bytes under `echo hello` stay plain.
+/// The payload is one no shape probe can read, so the colour can only be the command's.
+#[test]
+fn the_calls_command_reaches_its_result_rows_colours() {
+    const CUT: &str = "        rows.push(0);\n        total += 1;\n";
+    // The row holding the payload's first line, as the reader sees it, for a call whose command is
+    // `command` — staged the way the daemon appends it: the assistant row carries the arguments,
+    // the result row names its call id, and those two are all the head is handed.
+    let payload_row = |command: &str| -> String {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("a.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "a.0".into(),
+                item: Box::new(bash_row(command)),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::appended("i1", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::TranscriptContent {
+                item_id: "i1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: CUT.into(),
+                    edits: Vec::new(),
+                    origin: None,
+                    media: None,
+                    ran_ms: None,
+                    decision: None,
+                }),
+            },
+        )));
+        a.screen(100, 30)
+            .into_iter()
+            .find(|l| seen(l).contains("rows.push(0);"))
+            .expect("the payload's first line is on the screen")
+    };
+    // The role's own opening sequence, built from the palette: a test that spelled the escape
+    // would pass on the day the role moved.
+    let number = rano::style::Palette::Colour.open(Role::NumberLit);
+    let named = payload_row("cd rano && sed -n '424,450p' src/markdown/render/tests.rs");
+    assert!(
+        named.contains(&number),
+        "the command names a `.rs` file, so its payload is drawn in Rust's roles: {named:?}"
+    );
+    let unnamed = payload_row("echo hello");
+    assert!(
+        !unnamed.contains(&number),
+        "a command naming no file leaves the shape probe to answer, and it answers nothing here: \
+         {unnamed:?}"
+    );
+}
