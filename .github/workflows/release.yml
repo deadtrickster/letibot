@@ -57,6 +57,7 @@ jobs:
   build:
     needs: names
     runs-on: ${{ matrix.runs }}
+    continue-on-error: ${{ matrix.optional == true }}
     timeout-minutes: 60
     # **The names `crates/tokencore/build.rs` reads**, set here rather than on the
     # individual steps: `Build` and `Package` both need them, and a step that forgot
@@ -79,6 +80,8 @@ jobs:
           # source.
           - runs: macos-14
             triple: aarch64-apple-darwin
+            # GitHub cancels macOS runners on this account; a Mac builds from source then.
+            optional: true
     steps:
       - uses: actions/checkout@v4
 
@@ -311,7 +314,9 @@ jobs:
   # compile.
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A cancelled optional build (macOS) does not hold back the Linux assets; the step below
+    # still refuses a release without both Linux triples.
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -325,6 +330,15 @@ jobs:
 
       - name: List what will be published
         run: ls -la dist/
+
+      - name: Both Linux triples must be there
+        run: |
+          set -eu
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            for f in "letibot-$t.tar.gz" "letibot-$t-local.tar.gz"; do
+              [ -f "dist/$f" ] || { echo "::error::dist/$f is missing"; exit 1; }
+            done
+          done
 
       # **Both assets for every triple, and each one's own file list.** A cloud asset carries the
       # programs and no library; a `-local` asset carries the programs plus the four llama
