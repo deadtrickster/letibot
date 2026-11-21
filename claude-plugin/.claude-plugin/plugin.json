@@ -1,7 +1,7 @@
 {
   "name": "leticode",
   "displayName": "leticode",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "The leticode bridge for Claude Code: the MCP tools that hold leticode sessions and the rooms, the channel that pushes their turn ends, asks and failures into the session, the room waiter, and the skills that drive them, and panes beside the chat for packages, remote runs, a package's transcript and this seat's todo board.",
   "author": {
     "name": "deadtrickster",
