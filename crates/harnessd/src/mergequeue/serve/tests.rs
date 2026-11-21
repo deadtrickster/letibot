@@ -1113,6 +1113,113 @@ fn a_merge_row_landed_by_hand_settles() {
     assert_eq!(row.state, MergeState::Withdrawn, "{row:?}");
 }
 
+/// A branch merged by hand under NEW shas owes the target nothing, and the queue says so: the
+/// patch check settles the row where the ancestry check cannot, and the author is told.
+#[test]
+fn a_branch_merged_by_hand_under_new_shas_settles_as_already_on_main() {
+    let w = World::new("byhand-newshas");
+    let (wt, base, head) = branch(&w.repo, "hn", "hn.txt");
+    w.enqueue("hn", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("hn", "test/a");
+    // The hand merge a rebase-and-merge leaves behind: the same patch on the target, its own sha.
+    // The target moves first, so the replay cannot answer the branch's own commit object.
+    commit(&w.repo, "moved.txt", "x\n", "main moves");
+    sh(&w.repo, &["cherry-pick", &head]);
+    let tip = w.tip();
+    assert!(
+        !git::is_ancestor(&w.repo, &head, &tip).unwrap(),
+        "the branch's commit is not on the target - only its work is"
+    );
+    run(&q, 1);
+
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Withdrawn, "{row:?}");
+    let said = w.door.warnings("queue_already_on_target");
+    assert_eq!(said.len(), 1, "the author is told, once: {said:?}");
+    assert!(
+        said[0].contains("agent/hn") && said[0].contains(&tip),
+        "the notice names the branch and the tip it found it on: {}",
+        said[0]
+    );
+    let moves: Vec<String> = w
+        .store()
+        .transitions("merge", &m)
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.to_state == "withdrawn")
+        .map(|t| t.why)
+        .collect();
+    assert!(
+        moves.iter().any(
+            |why| why.contains("already on `main`") && why.contains("landed outside the queue")
+        ),
+        "the evidence says what settled it: {moves:?}"
+    );
+}
+
+/// A branch that still carries work keeps its row: the check settles what is already on the
+/// target and nothing else.
+#[test]
+fn a_branch_with_unlanded_patches_stays_queued() {
+    let w = World::new("byhand-unlanded");
+    let (wt, base, head) = branch(&w.repo, "ul", "ul.txt");
+    w.enqueue("ul", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("ul", "test/a");
+    // Another branch landed first, so the tip has moved and `ul` carries a commit it lacks.
+    let (wt2, _, _) = branch(&w.repo, "other2", "other2.txt");
+    sh(&w.repo, &["merge", "-q", "--ff-only", "agent/other2"]);
+    let _ = wt2;
+    // The target cannot be gated here, so nothing lands and the row waits its turn.
+    let mut e = env(Arc::new(LocalGate), w.door.clone(), "a");
+    Arc::get_mut(&mut e).unwrap().landing_root = Arc::new(|_| Err("no room".into()));
+    let q = RepoQueue::new(w.store(), w.repo.clone(), e);
+    run(&q, 2);
+
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Queued, "{row:?}");
+    assert!(
+        w.door.warnings("queue_already_on_target").is_empty(),
+        "nothing settled, so nothing was said"
+    );
+}
+
+/// The target's own gate is not skipped by a row that settled: `main`'s new tip is gated on its
+/// own account, whatever put the commits there.
+#[test]
+fn the_target_is_gated_on_the_tip_a_hand_merge_left() {
+    let w = World::new("byhand-gate");
+    let (wt, base, head) = branch(&w.repo, "hg", "hg.txt");
+    w.enqueue("hg", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("hg", "test/a");
+    commit(&w.repo, "moved.txt", "x\n", "main moves");
+    sh(&w.repo, &["cherry-pick", &head]);
+    let tip = w.tip();
+    // The settle is the first pass's; the tip's own gate is started there and applied by the next.
+    run(&q, 2);
+
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Withdrawn,
+        "the row settled"
+    );
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(
+        h.sha, tip,
+        "the target was judged where the hand merge left it: {h:?}"
+    );
+    assert_eq!(
+        h.state,
+        HealthState::Green,
+        "and judged, not skipped: {h:?}"
+    );
+}
+
 /// A branch already on the target is recognised ONCE - one move and one line, not a `landed <sha>`
 /// written again on every pass, which is what the queue's log was full of.
 #[test]
