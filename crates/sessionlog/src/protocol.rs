@@ -968,6 +968,11 @@ pub enum ClientFrame {
         /// the daemon mint one, which is what every head that has nothing recorded sends.
         #[serde(default)]
         id: Option<String>,
+        /// The session that ASKED for this one, when the head knows it: a bridge makes a worker for
+        /// the conversation it serves. `None` is a session nobody asked for by id - the operator's
+        /// own - and stays a root. An older daemon drops it, which is what it did for all of them.
+        #[serde(default)]
+        parent_session_id: Option<String>,
     },
     /// Bring a session that is in the store but not in this daemon back to life. Separate from
     /// [`ClientFrame::NewSession`] because this one NAMES an existing session.
