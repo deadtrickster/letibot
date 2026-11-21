@@ -194,6 +194,23 @@ need() { command -v "$1" >/dev/null 2>&1; }
 # loader is `ld-musl-<arch>.so.1` instead — so no glibc loader means the prebuilt
 # assets cannot run HERE whatever else is installed, which is a DIFFERENT sentence
 # from "you are missing libgomp" and deserves its own.
+# The oldest glibc the published binaries run on: the release builds on ubuntu-22.04, and
+# its workflow refuses a binary that asks for a newer symbol than this.
+GLIBC_MIN="2.35"
+
+# This machine's glibc as `2.39`, or nothing when it cannot be told.
+glibc_version() {
+  v=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
+  [ -n "$v" ] || v=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')
+  printf '%s' "$v"
+}
+
+# Is glibc $1 at least $2? Unknown counts as yes: the loader says so at exec if it is not.
+glibc_at_least() {
+  [ -n "$1" ] || return 0
+  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n | head -1)" = "$2" ]
+}
+
 have_glibc() {
   for d in /lib /lib64 /usr/lib /usr/lib64; do
     [ -d "$d" ] || continue
@@ -280,6 +297,13 @@ require_host_runtime() {
   which needs git, Rust and a C compiler, and a built llama.cpp checkout only for a
   LOCAL model: with LETIBOT_LOCAL set, also name LETIBOT_LLAMA_DIR and
   LETIBOT_LLAMA_LIB. Nothing has been downloaded or copied."
+  fi
+  if [ "${prebuilt:-0}" = 1 ] && ! glibc_at_least "$(glibc_version)" "$GLIBC_MIN"; then
+    die "this machine's glibc is $(glibc_version), and the published binaries need glibc
+  $GLIBC_MIN or newer, so they would fail at exec with a GLIBC version error. Build from
+  source instead:
+      LETIBOT_FROM_SOURCE=1 sh install.sh
+  which needs git, Rust and a C compiler. Nothing has been downloaded or copied."
   fi
   case "$plan" in
     cloud | prebuilt) want=$HOST_LIBS_CLOUD ;;

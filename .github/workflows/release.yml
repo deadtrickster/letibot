@@ -72,9 +72,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs: ubuntu-latest
+          # 22.04 for its glibc 2.35: install.sh's GLIBC_MIN, and the oldest the assets run on.
+          - runs: ubuntu-22.04
             triple: x86_64-unknown-linux-gnu
-          - runs: ubuntu-24.04-arm
+          - runs: ubuntu-22.04-arm
             triple: aarch64-unknown-linux-gnu
           # Apple silicon. install.sh maps `Darwin/arm64` here; an Intel Mac builds from
           # source.
