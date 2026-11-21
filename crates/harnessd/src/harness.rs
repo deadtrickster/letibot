@@ -678,6 +678,19 @@ impl Harness {
     // override, not the normal path, which is `[gatekeeper] endpoint` read at daemon start. Nothing is
     // written here, because config is the operator's file and a rewrite would make an override permanent.
 
+    /// Whether a sweep of this session could find anything at all: a row no earlier sweep has read,
+    /// or a call still waiting for an answer. O(1), so a daemon holding hundreds of sessions can
+    /// ask it of every one of them on a pass instead of walking their transcripts to find out.
+    pub fn sweep_has_work(&self) -> bool {
+        self.swept_calls.has_work(self.session.items.len())
+    }
+
+    /// When this session's transcript was last read by the sweep, or `None` for one no sweep has
+    /// looked at yet - the fact the pass's slow cadence is measured from.
+    pub fn swept_at(&self) -> Option<std::time::Instant> {
+        self.swept_calls.last_swept()
+    }
+
     /// Close out tool calls no round owns any more, and read the log to say why. The round loop is
     /// synchronous, so if this is running no round owns a call: the fact that we are here is the fact
     /// that the executor is gone, which needs no timeout. `NotRun`, because nothing ran and nothing failed.
@@ -2075,6 +2088,11 @@ pub use turns::abandoned_calls;
 #[cfg(test)]
 pub(crate) use turns::reconcile_rows;
 pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal};
+// The sweep's own two, for the pass in `sessions` that decides which sessions it spends: the
+// cursor's `has_work` is the fact the pass is cheap by, and the row probe is how a test counts
+// what a pass walked.
+#[cfg(test)]
+pub(crate) use turns::{SWEPT_ROWS, SweptCalls};
 pub use wall::{CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model};
 #[cfg(test)]
 pub(crate) use wall::{
