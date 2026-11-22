@@ -62,11 +62,20 @@ fn main() {
         ] {
             watch(&here, &watched);
         }
+        // Both halves of an entry are spelled from an environment variable at compile time and
+        // never as an absolute path: a table naming `/home/.../old-worktree/...` stopped this crate
+        // compiling the moment that worktree was removed.
+        let manifest_rel = relative(&here, &manifest);
+        let wasm_name = wasm
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         entries.push_str(&format!(
             "    Builtin {{\n        name: {name:?},\n        \
-             manifest: include_str!({manifest:?}),\n        wasm: include_bytes!({wasm:?}),\n    }},\n",
-            manifest = manifest.to_string_lossy(),
-            wasm = wasm.to_string_lossy(),
+             manifest: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {manifest:?})),\n        \
+             wasm: include_bytes!(concat!(env!(\"OUT_DIR\"), {wasm:?})),\n    }},\n",
+            manifest = format!("/{}", manifest_rel.display()),
+            wasm = format!("/trees/{}/{name}/{wasm_name}", tree_key(&here)),
         ));
     }
 
@@ -77,7 +86,18 @@ fn main() {
          /// §2.1, as a table rather than a directory.\n\
          pub fn table() -> &'static [Builtin] {{\n    BUILTIN\n}}\n"
     );
-    std::fs::write(out.join("table.rs"), table).expect("write the built-in table");
+    // A table that names this checkout's absolute path is one no other copy can compile, and the
+    // one this tree leaves in a shared `OUT_DIR` stops compiling the moment the tree is deleted.
+    let root_text = root.to_string_lossy().to_string();
+    if let Some(line) = table.lines().find(|l| l.contains(&root_text)) {
+        panic!("the built-in table names an absolute path (`{line}`): it must be relative");
+    }
+    std::fs::write(out.join("table.rs"), &table).expect("write the built-in table");
+    // The table is ALSO kept under this tree's own directory, and the crate includes THAT one: two
+    // worktrees share `OUT_DIR`, so the `table.rs` one of them leaves behind can be the other's.
+    std::fs::create_dir_all(&mine).expect("create this tree's directory in OUT_DIR");
+    std::fs::write(mine.join("table.rs"), table).expect("keep this tree's built-in table");
+    println!("cargo:rustc-env=LETIBOT_BUILTINS_TREE={}", tree_key(&here));
     println!("cargo:rerun-if-changed=build.rs");
 }
 

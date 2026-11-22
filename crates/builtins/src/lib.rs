@@ -16,7 +16,15 @@ pub struct Builtin {
     pub wasm: &'static [u8],
 }
 
-include!(concat!(env!("OUT_DIR"), "/table.rs"));
+// The table this build script wrote, kept under THIS tree's own directory in `OUT_DIR`: two
+// worktrees share one `OUT_DIR`, and the `table.rs` one of them leaves behind names a tree that may
+// since have been deleted.
+include!(concat!(
+    env!("OUT_DIR"),
+    "/trees/",
+    env!("LETIBOT_BUILTINS_TREE"),
+    "/table.rs"
+));
 
 /// Put every built-in at the bottom of `stack`, the `builtin` scope. Failures come
 /// back as sentences rather than being swallowed: a built-in that will not load is
