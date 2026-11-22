@@ -390,6 +390,7 @@ impl Harness {
         if !queued {
             return Err(format!("the fork {id}'s queue refused the turn"));
         }
+        self.limit_carry_the_unread(&hub, &me, &id);
         let said = format!(
             "[limit] {here} refused on a usage limit and the limit hook `{by}` forked this \
              conversation into {id}, where the turn continues on {target}. This turn \
@@ -403,6 +404,63 @@ impl Harness {
         }
         self.hub.warn("limit_new_session", said.clone());
         Ok(said)
+    }
+
+    /// What this conversation has not read yet moves to the fork: the prompts queued for the turn
+    /// that is ending, and the steers a refused round handed back. Left here they run on the model
+    /// that refused and each one can fork again. A notice is not a prompt and stays.
+    pub(crate) fn limit_carry_the_unread(&mut self, fork: &Arc<Hub>, me: &str, id: &str) {
+        let queued = self.hub.take_queued_prompts();
+        let handed: Vec<letibot_turn::SteeringMessage> = {
+            let mut held = self.handed_back.lock().unwrap_or_else(|e| e.into_inner());
+            let handed: Vec<_> = held
+                .iter()
+                .filter(|m| m.notice.is_none())
+                .cloned()
+                .collect();
+            held.retain(|m| m.notice.is_some());
+            handed
+        };
+        let mut carried = queued.clone();
+        for (i, m) in handed.iter().enumerate() {
+            carried.push(letibot_sessionlog::hub::QueuedCommand {
+                head_id: letibot_sessionlog::hub::DAEMON_SUBMITTER.to_string(),
+                identity: match m.from_operator {
+                    true => "human".to_string(),
+                    false => format!("agent:{me}"),
+                },
+                client_request_id: format!("fork-{id}-{i}"),
+                at_seq: 0,
+                enqueued_ms: letibot_sessionlog::event::now_ms(),
+                kind: CommandKind::Prompt {
+                    text: m.text.clone(),
+                    // A steer's parts are already rendered user parts, which a frame's
+                    // attachment is not, so an attachment on one does not survive the move.
+                    attachments: Vec::new(),
+                    context: None,
+                    from: m.from_session.clone().or_else(|| m.peer.clone()),
+                    delivery: letibot_sessionlog::protocol::PromptDelivery::Queue,
+                },
+            });
+        }
+        let n = carried.len();
+        if fork.adopt_prompts(carried) {
+            return;
+        }
+        // The fork closed under it: each went back where it came from, whole. The journal is not
+        // told, so a steer stays taken until this turn's own persist releases it.
+        self.hub.adopt_prompts(queued);
+        self.handed_back
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(handed);
+        self.hub.warn(
+            "limit_new_session_queue_not_carried",
+            format!(
+                "the fork {id} took no prompt: the {n} this session had not read stayed here, \
+                 and they run on the model that refused"
+            ),
+        );
     }
 }
 

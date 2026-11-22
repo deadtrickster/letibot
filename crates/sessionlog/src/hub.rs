@@ -2656,6 +2656,49 @@ impl Hub {
         true
     }
 
+    /// Every queued PROMPT, in order, leaving every other kind where it is. A session forked to
+    /// continue this conversation takes them with it: left here they would run on the model that
+    /// refused. Not `CommandQueue::taken`, because their rows are never written to this transcript.
+    pub fn take_queued_prompts(&self) -> Vec<QueuedCommand> {
+        let mut g = self.lock();
+        let mut took = Vec::new();
+        let mut kept = VecDeque::with_capacity(g.commands.len());
+        for c in std::mem::take(&mut g.commands.q) {
+            match c.kind {
+                CommandKind::Prompt { .. } => took.push(c),
+                _ => kept.push_back(c),
+            }
+        }
+        g.commands.replace(kept);
+        took
+    }
+
+    /// Prompts another hub handed over: back on this queue in their order, with the sender and the
+    /// lane they were typed with. `at_seq` becomes this log's head, since theirs names another
+    /// log. False when this hub is closed, and then the caller still holds them.
+    pub fn adopt_prompts(&self, handed_over: Vec<QueuedCommand>) -> bool {
+        if handed_over.is_empty() {
+            return true;
+        }
+        let ring = {
+            let mut g = self.lock();
+            if g.closed {
+                return false;
+            }
+            let at_seq = g.log.head_seq();
+            for mut c in handed_over {
+                c.at_seq = at_seq;
+                g.commands.push_back(c);
+            }
+            self.cv.notify_all();
+            g.bell.clone().map(|b| (b, g.log.session_id().to_string()))
+        };
+        if let Some((bell, id)) = ring {
+            bell.ring(&id);
+        }
+        true
+    }
+
     /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`], and
     /// [`Hub::take_own_work`] returns [`OwnWork::Closed`].
     pub fn close(&self) {
