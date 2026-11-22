@@ -676,6 +676,13 @@ impl Server {
         }
     }
 
+    /// Does this line address a seat on another box? The one question a record and a link both ask:
+    /// a record would be a reference the far box cannot read, and the line's own text is what crosses.
+    fn across_boxes(&self, to: Option<&str>) -> bool {
+        to.and_then(crate::SeatId::parse)
+            .is_some_and(|id| id.host() != self.seat_host())
+    }
+
     /// A line addressed to a seat on another box goes over that box's link. Called from the one
     /// place a message is appended, so every door that can address an id is routed by it.
     fn ship_remote(&self, message: &chat::Message) {
@@ -4490,7 +4497,11 @@ impl Server {
             }
         }
         // The operator's long line is carried whole: a person is not filing a record for the room.
-        let file = kind != Seat::Operator;
+        // And neither is a line that CROSSES a link, either way: a record's text stays on the box
+        // that filed it, so what crossed would be a reference the other box cannot read. The text
+        // cap is far under a peer frame's, so the whole line fits the link.
+        let crossed = self.across_boxes(to.as_deref()) || self.across_boxes(Some(author));
+        let file = kind != Seat::Operator && !crossed;
         // What the author is drawn by rides the refs, so a reader who knew the seat under another
         // label is told which, and a line written before this has no ref and reads unchanged.
         let refs = match self.label_of(author) {

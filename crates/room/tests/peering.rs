@@ -473,6 +473,45 @@ fn a_dm_to_seat_on_another_box_goes_over_the_link_and_reaches_that_seat() {
     );
 }
 
+/// A dm long enough to be filed as a record on the box that sent it still arrives WHOLE on the
+/// other box: a record's text stays where it was filed, so a reference to one would be a reference
+/// the far box cannot read - it printed `[record #N, N bytes: room read #N]` and the rest was gone.
+#[test]
+fn a_long_dm_carries_its_text_across_the_link_instead_of_a_record_reference() {
+    let (a, b) = two_boxes(
+        "long-dm",
+        &an_identity("6666dddd7777"),
+        &an_identity("111122223333"),
+        (true, true),
+    );
+    let sender = a.seat("s-a1");
+    let target = b.seat("s-b1");
+    // Longer than a record's three lines and 400 characters, and well under the line's own cap.
+    let text: String = (0..12)
+        .map(|i| format!("line {i}: the gate is green and the stack is landed"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        letibot_room::chat::is_record_post(&text),
+        "the fixture is a record"
+    );
+    sender.dm("peer-dm-long", "lab2/s-b1", &text);
+    let pushed = target.pushed(3_000);
+    let got = pushed
+        .iter()
+        .find(|m| m.author == "lab1/s-a1")
+        .unwrap_or_else(|| panic!("the far seat was pushed nothing: {pushed:?}"));
+    assert_eq!(
+        got.text, text,
+        "the whole line crossed, not a record's head"
+    );
+    assert!(
+        !got.text.contains("[record #"),
+        "the far box got a reference it cannot read: {}",
+        got.text
+    );
+}
+
 #[test]
 fn seats_on_one_repository_are_introduced_once_and_shown_in_the_roster() {
     let identity = an_identity("3333cccc4444");
