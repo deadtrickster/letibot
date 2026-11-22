@@ -270,6 +270,7 @@ The merge queue reads the project file only, except the three census keys.
 | `gate_carry` | list of paths | [] | project only | gitignored inputs copied into the landing tree |
 | `reviewers` | "host" \| "vm" | host | project only | where reviewers run |
 | `gate_host` | hosts.toml name | this machine | project only | machine the gate runs on |
+| `gate_poll_seconds` | seconds, 0.1 to 9 | 5.0 | project only | wait between two polls of a running step; each poll is also the step's heartbeat |
 | `gate_in` | "host" \| "firecode" | host | project only | gate steps run in a firecode VM |
 | `reviewer_skills` | list of skills | [] | project only | skills preloaded into reviewers |
 | `gate_train` | int >= 1 | 1 | project only | approved branches gated as one stack; a red stack is bisected |
