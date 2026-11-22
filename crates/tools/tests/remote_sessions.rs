@@ -425,6 +425,58 @@ fn a_write_is_one_session_whatever_its_size() {
     );
 }
 
+/// A script a remote session rewrites keeps its executable bit, and so the commit that comes home is
+/// 100755 (lead 75). The bit is what `mv` publishes: the temp file is the umask's 0644 otherwise.
+#[test]
+fn a_script_rewritten_on_the_far_side_comes_home_executable() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fake = Fake::new("modes", "");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    // A committed script, executable, in the repository the placement is cut from.
+    std::fs::create_dir_all(repo.join("scripts")).expect("scripts");
+    let script = repo.join("scripts/one.sh");
+    std::fs::write(&script, "#!/bin/sh\necho one\n").expect("the script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("the mode");
+    git(&repo, &["add", "scripts/one.sh"]);
+    git(&repo, &["commit", "-qm", "a script"]);
+
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
+        .expect("placed");
+    let worktree = PathBuf::from(b.worktree_path());
+    let there = worktree.join("scripts/one.sh");
+    assert_eq!(mode_of(&there), 0o111, "the checkout has it executable");
+
+    b.write("scripts/one.sh", b"#!/bin/sh\necho two\n")
+        .expect("the rewrite lands");
+    assert_eq!(
+        mode_of(&there),
+        0o111,
+        "a rewritten file keeps the mode it had"
+    );
+
+    // Committed there, as a package commits, and collected home.
+    git(&worktree, &["add", "-A"]);
+    git(&worktree, &["commit", "-qm", "two"]);
+    let said = b.close().expect("a close collects the branch");
+    assert!(said.contains("came back here"), "{said}");
+    let listed = git(&repo, &["ls-tree", b.back_branch(), "scripts/one.sh"]);
+    assert!(
+        listed.starts_with("100755"),
+        "the executable bit came home: {listed}"
+    );
+}
+
+/// A file's executable bits. The rest of the mode is the umask's on the machine the test runs on,
+/// and what a commit records is only ever 100755 or 100644.
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .permissions()
+        .mode()
+        & 0o111
+}
+
 // ---------------------------------------------------------------------------
 // A refused session is transport, and it is retried
 // ---------------------------------------------------------------------------

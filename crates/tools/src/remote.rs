@@ -2711,12 +2711,13 @@ impl Ssh {
              if [ -n \"$s\" ] && [ \"$s\" != {sha} ]; then\n\
                echo \"the bytes on that machine are not the bytes that were sent\" >&2; exit 42\n\
              fi\n\
-             mv -f \"$t\" {target}",
+             {mode}mv -f \"$t\" {target}",
             tmp = quote(&tmp),
             dir = quote(&dir),
             len = bytes.len(),
             sha = quote(&sha),
-            target = quote(path)
+            target = quote(path),
+            mode = keep_mode(path, "\"$t\"")
         );
         let body = crate::firecode::encode_base64(bytes);
         self.must_fed(
@@ -3272,6 +3273,21 @@ pub(crate) fn quote(s: &str) -> String {
     // A single quote leaves and re-enters the quoting: `'it'\''s'`, which is one
     // argument to the far side's shell and nothing else.
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The shell that gives `tmp` the mode of the file it is about to replace. Without it a rewritten
+/// script comes back 0644: `mv` publishes the temp's own mode, and a package's commit records that
+/// loss (lead 75). `stat` is spelled differently by GNU and BSD, and a machine with neither leaves
+/// the mode to the umask rather than failing the write.
+fn keep_mode(target: &str, tmp: &str) -> String {
+    format!(
+        "if [ -e {t} ]; then\n\
+         \x20 m=$(stat -c %a {t} 2>/dev/null) || m=$(stat -f %Lp {t} 2>/dev/null) || m=\n\
+         \x20 [ -z \"$m\" ] || chmod \"$m\" {tmp} 2>/dev/null || :\n\
+         fi\n",
+        t = quote(target),
+        tmp = tmp
+    )
 }
 
 /// How many commands this process has run on a remote host, for the per-command name of the file
@@ -4522,12 +4538,13 @@ fn write_into_guest(
              got=$(wc -c < {tmp} | tr -d ' \\t')\n\
              [ \"$got\" = {len} ] || {{ echo \"the file arrived as $got bytes, not {len}\" >&2; \
              exit 41; }}\n\
-             mv -f {tmp} {path}",
+             {mode}mv -f {tmp} {path}",
             dir = quote(&dir),
             b64 = quote(&b64),
             tmp = quote(&tmp),
             len = bytes.len(),
-            path = quote(path)
+            path = quote(path),
+            mode = keep_mode(path, &quote(&tmp))
         );
         ssh.must(&format!("writing {path} in the VM"), &script)?;
         return Ok(());
@@ -4561,7 +4578,12 @@ fn write_into_guest(
     handed?;
     ssh.must(
         &format!("renaming {path} into place in the VM"),
-        &format!("mv -f {} {}", quote(&format!("{dir}/{name}")), quote(path)),
+        &format!(
+            "{mode}mv -f {} {}",
+            quote(&format!("{dir}/{name}")),
+            quote(path),
+            mode = keep_mode(path, &quote(&format!("{dir}/{name}")))
+        ),
     )
     .map(|_| ())
 }
