@@ -377,9 +377,6 @@ pub struct Files {
     /// Where the daemon's pokes land, and what the step's watchdog reads them from.
     pub beat: String,
     pub tick: Tick,
-    /// Where `gate-env.sh` puts the step's HOME and XDG dirs — the same `env` under the run's
-    /// scratch the local gate uses, so a test sees one environment on either machine.
-    pub scratch: String,
 }
 
 impl Remote {
@@ -471,7 +468,6 @@ impl Remote {
             exit: format!("{run}/step-{n}.exit"),
             beat: format!("{run}/step-{n}.beat"),
             tick: self.tick,
-            scratch: format!("{run}/env"),
         }
     }
     /// The marker a poll's answer leads with - unique per run and step, so the step's own output cannot
@@ -1090,7 +1086,6 @@ pub fn launcher_script(
         exit,
         beat,
         tick,
-        scratch,
         ..
     } = files;
     let watchdog = gate_tick::watchdog_script(beat, tick);
@@ -1107,6 +1102,21 @@ pub fn launcher_script(
     } else {
         step.to_string()
     };
+    // **The apparatus, exported by the launcher and computed on the host** — the same three paths
+    // `scripts/gate-env.sh` threads for the local gate, by the same rule: the caller's value if it
+    // named one, else the box's file under the real HOME, and only when it is there. A gate that
+    // moved to a declared host lost exactly this, and 92 tokencore tests failed on a machine that
+    // HAS the calibration set because the step never heard of it. The whole of `gate-env.sh`
+    // cannot wrap the step here: it ends in `exec env -i "$@"`, which cannot exec a shell builtin
+    // (`exec systemd-run …`), and it copies the config into a scratch the run dir will not take.
+    // So this is the apparatus half, spelled once, where the host can read it.
+    let apparatus = "real=${HOME:-/nonexistent}; \\
+         for a in \\
+           LETIBOT_VOCAB_GGUF=\"$real/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf\" \\
+           LETIBOT_GLM_GGUF=\"$real/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf\" \\
+           LETIBOT_CALIBRATION=\"$real/.local/share/letibot/calibration\"; do \\
+           n=${a%%=*}; v=${a#*=}; [ -e \"$v\" ] && export \"$n=$v\"; done; \\
+         unset real a n v";
     format!(
         "#!/bin/bash\n\
          echo $$ > '{pid}'\n\
@@ -1115,9 +1125,10 @@ pub fn launcher_script(
          export CARGO_TARGET_DIR='{target}'\n\
          rm -f '{out}.refused'\n\
          export LETIBOT_APPARATUS_REFUSALS='{out}.refused'\n\
+         {apparatus}\n\
          printf '0\\n' > '{beat}'\n\
          {watchdog} &\n\
-         ( sh '{tree}/scripts/gate-env.sh' '{scratch}' {run} ) > '{out}' 2>&1\n\
+         ( {run} ) > '{out}' 2>&1\n\
          echo $? > '{exit}'\n"
     )
 }
