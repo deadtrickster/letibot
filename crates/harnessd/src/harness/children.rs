@@ -4532,6 +4532,11 @@ impl HarnessTaskRunner {
         // Held under this session's live point, so a `/mode` on the child cannot widen past it and
         // a later narrowing here narrows the child too.
         sub.follow_parent(self.point.clone());
+        // The child's own row holds what it was working under: a child reopened after a restart comes
+        // back on the model it was moved to, and one whose park is still running comes back parked
+        // rather than spending the same refusal again. A fresh child has no row, so both are no-ops.
+        sub.restore_provider_choice();
+        sub.restore_limit_state();
         // Open. Now it is a session a head can switch into, and now it is running. Adopted into the REGISTRY and
         // not into `Sessions::open`, which is the constraint: a head can peek and attach while the daemon holds
         // no harness for it, and the daemon serves it by handing the wake to the thread that owns it.
