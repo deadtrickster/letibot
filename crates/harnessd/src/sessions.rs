@@ -2671,7 +2671,7 @@ impl<'a> Sessions<'a> {
             });
         let prior = record.as_ref().and_then(|r| r.later_turn_began());
         // The parent's slot, settled from here: this turn is not on the child's thread, so the two acts it makes (`harness::later_turn`) are made from the parent's side.
-        // Whether it had settled is read before the turn, since a turn of the hold is part of the answer, not news.
+        // Whether a later turn is news is read before the turn, since a turn of the hold is part of the answer, not news - and a child WAITING on a job it started has an answer still owed, so its slot counts (`news_is_a_later_turn`).
         let parent = h.config().parent_session_id.clone();
         let a_child_turn = parent.as_ref().map(|parent| {
             let settled_before = self
@@ -2679,7 +2679,7 @@ impl<'a> Sessions<'a> {
                 .trees
                 .of(parent)
                 .and_then(|tree| tree.slot(session_id))
-                .is_some_and(|slot| slot.has_settled());
+                .is_some_and(|slot| slot.news_is_a_later_turn());
             (parent.clone(), settled_before)
         });
         let somebody_spoke = matches!(
@@ -2708,12 +2708,16 @@ impl<'a> Sessions<'a> {
             r.later_turn_ended(prior);
         }
         if let Some((parent, settled_before)) = &a_child_turn {
+            // What the child still holds, read AFTER its turn: the fact that decides whether it has
+            // finished or is waiting on a job it started.
+            let open = h.open_processes();
             crate::harness::a_child_turn_ended(
                 &self.parts.trees,
                 parent,
                 session_id,
                 somebody_spoke,
                 *settled_before,
+                &open,
                 &out,
             );
         }

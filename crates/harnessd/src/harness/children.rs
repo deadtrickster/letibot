@@ -149,6 +149,11 @@ pub(crate) struct TaskSlot {
     /// Whether the child's record kept that later answer. It is what decides whether a reader being
     /// handed the text lets the slot drop its copy: where no row landed, the slot's is the only one.
     again_durable: std::sync::atomic::AtomicBool,
+    /// The wait a `Running` state can be: the child's turn ended over jobs it still holds, so it has
+    /// not answered. `Some` carries the last word it gave OVER them, which is what a parent is
+    /// handed when the turn their ending wakes says nothing at all - and `None` is a child that is
+    /// not waiting. One field rather than a flag and a body, because the two are one fact.
+    waiting: std::sync::Mutex<Option<String>>,
     /// The tree this child's branch lives in, when it has one. `finish_child_thread` reaps it
     /// once the child has failed: nothing else removes a refused, failed or killed child's tree, and
     /// a tree left behind is a copy of a branch that already holds the work.
@@ -226,6 +231,7 @@ impl TaskSlot {
             parked: std::sync::atomic::AtomicBool::new(false),
             handed_over: std::sync::atomic::AtomicBool::new(false),
             again_durable: std::sync::atomic::AtomicBool::new(false),
+            waiting: std::sync::Mutex::new(None),
             permit: std::sync::Mutex::new(None),
             queued: std::sync::atomic::AtomicBool::new(false),
             objective: None,
@@ -373,6 +379,15 @@ impl TaskSlot {
         self.state.lock().expect("task slot").clone()
     }
 
+    /// What this slot settled with, or `None` while it is still `Running` - the reading a door that
+    /// draws the child's row takes, and the one that tells a wait from an answer.
+    pub(crate) fn settled_status(&self) -> Option<letibot_tools::builtins::task::TaskStatus> {
+        match &*self.state.lock().expect("task slot") {
+            letibot_tools::builtins::task::TaskStatus::Running { .. } => None,
+            other => Some(other.clone()),
+        }
+    }
+
     /// Settle a slot nobody has settled: the spawning thread's last word for a refusal that returned
     /// before its guard existed. A slot already settled keeps what it has, because that came from the
     /// child's own path and is the truer answer.
@@ -387,16 +402,75 @@ impl TaskSlot {
     }
 
     pub(crate) fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
-        self.settle_with(status, true);
+        self.settle_with(status, true, true);
     }
 
     /// A turn after the answer settled the slot: the record keeps the first outcome and the later
     /// answer, which `spoke_again` writes.
     pub(crate) fn settle_later(&self, status: letibot_tools::builtins::task::TaskStatus) {
-        self.settle_with(status, false);
+        self.settle_with(status, false, true);
     }
 
-    fn settle_with(&self, status: letibot_tools::builtins::task::TaskStatus, record: bool) {
+    /// The child's turn ended over jobs it still holds: it has NOT answered, and `note` is the wait.
+    /// `said` is what it said over them, kept because the turn a job's ending wakes may say nothing,
+    /// and an empty answer would read to a parent as *nothing done*. The record is not moved (the
+    /// run is still running) and the child keeps its place under the caps: it is alive and reachable,
+    /// only blocked on work it started.
+    pub(crate) fn settle_waiting(&self, note: String, said: String) {
+        *self.waiting.lock().expect("task slot") = Some(said);
+        self.settle_with(
+            letibot_tools::builtins::task::TaskStatus::Running {
+                note: Some(note),
+                child: None,
+            },
+            false,
+            false,
+        );
+    }
+
+    /// Still waiting, after a turn that ran: the same wait, with whatever the child has said since.
+    /// A silent turn does not take away the last word it gave over the job - that word is the answer
+    /// the parent is handed if the turn a job's ending wakes says nothing.
+    pub(crate) fn wait_again(&self, note: String, said: Option<String>) {
+        let said = said
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.waiting_answer())
+            .unwrap_or_default();
+        self.settle_waiting(note, said);
+    }
+
+    /// Is the `Running` this slot holds the WAIT (its turn ended over a job) rather than a turn?
+    pub(crate) fn waiting_on_a_job(&self) -> bool {
+        self.waiting.lock().expect("task slot").is_some()
+    }
+
+    /// The last word the child gave over the job it is waiting on, or `None` when it is not waiting.
+    pub(crate) fn waiting_answer(&self) -> Option<String> {
+        self.waiting.lock().expect("task slot").clone()
+    }
+
+    /// Whether a later turn of this child is owed to the parent: its first turn ended, either in an
+    /// answer (`has_settled`) or in the wait a job left it on. `has_settled` alone answers `false`
+    /// for a waiting child, and the turn a job's ending wakes would then be read as the hold's own
+    /// and never settle - the slot would say *waiting* about a job that ended.
+    pub(crate) fn news_is_a_later_turn(&self) -> bool {
+        self.has_settled() || self.waiting_on_a_job()
+    }
+
+    fn settle_with(
+        &self,
+        status: letibot_tools::builtins::task::TaskStatus,
+        record: bool,
+        place: bool,
+    ) {
+        // Any settlement that is not the wait itself ends the wait: the child has answered or failed,
+        // and a sentence about the job it was blocked on is not true of it any more.
+        if !matches!(
+            status,
+            letibot_tools::builtins::task::TaskStatus::Running { .. }
+        ) {
+            self.waiting.lock().expect("task slot").take();
+        }
         let status = self.as_settled(status);
         // The record moves with the slot, from this one place every first settlement passes
         // through - see `SubagentRecord::settled` for the one judgement it makes (a stop during
@@ -430,7 +504,10 @@ impl TaskSlot {
         drop(g);
         self.settled.notify_all();
         // A child that has answered no longer holds a running place; its later turns are not capped.
-        self.free_place();
+        // A waiting child does: it is alive, reachable, and holding its own turn's place.
+        if place {
+            self.free_place();
+        }
     }
 
     /// What a settlement becomes on this slot: the kill rule alone, so `say` applies it before adding
@@ -453,7 +530,9 @@ impl TaskSlot {
     }
 
     /// Has the turn this slot answers for ended? Until it has, a turn the child runs belongs to
-    /// the hold (or to its first turn) and is not news of its own - see [`TaskSlot::again`].
+    /// the hold (or to its first turn) and is not news of its own - see [`TaskSlot::again`]. `false`
+    /// for a child WAITING on a job too: its turn ended, and it has answered nothing, so a door that
+    /// wants *is a later turn owed* asks [`TaskSlot::news_is_a_later_turn`] instead.
     pub(crate) fn has_settled(&self) -> bool {
         !matches!(
             *self.state.lock().expect("task slot"),
@@ -515,6 +594,11 @@ impl TaskSlot {
 pub(crate) const STOPPED_BEFORE_ITS_TURN: &str =
     "stopped by `job_kill` while it was opening, before its first turn ran — this is not an answer";
 
+/// How a child stopped while it WAITED on a job it started settles: the wait was never answered, so
+/// there is no answer to hand up.
+pub(crate) const WAITING_WHEN_STOPPED: &str =
+    "stopped while it was waiting on a job it started — this is not an answer";
+
 /// What `kill` says of a child it stopped before its session opened.
 fn stopped_while_opening(handle: &str) -> String {
     format!(
@@ -574,6 +658,17 @@ impl<'a> AnswerOnce<'a> {
             return;
         }
         self.slot.settle(self.with_the_line(status));
+    }
+
+    /// The ending turn left jobs still open, so this is not an answer at all: it is the wait, and the
+    /// child's own words over the work go with it. Under the same once-only guard, so every path out
+    /// of the call after this one stays silent rather than overwriting a wait with an ending.
+    pub(crate) fn say_waiting(&self, open: &[String], said: &str) {
+        if self.said.replace(true) {
+            return;
+        }
+        self.slot
+            .settle_waiting(waiting_where(open), said.to_string());
     }
 
     /// The settlement as the parent will read it: the kill rule first, then - for a worktree
@@ -979,6 +1074,77 @@ pub fn open_jobs_answer_line(jobs: &[letibot_tools::exec::JobView]) -> Option<St
 /// when it holds nothing. The state is `held`, so the head draws the row and names the jobs on it.
 pub fn held_said(jobs: &[letibot_tools::exec::JobView]) -> Option<String> {
     open_jobs_clause(jobs).map(|list| format!("answered - held for {list}"))
+}
+
+/// The handles of what a child still holds, as every sentence about the wait names them: four and
+/// then a count, because a child can background a hundred and a status line is one line.
+fn named_handles(open: &[String]) -> String {
+    const SHOWN: usize = 4;
+    let mut named: Vec<String> = open.iter().take(SHOWN).map(|h| format!("`{h}`")).collect();
+    if open.len() > SHOWN {
+        named.push(format!("and {} more", open.len() - SHOWN));
+    }
+    named.join(", ")
+}
+
+/// The wait, in words: `waiting on 1 job(s) it started: `j41``. The one spelling, so the note on a
+/// status, the row the head draws and the parent's `task_result` cannot describe one child three ways.
+pub fn waiting_where(open: &[String]) -> String {
+    format!(
+        "waiting on {} job(s) it started: {}",
+        open.len(),
+        named_handles(open)
+    )
+}
+
+/// The row a parent's head draws for a child whose turn ended over jobs it still holds, or `None`
+/// for one that holds nothing. `held` is the state word the tree already uses for exactly this - a
+/// child that has not finished and is not idle, with the work it is blocked on named on the row.
+pub fn waiting_said(open: &[String]) -> Option<String> {
+    (!open.is_empty()).then(|| waiting_where(open))
+}
+
+/// The status a child that still holds work is described by: it has NOT answered - it is waiting on
+/// what it started. `None` when nothing is open, which is a child that has finished.
+pub fn waiting_on_jobs(open: &[String]) -> Option<letibot_tools::builtins::task::TaskStatus> {
+    (!open.is_empty()).then(|| letibot_tools::builtins::task::TaskStatus::Running {
+        note: Some(waiting_where(open)),
+        child: None,
+    })
+}
+
+/// What a turn of a child that has just ended settles the parent's slot with.
+///
+/// `news` is what the turn said ([`later_news`]); `spoke` is somebody's word rather than the
+/// harness's own clock; `open` is what the child still holds, read AFTER the turn; `waited` is the
+/// answer it gave over a job, read BEFORE it. Two corrections, and they are one defect from its two
+/// sides: a child that still holds a job has not finished, whatever its turn said - and a child
+/// whose wait this turn ENDED has finished, even when the turn said no words at all, because the
+/// turn a job's ending wakes is where the answer goes.
+pub fn turn_end_news(
+    news: Option<letibot_tools::builtins::task::TaskStatus>,
+    spoke: bool,
+    open: &[String],
+    waited: Option<&str>,
+) -> Option<letibot_tools::builtins::task::TaskStatus> {
+    use letibot_tools::builtins::task::TaskStatus;
+    let said = match &news {
+        Some(TaskStatus::Done { answer, .. }) if !answer.trim().is_empty() => Some(answer.clone()),
+        _ => None,
+    };
+    if let (Some(waited), true) = (waited, spoke) {
+        if !open.is_empty() {
+            return waiting_on_jobs(open);
+        }
+        return Some(TaskStatus::Done {
+            answer: said.unwrap_or_else(|| waited.to_string()),
+            child: None,
+        });
+    }
+    match &news {
+        Some(TaskStatus::Done { .. }) if !open.is_empty() => waiting_on_jobs(open),
+        _ => news,
+    }
 }
 
 /// The newest thing the child said, which is its answer after a hold or a turn-back: an empty row
@@ -1497,6 +1663,30 @@ pub(crate) fn later_news(
     })
 }
 
+/// What a later turn's answer does to the parent's slot. A child that had ANSWERED already is a
+/// later settlement: the record keeps the first outcome (`settle_later`). A child that was WAITING
+/// on a job answered for the first time here - the wait was not an answer, so the record moves with
+/// this one and a restart reads the child as finished rather than as one to bring back.
+pub(crate) fn slot_settled_by_a_later_turn(
+    slot: &TaskSlot,
+    status: letibot_tools::builtins::task::TaskStatus,
+    was_waiting: bool,
+) {
+    match was_waiting {
+        true => slot.settle(status),
+        false => slot.settle_later(status),
+    }
+}
+
+/// What a turn said, when it said anything at all: a reply of only whitespace is a turn that
+/// called tools and added no words, and it is not a newer answer than the one before it.
+pub(crate) fn words_of(out: &Option<Result<Reply, HarnessError>>) -> Option<String> {
+    match out {
+        Some(Ok(reply)) if !reply.text.trim().is_empty() => Some(reply.text.trim().to_string()),
+        _ => None,
+    }
+}
+
 /// A turn of a child after its first: `run_turn`, with the child's record moved to `running` for its
 /// length and put back when it ends, or left running when it ended because the daemon is stopping.
 /// Its answer settles the parent's slot again too - see [`ChildTurns::slot`].
@@ -1509,16 +1699,42 @@ fn later_turn(
     let record = turns.record.clone();
     let prior = record.as_ref().and_then(|r| r.later_turn_began());
     let somebody_spoke = somebody_spoke(&door);
-    // Whether the slot had already settled when this turn began. A turn before that is part of the
-    // answer the slot is waiting for, not news of its own.
-    let settled_before = turns.slot.as_ref().is_some_and(|s| s.has_settled());
+    // Whether the parent is owed this turn's word. A turn before the slot settled is part of the
+    // answer the slot is waiting for, not news of its own - but a WAITING child's slot is *running*
+    // and its answer is still owed, so the turn a job's ending wakes is news (see `turn_end_news`).
+    let settled_before = turns
+        .slot
+        .as_ref()
+        .is_some_and(|s| s.news_is_a_later_turn());
+    // The last word it gave over the job it was waiting on, read BEFORE the turn: the turn about to
+    // run may end the wait, and the sentence it was blocked by is then gone. `Some` here is also the
+    // fact that this turn's answer is the child's FIRST - the wait was not one, so the record moves
+    // on this settlement and there is no earlier answer for it to go beside.
+    let waited = turns.slot.as_ref().and_then(|s| s.waiting_answer());
+    let was_waiting = waited.is_some();
     let out = crate::turn_tail::run_turn(sub, turns, door, turn);
     if let (Some(r), Some(prior)) = (&record, &prior) {
         r.later_turn_ended(prior);
     }
+    // Read AFTER the turn: what it still holds is what decides whether it has finished.
+    let open = sub.open_processes();
     if let Some(slot) = &turns.slot
-        && let Some(status) = later_news(somebody_spoke, settled_before, &out)
+        && let Some(status) = turn_end_news(
+            later_news(somebody_spoke, settled_before, &out),
+            somebody_spoke,
+            &open,
+            waited.as_deref(),
+        )
     {
+        // Still waiting: the slot is told (a new job of its own, or the same one), and the parent is
+        // not - it was told once, and a second *still running* is news it already has.
+        if let letibot_tools::builtins::task::TaskStatus::Running { note, .. } = &status {
+            slot.wait_again(
+                note.clone().unwrap_or_else(|| waiting_where(&open)),
+                words_of(&out),
+            );
+            return out;
+        }
         let (state, detail) = match &status {
             letibot_tools::builtins::task::TaskStatus::Failed { why } => {
                 ("failed", crate::jobwatch::first_line(why))
@@ -1531,11 +1747,12 @@ fn later_turn(
                 }),
             ),
         };
-        slot.settle_later(status);
+        slot_settled_by_a_later_turn(slot, status, was_waiting);
         // This turn's answer is the child's last word, kept where `collect` reads it: a later
-        // turn's reply is what `task_result` answers with, not the first one it gave.
+        // turn's reply is what `task_result` answers with, not the first one it gave. NOT for a
+        // child that was waiting: this is its FIRST answer, so nothing goes beside an earlier one.
         let again = match &out {
-            Some(Ok(reply)) if settled_before => {
+            Some(Ok(reply)) if settled_before && !was_waiting => {
                 slot.spoke_again(reply.text.trim());
                 true
             }
@@ -1564,13 +1781,15 @@ fn later_turn(
 }
 
 /// A later turn of a child the daemon's worker ran: a parked child has no thread, so the parent's side makes the two acts its thread would make in [`later_turn`].
-/// Without them `task_result` keeps answering the first answer. `settled_before` is read before the turn.
+/// Without them `task_result` keeps answering the first answer. `settled_before` is read before the turn,
+/// and `open` is what the child holds, read after it.
 pub(crate) fn a_child_turn_ended(
     trees: &super::trees::Trees,
     parent: &str,
     child: &str,
     somebody_spoke: bool,
     settled_before: bool,
+    open: &[String],
     out: &Option<Result<Reply, HarnessError>>,
 ) {
     let Some(tree) = trees.of(parent) else {
@@ -1579,9 +1798,25 @@ pub(crate) fn a_child_turn_ended(
     let Some(slot) = tree.slot(child) else {
         return;
     };
-    let Some(status) = later_news(somebody_spoke, settled_before, out) else {
+    // Read BEFORE the settlement and after the turn: `Some` is the fact that this turn's answer is
+    // the child's FIRST, because the wait it was on was not an answer at all.
+    let was_waiting = slot.waiting_on_a_job();
+    let Some(status) = turn_end_news(
+        later_news(somebody_spoke, settled_before, out),
+        somebody_spoke,
+        open,
+        slot.waiting_answer().as_deref(),
+    ) else {
         return;
     };
+    // Still waiting for a job: the slot is told, and the parent is not - it already has that.
+    if let letibot_tools::builtins::task::TaskStatus::Running { note, .. } = &status {
+        slot.wait_again(
+            note.clone().unwrap_or_else(|| waiting_where(open)),
+            words_of(out),
+        );
+        return;
+    }
     let (state, detail) = match &status {
         letibot_tools::builtins::task::TaskStatus::Failed { why } => {
             ("failed", crate::jobwatch::first_line(why))
@@ -1594,10 +1829,11 @@ pub(crate) fn a_child_turn_ended(
             }),
         ),
     };
-    slot.settle_later(status);
-    // This turn's answer is the child's last word, kept where `collect` reads it.
+    slot_settled_by_a_later_turn(&slot, status, was_waiting);
+    // This turn's answer is the child's last word, kept where `collect` reads it - unless it is the
+    // child's FIRST word, which is the slot's settled answer already.
     let again = match out {
-        Some(Ok(reply)) if !reply.text.trim().is_empty() => {
+        Some(Ok(reply)) if !reply.text.trim().is_empty() && !was_waiting => {
             slot.spoke_again(reply.text.trim());
             true
         }
@@ -3588,10 +3824,12 @@ impl HarnessTaskRunner {
         // No session, no reading: a child this daemon has not adopted yet is still opening, and
         // *nothing to say about it* is the honest answer rather than *nothing is happening*.
         self.registry.get(handle)?;
+        // A WAITING child's `Running` is not a turn: its turn ended and it is blocked on a job it
+        // started, so the reading must say *between turns* rather than claim one is in flight.
         let turn_started = matches!(
             status,
             letibot_tools::builtins::task::TaskStatus::Running { .. }
-        );
+        ) && !slot.waiting_on_a_job();
         Some(crate::sessions::child_reading(
             &self.registry,
             handle,
@@ -4504,53 +4742,125 @@ impl HarnessTaskRunner {
                 reply.text = newest;
             }
         }
+        // What this child still holds open, read once and here: after its turn, after the holds
+        // above, and at the one moment its answer would otherwise settle. A host child ONLY - a VM's
+        // jobs were held for above (they die with the turn) and `finish_a_vm_child` is where that
+        // ending is said.
+        let open = match placement {
+            Placement::Host => sub.open_processes(),
+            _ => Vec::new(),
+        };
+        let waiting = waiting_on_jobs(&open);
         // The bound is the plan check's, so a child that keeps ending over its jobs is not turned
-        // back for ever: what is still running goes up IN the answer, where the parent acts on it.
-        if let Some(said) = open_jobs_answer_line(&sub.open_jobs()) {
+        // back for ever: what is still running goes up IN the answer, where the parent acts on it -
+        // unless this turn is not the child's answer at all. A WAITING child's words are kept for
+        // the turn that ends the wait, and an answer that carried this line after the job had ended
+        // would say the work was left running when it was not.
+        if waiting.is_none()
+            && let Some(said) = open_jobs_answer_line(&sub.open_jobs())
+        {
             reply.text.push_str("\n\n");
             reply.text.push_str(&said);
         }
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
         // A host child's estate, settled before its answer: that answer is the last thing the parent
-        // reads from it. A VM child's substrate dies with its turn, and `finish_a_vm_child` says so.
+        // reads from it. A VM child's substrate dies with its turn, and `finish_a_vm_child` says so -
+        // and a child that is WAITING is not over: settling its estate ENDS ITS SCOPES, which would
+        // kill the very job it is blocked on. Its estate is settled by the call on the way out, when
+        // the wait has ended and the child has gone quiet.
         let heir = self.heir();
-        if placement == Placement::Host
+        if waiting.is_none()
+            && placement == Placement::Host
             && let Some(said) = sub.settle_estate(heir.as_deref())
         {
             reply.text.push_str(&format!("\n\n[estate] {said}"));
         }
+        // The journal's row for this child: `running` while it still holds a job, because a child
+        // that has not finished must not have a row that says it has.
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
             role: seat.as_str().to_string(),
-            state: "done".into(),
+            state: if waiting.is_some() { "running" } else { "done" }.into(),
             tokens,
             elapsed: spawned.elapsed().as_secs_f64(),
             prompt: first_line.clone(),
             parent: parent.clone(),
         });
-        publish("done", &first_line, Some(first_line.clone()));
+        // The head's row: `held` for a child that is waiting on the work it started, which is the
+        // word the tree already draws for exactly this, and `done` for one that has finished.
+        match waiting_said(&open) {
+            Some(said) => publish("held", &said, None),
+            None => publish("done", &first_line, Some(first_line.clone())),
+        }
         // A VM's life is its turn's, and closing it is where the placement sentence comes from, the one the parent
         // reads as where the work went. So a VM child answers the task and no more: its substrate cannot be held
         // open for a later question, and that is stated rather than discovered as silence.
         if placement != letibot_tools::builtins::task::Placement::Host {
             return Ok(self.finish_a_vm_child(&mut sub, reply, &answer, &sub_id));
         }
-        // A host child stays reachable, and the answer is given AS the turn ends rather than on the way out of
-        // this function, because what follows does not end until the hub does. Settling from the return would have
-        // let a park delay it for the life of the daemon, so `task_result` would never answer.
-        answer.say(letibot_tools::builtins::task::TaskStatus::Done {
-            answer: reply.text.clone(),
-            // No reading here either, and for a reason that is the design: the reading is taken where it is ASKED
-            // for, or a child that answered and then parked would be described as it was at that moment, for ever.
-            child: None,
-        });
-        // The child has finished, so its branch goes to the queue, here rather than at the thread's exit: a host
-        // child parks and does not leave this function until the daemon closes its hub, so enqueueing on the way
-        // out would hold a finished branch out of the queue. The answer being given IS the finish.
-        self.enqueue_finished(&sub_id);
-        if serve_child(&mut sub, &sub_hub, &sub_id, turns) == ChildExit::Parked {
+        // A host child's ending turn settles the parent's slot here, AS the turn ends rather than on
+        // the way out of this function, because what follows does not end until the hub does -
+        // settling from the return would let a park delay it for the life of the daemon.
+        match &waiting {
+            // The wait. A child that still holds a job has NOT answered: it is waiting on the work it
+            // started, and the turn that job's ending wakes is where `Done` is said (`turn_end_news`).
+            // Its branch is deliberately NOT enqueued - it may still commit - so the enqueue is the
+            // one after `serve_child`, when the child has gone quiet. It stays reachable, which is the
+            // park's whole reason: it cannot park while the job runs (`park_refusal`), so its thread
+            // is here for the wake.
+            Some(_) => answer.say_waiting(&open, &reply.text),
+            // An answer, because the child holds nothing open.
+            None => {
+                answer.say(letibot_tools::builtins::task::TaskStatus::Done {
+                    answer: reply.text.clone(),
+                    // No reading here either, and for a reason that is the design: the reading is
+                    // taken where it is ASKED for, or a child that answered and then parked would be
+                    // described as it was at that moment, for ever.
+                    child: None,
+                });
+                // The child has finished, so its branch goes to the queue, here rather than at the
+                // thread's exit: a host child parks and does not leave this function until the daemon
+                // closes its hub, so enqueueing on the way out would hold a finished branch out of the
+                // queue. The answer being given IS the finish.
+                self.enqueue_finished(&sub_id);
+            }
+        }
+        let exit = serve_child(&mut sub, &sub_hub, &sub_id, turns);
+        if exit == ChildExit::Parked {
             slot.mark_parked();
+        }
+        // How the wait ended, said here where every fact the row and the slot carry is still in hand.
+        // The head's last row for a waiting child is the wait, and the child serves its later turns
+        // after it: if the turn a job's ending woke answered, that row says *held* about a child that
+        // has finished. And the wait cannot outlive the child's own ending - a slot left on it would
+        // answer `task_result` with a wait about a child that is gone.
+        if waiting.is_some() {
+            match (slot.settled_status(), exit) {
+                (Some(letibot_tools::builtins::task::TaskStatus::Done { answer, .. }), _) => {
+                    let said = answer.lines().next().unwrap_or("").to_string();
+                    publish("done", &said, Some(said.clone()));
+                }
+                // Nothing has settled and this is how the wait ended: it was STOPPED, and a wait is
+                // not an answer.
+                (None, _) if slot.was_killed() || exit == ChildExit::Stopped => {
+                    slot.settle(letibot_tools::builtins::task::TaskStatus::Failed {
+                        why: WAITING_WHEN_STOPPED.into(),
+                    });
+                }
+                // Parked: nothing under it is alive, which is `park_refusal`'s own rule for the park,
+                // so the job it waited on is not running here any more and the last word it gave over
+                // that job is its answer.
+                (None, ChildExit::Parked) => {
+                    slot.settle(letibot_tools::builtins::task::TaskStatus::Done {
+                        answer: slot.waiting_answer().unwrap_or_default(),
+                        child: None,
+                    });
+                }
+                // Closed: the daemon is going away, and the child is resumed into this tree by the
+                // next one. The slot dies with this process, so there is nothing to write.
+                _ => {}
+            }
         }
         // And once more, because the turns after the answer can commit too. This child parked
         // only after serving every later turn, and the queue reads a branch's head once, at the

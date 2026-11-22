@@ -673,9 +673,10 @@ fn patched_crates(text: &str) -> Vec<String> {
 /// between turns from one wedged mid-call. `None` means this runner keeps no such record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStatus {
-    /// Still working - the child's turn has not ended. `note` is the daemon's own progress line
-    /// from the child's opening phase (see [`TaskRunner::collect`] and `TaskSlot::note`), which is
-    /// what it is called: it is NOT the child's last word, and nothing prints it as one.
+    /// Not answered yet. `note` is the daemon's own one-line account of it (see
+    /// [`TaskRunner::collect`] and `TaskSlot::note`): the progress line its spawn wrote while it
+    /// opened, or - for a child whose turn ended over jobs it started and could not settle - the
+    /// wait it is on. It is NOT the child's last word, and nothing prints it as one.
     Running {
         note: Option<String>,
         /// What the daemon can see about the child right now, or `None` when it keeps no record.
@@ -2312,7 +2313,7 @@ impl Tool for TaskResultTool {
             ctx.want_completion(handle, crate::runtime::WantedNow::Awaited);
             let status = self.runner.look(handle, std::time::Duration::ZERO);
             match &status {
-                TaskStatus::Running { note, .. } => {
+                TaskStatus::Running { .. } => {
                     // The steering clause, in a value rather than inside the `format!`: the
                     // reading's own sentence when the daemon has one, and the pair of tools that
                     // have always been named when it has none (every fake, and `NoTaskRunner`).
@@ -2326,12 +2327,7 @@ impl Tool for TaskResultTool {
                          while the answer is already on its way. Carry on with something \
                          else; {next}.{}",
                         running_said(&label, &status),
-                        // The spawn's own line, and it is named as the spawn's: the note is written
-                        // by the progress callback during the child's opening phase and never
-                        // again, so it is not the child's last word. That is in the reading above.
-                        note.as_ref()
-                            .map(|n| format!(" (the spawn reported: {n})"))
-                            .unwrap_or_default()
+                        the_daemons_note(&status)
                     ));
                 }
                 _ => std::time::Duration::ZERO,
@@ -2414,7 +2410,8 @@ impl Tool for TaskResultTool {
                     format!("subagent `{label}` is {}", doing_word(&status)),
                     format!(
                         "`{label}` has not answered yet; its answer is delivered to you when it \
-                         finishes.{}",
+                         finishes.{}{}",
+                        the_daemons_note(&status),
                         status
                             .child_now()
                             .map(|said| format!(" Right now {said}."))
@@ -2422,16 +2419,14 @@ impl Tool for TaskResultTool {
                     ),
                 )
             }
-            TaskStatus::Running { ref note, .. } => Invocation::abstained(
+            TaskStatus::Running { .. } => Invocation::abstained(
                 format!("subagent `{label}` is {}", doing_word(&status)),
                 format!(
                     "the deadline passed and `{label}` has not answered yet{}. {} This is \
                      the wait ending, not the subagent ending — call `task_result` again \
                      with a longer `timeout_ms`, or do something else and collect it \
                      later.",
-                    note.as_ref()
-                        .map(|n| format!(" (the spawn reported: {n})"))
-                        .unwrap_or_default(),
+                    the_daemons_note(&status),
                     status
                         .child_now()
                         .map(|said| format!("Right now {said}."))
@@ -2460,6 +2455,16 @@ fn doing_word(status: &TaskStatus) -> String {
 /// child's handle, for a sentence that has to say which child it is about.
 fn running_said(label: &str, status: &TaskStatus) -> String {
     format!("`{label}` is {}", doing_word(status))
+}
+
+/// The daemon's own line about a child that has not answered, as an aside on any sentence that would
+/// otherwise leave it out: its spawn's progress, or the wait its jobs left it on. One function,
+/// because the three arms of `task_result` that print it must not read as three different facts.
+fn the_daemons_note(status: &TaskStatus) -> String {
+    match status {
+        TaskStatus::Running { note: Some(n), .. } => format!(" ({n})"),
+        _ => String::new(),
+    }
 }
 
 /// The one handle a session may address its parent by: `parent`. Reserved, not resolved as a name:
