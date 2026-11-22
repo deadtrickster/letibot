@@ -90,6 +90,16 @@ impl Clock {
     /// Why a check is due after the rows up to `items.len()`, or `None`. Reads only the rows it
     /// has not read, so a long session costs the round's rows.
     pub fn due(&mut self, items: &[TranscriptItem], todos: &[TodoItem]) -> Option<String> {
+        // No plan, no check: every trigger below is a reason to hold the work against what was
+        // announced, and a session that announced nothing has nothing to hold it against. Nothing is
+        // consumed here either, so the rows read while there was no plan are read again by the first
+        // trigger after one is stated.
+        let open = open_todos(todos).len();
+        if plan_of(items).is_none() && open == 0 {
+            self.calls = 0;
+            self.todos = open;
+            return None;
+        }
         let mut why: Option<String> = None;
         let say = |why: &mut Option<String>, w: String| {
             why.get_or_insert(w);
@@ -137,8 +147,7 @@ impl Clock {
             say(&mut why, "a new todo".into());
         }
         self.todos = open;
-        let planned = open > 0 || announced(items);
-        if why.is_none() && planned && self.calls >= EVERY {
+        if why.is_none() && self.calls >= EVERY {
             say(&mut why, format!("{EVERY} tool calls"));
         }
         if why.is_some() {
@@ -155,20 +164,17 @@ fn open_todos(todos: &[TodoItem]) -> Vec<&TodoItem> {
         .collect()
 }
 
-/// The last assistant text that announced work, which is the stated plan.
-fn plan_of(items: &[TranscriptItem]) -> Option<&str> {
+/// The last assistant text that announced work, cut to the PLAN: the commitment sentences it made,
+/// not the paragraph they sat in. The check compares the work against the plan, and a reader (or a
+/// model) given the whole message has to find the plan inside it first.
+fn plan_of(items: &[TranscriptItem]) -> Option<String> {
     items.iter().rev().find_map(|i| match i {
-        TranscriptItem::Assistant { text, .. }
-            if !letibot_tools::builtins::intent::commitments(text).is_empty() =>
-        {
-            Some(text.as_str())
+        TranscriptItem::Assistant { text, .. } => {
+            let said = letibot_tools::builtins::intent::commitments(text);
+            (!said.is_empty()).then(|| said.join(" "))
         }
         _ => None,
     })
-}
-
-fn announced(items: &[TranscriptItem]) -> bool {
-    plan_of(items).is_some()
 }
 
 /// The extension of a path argument, the cheapest sign the work moved to another kind of file.
@@ -238,6 +244,10 @@ pub fn shortlist(entries: &[Entry], window: &str, skip: &BTreeSet<String>) -> Ve
 
 /// The pre-filter: `ranked` skills (the offers' blended score, embedding plus lexical) up to
 /// [`SKILLS_SHORT`], then notes by shared words. Names in `skip` are left out.
+///
+/// A SKILL rides the shortlist only when the turn NAMES it: a skill that merely scores well is a
+/// skill the check raises at random, and a shortlist nobody asked for is noise the model has to
+/// read before it can answer. Notes are the operator's own memory and keep the word match.
 pub fn shortlist_ranked(
     ranked: &[(String, f64)],
     entries: &[Entry],
@@ -247,6 +257,7 @@ pub fn shortlist_ranked(
     let mut out: Vec<Entry> = ranked
         .iter()
         .filter(|(n, _)| !skip.contains(n))
+        .filter(|(n, _)| named(n, window))
         .filter_map(|(n, _)| entries.iter().find(|e| &e.name == n).cloned())
         .take(SKILLS_SHORT)
         .collect();
@@ -258,6 +269,22 @@ pub fn shortlist_ranked(
     let room = SHORTLIST - out.len();
     out.extend(shortlist(&notes, window, skip).into_iter().take(room));
     out
+}
+
+/// Does the turn name this skill? Every word of the name has to be in the turn's own words, so
+/// `rust-builds` is named by "run the rust builds check" and not by "build the rust thing".
+pub fn named(skill: &str, window: &str) -> bool {
+    let words: BTreeSet<String> = window
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let name: Vec<String> = skill
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    !name.is_empty() && name.iter().all(|w| words.contains(w))
 }
 
 /// Whether a new request came after the row the verdict judged at `position`, counted as the shadow
@@ -328,7 +355,7 @@ pub fn shown(
     super::turn_end::push_words(&mut head, &super::words::recent(items));
     let mut d = std::mem::take(&mut head.data);
     d.push_str("stated plan:\n");
-    d.push_str(plan_of(items).unwrap_or("(none)").trim());
+    d.push_str(plan_of(items).unwrap_or_else(|| "(none)".into()).trim());
     d.push_str("\n\nopen todos:\n");
     let open = open_todos(todos);
     if open.is_empty() {

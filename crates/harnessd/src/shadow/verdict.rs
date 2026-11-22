@@ -73,11 +73,21 @@ impl Shown {
     }
 
     fn authored_span(&self, quote: &str, ok: impl Fn(&Span) -> bool) -> Option<&Span> {
-        self.data.match_indices(quote).find_map(|(at, _)| {
-            self.spans
+        // Every occurrence the tolerant matcher finds, in order: a quote that differs only in case
+        // or in how its whitespace runs is still a quote, and the old exact-bytes rule voided a
+        // whole answer over a capital letter.
+        let mut from = 0;
+        while let Some((at, end)) = find(&self.data, from, quote) {
+            if let Some(span) = self
+                .spans
                 .iter()
-                .find(|s| ok(s) && s.start <= at && at + quote.len() <= s.end)
-        })
+                .find(|s| ok(s) && s.start <= at && end <= s.end)
+            {
+                return Some(span);
+            }
+            from = at + 1;
+        }
+        None
     }
 
     /// The assistant's own words, and under `strict` only those of the judged turn.
@@ -248,6 +258,65 @@ impl Log {
     }
 }
 
+/// Where `quote` appears in `data` at or after `from`, tolerating case and runs of whitespace: a
+/// model that re-wraps a line or capitalises its first word is quoting it, and the exact-bytes rule
+/// turned that into a voided answer with nothing to read. The words must still be the same words in
+/// the same order, with only whitespace between them.
+pub(crate) fn find(data: &str, from: usize, quote: &str) -> Option<(usize, usize)> {
+    let first = quote.split_whitespace().next()?;
+    let mut at = from;
+    loop {
+        let start = find_ascii_ci(data, at, first)?;
+        if let Some(end) = walk(data, start, quote) {
+            return Some((start, end));
+        }
+        at = start + first.len();
+        if at >= data.len() {
+            return None;
+        }
+    }
+}
+
+/// The rest of `quote` from `start`: each further token right after a run of whitespace, so the words
+/// are the same words in the same order and nothing else has been skipped. Answers the end offset.
+fn walk(data: &str, start: usize, quote: &str) -> Option<usize> {
+    let mut at = start;
+    let mut first = true;
+    for token in quote.split_whitespace() {
+        if first {
+            first = false;
+            at = start + token.len();
+            continue;
+        }
+        let gap = &data[at..];
+        let skip = gap.len() - gap.trim_start().len();
+        if skip == 0 {
+            return None;
+        }
+        let found = at + skip;
+        if !starts_ci(&data[found..], token) {
+            return None;
+        }
+        at = found + token.len();
+    }
+    Some(at)
+}
+
+/// Does `hay` start with `needle`, ASCII case taken as equal?
+fn starts_ci(hay: &str, needle: &str) -> bool {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    n.len() <= h.len() && h[..n.len()].eq_ignore_ascii_case(n)
+}
+
+/// `needle` in `hay` at or after `from`, ASCII case taken as equal: byte offsets stay offsets.
+fn find_ascii_ci(hay: &str, from: usize, needle: &str) -> Option<usize> {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || from >= h.len() || n.len() > h.len() - from {
+        return None;
+    }
+    (from..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
 /// Every non-empty quote, verified. One fabricated quote voids the whole verdict.
 fn verify<'a>(
     data: &str,
@@ -262,7 +331,7 @@ fn verify<'a>(
                 "`{field}` quote {q:?} is shorter than {MIN_QUOTE} bytes"
             ));
         }
-        if !data.contains(q) {
+        if find(data, 0, q).is_none() {
             return Err(format!(
                 "`{field}` quote {q:?} is not in what the shadow was shown"
             ));
@@ -274,6 +343,17 @@ fn verify<'a>(
 /// Read `reply` for `job` against what it was shown.
 pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
     let mut log = Log(Vec::new());
+    // An empty reply is not noise to throw away: a model that says nothing said nothing at all,
+    // which is what a prompt past its window looks like from here. Naming it is what lets a person
+    // find that cause instead of reading a void rate.
+    if reply.trim().is_empty() {
+        return log.reject(
+            "reply",
+            "the reply was empty: the prompt was very likely longer than the model's window, so \
+             nothing came back at all"
+                .into(),
+        );
+    }
     let Some(json) = object(reply) else {
         return log.reject("schema", "no JSON object in the reply".into());
     };

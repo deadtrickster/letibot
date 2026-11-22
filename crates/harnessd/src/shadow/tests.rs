@@ -212,6 +212,54 @@ fn a_fabricated_quote_voids_the_whole_verdict() {
     assert!(made_up.log.iter().any(|l| l.starts_with("reject quotes")));
 }
 
+/// A quote that differs only in case or in how its whitespace runs is still that quote: a model that
+/// caps a word or re-wraps a line was quoting, and voiding the whole answer over it is a loss of the
+/// answer, not a caught fabrication. The words must still be the same words, in order, with nothing
+/// but whitespace between them.
+#[test]
+fn a_quote_tolerates_case_and_whitespace_but_not_a_different_sentence() {
+    let said = shown("The agent will run the gate next.\n\nAnd then it will land the stack.");
+    let near = verdict::check(
+        Job::TurnEnd,
+        r#"{"verdict":"owed","promise":"the agent WILL run the gate   next.","evidence":""}"#,
+        &said,
+    );
+    assert!(near.verdict.is_ok(), "{near:?}");
+    let reflowed = verdict::check(
+        Job::TurnEnd,
+        r#"{"verdict":"owed","promise":"And then it will\nland the stack.","evidence":""}"#,
+        &said,
+    );
+    assert!(reflowed.verdict.is_ok(), "{reflowed:?}");
+    // Words in another order, or with one missing, are another sentence.
+    for wrong in [
+        "run the gate will next",
+        "the agent will land the stack next",
+    ] {
+        let bad = verdict::check(
+            Job::TurnEnd,
+            &format!(r#"{{"verdict":"owed","promise":"{wrong}","evidence":""}}"#),
+            &said,
+        );
+        assert!(
+            bad.verdict.is_err(),
+            "{wrong:?} was taken for a quote: {bad:?}"
+        );
+    }
+    // A fragment of it is a quote, as it always was: the check is against fabrication, not length.
+    let fragment = verdict::check(
+        Job::TurnEnd,
+        r#"{"verdict":"owed","promise":"run the gate next","evidence":""}"#,
+        &said,
+    );
+    assert!(fragment.verdict.is_ok(), "{fragment:?}");
+    // An empty reply is named for what it is: a prompt the model could not answer.
+    let nothing = verdict::check(Job::TurnEnd, "   ", &said);
+    let why = nothing.verdict.unwrap_err();
+    assert!(why.contains("empty") && why.contains("window"), "{why}");
+    assert!(nothing.log.iter().any(|l| l.starts_with("reject reply")));
+}
+
 #[test]
 fn the_schema_and_the_verdict_space_are_closed() {
     for (job, reply, says) in [
@@ -1185,15 +1233,28 @@ mod observe_only {
         }
     }
 
+    /// A trigger is a reason to look at a PLAN: with none stated nothing is due, so the job is never
+    /// asked to grade work against nothing.
     #[test]
     fn a_during_check_is_due_at_a_change_of_subject_or_every_n_calls_with_a_plan() {
         let mut c = Clock::default();
         let mut items = vec![op("fix the parser")];
-        assert_eq!(c.due(&items, &[]).as_deref(), Some("a new operator prompt"));
+        assert_eq!(
+            c.due(&items, &[]),
+            None,
+            "no plan is stated, so there is nothing to check against"
+        );
         items.push(calls(3, "src/a.rs"));
-        assert_eq!(c.due(&items, &[]).as_deref(), Some("a new file kind, .rs"));
+        assert_eq!(c.due(&items, &[]), None, "and still no plan");
+        items.push(plan());
+        assert_eq!(
+            c.due(&items, &[]).as_deref(),
+            Some("a new operator prompt"),
+            "the rows read while there was no plan are read again, and the oldest trigger is the one"
+        );
+        assert_eq!(c.due(&items, &[]), None, "and then nothing new");
         items.push(calls(3, "src/b.rs"));
-        assert_eq!(c.due(&items, &[]), None, "same kind, no plan: nothing");
+        assert_eq!(c.due(&items, &[]), None, "same kind, nothing new");
         items.push(failed("bash"));
         assert_eq!(
             c.due(&items, &[]).as_deref(),
@@ -1201,7 +1262,8 @@ mod observe_only {
         );
         items.push(failed("bash"));
         assert_eq!(c.due(&items, &[]), None, "the same error class again");
-        items.push(plan());
+        items.push(op("now the other one"));
+        assert_eq!(c.due(&items, &[]).as_deref(), Some("a new operator prompt"));
         items.push(calls(during::EVERY, "src/c.rs"));
         assert_eq!(c.due(&items, &[]).as_deref(), Some("8 tool calls"));
     }
@@ -1583,9 +1645,11 @@ fn a_stateless_during_offer_never_acts() {
     assert_eq!(skill_picks(&strict, false).unwrap().len(), 1);
 }
 
-/// The pre-filter takes skills in the blended order the offers score, then notes by shared words.
+/// The pre-filter takes skills in the blended order the offers score, and only a skill the TURN NAMES
+/// rides it: one that merely scores well is a shortlist nobody asked for. Notes keep the word match,
+/// because they are the operator's own memory.
 #[test]
-fn the_shortlist_is_the_ranked_skills_then_the_notes() {
+fn the_shortlist_is_the_ranked_skills_the_turn_names_then_the_notes() {
     use super::during::{Entry, SKILLS_SHORT, shortlist_ranked};
     let e = |n: &str, about: &str| Entry {
         name: n.into(),
@@ -1601,9 +1665,28 @@ fn the_shortlist_is_the_ranked_skills_then_the_notes() {
     let skip = ["skill-6".to_string()].into_iter().collect();
     let short = shortlist_ranked(&ranked, &entries, "run the parser tests", &skip);
     let names: Vec<&str> = short.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names.len(), SKILLS_SHORT + 1, "{names:?}");
-    assert_eq!(names[0], "skill-5");
-    assert_eq!(names.last(), Some(&"note:build.md"));
+    assert_eq!(
+        names,
+        vec!["note:build.md"],
+        "no skill is named by that turn, so none rides it"
+    );
+    // A turn that names one puts it first, and the notes follow.
+    let short = shortlist_ranked(
+        &ranked,
+        &entries,
+        "the skill-3 check and the parser tests",
+        &skip,
+    );
+    let names: Vec<&str> = short.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names.first(), Some(&"skill-3"), "{names:?}");
+    assert_eq!(names.last(), Some(&"note:build.md"), "{names:?}");
+    assert!(names.len() <= SKILLS_SHORT + 1, "{names:?}");
+    // A name is matched by every word of it: "rust-builds" is not named by "build it".
+    assert!(!super::during::named("rust-builds", "build the thing"));
+    assert!(super::during::named(
+        "rust-builds",
+        "run the rust builds check"
+    ));
 }
 
 /// An empty answer from a model that kept thinking is read from its reasoning's last JSON object,
