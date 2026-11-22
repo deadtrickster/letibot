@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::mergequeue::serve::tests::{TempDir, branch, commit, repo, sh};
+use crate::mergequeue::settings::{QueueSettings, target_for};
 
 /// The landing tree is made outside `.git` and reused: made under the landing root, keyed by the
 /// repository; the second call reuses it - its ignored build cache kept - and resets it clean.
@@ -1162,5 +1163,66 @@ fn the_patch_check_agrees_with_ancestry_and_sees_a_merge_that_rewrote_the_shas()
         unlanded_patches(&repo, &picked, &last2).unwrap(),
         0,
         "but every patch of it is there, so the branch owes the target nothing"
+    );
+}
+
+/// A repository with one commit on `name`, and no other branch.
+fn plain_repo(under: &Path, name: &str) -> PathBuf {
+    let repo = under.join(name);
+    std::fs::create_dir_all(&repo).unwrap();
+    sh(&repo, &["init", "-q", "-b", name]);
+    letibot_tools::testing::repo_config(&repo);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    sh(&repo, &["add", "."]);
+    sh(&repo, &["commit", "-q", "-m", "base"]);
+    std::fs::canonicalize(repo).unwrap()
+}
+
+/// The rungs are unchanged: `main`, else `master`, else the checkout's own `HEAD` - the reader
+/// the cache sits in front of, tested apart from it.
+#[test]
+fn the_default_targets_rungs_are_main_then_master_then_the_checkouts_head() {
+    let dir = TempDir::new("default-rungs");
+    let main = repo(&dir.0);
+    assert_eq!(read_default_target(&main).as_deref(), Some("main"));
+    let master = plain_repo(&dir.0, "master");
+    assert_eq!(read_default_target(&master).as_deref(), Some("master"));
+    let trunk = plain_repo(&dir.0, "trunk");
+    assert_eq!(read_default_target(&trunk).as_deref(), Some("trunk"));
+}
+
+/// [`default_target`] is asked once per repository and kept: a `main` that appears afterwards is
+/// not the answer, because a second ask is a `git rev-parse` on every pass of the queue.
+#[test]
+fn the_default_target_is_asked_once_per_repository() {
+    let dir = TempDir::new("default-once");
+    let was_master = plain_repo(&dir.0, "master");
+    assert_eq!(default_target(&was_master).as_deref(), Some("master"));
+    sh(&was_master, &["branch", "main"]);
+    assert_eq!(
+        default_target(&was_master).as_deref(),
+        Some("master"),
+        "a second read would answer `main`; the first answer is the one the queue keeps"
+    );
+    // Another repository is another key, not another process-wide answer.
+    let with_main = repo(&dir.0);
+    assert_eq!(default_target(&with_main).as_deref(), Some("main"));
+}
+
+/// A project that names `[queue] target` is never asked for the repository's default: its answer
+/// is the name in its file, in a repository that has no such branch at all.
+#[test]
+fn a_named_target_is_answered_without_reading_the_repository() {
+    let dir = TempDir::new("named-target");
+    let repo = plain_repo(&dir.0, "trunk");
+    let named = QueueSettings {
+        target: Some("release".into()),
+        ..Default::default()
+    };
+    assert_eq!(target_for(&repo, &named).as_deref(), Some("release"));
+    assert_eq!(
+        target_for(&repo, &QueueSettings::default()).as_deref(),
+        Some("trunk"),
+        "with no name in the file, the repository's own default still answers"
     );
 }
