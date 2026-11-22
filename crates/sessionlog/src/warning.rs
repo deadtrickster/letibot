@@ -244,6 +244,12 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("check the session store"),
     ),
+    // A limit fork took none of the prompts the session had not read: they stay here, not lost.
+    (
+        "limit_new_session_queue_not_carried",
+        Class::Failure,
+        Action::Do("send them again in the new session"),
+    ),
     (
         "fork_unstored",
         Class::Failure,
