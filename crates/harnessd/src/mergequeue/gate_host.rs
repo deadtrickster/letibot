@@ -377,6 +377,9 @@ pub struct Files {
     /// Where the daemon's pokes land, and what the step's watchdog reads them from.
     pub beat: String,
     pub tick: Tick,
+    /// Where `gate-env.sh` puts the step's HOME and XDG dirs — the same `env` under the run's
+    /// scratch the local gate uses, so a test sees one environment on either machine.
+    pub scratch: String,
 }
 
 impl Remote {
@@ -468,6 +471,7 @@ impl Remote {
             exit: format!("{run}/step-{n}.exit"),
             beat: format!("{run}/step-{n}.beat"),
             tick: self.tick,
+            scratch: format!("{run}/env"),
         }
     }
     /// The marker a poll's answer leads with - unique per run and step, so the step's own output cannot
@@ -1086,6 +1090,7 @@ pub fn launcher_script(
         exit,
         beat,
         tick,
+        scratch,
         ..
     } = files;
     let watchdog = gate_tick::watchdog_script(beat, tick);
@@ -1112,7 +1117,7 @@ pub fn launcher_script(
          export LETIBOT_APPARATUS_REFUSALS='{out}.refused'\n\
          printf '0\\n' > '{beat}'\n\
          {watchdog} &\n\
-         ( {run} ) > '{out}' 2>&1\n\
+         ( sh '{tree}/scripts/gate-env.sh' '{scratch}' {run} ) > '{out}' 2>&1\n\
          echo $? > '{exit}'\n"
     )
 }

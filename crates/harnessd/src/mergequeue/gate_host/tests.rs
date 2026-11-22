@@ -87,6 +87,7 @@ fn files(tick: Tick) -> Files {
         out: "/h/gate/x/run/step-0.out".to_string(),
         exit: "/h/gate/x/run/step-0.exit".to_string(),
         beat: "/h/gate/x/run/step-0.beat".to_string(),
+        scratch: "/h/gate/x/run/env".to_string(),
         tick,
     }
 }
@@ -104,7 +105,8 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
     );
     assert!(
         script.contains(
-            "( cargo test --workspace -- --nocapture ) > '/h/gate/x/run/step-0.out' 2>&1"
+            "( sh '/h/gate/x/tree/scripts/gate-env.sh' '/h/gate/x/run/env' \
+               cargo test --workspace -- --nocapture ) > '/h/gate/x/run/step-0.out' 2>&1"
         ),
         "{script}"
     );
@@ -128,7 +130,10 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
         &files(Tick::default()),
         false,
     );
-    assert!(quoted.contains("( echo \"it's fine\" )"), "{quoted}");
+    assert!(
+        quoted.contains("( sh '/t/scripts/gate-env.sh' '/h/gate/x/run/env' echo \"it's fine\" )"),
+        "{quoted}"
+    );
     // And the step keeps no core dump, whatever the host's own limit is: a step the gate kills for
     // size is not a crash anybody is owed a report about.
     assert!(
@@ -151,7 +156,8 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
     );
     assert!(
         script.contains(
-            "( exec systemd-run --user --scope -p Delegate=yes -p CPUWeight=20 -p IOWeight=20 \
+            "( sh '/h/gate/x/tree/scripts/gate-env.sh' '/h/gate/x/run/env' \
+             exec systemd-run --user --scope -p Delegate=yes -p CPUWeight=20 -p IOWeight=20 \
              --quiet -- bash -c 'LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace' ) > \
              '/h/gate/x/run/step-0.out' 2>&1"
         ),
@@ -196,7 +202,10 @@ fn a_step_runs_below_the_boxs_own_work() {
     // A step with no scope of its own has no cgroup to weight, and still runs nice'd: the priority is
     // the launcher's, so the project's own step is never rewritten to carry it.
     let bare = launcher_script("cargo test", "/t", "/c", &files(Tick::default()), false);
-    assert!(bare.contains("( cargo test )"), "{bare}");
+    assert!(
+        bare.contains("( sh '/t/scripts/gate-env.sh' '/h/gate/x/run/env' cargo test )"),
+        "{bare}"
+    );
     assert!(
         !bare.contains("Weight"),
         "no scope, nothing to weight: {bare}"
@@ -355,6 +364,7 @@ fn the_poll_reads_the_status_before_the_pid_and_leads_with_its_marker() {
         out: "/h/run/step-0.out".to_string(),
         exit: "/h/run/step-0.exit".to_string(),
         beat: "/h/run/step-0.beat".to_string(),
+        scratch: "/h/run/env".to_string(),
         tick: Tick::default(),
     };
     let poll = poll_script("@@letibot-gate-1-0@@", &polled, 4096);

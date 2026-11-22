@@ -24,6 +24,7 @@ fn files(dir: &Path, tick: Tick) -> crate::mergequeue::gate_host::Files {
         out: format!("{run}/step-0.out"),
         exit: format!("{run}/step-0.exit"),
         beat: format!("{run}/step-0.beat"),
+        scratch: format!("{run}/env"),
         tick,
     }
 }
@@ -121,7 +122,7 @@ fn the_launcher_carries_the_watchdog_and_the_poll_carries_the_poke() {
     }
     // The watchdog is started BESIDE the step and before it, and the step itself is untouched.
     let wd = launcher.find("trap '' TERM").unwrap();
-    let run = launcher.find("( cargo test )").unwrap();
+    let run = launcher.find("( sh '/h/tree/scripts/gate-env.sh'").unwrap();
     assert!(wd < run, "the watchdog starts first:\n{launcher}");
     // The local gate's launcher is the same watchdog in front of the step's own command.
     let local = watched("cargo test", &dir.join("beat"), &Tick::default());
