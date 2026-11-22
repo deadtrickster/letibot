@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use sha2::{Digest, Sha256};
+
 /// The guest's commits and uncommitted work, saved on the host as a bundle before the VM stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rescue {
@@ -140,15 +142,10 @@ fn excluded(path: &str, exclude: &[String]) -> bool {
     exclude.iter().any(|e| p.contains(&format!("/{e}/")))
 }
 
-/// The guest command that says whether the tree holds work past `base`, and if so stages it as
-/// a bundle at [`GUEST_BUNDLE`]. Prints `CLEAN`, or `WORK <head> <commits|-> <dirty 0|1>`.
-pub fn guest_stage(project: &str, base: Option<&str>) -> String {
-    guest_stage_into(project, base, GUEST_BUNDLE)
-}
-
-/// Untracked `pkg/` is the package brief the host wrote into the copy, not the guest's work: the
-/// wip commit leaves it out, and a tree with nothing else changed is clean.
-fn guest_stage_into(project: &str, base: Option<&str>, bundle: &str) -> String {
+/// The guest command that stages the work, and `pkg/` is left out of it: untracked `pkg/` is the
+/// package brief the host wrote into the copy, not the guest's work, so a tree with nothing else
+/// changed is clean.
+pub(crate) fn guest_stage_into(project: &str, base: Option<&str>, bundle: &str) -> String {
     let base = base.unwrap_or("");
     format!(
         "cd {project} 2>/dev/null || exit 0\n\
@@ -180,8 +177,22 @@ fn guest_stage_into(project: &str, base: Option<&str>, bundle: &str) -> String {
     )
 }
 
-/// Where the guest stages the bundle before it is read out.
-pub const GUEST_BUNDLE: &str = "/tmp/letibot-rescue.bundle";
+/// Where a copy's guest stages the bundle before it is read out: ONE name per copy, because
+/// `git bundle create` writes `<path>.lock` and two guests sharing a `/tmp` would take each
+/// other's work. The name is a digest, so a copy's path is what identifies the bundle.
+pub fn guest_bundle(project: &Path) -> String {
+    let digest = Sha256::digest(project.as_os_str().as_encoded_bytes());
+    let tag: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("/tmp/letibot-rescue-{tag}.bundle")
+}
+
+/// Whether `bundle` names `head` as its ref: what was read out is the work that was staged.
+pub fn bundle_names(bundle: &Path, head: &str) -> bool {
+    let mut c = std::process::Command::new("git");
+    c.arg("bundle").arg("list-heads").arg(bundle);
+    c.stdin(Stdio::null()).stderr(Stdio::null());
+    out(c).is_some_and(|o| String::from_utf8_lossy(&o).contains(head))
+}
 
 /// A bundle larger than this is not read out over `firecode in`; the refusal is said instead.
 pub const MAX_BUNDLE: u64 = 512 * 1024 * 1024;

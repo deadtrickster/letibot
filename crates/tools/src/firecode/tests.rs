@@ -1226,6 +1226,56 @@ fn the_guests_commits_are_carried_out_when_the_copy_out_says_none() {
     assert_eq!(git_in(&src, &["rev-parse", "rescued"]), head);
 }
 
+/// Two copies' guests stage at the same moment into one `/tmp` - which the stub's `in` arm makes
+/// real, since it runs the command on the host. Each rescue must read out the bundle its OWN guest
+/// staged; a shared staging path hands one copy the other's work, which is a silent loss of it.
+#[test]
+fn a_rescue_reads_out_the_bundle_its_own_guest_staged() {
+    // The other copy, staged at the instant this one is between staging and reading out.
+    let (_other_src, other_copy, other) = none_after("rescue-other", "true", true);
+    git_in(
+        &other_copy,
+        &["commit", "-q", "--allow-empty", "-m", "other work"],
+    );
+    let elsewhere = keep::guest_stage_into(
+        &shell_quote(&other.project().display().to_string()),
+        other.base.as_deref(),
+        &keep::guest_bundle(other.project()),
+    );
+
+    let root = tmp("rescue-own");
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    git_in(&src, &["init", "-q"]);
+    git_in(&src, &["add", "-A"]);
+    git_in(&src, &["commit", "-qm", "base"]);
+    let other_stage = root.join("other-stage.sh");
+    std::fs::write(&other_stage, elsewhere).unwrap();
+    let arms = format!(
+        "{HAPPY}\n\
+         in) if printf '%s' \"$6\" | grep -q '^wc -c'; then sh '{s}' >/dev/null 2>&1; fi; \
+         cd \"$5\" && sh -c \"$6\" ;;\n\
+         down) mkdir -p \"$ROOT/runs/r1\"; echo none > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;",
+        s = other_stage.display()
+    );
+    let bin = stub_firecode(&root.join("fc"), &arms);
+    let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).unwrap();
+    let copy = root.join("cache").join("child");
+    git_in(&copy, &["commit", "-q", "--allow-empty", "-m", "this work"]);
+    let head = git_in(&copy, &["rev-parse", "HEAD"]);
+    let answer = b.close().unwrap();
+    let bundle = copy.with_file_name("child.rescue.bundle");
+    assert!(bundle.exists(), "nothing was carried out: {answer}");
+    let listed = git_in(
+        &src,
+        &["bundle", "list-heads", &bundle.display().to_string()],
+    );
+    assert!(
+        listed.contains(&head),
+        "the bundle carried out is another copy's work: {listed}\n{answer}"
+    );
+}
+
 /// R220: a copy of a WORKTREE must not keep the source's `gitdir` link. A worktree's `.git` is a
 /// file naming `<main>/.git/worktrees/<name>`, so a copy that keeps it is a second working tree
 /// attached to the same admin entry: `git add` in the copy writes the source's index and `git

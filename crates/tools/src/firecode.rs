@@ -1159,7 +1159,14 @@ impl FirecodeBackend {
             return;
         }
         let project = shell_quote(&self.project.display().to_string());
-        let said = match self.guest(&keep::guest_stage(&project, self.base.as_deref())) {
+        // The staging path is this copy's own: the three steps below are separate `firecode in`
+        // round trips, and a shared name is a bundle lock two guests fight over.
+        let staged = keep::guest_bundle(&self.project);
+        let said = match self.guest(&keep::guest_stage_into(
+            &project,
+            self.base.as_deref(),
+            &staged,
+        )) {
             Ok((bytes, 0)) => String::from_utf8_lossy(&bytes).into_owned(),
             Ok((bytes, code)) => {
                 return self.rescued_as(Err(format!(
@@ -1173,7 +1180,7 @@ impl FirecodeBackend {
             return;
         };
         let size = self
-            .guest(&format!("wc -c < {}", keep::GUEST_BUNDLE))
+            .guest(&format!("wc -c < {staged}"))
             .ok()
             .and_then(|(b, _)| String::from_utf8_lossy(&b).trim().parse::<u64>().ok());
         if size.is_some_and(|n| n > keep::MAX_BUNDLE) {
@@ -1183,13 +1190,22 @@ impl FirecodeBackend {
                 human(keep::MAX_BUNDLE)
             )));
         }
-        let bytes = match self.read(keep::GUEST_BUNDLE) {
+        let bytes = match self.read(&staged) {
             Ok(b) => b,
             Err(e) => return self.rescued_as(Err(format!("reading the bundle out: {e}"))),
         };
         let bundle = self.rescue_path();
         if let Err(e) = std::fs::write(&bundle, &bytes) {
             return self.rescued_as(Err(format!("{}: {e}", bundle.display())));
+        }
+        // The bundle is the only copy of that work once the copy is removed, so what was read out
+        // must name the head that was staged.
+        if !keep::bundle_names(&bundle, &head) {
+            let _ = std::fs::remove_file(&bundle);
+            return self.rescued_as(Err(format!(
+                "the bundle read out of the guest does not name its HEAD {head}: {}",
+                bundle.display()
+            )));
         }
         self.rescued_as(Ok(keep::Rescue {
             bundle,
