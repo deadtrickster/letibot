@@ -163,10 +163,28 @@ impl Fake {
 
     /// A message appears in the log, and is pushed to every connection with `names_you`.
     fn push(&self, author: &str, kind: &str, room: &str, to: Option<&str>, text: &str) -> Value {
+        self.push_saying(author, kind, room, to, text, "")
+    }
+
+    /// The same, with the say-kind the room stores in its refs: `ask`, `decision`, `fyi`, or empty
+    /// for a plain post. The re-raise reads it, so a fixture about nags has to carry it.
+    fn push_saying(
+        &self,
+        author: &str,
+        kind: &str,
+        room: &str,
+        to: Option<&str>,
+        text: &str,
+        says: &str,
+    ) -> Value {
+        let refs = match says.is_empty() {
+            true => json!([]),
+            false => json!([{ "kind": "say", "id": says }]),
+        };
         let m = {
             let mut log = self.log.lock().unwrap();
             let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
-                "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
+                "kind": kind, "to": to, "thread": null, "refs": refs, "text": text});
             log.push(m.clone());
             m
         };
@@ -792,9 +810,10 @@ fn a_pushed_message_is_acked_only_once_the_model_saw_it() {
     assert!(replay(&RoomLink::at(&fake.path)).is_empty());
 }
 
-/// A message nothing settled is pushed again after the wait, and rides the next tool result.
+/// A message nothing settled is pushed again after the wait, and rides the next tool result. Only one
+/// that WANTS an answer is: a post and an `fyi` are read and done.
 #[test]
-fn an_unseen_message_is_raised_again_and_rides_the_next_tool_result() {
+fn an_unseen_ask_is_raised_again_and_a_post_is_not() {
     let fake = Fake::start("reraise");
     let link = RoomLink::at(&fake.path);
     link.reraise_after(Duration::from_millis(500));
@@ -807,18 +826,93 @@ fn an_unseen_message_is_raised_again_and_rides_the_next_tool_result() {
         true
     }));
     wait_until(|| link.connected());
-    fake.push("s-a", "session", "dm", Some("claude-code"), "is H6 gated?");
-    wait_until(|| said.lock().unwrap().len() == 2);
-    assert!(
-        said.lock().unwrap()[1].starts_with("(unanswered"),
-        "{:?}",
-        said.lock()
+    // A plain dm post, an fyi and an ask: only the ask is owed an answer.
+    fake.push_saying(
+        "s-a",
+        "session",
+        "dm",
+        Some("claude-code"),
+        "the gate is green",
+        "",
     );
+    fake.push_saying(
+        "s-b",
+        "session",
+        "host",
+        Some("claude-code"),
+        "just so you know",
+        "fyi",
+    );
+    let ask = fake.push_saying(
+        "s-c",
+        "session",
+        "dm",
+        Some("claude-code"),
+        "is H6 gated?",
+        "ask",
+    );
+    let seq = ask["seq"].as_u64().expect("a seq");
+    wait_until(|| said.lock().unwrap().len() == 4);
+    let raised: Vec<String> = said
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| t.starts_with("(unanswered"))
+        .cloned()
+        .collect();
+    assert_eq!(raised.len(), 1, "one re-raise, for the ask: {raised:?}");
+    assert!(raised[0].contains("is H6 gated?"), "{raised:?}");
     let lines = link.take_unanswered().expect("the raised message");
     assert!(lines.to_string().contains("is H6 gated?"), "{lines}");
     assert!(link.take_unanswered().is_none(), "handed over once");
-    assert!(link.unseen().is_empty());
-    wait_until(|| *fake.cursor.lock().unwrap() == 1);
+    assert!(
+        !link.unseen().contains(&seq),
+        "the ask is settled by its line"
+    );
+}
+
+/// A reply in the thread of an ask settles it, so nothing is raised again.
+#[test]
+fn a_reply_in_the_thread_stops_the_raise() {
+    let fake = Fake::start("reraise-replied");
+    let link = RoomLink::at(&fake.path);
+    link.reraise_after(Duration::from_millis(500));
+    let said = Arc::new(Mutex::new(Vec::<String>::new()));
+    let t = said.clone();
+    link.stream(Arc::new(move |m, _names_you| {
+        t.lock()
+            .unwrap()
+            .push(m["text"].as_str().unwrap_or("").to_string());
+        true
+    }));
+    wait_until(|| link.connected());
+    let ask = fake.push_saying(
+        "s-a",
+        "session",
+        "dm",
+        Some("claude-code"),
+        "is H6 gated?",
+        "ask",
+    );
+    let seq = ask["seq"].as_u64().expect("a seq");
+    wait_until(|| link.unseen().contains(&seq));
+    // The seat answers in the thread: the ask is settled, and no re-raise follows.
+    let _ = rooms::call(
+        &link,
+        "room_dm",
+        &json!({"to": "s-a", "text": "yes, behind the flag", "thread": seq}),
+    );
+    assert!(!link.unseen().contains(&seq), "{:?}", link.unseen());
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        !said
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| t.starts_with("(unanswered")),
+        "{:?}",
+        said.lock()
+    );
 }
 
 /// A reply settles what it answers: a dm to the author settles that author's dms.

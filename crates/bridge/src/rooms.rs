@@ -448,6 +448,16 @@ fn set_family(name: Option<String>) {
     *family_cell().lock().unwrap_or_else(|e| e.into_inner()) = name;
 }
 
+/// Does this message WANT an answer? An `ask` and a `decision` do: a reader is owed one, and the
+/// re-raise exists to say so. A post or an `fyi` does not - the room's own rule keeps those silent
+/// for anyone with nothing to add, and a re-raise would cost a reply written only to stop the nag.
+pub fn wants_reply(m: &Value) -> bool {
+    m["refs"].as_array().into_iter().flatten().any(|r| {
+        r["kind"] == letibot_room::chat::SAY
+            && matches!(r["id"].as_str(), Some("ask") | Some("decision"))
+    })
+}
+
 /// How long a message addressed to this seat may go unseen before it is raised again. Nothing the
 /// bridge writes to the channel is known to have reached the model, so silence is not delivery.
 fn reraise_after() -> Duration {
@@ -1517,7 +1527,9 @@ impl RoomLink {
         let due: Vec<(u64, Value)> = self
             .pending_map()
             .iter_mut()
-            .filter(|(_, p)| !p.raised && p.at.elapsed() >= after)
+            // Only a message that WANTS an answer is raised again: a re-raise is a nag, and nagging
+            // a post or an `fyi` costs a reply written to silence it and nothing else.
+            .filter(|(_, p)| !p.raised && p.at.elapsed() >= after && wants_reply(&p.message))
             .map(|(seq, p)| {
                 p.raised = true;
                 (*seq, p.message.clone())
