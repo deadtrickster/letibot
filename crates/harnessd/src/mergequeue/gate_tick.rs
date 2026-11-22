@@ -133,6 +133,28 @@ pub fn quote(word: &str) -> String {
 pub(crate) mod probe {
     use std::time::{Duration, Instant};
 
+    /// A Mac has no `/proc`: the group is `ps`'s, read the same way - a zombie left out.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn in_group(pgid: u32) -> Vec<u32> {
+        let Ok(out) = std::process::Command::new("/bin/ps")
+            .args(["-axo", "pid=,pgid=,stat="])
+            .output()
+        else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                let pid: u32 = f.next()?.parse().ok()?;
+                let group: u32 = f.next()?.parse().ok()?;
+                let state = f.next()?;
+                (group == pgid && !state.starts_with('Z')).then_some(pid)
+            })
+            .collect()
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn in_group(pgid: u32) -> Vec<u32> {
         let Ok(entries) = std::fs::read_dir("/proc") else {
             return Vec::new();
@@ -144,6 +166,7 @@ pub(crate) mod probe {
             .collect()
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn pgrp_of(pid: u32) -> Option<u32> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let rest = &stat[stat.rfind(')')? + 1..];
