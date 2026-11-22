@@ -2446,43 +2446,19 @@ fn replay(link: &RoomLink, attention: Attention, mark: &Path) -> Result<Option<S
     Ok(Some(rows.iter().map(line).collect::<Vec<_>>().join("\n")))
 }
 
-/// One mark per seat and Claude Code process: the waiter loop restarts this binary for every
-/// message, and two sessions of one name each need their own. Public because a test proves WHICH
-/// name the mark is under, and that is a fact about this path and no other.
+/// One mark per SEAT: the waiter loop restarts this binary for every message, so a mark filed
+/// under the process that wrote it is a new mark every time and the same message is printed again
+/// on every pass. The handle is the seat's own name, which every restart of one session shares -
+/// and it is the name the room keys the cursor by, so the mark and the ack agree. Public because a
+/// test proves WHICH name the mark is under, and that is a fact about this path and no other.
 pub fn wait_mark_path() -> PathBuf {
-    let key = format!("{}#{}", handle(), session_pid());
+    let key = handle();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in key.as_bytes() {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     data_dir().join("waiters").join(format!("{h:016x}"))
-}
-
-/// The nearest `claude` ancestor, else the parent: what this waiter wakes.
-fn session_pid() -> u32 {
-    let parent = |pid: u32| -> Option<u32> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        stat.rsplit_once(')')?
-            .1
-            .split_whitespace()
-            .nth(1)?
-            .parse()
-            .ok()
-    };
-    let me = std::process::id();
-    let mut at = me;
-    for _ in 0..16 {
-        let Some(up) = parent(at).filter(|p| *p > 1) else {
-            break;
-        };
-        let comm = std::fs::read_to_string(format!("/proc/{up}/comm")).unwrap_or_default();
-        if comm.trim() == "claude" {
-            return up;
-        }
-        at = up;
-    }
-    parent(me).unwrap_or(me)
 }
 
 fn read_mark(path: &Path) -> (Option<u64>, u64) {
@@ -2501,6 +2477,92 @@ fn write_mark(path: &Path, instance: Option<u64>, seq: u64) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A waiter prints a message ONCE, and an ack by the bridge stops it: the mark is the seat's,
+    /// so the next run of the same seat finds it, and the cursor is the seat's, so a message its
+    /// session has already taken is not the waiter's to print again.
+    #[test]
+    fn a_wait_prints_a_message_once_and_an_ack_stops_it() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use letibot_room::client::Client;
+        use letibot_room::server::Server;
+        use letibot_room::{Event, Request, Room, Seat, Speaker, room_name};
+
+        let _held = letibot_testenv::EnvGuard::lock();
+        let dir = std::env::temp_dir().join(format!("letibot-wait-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: under the binary's one env lock, held above.
+        unsafe {
+            std::env::set_var(NAME_ENV, "cc@wait-once");
+            std::env::set_var("XDG_DATA_HOME", &dir);
+        }
+        let server = Server::serve(&dir.join("room.sock"), Room::new()).expect("a coordinator");
+        let bridge = RoomLink::at(server.path());
+        bridge.ensure().expect("the bridge connects");
+        let speaker = Client::connect_as(
+            server.path(),
+            Speaker::top_level("s-a"),
+            room_name(&server.name(), ""),
+            Seat::Session,
+            Arc::new(|_: &Event| {}),
+        )
+        .expect("a session");
+        let said = speaker
+            .request(&Request::Say {
+                id: "1".into(),
+                room: "host".into(),
+                text: "disk is free".into(),
+                to: Some(handle()),
+                thread: None,
+                refs: Vec::new(),
+                attachments: Vec::new(),
+                kind: Default::default(),
+            })
+            .expect("said");
+        let seq = match said {
+            letibot_room::Response::Said { message, .. } => message.seq,
+            other => panic!("{other:?}"),
+        };
+
+        let mark = dir.join("wait-mark");
+        let waiter = RoomLink::at(server.path());
+        let (code, printed) = wait_marked(
+            &waiter,
+            Attention::ToMe,
+            Instant::now() + Duration::from_secs(20),
+            Some(&mark),
+        );
+        assert_eq!(code, 0, "{printed}");
+        assert!(printed.contains("disk is free"), "{printed}");
+
+        // The next run of the same seat, with the same mark, has nothing to print.
+        let again = RoomLink::at(server.path());
+        let (code, printed) = wait_marked(
+            &again,
+            Attention::ToMe,
+            Instant::now() + Duration::from_secs(1),
+            Some(&mark),
+        );
+        assert_eq!(code, 30, "the same run printed it again: {printed}");
+
+        // And a waiter that has never printed it does not print what the bridge acked: the cursor
+        // is the seat's, and the msg is its session's to read.
+        bridge.ack(seq).expect("the bridge acks");
+        let fresh = RoomLink::at(server.path());
+        let (code, printed) = wait_marked(
+            &fresh,
+            Attention::ToMe,
+            Instant::now() + Duration::from_secs(1),
+            Some(&dir.join("fresh-mark")),
+        );
+        assert_eq!(code, 30, "an acked message was printed: {printed}");
+
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A connection that has just been dialled owes its gap: until `replay_the_gap` has fetched it,
     /// an ack would move the cursor over rows the open push never handed over. A row the stream
