@@ -227,6 +227,46 @@ fn a_question_is_a_message_and_its_answer_settles_the_ask() {
     assert_eq!(answer.room, ask.room, "an answer stays in the ask's room");
 }
 
+/// A `cc@` seat asks like a session does: the room holds the question, the target answers, and the
+/// answer reaches the bridge as a dm its session reads with its inbox. No board is needed, because
+/// the ask is the room's own record and the answer is a message.
+#[test]
+fn a_bridge_seat_asks_a_session_and_reads_the_answer_as_a_dm() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let bridge = seat(&server, "cc@etcd", A, Seat::External);
+    let b = seat(&server, "s-b", A, Seat::Session);
+
+    let ask = asked(bridge.ask("q1", "s-b", "which port does the proxy use?"));
+    assert_eq!(ask.asker, "cc@etcd");
+    assert!(ask.open(), "{ask:?}");
+    assert_eq!(b.next().seq, ask.seq, "the target is woken by the question");
+
+    let (_, of_me) = b.asks();
+    assert_eq!(of_me.len(), 1);
+
+    asked(b.reply("r1", ask.seq, "5433"));
+    let (by_me, _) = bridge.asks();
+    assert!(
+        matches!(&by_me[0].state, AskState::Answered { text, .. } if text == "5433"),
+        "{by_me:?}"
+    );
+    // The answer is a dm to the seat, so the seat's own inbox carries it.
+    let Response::Inbox { rows, .. } = bridge.call(Request::Inbox {
+        attention: letibot_room::Attention::ToMe,
+        limit: None,
+        after: None,
+    }) else {
+        panic!("the seat's inbox answers")
+    };
+    let answer = rows
+        .into_iter()
+        .find(|m| m.thread == Some(ask.seq))
+        .unwrap_or_else(|| panic!("the answer is in the seat's inbox"));
+    assert_eq!(answer.to.as_deref(), Some("cc@etcd"));
+    assert_eq!(answer.text, "`s-b` answered your ask #1: 5433");
+}
+
 /// Only the session that was asked answers, and only while the ask is open. A stranger's answer is
 /// refused with the ask's target named, and the ask is untouched.
 #[test]

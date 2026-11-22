@@ -4829,8 +4829,9 @@ impl Server {
         question: &str,
         now: u64,
     ) -> Response {
-        // An ask is a wait on another board, so only a session has one to wait on.
-        if seat != Seat::Session {
+        // An ask is held by the room and answered to the asker as a dm, so a `cc@` seat may make
+        // one whether or not it has a board: the bridge's session reads the answer with its inbox.
+        if !matches!(seat, Seat::Session | Seat::External) {
             return Response::Refused {
                 id: Some(id.to_string()),
                 why: crate::Refused::AskNotASession,

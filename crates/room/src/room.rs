@@ -813,8 +813,8 @@ impl fmt::Display for Refused {
             ),
             Refused::AskNotASession => write!(
                 f,
-                "only a top-level session asks: an ask is a wait between two of them, and this \
-                 seat has no board to wait on"
+                "only a top-level session or a `cc@` seat asks: an ask is a wait between two \
+                 seats, and this one has none to wait on"
             ),
             Refused::AskNotTheTarget { ask, target, state } => match state {
                 None | Some(crate::chat::AskState::Open) => write!(
