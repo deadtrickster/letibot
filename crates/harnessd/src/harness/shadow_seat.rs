@@ -65,8 +65,9 @@ impl Harness {
         })
     }
 
-    /// The rows the shadow owes this session for the reads it answered, appended now.
-    fn shadow_answered_rows(&mut self) {
+    /// The rows the shadow owes this session: it stopped answering and somebody has to arm it
+    /// again. An ordinary allow is not one of these - it is machinery, and no longer a card.
+    fn shadow_breaker_rows(&mut self) {
         let mut rows: Vec<TranscriptItem> = self
             .shadow_answering
             .take_rows()
@@ -83,8 +84,8 @@ impl Harness {
             self.warn(
                 "offer_rows_not_stored",
                 format!(
-                    "the shadow's offer rows were appended but the store refused them: {e}. \
-                     They stay in the session's ledger; the next store write carries them."
+                    "the shadow's breaker row was appended but the store refused it: {e}. It \
+                     stays in the session's ledger; the next store write carries it."
                 ),
             );
         }
@@ -122,7 +123,7 @@ impl Harness {
         } else if reply.ok {
             reply.lines.push(state(&self.shadow_answering));
         }
-        self.shadow_answered_rows();
+        self.shadow_breaker_rows();
         reply
     }
 
@@ -132,7 +133,7 @@ impl Harness {
             Ok(line) => crate::slash::SlashReply::listing(vec![line]),
             Err(e) => crate::slash::SlashReply::refused(vec![e]),
         };
-        self.shadow_answered_rows();
+        self.shadow_breaker_rows();
         self.publish_shadow();
         reply
     }
@@ -412,7 +413,7 @@ impl Harness {
     /// The verdicts that arrived since the last wake, acted on: the notices a wake says, and the
     /// display rows (a proposed note) appended now.
     pub(crate) fn shadow_notices(&mut self) -> Vec<String> {
-        self.shadow_answered_rows();
+        self.shadow_breaker_rows();
         let Some((events, recorder, shadow_id)) = self.shadow.parts() else {
             return Vec::new();
         };

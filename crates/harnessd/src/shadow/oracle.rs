@@ -467,14 +467,7 @@ impl Adjudicator for ShadowAdjudicator {
         let target = target_of(req);
         match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
-                self.answering.granted(
-                    &req.id,
-                    &req.session_id,
-                    stage,
-                    &target,
-                    judge_of(&self.cell).as_deref().unwrap_or("permission"),
-                    &d.basis,
-                )
+                self.answering.granted(stage, &target)
             }
             _ => self.answering.asked(&req.id, stage, &target),
         }

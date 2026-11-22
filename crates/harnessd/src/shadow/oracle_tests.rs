@@ -342,16 +342,29 @@ fn a_tripped_breaker_asks_at_every_stage() {
     assert_eq!(person_asks, 2, "the person answered at both stage sets");
 }
 
-/// Every answer is a row the operator sees, and it names the model and the stage.
+/// An allow is machinery, not news: no row arrives for it, and the gate's audit row - what `/gate`
+/// reads and what the corpus keeps - still says the shadow took the decision and admitted.
 #[test]
-fn an_answer_is_a_row_naming_the_model_and_the_stage() {
+fn an_answer_is_no_row_and_the_audit_names_the_shadow() {
     let read = serde_json::json!({ "command": "/usr/bin/cat /etc/hostname" });
     let (mut g, _, answering, _) = automode_gate(&[Stage::Reads], ALLOW);
     assert!(matches!(g.admit(&call(&read)), GateDecision::Admit));
-    let rows = answering.take_rows();
-    let title = rows.first().map(|(t, _)| t.clone()).unwrap_or_default();
-    assert!(title.contains("deepseek"), "{title}");
-    assert!(title.contains("reads"), "{title}");
+    assert!(
+        answering.take_rows().is_empty(),
+        "the burst of `shadow allowed …` rows the operator complained about"
+    );
+    let row = g.log.last().expect("the decision is a row");
+    assert_eq!(
+        row.decision.by, "shadow:deepseek",
+        "never filed as a person's answer"
+    );
+    assert!(
+        row.decision.basis.contains("deepseek"),
+        "{}",
+        row.decision.basis
+    );
+    assert_eq!(row.effect, "admit");
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Reads);
 }
 
 fn call(args: &serde_json::Value) -> letibot_tools::GateCall<'_> {
@@ -498,14 +511,23 @@ fn write_call(args: &serde_json::Value) -> letibot_tools::GateCall<'_> {
     }
 }
 
-/// The stage a decision was answered at, as the row the operator sees names it.
-fn stage_of_row(answering: &Answering) -> String {
-    answering
-        .take_rows()
-        .into_iter()
-        .map(|(title, _)| title)
-        .find(|t| t.starts_with("shadow allowed"))
-        .unwrap_or_default()
+/// The stage a decision was answered at, read from the request the gate recorded: `stage_of` IS the
+/// derivation the decider used, so the test and the shadow cannot disagree about which stage took
+/// the call.
+fn stage_of_the_audit(g: &letibot_tools::AdjudicatedGate, granted: &[&str]) -> Stage {
+    let req = &g
+        .log
+        .last()
+        .expect("the decision is the gate's own row")
+        .request;
+    let roots: Vec<std::path::PathBuf> = granted.iter().map(std::path::PathBuf::from).collect();
+    super::oracle::stage_of(
+        req,
+        std::path::Path::new("/home/op"),
+        std::path::Path::new("/w"),
+        &roots,
+    )
+    .expect("a stage answers it")
 }
 
 /// A folder the operator granted writable is a workspace for a write: the class is the project's
@@ -523,9 +545,14 @@ fn a_write_into_a_granted_folder_is_answered_at_workspace_writes() {
         "a write into a granted folder is the shadow's"
     );
     assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
-    let row = stage_of_row(&answering);
-    assert!(row.contains("workspace_writes"), "{row}");
-    assert!(row.contains(path), "{row}");
+    assert_eq!(
+        stage_of_the_audit(&g, &["/data/scratch"]),
+        Stage::WorkspaceWrites
+    );
+    assert!(
+        answering.take_rows().is_empty(),
+        "an allow is machinery, not a card for the person watching"
+    );
 }
 
 /// The same write with no grant is outside the workspace, and the person decides.
@@ -557,8 +584,8 @@ fn a_delete_inside_a_granted_folder_is_answered_at_exec() {
         "a delete inside the grant is the shadow's"
     );
     assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
-    let row = stage_of_row(&answering);
-    assert!(row.contains("exec"), "{row}");
+    assert_eq!(stage_of_the_audit(&g, &["/data/scratch"]), Stage::Exec);
+    assert!(answering.take_rows().is_empty(), "an allow is not a card");
 }
 
 /// A grant revoked between two calls stops counting at once: the same write asks again.

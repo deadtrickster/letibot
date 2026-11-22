@@ -184,8 +184,8 @@ const ASKED_MAX: usize = 1024;
 const BREAKER_JOB: &str = "permission";
 
 /// The main session's answering state, kept across the relays built for it: the switch, the
-/// breaker, the shapes granted, and the rows owed to the main session. With a store the breaker
-/// and the granted shapes outlive the daemon, as the grants they guard do.
+/// breaker, the shapes granted, and the one row a tripped breaker owes the person. With a store the
+/// breaker and the granted shapes outlive the daemon, as the grants they guard do.
 pub struct Answering {
     on: AtomicBool,
     /// The stages as configured: what a re-arm may turn back on.
@@ -195,6 +195,7 @@ pub struct Answering {
     granted: Mutex<BTreeSet<String>>,
     /// Cards that went to the operator, by request, with their shape.
     asked: Mutex<BTreeMap<String, String>>,
+    /// Rows owed to the main session: the breaker's, and nothing else.
     rows: Mutex<Vec<(String, String)>>,
     wake: Mutex<Option<super::Wake>>,
 }
@@ -295,7 +296,7 @@ impl Answering {
         *self.wake.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
     }
 
-    /// The main session's rows since the last take, as `(title, body)`.
+    /// The main session's rows since the last take, as `(title, body)`: a breaker that tripped.
     pub fn take_rows(&self) -> Vec<(String, String)> {
         std::mem::take(&mut *self.rows.lock().unwrap_or_else(|e| e.into_inner()))
     }
@@ -311,34 +312,15 @@ impl Answering {
         }
     }
 
-    /// A call the shadow allowed through the oracle at `stage`: its shape counts toward a later No,
-    /// and the main session gets one row about it naming the model, the stage and the request.
-    pub fn granted(
-        &self,
-        req_id: &str,
-        session: &str,
-        stage: Stage,
-        target: &str,
-        judge: &str,
-        basis: &str,
-    ) {
+    /// A call the shadow allowed at `stage`: its shape counts toward a later No, and nothing is
+    /// said. A decision the machinery took while a turn ran is not news, so it is no card; what a
+    /// person may want to review later is the gate's audit row (its `by` is `shadow:<judge>`, kept
+    /// in the store's corpus) and the shadow session's own record of the exchange.
+    pub fn granted(&self, stage: Stage, target: &str) {
         self.granted
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(shape(stage, target));
-        self.push_row(
-            format!(
-                "shadow allowed {session} to {} {target} · {judge}, {} · alt-n to see · /shadow \
-                 revoke",
-                verb(stage),
-                stage.as_str()
-            ),
-            format!(
-                "verdict: allow\nstage: {}\nmodel: {judge}\nbasis: {basis}\ntarget: {target}\n\
-                 request: {req_id}\nrevoke: /shadow revoke",
-                stage.as_str()
-            ),
-        );
     }
 
     /// A call the shadow was asked about and left to the operator, so their later No can be scored
@@ -384,15 +366,6 @@ fn unix_ms() -> i64 {
 fn shape(stage: Stage, target: &str) -> String {
     let prefix: PathBuf = std::path::Path::new(target).components().take(3).collect();
     format!("{} {}", stage.as_str(), prefix.display())
-}
-
-/// What a granted stage lets the session do, for the row's title.
-fn verb(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Reads => "read",
-        Stage::WorkspaceWrites => "write",
-        Stage::Exec => "run",
-    }
 }
 
 /// The seat kind of a review-queue asker, from its session id and never its role string: a

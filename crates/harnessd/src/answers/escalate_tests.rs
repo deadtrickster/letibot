@@ -886,6 +886,17 @@ fn reviewer_trail() -> letibot_tools::authorise::AuthorisationTrail {
     )
 }
 
+/// Every `SessionEvent::Warning` a hub has published, as its code: the notices the head draws.
+fn warnings(hub: &Arc<Hub>) -> Vec<String> {
+    hub.retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The main session's shadow answering a reviewer's view asks.
 fn view_world(judge: Slow) -> (World, Arc<Rows>, Arc<crate::shadow::permission::Answering>) {
     let w = world();
@@ -972,7 +983,7 @@ fn ask_watching(
 }
 
 #[test]
-fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_row() {
+fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_no_row() {
     let (w, rows, answering) = view_world(Slow {
         reply: ALLOW_READ,
         sleep: Duration::from_millis(20),
@@ -982,6 +993,7 @@ fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_ro
         "/build/letibot-r1",
         letibot_tools::Access::Read,
     );
+    let before = warnings(&w.main);
     let (card, d) = ask_watching(&w, &req, "deny", Duration::ZERO);
 
     assert!(card.is_none(), "no card reached the operator: {card:?}");
@@ -995,14 +1007,23 @@ fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_ro
     );
     assert_eq!(d.by, "shadow:deepseek", "never filed as a person's answer");
     assert!(d.basis.contains("citing trail entry 0"), "{}", d.basis);
-    let main_rows = answering.take_rows();
-    assert_eq!(main_rows.len(), 1, "{main_rows:?}");
-    assert_eq!(
-        main_rows[0].0,
-        "shadow allowed s-gatekeeper-k-sub-1 to read /build/letibot-r1 · deepseek, reads · \
-         alt-n to see · /shadow revoke"
+    // The decision is kept with the stage it was taken at, because that is what a person reviewing
+    // the record later needs - and it is NOT a notice: no row reaches the watched session, so
+    // nothing arrives as a card at the end of the turn.
+    assert!(
+        d.basis.contains("reads"),
+        "the stage is in the record: {}",
+        d.basis
     );
-    assert!(main_rows[0].1.contains("target: /build/letibot-r1"));
+    assert!(
+        answering.take_rows().is_empty(),
+        "an allow is machinery, not news for the person"
+    );
+    assert_eq!(
+        warnings(&w.main),
+        before,
+        "the allow published no warning on the watched session"
+    );
     let rows = rows.0.lock().unwrap();
     assert!(
         rows.iter().any(|r| r.starts_with("permission")),
@@ -1131,7 +1152,9 @@ fn a_shadow_grant_is_kept_like_any_other_and_both_revokes_trip_the_breaker() {
             "{path}"
         );
     }
-    answering.take_rows();
+    // Two allows went by and nobody was told: an allow is machinery, not news. What the person can
+    // review later is the grant itself, kept in the store below with the model that answered it.
+    assert!(answering.take_rows().is_empty(), "an allow is not a notice");
 
     // Kept at the asker's session, kind view, answered by the shadow.
     let store = at.open().unwrap();
@@ -1190,6 +1213,12 @@ fn a_shadow_grant_is_kept_like_any_other_and_both_revokes_trip_the_breaker() {
     assert_eq!(answering.disagreements(), 2);
     assert!(!answering.is_on(), "two disagreements: observe-only");
     let main_rows = answering.take_rows();
+    assert_eq!(
+        main_rows.len(),
+        1,
+        "the breaker is the only row: a stopped shadow needs `/shadow arm` a person types, and an \
+         allow is not one ({main_rows:?})"
+    );
     assert!(
         main_rows
             .iter()
