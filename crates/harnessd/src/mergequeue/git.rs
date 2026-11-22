@@ -5,8 +5,10 @@
 //! `git worktree remove`, and the `git` door - live in `letibot_tools::git`, because `letibot gc`
 //! removes the same trees from a crate below this one. Re-exported here, so there is one check.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 pub use letibot_tools::git::{
     Proof, branch_head, commit_on, commit_proof, commits_over, daemon_leftover, delete_branch, git,
@@ -166,9 +168,33 @@ pub fn repository_key(any_path_in_it: &Path) -> Option<String> {
     repo_of_worktree(any_path_in_it).map(|p| p.display().to_string())
 }
 
+/// The target each repository was read to have, for the life of the process. The answer is the
+/// repository's shape - `main` exists or it does not - so it is asked once; a project that names
+/// `[queue] target` does not reach here at all.
+static DEFAULT_TARGETS: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = OnceLock::new();
+
 /// The target branch a repository lands on when the project names none: `main` when it exists
-/// else `master`, else whatever the main checkout has out.
+/// else `master`, else whatever the main checkout has out - read once per repository per process,
+/// because the pass asks it twice and a `git rev-parse` per ask was 13 spawns a second.
 pub fn default_target(repo: &Path) -> Option<String> {
+    let seen = DEFAULT_TARGETS.get_or_init(Default::default);
+    let known = seen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(repo)
+        .cloned();
+    if let Some(known) = known {
+        return known;
+    }
+    let answer = read_default_target(repo);
+    seen.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(repo.to_path_buf(), answer.clone());
+    answer
+}
+
+/// [`default_target`] as git answers it, in the one place the three rungs are tried.
+fn read_default_target(repo: &Path) -> Option<String> {
     for b in ["main", "master"] {
         if branch_head(repo, b).is_some() {
             return Some(b.to_string());
