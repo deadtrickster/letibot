@@ -1686,9 +1686,11 @@ impl RepoQueue {
         let asks_about_a_tree = merges
             .iter()
             .any(|m| !m.state.is_open() && m.worktree.is_some());
-        let heads = asks_about_a_tree
-            .then(|| letibot_tools::git::ref_heads(&self.repo))
-            .unwrap_or_default();
+        let heads = if asks_about_a_tree {
+            letibot_tools::git::ref_heads(&self.repo)
+        } else {
+            Default::default()
+        };
         for m in &merges {
             if m.state.is_open() || m.worktree.is_none() {
                 continue;
