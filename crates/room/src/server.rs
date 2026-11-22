@@ -1545,6 +1545,13 @@ impl Server {
         if held.is_empty() {
             return NameDoor::Admit;
         }
+        // A SEAT is an id, and a connection that names none is a reader of the name rather than a
+        // seat: a folder's waiter reads what its bridge reads and holds nothing, and the fact the two
+        // processes share is the folder, not the id each of them minted from its own environment.
+        // Two seats still differ by their ids, so a second Claude Code session takes a twin.
+        if share && id.is_empty() {
+            return NameDoor::Admit;
+        }
         // A connection that named no id predates ids, and the name is all there is to tell it by.
         let is = |c: &Conn| c.id.is_empty() || (!id.is_empty() && c.id == id);
         if share {
@@ -1578,6 +1585,17 @@ impl Server {
                 c.give_up(why);
             }
         }
+    }
+
+    /// The seat id another connection under `name` speaks as, or empty when none does: what a
+    /// connection that names no seat of its own joins, so a reader is drawn as the seat it reads
+    /// for rather than as an unnamed thing beside it.
+    fn id_held_for(&self, name: &str) -> String {
+        self.conn_list()
+            .iter()
+            .find(|c| c.who.session == name && !c.id.is_empty())
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
     }
 
     /// The family a connected external `name` declared at its `Hello`.
@@ -5489,6 +5507,13 @@ impl Server {
                         nick.trim().to_string(),
                     ),
                     _ => return,
+                };
+                // A reader that named no seat of its own is the seat this name already speaks as:
+                // the roster draws it as that seat and the cursor is the seat's. A name nothing
+                // holds is the reader's alone until a seat arrives.
+                let seat_id = match seat_id.is_empty() {
+                    true => me.id_held_for(&speaker.session),
+                    false => seat_id,
                 };
                 // A nick that is not a label is no label: the name it speaks as is drawn instead.
                 // And a label **another** live seat already answers to is dropped rather than taken:

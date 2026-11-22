@@ -920,6 +920,13 @@ impl RoomLink {
         self.set_seat(id.into());
     }
 
+    /// A reader of a name rather than a seat: the folder's waiter, which reads what the bridge's
+    /// seat reads and holds nothing of its own. It names no id in its `Hello`, and the room joins it
+    /// to whatever seat holds the name.
+    pub fn as_reader(&self) {
+        self.set_seat(String::new());
+    }
+
     /// The seat this connection is, as its `Hello` says it: the process's, unless a twin had to
     /// take one of its own.
     pub fn seat(&self) -> String {
@@ -2379,6 +2386,11 @@ pub fn wait_marked(
     deadline: Instant,
     mark: Option<&Path>,
 ) -> (i32, String) {
+    // A waiter READS a seat; it does not mint one. The bridge of the folder is the seat, and the
+    // two processes agree on the folder and not on an id - Claude Code's session id reaches its
+    // MCP server and may not reach the monitor that runs this loop - so the waiter names none and
+    // the room attaches it to the seat that holds the name.
+    link.as_reader();
     let (tx, rx) = mpsc::channel::<Value>();
     link.on_chat(Arc::new(move |m, names_you| {
         if attention.passes(m, names_you) {
