@@ -48,7 +48,7 @@ letibot-config-ref.workspace = true
 # **And the terminal** (`rano::term`): raw mode, the row-diffing painter, the input decoder,
 # the kitty graphics and OSC 8 protocols. rano reads the bytes into what was *pressed*; what a
 # key *means* stays here, in `app::key_of`.
-rano = { git = "https://github.com/deadtrickster/rano", rev = "67a6df42f3aad47f8c1816fa1355af05075cf00e" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "68229951797ce2b994e9baf1059457cd5ac1e334" }
 # **The layer stack, the plugin SDK and the layers this binary carries** — for ONE pane: the
 # session list, whose policy is a plugin now (`docs/plugins-plan.md` §7 step 10,
 # `src/app/sessions_pane.rs`). The stack carries no engine, the SDK is serde, and `builtins` is the
