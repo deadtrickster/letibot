@@ -2891,12 +2891,12 @@ impl Server {
                 rows.insert(
                     seat.id.clone(),
                     chat::Presence {
-                        // The id is the address a send takes; a nick is what a reader sees.
-                        name: if seat.nick.is_empty() {
-                            seat.id.clone()
-                        } else {
-                            seat.nick.clone()
-                        },
+                        // The id is the address a send takes; a `nick@host` is what a reader sees.
+                        name: chat::drawn(
+                            crate::SeatId::parse(&seat.id),
+                            Some(&seat.nick),
+                            &seat.id,
+                        ),
                         id: seat.id.clone(),
                         seat_id: seat.id.clone(),
                         kind: Seat::External,

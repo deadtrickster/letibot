@@ -402,7 +402,9 @@ impl Message {
         let flags = self.flags();
         format!(
             "#{} [{}] {}{to}: {text}{refs}{flags}",
-            self.seq, self.room, self.author
+            self.seq,
+            self.room,
+            self.drawn_author()
         )
     }
 
@@ -419,6 +421,18 @@ impl Message {
             .iter()
             .find(|r| r.kind == NICK && !r.id.trim().is_empty())
             .map(|r| r.id.trim())
+    }
+
+    /// The name this message's author is DRAWN by: `nick@host` for a seat on another box, because a
+    /// nick is unique on the box that holds it and no further, and an id's host is the only half of
+    /// that name two boxes cannot disagree about. The id stays the address a send takes; a seat of
+    /// this box, and the operator, are drawn by the name they speak as.
+    pub fn drawn_author(&self) -> String {
+        drawn(
+            crate::SeatId::parse(&self.author),
+            self.nick(),
+            &self.author,
+        )
     }
 
     /// What this line asks of its readers. A message with no kind ref is an ordinary post.
@@ -616,6 +630,19 @@ impl Message {
     /// read from the queue, so a digest and the head skip these and the log keeps them.
     pub fn is_queue_line(&self) -> bool {
         self.kind == Seat::System && self.author == "queue"
+    }
+}
+
+/// The name a seat is DRAWN by: `nick@host` when the who is an id and a label came with it, and the
+/// id itself when no label did. A nick is unique on the box that minted it and no further, so a
+/// remote seat's drawn name always carries its host; the id stays the address a send takes.
+pub fn drawn(id: Option<crate::SeatId>, nick: Option<&str>, who: &str) -> String {
+    let Some(id) = id else {
+        return who.to_string();
+    };
+    match nick.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(nick) => format!("{nick}@{}", id.host()),
+        None => id.to_string(),
     }
 }
 
@@ -2804,6 +2831,42 @@ mod tests {
             attachments: Vec::new(),
             text: text.into(),
         }
+    }
+
+    /// A seat of another box is drawn `nick@host`, because a nick is unique on the box that minted
+    /// it and no further. The id is what a send takes, and a seat with no label is drawn by it.
+    #[test]
+    fn a_remote_seat_is_drawn_by_its_nick_and_its_host() {
+        let mac = crate::SeatId::parse("mac1/cc-2e4a9c1b").expect("a seat id");
+        assert_eq!(
+            super::drawn(Some(mac.clone()), Some("f36"), "mac1/cc-2e4a9c1b"),
+            "f36@mac1"
+        );
+        assert_eq!(
+            super::drawn(Some(mac.clone()), None, "mac1/cc-2e4a9c1b"),
+            mac.to_string()
+        );
+        assert_eq!(
+            super::drawn(Some(mac), Some("  "), "mac1/cc-2e4a9c1b"),
+            "mac1/cc-2e4a9c1b",
+            "a blank label names nobody"
+        );
+        // A seat of this box is not an id: it is drawn by the name it speaks as.
+        assert_eq!(super::drawn(None, Some("db-fuzz"), "cc@etcd"), "cc@etcd");
+        assert_eq!(super::drawn(None, None, OPERATOR), OPERATOR);
+
+        // And a line from a remote seat carries that name in its header.
+        let mut m = msg("host", Seat::External, None, "the gate is green");
+        m.author = "mac1/cc-2e4a9c1b".into();
+        m.refs.push(Ref {
+            kind: NICK.into(),
+            id: "f36".into(),
+        });
+        assert!(
+            m.line().contains("f36@mac1"),
+            "the header draws the remote seat by nick@host: {}",
+            m.line()
+        );
     }
 
     /// The header says why the message reached the reader, one case per reach, and the text is

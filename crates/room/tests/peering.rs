@@ -512,6 +512,34 @@ fn a_long_dm_carries_its_text_across_the_link_instead_of_a_record_reference() {
     );
 }
 
+/// A peer's seat is drawn in the roster as `nick@host`: a nick is unique on the box that minted it
+/// and no further, and the seat's id is the address a send takes.
+#[test]
+fn a_nicked_peer_seat_is_drawn_in_the_roster_by_its_nick_and_its_host() {
+    let identity = an_identity("8888eeee9999");
+    let (a, b) = two_boxes("nicked", &identity, &identity, (true, true));
+    // The far box names its seat, and the name crosses with the profile.
+    b.publishes(
+        SeatProfile::new(
+            "lab2/s-b1",
+            &RepoIdentity::named(&identity),
+            "main",
+            "the gate",
+        )
+        .with_nick("f36"),
+    );
+    wait_until("the peer's label to reach this box", || {
+        a.peer.seat("lab2/s-b1").map(|s| s.nick).as_deref() == Some("f36")
+    });
+    let roster = a.server.roster_rows(&letibot_room::chat::project_room(A));
+    let row = roster
+        .iter()
+        .find(|r| r.seat_id == "lab2/s-b1")
+        .unwrap_or_else(|| panic!("no peer row in {roster:?}"));
+    assert_eq!(row.name, "f36@lab2", "the drawn name carries the host");
+    assert_eq!(row.id, "lab2/s-b1", "and the id is still the address");
+}
+
 #[test]
 fn seats_on_one_repository_are_introduced_once_and_shown_in_the_roster() {
     let identity = an_identity("3333cccc4444");

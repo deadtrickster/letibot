@@ -703,11 +703,17 @@ pub fn delivered(m: &Value, names_you: bool) -> String {
         }
     };
     let seat = if kind == "system" { "harness" } else { kind };
-    let mut head = format!(
-        "#{} [{room}] from {} ({seat}) to {to_word}",
-        m["seq"],
-        m["author"].as_str().unwrap_or("?")
-    );
+    // A seat of another box is drawn `nick@host`: its nick is unique on its own box, and the id is
+    // the address a reply takes rather than a name a person reads.
+    let nick = m["refs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|r| r["kind"] == letibot_room::chat::NICK)
+        .and_then(|r| r["id"].as_str());
+    let author = m["author"].as_str().unwrap_or("?");
+    let from = letibot_room::chat::drawn(letibot_room::SeatId::parse(author), nick, author);
+    let mut head = format!("#{} [{room}] from {from} ({seat}) to {to_word}", m["seq"]);
     if let Some(t) = m["thread"].as_u64() {
         head.push_str(&format!(", re #{t}"));
     }
@@ -2736,6 +2742,32 @@ mod tests {
             content,
             "#44 [host] from s-a (session) to @s-b, re #40, passing by\n> @s-b status?"
         );
+    }
+
+    /// A seat of another box is drawn `nick@host` in the channel header, and the id stays the
+    /// address: a nick is unique on its own box, and two boxes can disagree about a nick.
+    #[test]
+    fn a_remote_seats_channel_header_names_its_nick_and_its_host() {
+        let remote = json!({"seq": 9, "room": "host", "author": "mac1/cc-2e4a9c1b",
+            "kind": "external", "text": "the survey is in",
+            "refs": [{"kind": "nick", "id": "f36"}]});
+        let said = delivered(&remote, false);
+        assert!(
+            said.starts_with("#9 [host] from f36@mac1 (external) to all"),
+            "{said}"
+        );
+        // No label: the id, which already names the host.
+        let unlabelled = json!({"seq": 10, "room": "host", "author": "mac1/cc-2e4a9c1b",
+            "kind": "external", "text": "no label", "refs": []});
+        assert!(
+            delivered(&unlabelled, false).starts_with("#10 [host] from mac1/cc-2e4a9c1b ("),
+            "{}",
+            delivered(&unlabelled, false)
+        );
+        // A seat of this box is drawn by the name it speaks as, whatever label it carried.
+        let local = json!({"seq": 11, "room": "host", "author": "cc@etcd", "kind": "external",
+            "text": "mine", "refs": [{"kind": "nick", "id": "db-fuzz"}]});
+        assert!(delivered(&local, false).starts_with("#11 [host] from cc@etcd ("));
     }
 
     /// A peer's words earn the room's two flags and the operator's identical words earn neither:
