@@ -935,6 +935,26 @@ impl Shadow {
         }
     }
 
+    /// The operator's most recent own words in the watched session, as the feed holds them with
+    /// their author. `None` for a stateless shadow, or one whose window holds none of them.
+    ///
+    /// The permission question is "did the operator ask for this?", and the gate's own trail can be
+    /// empty of the operator's lines (a resumed session, a trail seeded from a store that kept only
+    /// our side of it). The feed is the same rows the operator and the model see, so it is asked
+    /// here rather than answering "(none)".
+    pub fn operator_words(&self) -> Option<String> {
+        let log = self.log.as_ref()?;
+        let log = log.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = None;
+        for row in log
+            .since(log.start())
+            .filter(|r| r.author == super::words::Author::Operator)
+        {
+            last = Some(row.text.clone());
+        }
+        last
+    }
+
     /// The watched transcript grew to `n` rows: a verdict stamped earlier is now stale.
     pub fn advance(&self, n: u64) {
         self.position.fetch_max(n, Ordering::SeqCst);

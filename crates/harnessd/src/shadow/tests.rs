@@ -1357,6 +1357,78 @@ mod observe_only {
         );
     }
 
+    /// The permission question is "did the operator ask for this?", and the gate's own trail can be
+    /// empty of the operator's lines. The shadow is fed the same rows the operator and the model
+    /// see, each with its author, so its last OPERATOR row is where the stated task comes from - and
+    /// our own rows are never mistaken for it.
+    #[test]
+    fn the_feed_holds_the_operators_last_own_words() {
+        let rows = Arc::new(Rows::default());
+        let cfg = ShadowConfig::from_lines(
+            letibot_provider::keys::ShadowLines {
+                enabled: vec!["permission".into()],
+                ..Default::default()
+            },
+            "local".into(),
+        )
+        .unwrap();
+        let shadow = Shadow::start(
+            &cfg,
+            "glm/x",
+            None,
+            rows,
+            &|_, _| Stub::new(|_, _| Ok(r#"{"verdict":"ask"}"#.into())),
+            &|_| fast(),
+            &|_| Box::new(|_, _| {}),
+        )
+        .unwrap();
+        let row = |at: usize, author: crate::shadow::words::Author, text: &str| {
+            crate::shadow::feed::Row {
+                row: at,
+                header: match author {
+                    crate::shadow::words::Author::Operator => {
+                        "operator (the human, in their own words)".to_string()
+                    }
+                    _ => "assistant".to_string(),
+                },
+                author,
+                text: text.to_string(),
+            }
+        };
+        use crate::shadow::words::Author;
+        shadow.feed(vec![
+            row(0, Author::Assistant, "the plans are in crates/room"),
+            row(1, Author::Operator, "run the fuzz campaign for an hour"),
+            row(2, Author::Assistant, "starting it"),
+            row(3, Author::Operator, "then land the stack"),
+        ]);
+        assert_eq!(
+            shadow.operator_words().as_deref(),
+            Some("then land the stack"),
+            "the last OPERATOR row, not the last row"
+        );
+        // A shadow with no feed (stateless) says nothing rather than guessing at the operator.
+        let bare = Shadow::start(
+            &ShadowConfig::from_lines(
+                letibot_provider::keys::ShadowLines {
+                    mode: Some("stateless".into()),
+                    enabled: vec!["permission".into()],
+                    ..Default::default()
+                },
+                "local".into(),
+            )
+            .unwrap(),
+            "glm/x",
+            None,
+            Arc::new(Rows::default()),
+            &|_, _| Stub::new(|_, _| Ok(r#"{"verdict":"ask"}"#.into())),
+            &|_| fast(),
+            &|_| Box::new(|_, _| {}),
+        )
+        .unwrap();
+        assert_eq!(bare.operator_words(), None);
+    }
+
     #[test]
     fn an_observe_only_verdict_is_never_dropped_as_stale() {
         let judge = Stub::new(|_, _| Ok(r#"{"verdict":"on_plan"}"#.into()));

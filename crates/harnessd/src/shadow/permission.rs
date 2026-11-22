@@ -121,7 +121,11 @@ impl ShadowSink {
             granted: Vec::new(),
         };
         let q = question(request, tool, arguments, &self.rules, &call);
-        let s = shown(request, tool, arguments, &self.rules, task, call);
+        // The operator's own words are the whole of "did they ask for this". The gate's trail can be
+        // empty of them, and the shadow's feed is the same rows the operator and the model see, so
+        // the brief asks there rather than stating "(none)".
+        let task = task.map(str::to_string).or_else(|| shadow.operator_words());
+        let s = shown(request, tool, arguments, &self.rules, task.as_deref(), call);
         shadow.submit_asking(Job::Permission, s, q);
         rec.row(
             &format!("permission · operator answered {effect} {request}"),
