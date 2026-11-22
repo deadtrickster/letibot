@@ -1322,7 +1322,29 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
                 // directory and a branch, and `stash` with no verb PUSHES. Listing the read verbs
                 // and defaulting to write is the fail-closed direction.
                 "worktree" | "stash" | "config" | "branch" | "notes" | "bisect" => {
-                    if matches!(subarg(0), "list" | "get" | "get-all" | "show" | "log" | "view")
+                    // A LISTING verb changes nothing: `branch -a`, `tag -l`, `stash list`,
+                    // `worktree list`. The flags are the verb here, and a bare name beside one is
+                    // the pattern it lists.
+                    let listing = rest.iter().any(|w| {
+                        matches!(
+                            *w,
+                            "-a" | "--all"
+                                | "-r"
+                                | "--remotes"
+                                | "-l"
+                                | "--list"
+                                | "-v"
+                                | "-vv"
+                                | "--verbose"
+                                | "--show-current"
+                                | "--merged"
+                                | "--no-merged"
+                                | "--contains"
+                                | "--points-at"
+                        )
+                    });
+                    if listing
+                        || matches!(subarg(0), "list" | "get" | "get-all" | "show" | "log" | "view")
                         || (sub == "branch" && rest.is_empty())
                         || (sub == "config" && rest.len() <= 1)
                     {
@@ -2346,6 +2368,29 @@ fn touches_own_config(text: &str) -> bool {
     ]
     .iter()
     .any(|f| t.contains(&format!("letibot/{f}")))
+}
+
+/// Does a `git` operand name a REF rather than a path? Git puts a branch or tag name exactly where
+/// it puts a file (`branch master`, `checkout master`, `log master`), and a ref is not a place the
+/// call writes: a bare word is a ref far more often than it is a path, and the write intent the
+/// card needs is already there. A path shows itself as absolute, dotted or with a `/` in it.
+fn git_names_a_ref(program: &str, operand: &str) -> bool {
+    let t = operand.trim();
+    program == "git"
+        && !t.is_empty()
+        && !t.starts_with('/')
+        && !t.starts_with('.')
+        && !t.starts_with('~')
+        && !t.contains('/')
+}
+
+/// A place a redirect can write into that keeps nothing: `/dev/null` is the one a diagnostic line
+/// uses, and the two standard streams are the same bargain. Writing there is not writing a file.
+fn keeps_nothing(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "/dev/null" | "/dev/stdout" | "/dev/stderr" | "/proc/self/fd/1" | "/proc/self/fd/2"
+    )
 }
 
 /// A resolved path inside letibot's config directory, or one of its rule files wherever
@@ -3733,6 +3778,7 @@ impl Baseline {
                     }
                     if matches!(verb, Intent::Destroy | Intent::WriteFile | Intent::Network)
                         && !identity.contains(&i)
+                        && !(verb == Intent::WriteFile && git_names_a_ref(&effective, text))
                     {
                         self.scoped.push(ScopedIntent {
                             intent: verb,
@@ -3774,7 +3820,10 @@ impl Baseline {
                 continue;
             }
             if let Some(text) = w.and_then(|w| w.text()) {
-                if r.op.writes() && self.own_config.is_none() {
+                // A redirect into `/dev/null` takes the bytes and keeps none of them: it writes no
+                // file, so a read-only diagnostic with `2>/dev/null` on it is not a write.
+                let writes = r.op.writes() && !keeps_nothing(text);
+                if writes && self.own_config.is_none() {
                     let placed = match &self.cwd {
                         Some(cwd) if !text.starts_with('/') && !text.starts_with('~') => {
                             format!("{}/{text}", cwd.trim_end_matches('/'))
@@ -3814,7 +3863,7 @@ impl Baseline {
                     ));
                 }
                 self.regions.insert(region);
-                if r.op.writes() {
+                if writes {
                     self.intents.insert(Intent::WriteFile);
                 }
             }
@@ -7019,5 +7068,75 @@ open(p,'w').write(s.replace('x','y'))
             "the inline case was also treated as a path: {}",
             findings(&b)
         );
+    }
+}
+
+#[cfg(test)]
+mod a_read_is_not_a_write {
+    //! The effect a line has, not the words in it: an `env` assignment is a value, a positional is
+    //! an operand of some verb, a git ref is not a path, and a redirect into `/dev/null` writes
+    //! nothing. The operator's card said "to write" for `journalctl ... 2>/dev/null` and put a
+    //! read-only diagnostic in `workspace_writes`.
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/letibot".into()),
+            scratch: Some("/tmp/letibot-scratch-1234".into()),
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
+            granted: Vec::new(),
+        }
+    }
+
+    fn b(cmd: &str) -> Baseline {
+        Baseline::of_command(cmd, &env())
+    }
+
+    #[test]
+    fn a_diagnostic_that_writes_nothing_has_no_write_intent() {
+        for cmd in [
+            "journalctl -u letibot 2>/dev/null",
+            "journalctl -u letibot > /dev/null 2>&1",
+            "systemctl status letibot 2>/dev/null",
+            "env FOO=1 journalctl -u letibot",
+            "FOO=1 journalctl -u letibot",
+            "git log --oneline master",
+            "git branch -a master",
+            "git show master",
+        ] {
+            let x = b(cmd);
+            assert!(
+                !x.intents.contains(&Intent::WriteFile),
+                "`{cmd}` is a read and was read as a write: {:?} (scoped {:?})",
+                x.intents,
+                x.scoped
+                    .iter()
+                    .map(|s| (s.intent.as_str(), s.target.as_str()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_that_does_write_still_says_so() {
+        for cmd in [
+            "journalctl -u letibot > /tmp/log",
+            "touch /tmp/x",
+            "tee /tmp/x",
+            "cp /tmp/a /tmp/b",
+        ] {
+            let x = b(cmd);
+            assert!(
+                x.intents.contains(&Intent::WriteFile),
+                "`{cmd}` writes and was not read as one: {:?}",
+                x.intents
+            );
+        }
     }
 }
