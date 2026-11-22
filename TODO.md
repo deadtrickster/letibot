@@ -48,37 +48,31 @@ One row per open entry. Status is `built (<sha>); left: <residue>`, `open: <next
 
 Review residue, fix-only, do now:
 - R321 run the previous tag's head and bridge against this harnessd.
-- R324 `sort -o` reads as read; no revoke for remembered shapes; egress fixed at open.
 - R325 the operator rules per masked credential store; shadow key heuristics outside the table.
-- R326 store a spawn's composed perimeter; child-mode fixtures return without a vocab.
-- R327 no idle pass persists owed rows; close waits per hub on a locked store.
-- R328 a parked child and a forked session lose the limit state.
+- R326 store a spawn's composed perimeter (needs the widening ruling); child-mode fixtures return without a vocab.
+- R328 a parked child's park is restored at its open and lifted by nothing.
 - R330 I85 rest (refusal strings, `set_var` lint, GGUF fallback); I88 reflog after an undone landing.
-- R331 `letibot-multi --verbs`; one `data_dir()`.
+- R331 the launcher's awk providers.toml reader.
 - R332 a pre-carve daemon handle still writes `sessions.db`.
-- R333 tests for the redial race and for ack and pending against a real `Server`.
 - R334 MCP servers through the exec sandbox, the pin flow, `/mcp pin`.
 - R335 rano header estimate mark (cc@rano); esc closing a pane (operator).
-- R336 `restart_keeps_model_and_provider`; harnessd `--model` wording; daemon-side lease.
+- R336 lead 37; a daemon-side lease so a SIGKILLed bridge leaves no session open.
 - R337 revoke reaching running commands (I16); I17 (f) replay numbers.
 - R338 tmux and systemd-run spawns outside every view; a seat registry for `from` and decision 1.
-- R339 a `new_session` fork drops queued prompts (I36).
-- R341 daemon-start settlement sweep (I49); last-seen id at attach (I48); offer-only sessions (I50).
+- R339 the hook is not yet idempotent per episode.
+- R341 daemon-start settlement sweep (I49); last-seen id at attach (I48).
 - R341a `disclosure` rows in export and import.
 - R342 a test that fails a probe; a `forget_import` verb.
 - R343 owner rows link daemons by repo path.
 - R345a ctrl-p body hold, pane repaint after a dropped frame, R319's delivery grace.
 - R347 I90 queue doors, I91 queue structure.
-- R347b `mergequeue::serve` tests read the live `/proc`.
 - R349 I102 flowy cleartext, I103 provider error classes, I97 plugin-call deadline, I101, I105.
 - R351 the reviewer checklist question.
 - R357 rano protocol compare; plugin `letibot-mcp` skew.
-- wait-sweep a pid edge stored with `start = 0` reads as ended.
 
 After the stability bar:
 - R341b warning routing redesign.
 - R350 facts frame, TUI structure, launcher shim, `RoomLink`, carve cut, gc timer, host reaper.
-- wait-on-landing a wait on a queue row's landing.
 - R296 the merge queue picks its train size.
 
 Designs:
@@ -106,22 +100,22 @@ Older backlog:
 | id | title | group | status |
 |---|---|---|---|
 | R321 | B1b skew measured: round-trip tests use the current types at both ends | Code work | built (e16e31958); left: run the previous tag's head and bridge binaries against this harnessd |
-| R324 | B4 gate rules: approved shapes admit any body, seed rows admit write and exec flags, own-config by substring, Absent never refused | Code work | built (5268f43ce); left: `sort -o` reads as read (one read-only table with the seed check), no revoke for remembered shapes, egress fixed at open |
+| R324 | B4 gate rules: approved shapes admit any body, seed rows admit write and exec flags, own-config by substring, Absent never refused | Code work | built (5268f43ce); left: nothing this row names — `sort -o` is in layer A's table, the point's move is the shape revoke, egress is re-probed at open (all in-tree, with `a_read_only_name_writes_through_its_flag`, `set_mode_to_always_ask_forgets_approved_shapes`, `a_move_that_seats_the_network_probes_the_view_again`) |
 | R325 | B5 fence and secrets: the file tools' fence renders the seat from a different source than the shell view | Code work | built (6162feec4); left: operator rules per masked store (rclone, sops, psql, vault, s3cmd), the shadow's key heuristics outside the secret table |
-| R326 | B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly | Code work | built (ba05f3f1f); left: a spawn's composed perimeter is not stored (needs a column), child-mode fixtures still return without a vocab (I35) |
-| R327 | B7 durability: acks come before the journal and the store hold the work | Code work | built (d53f5ad19); left: no idle pass persists owed rows (I44), a close waits up to 2 s per hub on a locked store (I43) |
-| R328 | B8 limit state: a restart after a refused probe drops the owed turn | Code work | built (c1bf16b6e); left: a parked child is lost across a restart, a forked session drops the limit state |
+| R326 | B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly | Code work | built (ba05f3f1f); left: a spawn's composed perimeter is not stored, and storing it needs the widening ruling in the section; the child-mode fixtures run without a vocab (I35 closed) |
+| R327 | B7 durability: acks come before the journal and the store hold the work | Code work | built (d53f5ad19); left: nothing this row names — an idle pass stores what a stopped turn left (`an_idle_pass_stores_the_rows_a_stopped_turn_left`), and a close spends one grace for every hub (`a_close_waits_one_deadline_for_every_hub`) |
+| R328 | B8 limit state: a restart after a refused probe drops the owed turn | Code work | built (c1bf16b6e, 34f27c5e); left: `resume_due_limits` drives no child (children are not in `Sessions`), so a child's park is restored at its open and never lifted by itself |
 | R330 | B10 merge queue: gate steps inherit the daemon's env, a skip passes, a seat approves its own branch, no fetch | Code work | built (98e4da337); left: I85 rest (per-mechanism refusal strings, `set_var` lint, GGUF fallback), an undone landing leaves its commit in the reflog (I88) |
-| R331 | B11 launcher: verbs become billed prompts, a second providers.toml, a store that ignores XDG | Code work | built (88512064f); left: `letibot-multi --verbs`, one `data_dir()` for a relative `XDG_DATA_HOME`, the launcher's awk providers.toml reader |
+| R331 | B11 launcher: verbs become billed prompts, a second providers.toml, a store that ignores XDG | Code work | built (88512064f); left: the launcher's awk providers.toml reader (`letibot-multi --verbs` and one `data_dir()` are in-tree, the verb list read by `tests/launcher.sh`) |
 | R332 | B12 store carve: rows committed after the claim check are deleted uncopied | Code work | built (8d2984d01); left: a daemon whose handle predates the carve still writes `sessions.db`, `--project` needs the daemon stopped |
-| R333 | B13 rooms: gap replay drops rows below a live push and acks over them | Code work | built (23b492860); left: tests for the redial race, and for ack and pending against a real `Server` (I99 A8-F4, from R348) |
+| R333 | B13 rooms: gap replay drops rows below a live push and acks over them | Code work | built (23b492860); left: nothing this row names — `a_redial_owes_its_gap_before_anything_is_acked` and `a_row_the_model_has_not_taken_stays_in_the_inbox_until_it_is_seen` (a real `Server`) pass; an older coordinator still ignores `after` |
 | R334 | B14 plugins and MCP: unpinned layers decide, MCP servers inherit the env, `.mcp.json` trusted by prefix | Code work | built (23415904e); left: MCP servers through the exec sandbox (decision 8b), the pin flow (9b), `/mcp pin`, `new_session` limit answers unrestricted |
 | R335 | B15 header facts: header ctx survives a clear, a reseat and a re-ingest | Code work | built (51cad4204); left: rano header has no estimate mark (cc@rano), esc on the composer closing a pane needs the operator |
-| R336 | B16 workflow stability: the orchestration layer fails silently | Code work | built (a4ddd78c7); left: `restart_keeps_model_and_provider` test, harnessd's `--model` wording, a daemon-side lease for SIGKILLed bridges |
+| R336 | B16 workflow stability: the orchestration layer fails silently | Code work | built (a4ddd78c7); left: lead 37, and a daemon-side lease keyed on the head's peer pid, so a SIGKILLed bridge leaves no session open (the restart record and the `--model` wording are in-tree) |
 | R337 | the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model | Code work | built (6128c544a); left: a revoke does not reach a running command (I16), I17 (f) replay numbers, `shadow replay --job permission` asks the rule question |
 | R338 | role per connection and the masked operator socket | Code work | built (9d437a5b1); left: routes the operator's own tmux or systemd-run spawn outside every view, a seat registry for `from`, per-seat decision 1 and origin (merged from R323) |
-| R339 | gate ladder after "once means once" | Code work | built (63672d2f5); left: a `new_session` fork drops the queued prompts and `handed_back` (I36 queue half) |
-| R341 | rows, the journal and warnings: head before store, jobs marked delivered first, operator-only rows in the model transcript, warnings, the room store | Code work | built (34e9053a8); left: a daemon-start sweep of undelivered settlements (I49), a last-seen-id check at attach (I48), offer-only sessions undeletable (I50) |
+| R339 | gate ladder after "once means once" | Code work | built (63672d2f5, fdadb9e6); left: the hook is not yet idempotent per episode |
+| R341 | rows, the journal and warnings: head before store, jobs marked delivered first, operator-only rows in the model transcript, warnings, the room store | Code work | built (34e9053a8); left: a daemon-start sweep of undelivered settlements (I49) and a last-seen-id check at attach (I48), both needing a seam neither the store nor the wire has; offer-only sessions are deletable (I50 closed) |
 | R341a | warnings: routing, audiences, placement, a durable copy | Code work | built (397f48aae); left: `disclosure` rows are not exported or imported, boot warnings before the journal attaches are not kept |
 | R341b | warnings: the routing redesign left from R341a | Code work | open: warning routing redesign (newtype, placement column, one event two audiences); after the stability bar |
 | R342 | migrations and the split schema | Code work | built (9e795bb21); left: no test fails a probe, `forget_import` has no `letibot` verb |
@@ -129,11 +123,11 @@ Older backlog:
 | R345a | R345 remainder: ctrl-p holds only the body, a lost side frame resyncs, R319's freed-at-delivery grace | Code work | open: ctrl-p holds only the body (F14), a dropped pane frame asks a repaint (F11), R319's freed-at-delivery grace |
 | R347 | gate-at, queue doors, queue structure, tests reading live state | Code work | built (14d156132); left: I90 queue doors, I91 queue structure |
 | R349 | extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits | Code work | open: I102 flowy cleartext, I103 provider error classes, I97 plugin-call wall deadline (cc@rano), I101 needs decision 21, I105 |
-| R347b | the queue release sweep reads the live process table in tests | Code work | open: `cwd_inside` reads the live `/proc` in five `mergequeue::serve` tests; give them a fixture process table |
+| R347b | the queue release sweep reads the live process table in tests | Code work | built; left: nothing this row names — `RepoQueue::with_proc_root` hands the worker a fixture table (`the_queues_process_table_is_the_one_the_worker_was_handed`) |
 | R350 | design follow-ups after the stability phase: the facts frame, TUI structure | Code work | open: I76 facts frame, I77 TUI structure, launcher shim, `RoomLink` on the room client, carve cut, `letibot-gc.timer`, host-side reaper; after the stability bar |
 | R351 | process rules from the review | Code work | built (8a30bbb9b); left: the reviewer checklist's "what else does this job" question |
-| wait-sweep | anything a session waits on wakes it when it STOPS, not only when it succeeds (leads 49, 51, R319's rule) | Code work | built (0c2eaa285); left: a pid edge stored with `start = 0` reads as ended |
-| wait-on-landing | a landing that succeeds wakes nobody, and a session cannot wait on a queue row | Code work | open: a `TodoNeed::Landing` edge (wire above 79, schema); after the stability bar |
+| wait-sweep | anything a session waits on wakes it when it STOPS, not only when it succeeds (leads 49, 51, R319's rule) | Code work | built (0c2eaa285); left: nothing this row names — `procs::alive_edge` reads a `start = 0` edge as live (`a_pid_edge_with_no_start_time_is_not_read_as_ended`), and the queue-row wait landed as `wait-on-landing` |
+| wait-on-landing | a landing that succeeds wakes nobody, and a session cannot wait on a queue row | Code work | built (30141198); left: nothing — `TodoNeed::Queue` completes the row when the branch lands and frees it with the reason when it stops |
 | R208 | rano marks: what a reply cited and what a call changed are marks in the editor pane | Code work | built (ab7d556c1); left: a buffer closed in rano keeps its marks until a switch |
 | R206 | Rooms have no archive: a project room cannot be put away and kept | Code work | built (3c0f14396); left: no head key archives or unarchives a room, a room whose last session was already dead is not archived |
 | R205 | The session list is drawn twice and the two drawings drift | Code work | built (077523e08); left: a layer whose VIEW is refused draws `UNANSWERED`, no Stack door asks the next layer |
@@ -179,7 +173,7 @@ Older backlog:
 | R289 | One verb table for list panes: the same key does the same thing in every pane | Code work | built (6c94d7c47); left: no pane has a `/` filter, the hint bar's conversation half is literals |
 | R300 | The review queue asked the operator about harmless probes at `allow-all`, and the shadow said nothing on a relayed card | Code work | built (5e1ed9a22); left: the shadow judges the main workspace, not the reviewer's clone; `leticode_asks` drops the line |
 | R314 | Session and queue grants were lost on a restart, and each new reviewer asked again | Code work | built (47894496a); left: a parent does not re-read a child's view grants after a restart, `/config` lists no grants; running commands are I16 (R337) |
-| R316 | The shadow runs auto mode: its permission job becomes layer B, the oracle `automode` expects | Code work | design: `docs/design/automode-and-broker.md`, `docs/PLAN.md` section 1; after R361, R364-R370 for stages 3-4 |
+| R316 | The shadow runs auto mode: its permission job becomes layer B, the oracle `automode` expects | Code work | design: `docs/design/automode-and-broker.md`, `docs/PLAN.md` section 1; stage 1's oracle is built (`shadow::oracle::ShadowOracle` behind `ModelAdjudicator`, `stage_scope`, `[shadow] answers`); after R361, R364-R370 for stages 3-4 |
 | R360 | Cards per hour of agent work: the metric automode is steered by, and its baseline | Code work | design: `docs/design/automode-and-broker.md` section 1; no dependency |
 | R361 | Queue seats get no shadow answers: a standing instruction the operator typed, citable for reads only | Code work | design: `docs/design/automode-and-broker.md` section 10; after R337 (on main) |
 | R362 | One redactor at every door: tool results, stored rows, the shadow feed, the bridge, logs, the provider request | Code work | design: `docs/design/automode-and-broker.md` section 7; after R325 (on main) |
@@ -196,7 +190,7 @@ Older backlog:
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | built (cf7de7fb); left: the rooms' numbers over real traffic: R163's Done-when, R164-style before/after (R169), counters (R165, R166, R168) |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | built (d97937f5b); left: a live seat against a daemon on another protocol |
 | R203 | The permission card's answer half contradicts itself | Code work | built (fba83d61b); left: an unresolvable edit gets no diff and no reason, `notes` edits get none |
-| R180 | A Claude Code seat is a session like any other in the rooms | Code work | built (84211d713); left: the host roster is not grouped by project |
+| R180 | A Claude Code seat is a session like any other in the rooms | Code work | built (84211d713); left: the host roster is not grouped by project; a stopped session now leaves a roster after a day (a4800d7a) |
 | R185 | The room's chat log drops every message past 500 rows or 256 KiB | Code work | built (74d02e4de); left: a reply to a root older than the ring is refused `unknown_thread`, the `room` tool has no `search` |
 | R210 | Room items, questions, claims and a closed session's notes are kept (E2) | Code work | built (185e18525); left: no door reads a closed question or claim, the `/rooms` pane draws the live window only |
 | R181 | The opencode importer reads opencode 1.x's tables and nothing a 2.x install writes | Code work | built (bc8bc51fd); left: no real opencode 2.x database has been read |
@@ -342,6 +336,8 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 **Status:** built, on main at `5268f43ce`; left: the residue below. Filed from the review at `9e9312b06`. Batch B4 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I18, I20, I21, I22, I23. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
 
+**2026-11-20:** nothing this row names is left. `sort -o` is a write in layer A's table, the shape revoke is the point's own move, and egress is re-probed at open; each has its test (listed under Proving tests).
+
 **What was built.**
 - I20: `write_or_exec_flag` knows `rg --pre/--pre-glob/--hostname-bin`, `ugrep --filter/--save-config/--pager/--view`, `less -o/-O/-k/+cmd/--log-file/--lesskey-*`, `file -C`, `date -s`, `tree -R`, the `uniq` and `xxd` output operand, `git branch` writes (`-v newname` creates, `-v -D` deletes), `git remote -v add`, and `--output` on every git verb that parses diff options (`blame`, `rev-list`, `shortlog`, `stash list/show`, `reflog show` all wrote the file when tried). One-word seed rows are `prog *`, so `less*` no longer admits `lesskey`. `the_seed_admits_no_write_or_exec_flag` carries a fixture per seed row and fails on a row without one.
 - I21: `subcommand_that_runs_code` adds cargo `doc`, `rustdoc`, `rustc`, `fix`; `ctest`, `npx`, `bunx`; `npm/pnpm/yarn/bun exec|x|dlx`; `go run`, `go generate`. `every_seeded_runner_row_is_judged` walks the seed's runner rows. Gate test `no_boundary_cargo_doc_asks`.
@@ -394,6 +390,8 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 **Status:** built, on main at `ba05f3f1f`; left: the residue below. Filed from the review at `9e9312b06`. Batch B6 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I24, I25, I26, I27. Record: `docs/review/2026-11-16/INTEGRATION.md`. Left: the full gate and the landing; the residue below.
 
+**2026-11-20:** I35 stays closed (`child_at`, `child_with` and `daemon_at` run on the byte vocabulary). The perimeter half still needs the ruling the residue asks for before a line of it can be written.
+
 **What was built.**
 - I24: `resolve_the_point` resolves the parent first (`parent_for`), then the parent's point: live from the tree table (`Tree::point`) when the parent is open in this daemon, else from its rows (`stored_point`: own row under its ancestors', else the root's project row, else the base). The child's own row is taken when no wider. The ceiling is a `trees::Ceiling` that reads the parent's live point on every look, so a child reopened while its parent was closed follows the parent's later narrowing once it opens.
 - I25: `Mode::no_wider_than` ranks the decider: Model is wider than Human. `/supervise` on a child under a human-decided parent is refused.
@@ -421,6 +419,8 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 ## R327 - B7 durability: acks come before the journal and the store hold the work
 
 **Status:** built, on main at `d53f5ad19`; left: the residue below. Filed from the review at `9e9312b06`. Batch B7 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I42, I43, I44, I45, I47. Record: `docs/review/2026-11-16/INTEGRATION.md`. Left: the full gate and the landing; the residue below.
+
+**2026-11-20:** both halves of the residue are in the tree and green: `an_idle_pass_stores_the_rows_a_stopped_turn_left` and `a_close_waits_one_deadline_for_every_hub`.
 
 **What was built.**
 - I47: `JournaledPrompt` carries `from` and `delivery`; `queued_prompt` gains `from_who` and `delivery` (v53, defaulted, so an older row reads as the operator's steer).
@@ -452,6 +452,8 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 ## R328 - B8 limit state: a restart after a refused probe drops the owed turn
 
 **Status:** built, on main at `c1bf16b6e`; left: the residue below.
+
+**2026-11-20 (`34f27c5e`):** a child's open now restores its park and its provider choice (`a_childs_open_puts_back_the_park_and_the_model_its_row_holds`), and a fork's limit state is carried by `fork_session` and pinned in `a fork continues the park it was forked in`'s test. Left: no driver ever lifts a child's park, since children are not in `Sessions::resume_due_limits`.
 
 **Built (branch `b8-limit`, on `ccc95d272`), waiting for the full gate.** One commit, `0674d3907`. The proving test was run on the base and failed (the re-try's `[limit]` row read as not mid-turn), then passed with the fix. With the fix in and the restore call or the notice reuse disabled, it fails at the park coming back and the notice count.
 - I46 (`tokencore`, `harnessd`): schema 56 (additive, reader floor unchanged) adds `session.limit_state`, one JSON `LimitState` (park `{until_ms, reset_ms, model, said}`, probing `{refused, asked}`, return, limited). `Harness::save_limit_state` writes it on every change, deduped against the last write. `Harness::restore_limit_state` runs at both `Sessions` open paths after `restore_provider_choice`, puts the park back with its status row and seat, and says `limit_park_restored`. `restart::mid_turn` reads past a park's resume notice; the Esc ending (`restart::PARK_INTERRUPTED`) still ends the turn. `owed_after_a_restart` does not count the turn as owed while a restored park holds it, so the restart wakes no turn into a refusal. A re-try refused again sends its standing notice instead of appending another (A1-F8). Tests: `a_restart_after_a_refused_probe_still_owes_the_turn` (`harnessd/tests/limits.rs`: park, refused re-try, new daemon, same park and step, the third step and the answer), the notice count in `a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it`, `a_parks_resume_notice_is_read_past_and_its_interrupt_is_not` (`restart.rs`), `a_v55_store_gains_the_limit_state_column` (`tokencore`).
@@ -516,6 +518,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 ## R331 - B11 launcher: verbs become billed prompts, a second providers.toml, a store that ignores XDG
 
 **Status:** built, on main at `88512064f`; left: the residue below. Filed from the review at `9e9312b06`. Batch B11 of `docs/review/2026-11-16-letibot.md` section 7. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
+
+**2026-11-20:** `letibot-multi --verbs` is answered by `crates/letibot/src/main.rs` (`VERB_WORDS`, read by the launcher's test) and every `data_dir()` in the tree is `letibot_paths`'. Left: the launcher's own awk reader of `providers.toml`.
 
 **What was built.**
 - I78. `hold | release` joined the multicall verb arm, and bare `where` takes the `--where` arm and its flag guard. `tests/launcher.sh` walks `holds gc where hold release notes doctor` and asserts `^letibot-multi <verb>` and no `--prompt` (`launcher_routes_hold_release_where_to_multicall`).
@@ -653,6 +657,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Status:** built, on main at `a4ddd78c7`; left: the residue below. Filed from the review at `9e9312b06`. Batch B16 of `docs/review/2026-11-16-letibot.md` section 7. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; lead 37; the residue below.
 
+**2026-11-20:** `restart_keeps_model_and_provider` and the `--model` wording are in the tree (both fixed with `a restart reopens the daemon it stopped`). Left: lead 37, and the daemon-side lease - a session opened by a bridge is closed on a clean end, not on a SIGKILL, because nothing records which head opened it.
+
 **What was built.**
 - I28 / L27: `Bridge::start` parses the mode with `Mode::parse` before any daemon or session exists, and refuses listing this build's modes. A `set_mode` failure holds the session and refuses, as the model branch does. On main `set_mode` is a fire-and-forget frame, so "read-edits" came back Ok with `mode: "read-edits"` and the brief ran.
 - I100 / L28: reproduced. Two starts both see nothing listening and both spawn. The loser exits on harnessd's folder claim, but its start wait sees the winner's socket answer, so it marked the daemon `started`, wrote `<key>.json` with its own dead pid, and handed its caller the winner's first session, which the next brief then shared. `ensure_here_with` now reads the serving pid with `SO_PEERCRED` (`letibot_sessionlog::peer::peer_pid`, made pub). Another pid joins it as a daemon already up, after a 5s wait for its placement record, or refuses by placement.
@@ -748,6 +754,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Status:** built, on main at `63672d2f5`; left: the residue below. Filed 2026-11-16 from the review at `9e9312b06`. Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I29, I30, I31, I32, I33, I34, I35, I36. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
+**2026-11-20 (`fdadb9e6`):** I36's queue half. `Hub` has the two doors the residue said it lacked - `take_queued_prompts` and `adopt_prompts` - and the hook moves the session's queued prompts and the steers a refused round handed back into the fork, leaving a notice and every non-prompt command behind (`a_new_session_fork_takes_the_queue_with_it`). The fork's `handed_back` attachments do not survive the move. Left: the hook is not idempotent per episode.
+
 **What was built.**
 - I29: one builder `tools/src/adjudicate.rs options(offer, scope)`; the point's `grants` decides the session rung, and the recording site reads the same field, so `allow_session` at a once point is an option the request did not offer and is refused. `exec_options` and `once_only_options` are gone. Tests `a_once_point_records_no_session_grant`, `at_always_ask_an_allow_session_answer_settles_only_that_call`. The card's `Offer` table in `docs/boundary-and-adjudication.md` 4l was corrected in the same pass.
 - I30: `Mode::admits_unasked`'s `AlwaysAsk` arm also requires `disposition(access) == Admit`. Tests `a_boundary_admits_the_always_ask_list_only_for_an_access_the_point_admits`, `an_always_ask_is_not_admitted_by_a_boundary_at_a_point_that_asks_for_that_access`.
@@ -773,6 +781,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 ## R341 - rows, the journal and warnings: head before store, jobs marked delivered first, operator-only rows in the model transcript, warnings, the room store
 
 **Status:** built, on main at `34e9053a8`; left: the residue below. Filed from the review at `9e9312b06`. Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I48, I49, I50, I51, I52. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**2026-11-20:** I50 is closed (`an_offer_only_session_can_be_deleted_and_a_said_one_cannot`). I49's daemon-start sweep and I48's last-seen check are still open, and neither can be done inside a fix: a row needs ledger tokens, so a daemon that holds no harness for a session cannot speak for it, and the Hello frame carries no last-seen id.
 
 **What was built.**
 - I48: `after_the_round` calls `persist()` right after append and reconcile, before the gate-admission flush, the usage notices, the jobs publish, the queued mode change, the operator's queued run and the review pass. The method is `pub(crate)` so the seam can be driven directly. `append_imported` (the operator call's settle path) stores nothing itself, so the seam's write is the only one.
@@ -1118,6 +1128,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Status:** built, on main at `0c2eaa285`; left: the residue below.
 
+**2026-11-20:** nothing this row names is left. `procs::alive_edge` is one rule for a session's own reading and a bridge seat's, and a `start = 0` edge is looked up by pid alone (`a_pid_edge_with_no_start_time_is_not_read_as_ended`). The queue-row wait this row filed as `wait-on-landing` landed as `30141198`.
+
 **Scope.** Lead 51 and the rule behind leads 49 and 51 and R319: every wait kind, checked for what wakes the session on success, failure, timeout, cancel and give-up. Lead 49 itself is `ce6952213` on `w4-base`.
 
 **Enumeration.**
@@ -1151,6 +1163,8 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 ## wait-on-landing - a landing that succeeds wakes nobody
 
 **Status:** open, filed 2026-11-16 from `wait-sweep`. Lead 49 asks that "a session that says once it lands I'll ... gets a wait on the row". Today `RepoQueue::landed` writes `landed_sha` and rings nobody, and no `TodoNeed` kind names a queue row, so a session that waits for its landing is woken only when it stops (lead 49, `ce6952213`). Change: a `TodoNeed::Landing { review }` edge, met when the row reaches `landed` and woken by the same ring as a stop. Needs a wire number above 79 and a schema check. Not a fix-phase change.
+
+**Done, `30141198` (todos: a queue row is a wait, and landing closes it).** The edge is `TodoNeed::Queue { id }`, not a new wire number: the id is the one `queue enqueue` answered, so the todo tool reads the queue's own store for it. A row that lands completes the todo and says so once (including a landing found on origin after a failed push); a row that ends without landing - failed, timed out, conflict, withdrawn - frees the wait and leaves the todo open with the reason. Tests: `a wait on a queue row` cases in `crates/tools/src/builtins/todo/tests/needs.rs` and the queue's ring.
 
 ## R349 - extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits
 
@@ -2580,6 +2594,8 @@ Nothing is hardcoded: no path is granted that the operator did not answer.
 ## R316 - The shadow runs auto mode
 
 **Status:** plan, 2026-11-16. Step 1 (R317, the shadow answering a queue seat's relayed read) is built and folded into R322 and R337. Stage 1's blockers (B2, I12, I15, I17 (i)) are on main at `ccc95d272`. left: the stages are steps 2, 4, 11 and 12 of `docs/PLAN.md` section 1. Stages 3 and 4 also need the credential broker and its evidence (R360-R371, `docs/design/automode-and-broker.md`): exec is where a script reads and sends a credential. Queue seats are R361.
+
+**2026-11-20:** stage 1's oracle is in the tree: `crates/harnessd/src/shadow/oracle.rs` is the `ShadowOracle` behind `letibot_tools::ModelAdjudicator`, with the two screens `stage_scope`/`stage_for` feeding `OracleScope` (intents and one `max_scope`), and `[shadow] answers` (`answer_reads` as its old spelling) names what the shadow may answer. `[gatekeeper] via` picks endpoint, shadow or both. Stages 3 and 4 are still the broker's.
 
 The operator: "ultimately I want it to do automode properly". The design already has a slot for this. `docs/boundary-and-adjudication.md` §4e names the points `automode` (write, exec and network ask, decided by a model) and `automode-edits` (writes admitted, the rest decided by a model), and their prerequisite `Oracle`, an `AuthorisationOracle` with "a loaded model, a budget, a scope earned by measurement". The same section says `automode` with no oracle is `always-ask` wearing a different banner. `docs/guard-corpus-plan.md` §0 says what that oracle is: layer B, shown the `may_approve` residue of layer A's tiers and asked "does this command fit what the operator asked for", answering ALLOW/ASK with the trail entry it relied on, briefed through `ModelBrief` (`crates/tools/src/authorise.rs`). So the shadow is not a second oracle. Its permission job becomes that oracle.
 
