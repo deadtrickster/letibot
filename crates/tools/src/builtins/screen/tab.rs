@@ -21,39 +21,27 @@ const WAIT: Duration = Duration::from_secs(55);
 /// A result line larger than this is refused: a viewport PNG as base64 is far below it.
 const LINE_MAX: u64 = 48 * 1024 * 1024;
 
-/// `<rundir>/browser.sock`, with the daemon module's rundir rule: `$XDG_RUNTIME_DIR/letibot`,
-/// else `/run/user/<uid>/letibot` on Linux and the per-user temp dir on macOS. The bridge binds
-/// this same function's answer, so the two cannot disagree.
+/// Where the browser bridge's socket is, and the one answer the bridge binds, so the two cannot
+/// disagree. Linux: `$XDG_RUNTIME_DIR/letibot`, else `/run/user/<uid>/letibot` - a directory the
+/// user's own manager makes. A Mac: the data directory, never the per-user temp dir: launchd makes a
+/// socket's missing parent as root at login, and a boot empties that temp dir, so a socket there left
+/// letibot's runtime directory root's and no daemon could start.
 pub fn browser_socket() -> PathBuf {
-    let base = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => runtime_base(),
-    };
-    base.join("letibot").join("browser.sock")
+    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d).join("letibot").join("browser.sock");
+    }
+    socket_home().join("browser.sock")
 }
 
 #[cfg(not(target_os = "macos"))]
-fn runtime_base() -> PathBuf {
+fn socket_home() -> PathBuf {
     // SAFETY: getuid cannot fail.
-    PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
+    PathBuf::from(format!("/run/user/{}/letibot", unsafe { libc::getuid() }))
 }
 
 #[cfg(target_os = "macos")]
-fn runtime_base() -> PathBuf {
-    let mut buf = vec![0u8; 1024];
-    // SAFETY: `confstr` writes at most `buf.len()` bytes and returns how many it wanted.
-    let n = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_TEMP_DIR,
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-        )
-    };
-    if n == 0 || n > buf.len() {
-        return std::env::temp_dir();
-    }
-    buf.truncate(n - 1);
-    PathBuf::from(String::from_utf8_lossy(&buf).into_owned())
+fn socket_home() -> PathBuf {
+    crate::lifecycle::data_dir()
 }
 
 fn fail(reason: impl Into<String>, payload: impl Into<String>) -> Box<Invocation> {
@@ -320,6 +308,21 @@ mod tests {
     fn the_socket_lives_in_the_runtime_dir() {
         let p = browser_socket();
         assert!(p.ends_with("letibot/browser.sock"), "{}", p.display());
+    }
+
+    /// On a Mac the socket is in the data directory, never in the per-user temp dir: launchd makes a
+    /// socket's missing parent as root at login, and that left letibot's runtime directory root's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_macs_socket_is_not_in_the_temp_dir_launchd_would_make_as_root() {
+        if std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|d| !d.is_empty()) {
+            return;
+        }
+        let p = browser_socket();
+        assert_eq!(p, crate::lifecycle::data_dir().join("browser.sock"));
+        let temp = std::env::temp_dir();
+        let temp = temp.canonicalize().unwrap_or(temp);
+        assert!(!p.starts_with(&temp), "{} is in the temp dir", p.display());
     }
 
     #[test]

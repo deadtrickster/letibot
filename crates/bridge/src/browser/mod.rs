@@ -7,7 +7,7 @@
 //! Every request passes three doors in order: a loopback `Host` (no rebound DNS name), the extension's
 //! `Origin`, and the `browser.token` bearer. Only the operator's live top-level sessions can be asked.
 //! The same doors front `/tab/*`, the tab grants and the commands sessions send on
-//! `<rundir>/browser.sock`.
+//! `browser_socket()`: `<rundir>/browser.sock` on Linux, the data directory on a Mac.
 
 pub mod ask;
 pub mod http;
