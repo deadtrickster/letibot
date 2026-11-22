@@ -752,8 +752,11 @@ impl Harness {
             // A child's ceiling is its parent's point: live when the parent is open in this daemon,
             // else the one its rows give. Its own row counts only when no wider than that; the
             // seat's clamp comes later, where the seat's supplies exist.
+            // A Claude Code conversation (`cc-<id>`, the caller a bridge names) has no letibot mode,
+            // so it sets no ceiling: the session opens at the point it was started with.
+            let known = |parent: &str| !parent.starts_with("cc-");
             let own = match &cfg.parent_session_id {
-                Some(parent) => {
+                Some(parent) if known(parent) => {
                     let ceiling = parts.trees.point_of(parent).unwrap_or_else(|| {
                         stored_point(store, session_registry, parent, cfg.mode, &cfg.workspace)
                     });
@@ -761,7 +764,7 @@ impl Harness {
                     cfg.mode = ceiling;
                     own.filter(|(m, _)| m.no_wider_than(ceiling))
                 }
-                None => own,
+                _ => own,
             };
             if let Some((own, when)) = own {
                 cfg.mode = own;
@@ -2404,13 +2407,18 @@ impl Harness {
             Arc::new(std::sync::Mutex::new(cfg.mode));
         // A child's ceiling: the parent's point as `resolve_the_point` found it, followed live
         // through the tree table for as long as the parent is open in this daemon.
-        let parent_ceiling = cfg.parent_session_id.as_ref().map(|parent| {
-            crate::harness::trees::Ceiling::new(
-                parent.clone(),
-                parts.trees.clone(),
-                parent_point.unwrap_or(cfg.mode),
-            )
-        });
+        // A Claude Code caller (`cc-<id>`) owns the session but has no letibot point to hold it under.
+        let parent_ceiling = cfg
+            .parent_session_id
+            .as_ref()
+            .filter(|parent| !parent.starts_with("cc-"))
+            .map(|parent| {
+                crate::harness::trees::Ceiling::new(
+                    parent.clone(),
+                    parts.trees.clone(),
+                    parent_point.unwrap_or(cfg.mode),
+                )
+            });
         // The slot a child of this session hands its survivors to - this session's process host,
         // filled once the backend has one, `tree_watch_slot`'s reason: a child's estate is settled
         // against the session that outlives it, and a leftover with nowhere to go is an orphan.
