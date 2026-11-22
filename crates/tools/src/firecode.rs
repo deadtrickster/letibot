@@ -1270,9 +1270,14 @@ impl Drop for FirecodeBackend {
 /// The shell step that gives a staged file the mode of the file it replaces, before the rename:
 /// a write is a new inode, and without this an edited script came back without its `x` bit.
 /// A target that does not exist yet keeps the staged file's own mode.
+///
+/// The mode is READ and then applied, because `chmod --reference` is GNU's flag and a Mac's `chmod`
+/// has none. The two `stat` spellings are tried in turn, GNU's `-c %a` first and a Mac's `-f %Lp`
+/// second: a Mac's `stat` has no `-c` and fails, while GNU's `-f` means "the filesystem" and does
+/// NOT fail - so the order is what makes the fallback work.
 fn keep_mode(staged: &str, target: &str) -> String {
     format!(
-        "{{ [ ! -e {t} ] || chmod --reference={t} {s}; }} && ",
+        "{{ [ ! -e {t} ] || chmod \"$(stat -c %a {t} 2>/dev/null || stat -f %Lp {t})\" {s}; }} && ",
         t = shell_quote(target),
         s = shell_quote(staged)
     )

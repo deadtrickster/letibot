@@ -27,13 +27,25 @@ pub struct LoadSample {
 }
 
 impl LoadSample {
-    /// `/proc/loadavg` and the cores this process may use. `None` where there is no such file.
+    /// `/proc/loadavg` and the cores this process may use, else the same two numbers off `sysctl`:
+    /// a Mac has no `/proc`, and `sysctl -n vm.loadavg` answers `{ 1.23 4.56 7.89 }`.
     pub fn read() -> Option<LoadSample> {
-        let text = std::fs::read_to_string("/proc/loadavg").ok()?;
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        Self::parse(&text, cores)
+        if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
+            return Self::parse(&text, cores);
+        }
+        let out = std::process::Command::new("sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let text = text.trim().trim_start_matches('{').trim_end_matches('}');
+        Self::parse(text.trim(), cores)
     }
 
     pub fn parse(loadavg: &str, cores: usize) -> Option<LoadSample> {

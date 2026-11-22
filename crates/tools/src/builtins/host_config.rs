@@ -478,7 +478,15 @@ impl MacOs {
             let v = ran.stdout.trim().to_string();
             return Ok(if v.is_empty() { None } else { Some(v) });
         }
-        if ran.said().contains("does not exist") {
+        // `defaults read` exits 1 for a key this user never set, saying so about a missing pair or
+        // domain - on stderr, in a wording that moves between macOS releases. An unset key is the
+        // DEFAULT in force, not a read that failed; a read that failed says something else.
+        let said = ran.said();
+        if said.trim().is_empty()
+            || said.contains("does not exist")
+            || said.contains("not found")
+            || said.contains("Domain (")
+        {
             return Ok(None);
         }
         Err(Refusal::new(

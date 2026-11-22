@@ -2194,18 +2194,19 @@ pub mod tempdir {
         #[allow(clippy::new_without_default)]
         pub fn new() -> Self {
             let n = N.fetch_add(1, Ordering::Relaxed);
-            let p = std::env::temp_dir().join(format!(
-                "letibot-tools-{}-{}-{}-{n}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0),
-                {
-                    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                }
-            ));
+            // Two things a fixture directory must be, and neither is free:
+            //
+            // SHORT, because a test that binds a unix socket under it has `sun_path` (104 bytes on a
+            // Mac) to fit in, and a Mac's `$TMPDIR` is a long `/var/folders/...`; and CANONICAL,
+            // because `$TMPDIR` there is a symlink (`/tmp` is `/private/tmp`), so a product that
+            // canonicalises a path and a fixture that does not would disagree about one directory.
+            let root = std::path::Path::new("/tmp");
+            let root = match root.is_dir() {
+                true => root.to_path_buf(),
+                false => std::env::temp_dir(),
+            };
+            let root = root.canonicalize().unwrap_or(root);
+            let p = root.join(format!("lb-{}-{n}", std::process::id()));
             std::fs::create_dir_all(&p).expect("temp dir");
             TempDir(p)
         }
