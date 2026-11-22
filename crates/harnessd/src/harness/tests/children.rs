@@ -1412,9 +1412,10 @@ fn a_later_answer_the_record_keeps_is_not_kept_twice() {
         held(&slots)
     );
     // And the ROW is what a tree keeps per child once the body is gone: a few hundred bytes, so a
-    // field that makes a slot thousands is the retention coming back.
+    // field that makes a slot thousands is the retention coming back. `waiting` is one of those
+    // few: a `Mutex<Option<String>>`, 24 bytes, for the job a child's ending turn was blocked on.
     assert!(
-        std::mem::size_of::<TaskSlot>() <= 640,
+        std::mem::size_of::<TaskSlot>() <= 704,
         "one slot is {} bytes before its strings",
         std::mem::size_of::<TaskSlot>()
     );
@@ -1545,6 +1546,225 @@ fn a_failing_turn_of_the_hold_does_not_settle_the_slot() {
     assert!(
         crate::harness::children::later_news(true, true, &out).is_some(),
         "a later turn's failure after the answer is still news"
+    );
+}
+
+/// A child that ends its turn over a job it started has not finished. The read is
+/// [`Harness::open_processes`] - the store's rows, which is the query a restart's supervisor reads,
+/// unioned with the live host - so a job either witness knows keeps its parent from reading *done*
+/// over work that is still running.
+#[test]
+fn a_child_that_still_holds_an_open_process_is_waiting_and_not_done() {
+    use letibot_tokencore::store::{Check, ProcState, ProcessRecord, Store};
+    use letibot_tools::builtins::task::TaskStatus;
+
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-child-wait-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("sessions.db");
+    let mut cfg = Config::for_this_box(&dir);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.store = Some(path.clone());
+    cfg.session_id = "s-child".into();
+    // The byte vocabulary: this test is about a process row, not a model file.
+    cfg.vocab_gguf = None;
+    let parts = Parts::load(&cfg).expect("the byte vocabulary needs no model file");
+    *parts.mode_store.write().unwrap_or_else(|e| e.into_inner()) =
+        crate::modes::ModeStore::default();
+    let h = Harness::open(&parts, cfg, Hub::new("s-child")).expect("the child opens");
+
+    // A child that started nothing holds nothing, and its turn ends with its answer.
+    assert_eq!(h.open_processes(), Vec::<String>::new(), "nothing started");
+    assert_eq!(
+        waiting_on_jobs(&h.open_processes()),
+        None,
+        "nothing open is no wait - the ending turn settles `Done` with its answer"
+    );
+
+    // The job it backgrounded, as the store records it while the job exists - `record_start` writes
+    // the row as the tool's call finishes, so it is there before the turn ends.
+    let store = Store::open(&path).expect("the store");
+    store
+        .put_process(&ProcessRecord {
+            state: ProcState::Running,
+            ..ProcessRecord::starting("s-child", "j41", None, 1)
+        })
+        .expect("the job's row");
+    // Another session's job is not this child's: the wait is per session.
+    store
+        .put_process(&ProcessRecord::starting("s-elsewhere", "j7", None, 2))
+        .expect("the other session's row");
+
+    let open = h.open_processes();
+    assert_eq!(
+        open,
+        vec!["j41".to_string()],
+        "the child holds the job it started"
+    );
+    let wait = waiting_on_jobs(&open).expect("a held job is a wait");
+    match &wait {
+        TaskStatus::Running {
+            note: Some(note), ..
+        } => {
+            assert!(note.starts_with("waiting on 1 job(s)"), "{note}");
+            assert!(note.contains("`j41`"), "the wait names the job: {note}");
+        }
+        other => panic!("a child that holds a job is not {other:?}"),
+    }
+    assert!(
+        waiting_said(&open).is_some_and(|said| said.contains("`j41`")),
+        "and the row a head draws says the same thing"
+    );
+
+    // The job ends: the child holds nothing again, and its next ending is its answer.
+    store
+        .check_process(
+            "s-child",
+            "j41",
+            &Check::new(ProcState::Done, 2, 1, "probe").with_exit(0),
+        )
+        .expect("the job's end");
+    assert_eq!(h.open_processes(), Vec::<String>::new(), "the job ended");
+    assert_eq!(waiting_on_jobs(&h.open_processes()), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The wait's whole life on one slot: it is set by an ending that left a job open, the turn the
+/// job's ending wakes is where `Done` is said - with the last word the child gave over the job when
+/// that turn says nothing - and it is said ONCE, so a parent is not handed a second *answered again*
+/// for work it has already been told about.
+#[test]
+fn a_waiting_childs_woken_turn_says_done_once() {
+    use letibot_tools::builtins::task::TaskStatus;
+
+    let said = "All done. Here is the handoff.";
+    let slot = TaskSlot::new("s-parent");
+    {
+        let answer = AnswerOnce::new(&slot);
+        answer.say_waiting(&["j41".to_string()], said);
+        // A second path out of the same call cannot overwrite the wait with an ending.
+        answer.say(TaskStatus::Done {
+            answer: "not this".into(),
+            child: None,
+        });
+    }
+    assert!(
+        matches!(slot.status(), TaskStatus::Running { note: Some(ref n), .. } if n.contains("`j41`")),
+        "{:?}",
+        slot.status()
+    );
+    assert!(slot.waiting_on_a_job());
+    assert!(!slot.has_settled(), "the turn ended; nothing was answered");
+    assert!(
+        slot.news_is_a_later_turn(),
+        "the turn a job's ending wakes is news, or the slot would say `waiting` for ever"
+    );
+    assert_eq!(slot.waiting_answer().as_deref(), Some(said));
+
+    // The woken turn says NOTHING: on its own that is not news, and the wait's own last word is the
+    // answer the parent is owed.
+    let silent: Option<Result<Reply, HarnessError>> = None;
+    let news = crate::harness::children::later_news(true, slot.news_is_a_later_turn(), &silent);
+    assert!(news.is_none(), "a silent turn is not news by itself");
+    let done = turn_end_news(news, true, &[], slot.waiting_answer().as_deref())
+        .expect("the job ended and the child answered, in the word it had");
+    assert_eq!(
+        done,
+        TaskStatus::Done {
+            answer: said.into(),
+            child: None
+        }
+    );
+    slot.settle_later(done);
+    assert!(!slot.waiting_on_a_job(), "the wait is over");
+
+    // NOT a second delivery for the same work: with the slot answered, the same quiet turn is not
+    // news, so nothing new reaches the parent's watcher.
+    let second = turn_end_news(
+        crate::harness::children::later_news(true, slot.news_is_a_later_turn(), &silent),
+        true,
+        &[],
+        slot.waiting_answer().as_deref(),
+    );
+    assert!(
+        second.is_none(),
+        "a second settlement of one answer: {second:?}"
+    );
+
+    // And a turn that DOES speak is the child's last word, exactly as before this change.
+    let spoke = Some(Ok(reply("the tests passed")));
+    let again = turn_end_news(
+        crate::harness::children::later_news(true, slot.news_is_a_later_turn(), &spoke),
+        true,
+        &[],
+        slot.waiting_answer().as_deref(),
+    )
+    .expect("a later turn's words are news");
+    assert_eq!(
+        again,
+        TaskStatus::Done {
+            answer: "the tests passed".into(),
+            child: None
+        }
+    );
+}
+
+/// A turn that ends over ANOTHER job is a wait again, never a `Done`: the child's answer is still
+/// owed, and the parent is told the ending once, when there is one.
+#[test]
+fn a_turn_that_ends_over_a_new_job_is_a_wait_again() {
+    use letibot_tools::builtins::task::TaskStatus;
+
+    let held = turn_end_news(
+        Some(TaskStatus::Done {
+            answer: "done, I think".into(),
+            child: None,
+        }),
+        true,
+        &["j42".to_string()],
+        None,
+    )
+    .expect("a held job is a status");
+    match &held {
+        TaskStatus::Running {
+            note: Some(note), ..
+        } => assert!(note.contains("`j42`"), "{note}"),
+        other => panic!("a turn ending over a job is not {other:?}"),
+    }
+    // The same shape for a child that was already waiting and started a second job.
+    let again = turn_end_news(None, true, &["j42".to_string()], Some("the first answer"));
+    assert!(
+        matches!(again, Some(TaskStatus::Running { .. })),
+        "{again:?}"
+    );
+    // Nor is the harness's own clock a settlement of the wait: a plan-check runs no answer.
+    let nag = turn_end_news(None, false, &[], Some("the first answer"));
+    assert!(
+        nag.is_none(),
+        "the plan-check answered for the child: {nag:?}"
+    );
+}
+
+/// The wait in words: every job by handle, four of them and then a count, because a child can
+/// background a hundred and a status line is one line.
+#[test]
+fn the_wait_names_the_jobs_and_never_the_whole_list() {
+    assert_eq!(
+        waiting_where(&["j41".to_string()]),
+        "waiting on 1 job(s) it started: `j41`"
+    );
+    assert_eq!(waiting_said(&[]), None, "nothing open is no row");
+    let many: Vec<String> = (1..=100).map(|n| format!("j{n}")).collect();
+    let line = waiting_where(&many);
+    assert_eq!(
+        line, "waiting on 100 job(s) it started: `j1`, `j2`, `j3`, `j4`, and 96 more",
+        "the line stays one line"
     );
 }
 

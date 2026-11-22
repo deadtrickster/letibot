@@ -35,6 +35,39 @@ impl Harness {
             .collect()
     }
 
+    /// Every process this session still holds open, by handle, from the two witnesses that have
+    /// one: the store's rows - `Store::open_processes`, the query a restart's supervisor reads - and
+    /// the live process host above. The union, because either can be the only one that knows: a row
+    /// whose host has been rebuilt since, and a job the host has held since it spawned and whose row
+    /// a settlement is still writing out. Over-reporting a job is recoverable (its ending rings a
+    /// wake, and a message reaches the child); under-reporting one is a parent told work is done.
+    pub fn open_processes(&self) -> Vec<String> {
+        let mut open: Vec<String> = self.open_jobs().iter().map(|j| j.id.0.clone()).collect();
+        let rows = match self.store() {
+            Some(store) => match store.open_processes() {
+                Ok(rows) => rows,
+                // A store that will not answer is a daemon with a worse problem than this read, and
+                // the host's own table is still evidence: the wait is narrowed, never invented.
+                Err(e) => {
+                    eprintln!(
+                        "  {} · its open processes could not be read ({e}); the live jobs alone \
+                         are what this session is described by",
+                        self.cfg.session_id
+                    );
+                    Vec::new()
+                }
+            },
+            // No durable half, so nothing was ever recorded: the host's table is the whole answer.
+            None => Vec::new(),
+        };
+        for p in rows.iter().filter(|p| p.session == self.cfg.session_id) {
+            if !open.contains(&p.handle) {
+                open.push(p.handle.clone());
+            }
+        }
+        open
+    }
+
     /// The turn a child owes when its turn ended over jobs it started: one message naming them and
     /// the two ways out, and the child's own turn to wait on them or kill them before it answers.
     /// `None` when a layer dropped the sentence, and then no turn is opened.

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use letibot_harnessd::config::{Config, ProviderConfig};
 use letibot_harnessd::harness::{
     ChildTurns, JOBS_TURN_BACKS, held_said, open_jobs_answer_line, turn_back_for_jobs,
-    turned_back_for_its_jobs,
+    turned_back_for_its_jobs, waiting_on_jobs,
 };
 use letibot_harnessd::sessions::TodoNagClock;
 use letibot_harnessd::{Dialect, Harness, Parts};
@@ -323,6 +323,57 @@ fn a_child_that_ends_over_a_job_is_turned_back_and_answers_after_it() {
         matches!(sub.hub().take_own_work(), OwnWork::Wake),
         "a wake rung on a turned-back child is the next thing its loop takes"
     );
+
+    // And the ending that goes up when the bound is spent: a child that still HOLDS a job has not
+    // finished. The read is the child's own store - `Store::open_processes`, the query a restart's
+    // supervisor reads - because this box has no cgroup v2 subtree to run a real job in, so the job
+    // is its row. `record_start` writes that row as the tool's call finishes, which is before the
+    // turn ends, so this is the state the ending turn is in.
+    let store =
+        letibot_tokencore::store::Store::open(&scratch.join("sessions.db")).expect("the store");
+    store
+        .put_process(&letibot_tokencore::store::ProcessRecord {
+            state: letibot_tokencore::store::ProcState::Running,
+            ..letibot_tokencore::store::ProcessRecord::starting("s-child", "j41", None, 1)
+        })
+        .expect("the job's row");
+    let open = sub.open_processes();
+    assert_eq!(
+        open,
+        vec!["j41".to_string()],
+        "the child holds the job it backgrounded, so its ending turn is not its answer"
+    );
+    match waiting_on_jobs(&open) {
+        Some(letibot_tools::builtins::task::TaskStatus::Running {
+            note: Some(note), ..
+        }) => {
+            assert!(note.starts_with("waiting on 1 job(s)"), "{note}");
+            assert!(
+                note.contains("`j41`"),
+                "the parent is told which job it is waiting on: {note}"
+            );
+        }
+        other => panic!("a child holding a job answered as {other:?}"),
+    }
+    // The job ends, and this is the ending the child's next turn answers: `Done`, with its words.
+    store
+        .check_process(
+            "s-child",
+            "j41",
+            &letibot_tokencore::store::Check::new(
+                letibot_tokencore::store::ProcState::Done,
+                2,
+                1,
+                "probe",
+            )
+            .with_exit(0),
+        )
+        .expect("the job's end");
+    assert!(
+        sub.open_processes().is_empty(),
+        "a child whose job has ended holds nothing"
+    );
+    assert_eq!(waiting_on_jobs(&sub.open_processes()), None);
 }
 
 /// The decision itself: nothing running is no notice, one job is one notice, and the same notice

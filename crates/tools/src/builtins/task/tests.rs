@@ -386,6 +386,57 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
 }
 
 #[test]
+fn a_child_waiting_on_a_job_says_so_in_the_answer_its_parent_reads() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use std::time::Duration;
+
+    /// A child whose turn ended over a job it started: the daemon's own note is the wait.
+    struct Waiting;
+    impl TaskRunner for Waiting {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Ok("sub-wait".into())
+        }
+        fn collect(&self, _h: &str, _t: Duration) -> TaskStatus {
+            TaskStatus::Running {
+                note: Some("waiting on 1 job(s) it started: `j41`".into()),
+                child: None,
+            }
+        }
+        fn started(&self) -> Vec<String> {
+            vec!["sub-wait".into()]
+        }
+    }
+
+    let runner: Arc<dyn TaskRunner> = Arc::new(Waiting);
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let r = rt.invoke(
+        "t1",
+        &letibot_transcript::ToolCall {
+            id: "c0".into(),
+            name: "task_result".into(),
+            arguments: r#"{"task": "sub-wait"}"#.into(),
+        },
+        &mut crate::NullToolSink,
+    );
+    // The parent reads the wait: which job, by handle - and it is not an answer, so the envelope
+    // is an abstention rather than a finish.
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Abstained { .. }),
+        "a child waiting on a job is not a finish: {:?}",
+        r.outcome
+    );
+    assert!(
+        r.payload.contains("waiting on 1 job(s) it started: `j41`"),
+        "the wait has to reach the parent, or it reads the note as the child's own word: {}",
+        r.payload
+    );
+}
+
+#[test]
 fn starting_a_subagent_does_not_wait_for_it() {
     use std::sync::Arc as StdArc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
