@@ -14,6 +14,7 @@ fn row<'a>(session: &'a str, title: &'a str, parent: Option<&'a str>) -> Row<'a>
         workspace: PROJECT,
         origin: letibot_sessionlog::SessionOrigin::Operator,
         live: true,
+        moved_ms: 0,
     }
 }
 
@@ -69,6 +70,7 @@ fn a_row_of_another_project_is_not_in_this_one_s_roster() {
             workspace: other,
             origin: letibot_sessionlog::SessionOrigin::Operator,
             live: true,
+            moved_ms: 0,
         },
     ];
     let project_of = |w: &str| w.to_string();
@@ -93,6 +95,7 @@ fn a_child_of_another_workspace_is_placed_by_its_root() {
             workspace: "/tmp/letibot-review-clones/review-7",
             origin: letibot_sessionlog::SessionOrigin::Queue,
             live: true,
+            moved_ms: 0,
         },
     ];
     // The clone is not in any repository, so its own workspace would be its own project - and the
@@ -171,6 +174,31 @@ fn the_notes_keeper_is_a_keeper_and_a_brief_is_a_reviewer() {
     assert_eq!(group("s-review-1"), Group::Reviewer);
 }
 
+/// The roster is the box as it is: a session that stopped over a day ago leaves it, and one that
+/// runs again is live and rejoins.
+#[test]
+fn a_stopped_session_leaves_the_roster_after_a_day_and_rejoins() {
+    let now = 1_000_000_000_000u64;
+    assert!(in_the_roster(true, 0, now), "a live session is always here");
+    assert!(
+        in_the_roster(false, now - 1_000, now),
+        "stopped a moment ago"
+    );
+    assert!(
+        in_the_roster(false, now - STOPPED_AFTER_MS + 1_000, now),
+        "inside the day"
+    );
+    assert!(
+        !in_the_roster(false, now - STOPPED_AFTER_MS, now),
+        "a day old is out"
+    );
+    assert!(!in_the_roster(false, 0, now), "no activity date is out");
+    assert!(
+        in_the_roster(true, now - 30 * STOPPED_AFTER_MS, now),
+        "and a session that runs again is live, however old its last row"
+    );
+}
+
 /// A folder outside any repository is its own project, so a session there has a room. Only an
 /// empty or missing workspace is the box's room.
 #[test]
@@ -195,6 +223,7 @@ fn a_workspace_outside_a_repository_is_its_own_project() {
         workspace: &at,
         origin: letibot_sessionlog::SessionOrigin::Operator,
         live: true,
+        moved_ms: 0,
     }];
     let project_of = |w: &str| roster.project_of(w);
     let key = letibot_room::project_key(&at);
@@ -232,6 +261,7 @@ fn a_child_and_a_gatekeeper_join_their_roots_project_room() {
             workspace: &ps,
             origin: letibot_sessionlog::SessionOrigin::Operator,
             live: true,
+            moved_ms: 0,
         },
         Row {
             session: "s-child",
@@ -240,6 +270,7 @@ fn a_child_and_a_gatekeeper_join_their_roots_project_room() {
             workspace: &cs,
             origin: letibot_sessionlog::SessionOrigin::Operator,
             live: true,
+            moved_ms: 0,
         },
     ];
     assert_eq!(
@@ -316,7 +347,9 @@ mod cached {
             session_id: id.into(),
             title: title.into(),
             items: 0,
-            last_activity_ms: 0,
+            // As recent as the listing is: a stored row older than a day is not in the roster, so a
+            // fixture that means "a session this daemon does not hold" has to be a fresh one.
+            last_activity_ms: letibot_sessionlog::registry::now_ms(),
             wiring: SessionWiring {
                 workspace: workspace.into(),
                 ..Default::default()

@@ -92,6 +92,7 @@ impl Roster {
                 workspace: &b.wiring.workspace,
                 origin: b.origin,
                 live: b.live,
+                moved_ms: b.moved_ms,
             })
             .collect()
     }
@@ -101,7 +102,11 @@ impl Roster {
             if let Some(found) = snap.answers.get(project) {
                 return found.clone();
             }
-            let rows = Self::rows_of(&snap.briefs);
+            let now = letibot_sessionlog::registry::now_ms();
+            let rows: Vec<Row<'_>> = Self::rows_of(&snap.briefs)
+                .into_iter()
+                .filter(|r| in_the_roster(r.live, r.moved_ms, now))
+                .collect();
             let members = members_of(&rows, project, |w| self.project_of(w));
             let root = snap
                 .briefs
@@ -189,6 +194,8 @@ impl Roster {
                 workspace,
                 origin: letibot_sessionlog::SessionOrigin::Operator,
                 live: true,
+                // A session with no row yet is here now, so its age is `live`'s to decide.
+                moved_ms: 0,
             });
         }
         let root = self.project_of_session(&rows, id);
@@ -211,7 +218,7 @@ impl RosterSource for Roster {
 }
 
 /// One session, as the roster needs it - the fields of a [`SessionBrief`] the tree is drawn
-/// from, and nothing else: six values a test can write down without a registry or a store.
+/// from, and nothing else: seven values a test can write down without a registry or a store.
 #[derive(Debug, Clone, Copy)]
 pub struct Row<'a> {
     pub session: &'a str,
@@ -220,6 +227,20 @@ pub struct Row<'a> {
     pub workspace: &'a str,
     pub origin: letibot_sessionlog::SessionOrigin,
     pub live: bool,
+    /// When this session last moved (its last transcript row's time), unix millis. Read by
+    /// [`in_the_roster`] for a session this daemon does not hold.
+    pub moved_ms: u64,
+}
+
+/// How long a stopped session stays in a room's roster after its last row. The roster is the box
+/// as it is: a session down for a day is the session picker's, not the room's.
+pub const STOPPED_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Whether a session belongs in a roster at `now_ms`. A live one always does; a stopped one while
+/// it has moved within [`STOPPED_AFTER_MS`], so a row with no activity date is out. A session that
+/// runs again is live again, and rejoins by itself.
+pub fn in_the_roster(live: bool, moved_ms: u64, now_ms: u64) -> bool {
+    live || moved_ms.saturating_add(STOPPED_AFTER_MS) > now_ms
 }
 
 /// The rows of one project, as the tree draws them - the pure half, so a test can pin the
