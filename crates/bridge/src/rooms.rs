@@ -112,6 +112,12 @@ fn data_dir() -> PathBuf {
     letibot_paths::data_dir().unwrap_or_else(|| PathBuf::from(".").join("letibot"))
 }
 
+/// [`data_dir`], for a module that keeps a mark there: the channel's live flag is read by
+/// `room-wait`, which has no other way to learn whether this session's frames are delivered.
+pub fn data_dir_for_marks() -> PathBuf {
+    data_dir()
+}
+
 /// Where the nick for `cwd` is kept, keyed by the folder's canonical path.
 fn nick_file(dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
     let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
@@ -2474,6 +2480,18 @@ pub fn wait_marked(
     // MCP server and may not reach the monitor that runs this loop - so the waiter names none and
     // the room attaches it to the seat that holds the name.
     link.as_reader();
+    // A session started with the development-channels flag already has every room message pushed
+    // into it as a channel frame. The waiter would then be a second wake for the same message on a
+    // second connection of the same seat, so it steps aside: the bridge marks the session when it
+    // finds the flag on its `claude` ancestor's command line.
+    if crate::channel::is_live(&data_dir(), &handle()) {
+        eprintln!(
+            "letibot-mcp: the channel delivers this session's room messages, so the waiter is not \
+             needed - see `{}`",
+            crate::channel::marker(&data_dir(), &handle()).display()
+        );
+        return (0, String::new());
+    }
     let (tx, rx) = mpsc::channel::<Value>();
     link.on_chat(Arc::new(move |m, names_you| {
         if attention.passes(m, names_you) {

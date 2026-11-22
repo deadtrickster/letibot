@@ -12,6 +12,7 @@
 //! a model: the turn is the daemon's, and the bridge watches it and answers for it.
 
 pub mod browser;
+pub mod channel;
 pub mod daemon;
 pub mod diff;
 pub mod docs;

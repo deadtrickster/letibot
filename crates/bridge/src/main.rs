@@ -172,6 +172,10 @@ fn serve() -> i32 {
         bridge = bridge.relaying();
     }
     let bridge = std::sync::Arc::new(bridge);
+    // The plugin's room waiter is a second wake for a message the channel already delivers, and a
+    // second connection of the same seat. Let it know: the flag is on this process's `claude`
+    // ancestor's command line, and the waiter reads the mark this writes.
+    letibot_bridge::channel::publish_for_this_seat();
     if let Some(set) = stops {
         let b = bridge.clone();
         std::thread::spawn(move || {
