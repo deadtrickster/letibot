@@ -152,6 +152,47 @@ fn settled_file(dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
     name
 }
 
+/// Where ONE Claude Code session's seat is kept: its handle and its room, keyed by the session id
+/// rather than by a folder. Two processes of one session are one seat, and they do not begin in one
+/// folder - the plugin's monitor may run in a subdirectory of the repository its MCP server was
+/// started in - so the folder cannot be what names the seat.
+fn session_file(dir: &std::path::Path, session: &str) -> PathBuf {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in session.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    dir.join("seats").join(format!("session-{h:016x}"))
+}
+
+/// The handle and the room a Claude Code session's seat already speaks as, if any process of it has
+/// settled them: the first connection names the seat, and the second joins it rather than minting a
+/// name of its own out of whichever directory it happened to start in.
+pub fn settled_session(dir: &std::path::Path, session: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(session_file(dir, session)).ok()?;
+    // Split BEFORE trimming: an empty room is a trailing tab, and `trim` would eat it and with it
+    // the separator this reads.
+    let (name, room) = text.split_once('\t')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| (name.to_string(), room.trim().to_string()))
+}
+
+/// Keep what this session's seat speaks as, so every other process of the same session joins it.
+pub fn remember_session(
+    dir: &std::path::Path,
+    session: &str,
+    name: &str,
+    room: &str,
+) -> Result<(), String> {
+    let file = session_file(dir, session);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot keep the seat in {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&file, format!("{name}\t{room}\n"))
+        .map_err(|e| format!("cannot keep the seat in {}: {e}", file.display()))
+}
+
 /// The name this folder's bridge settled on, when it is the name `base` still asks for: a nick the
 /// operator changed since is a name the room never gave, and the folder's own name wins again.
 pub fn settled_name(dir: &std::path::Path, cwd: &std::path::Path, base: &str) -> Option<String> {
@@ -278,12 +319,27 @@ fn base() -> String {
         .clone()
 }
 
+/// The Claude Code session this process belongs to, when Claude Code told it: the one fact that is
+/// the same for every process of one session, whatever folder each of them started in.
+fn session_env() -> Option<String> {
+    std::env::var(SESSION_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn name_cell() -> &'static Mutex<String> {
     static NAME: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
     NAME.get_or_init(|| {
         let dir = data_dir();
         let cwd = std::env::current_dir().unwrap_or_default();
         let base = base();
+        // A session's seat that has already named itself wins over anything this process could
+        // derive: its processes do not begin in one folder, and a name minted from the directory
+        // this one started in would be a second row for one seat.
+        if let Some((name, _)) = session_env().and_then(|s| settled_session(&dir, &s)) {
+            return Mutex::new(name);
+        }
         // The name the room gave this folder last time comes first: asking again for the folder's
         // own name would be a new seat, and its cursor is the seat's.
         let settled = settled_name(&dir, &cwd, &base).unwrap_or(base);
@@ -1056,9 +1112,25 @@ impl RoomLink {
         // Seat and speaker are constants: nothing a tool says reaches them. The room is the one
         // thing the working folder decides: the project's room, never every room, and the host
         // room alone outside any folder.
-        let here = match std::env::current_dir() {
-            Ok(cwd) => hello_room(&cwd),
-            Err(_) => String::new(),
+        //
+        // Unless this process is one of a Claude Code session's, and that session's seat has already
+        // spoken: then the SEAT decides both. Its processes do not begin in one folder (a monitor
+        // may run in a subdirectory of the repository its MCP server was started in), so a handle
+        // and a room minted from whichever directory this one started in would split one seat into
+        // two rows of two projects.
+        let session = session_env();
+        let settled = session
+            .as_deref()
+            .and_then(|s| settled_session(&data_dir(), s));
+        if let Some((name, _)) = &settled {
+            set_handle(name.clone());
+        }
+        let here = match &settled {
+            Some((_, room)) if !room.is_empty() => room.clone(),
+            _ => match std::env::current_dir() {
+                Ok(cwd) => hello_room(&cwd),
+                Err(_) => String::new(),
+            },
         };
         let hello = json!({
             "type": "hello",
@@ -1149,6 +1221,11 @@ impl RoomLink {
                 // the seat - and with it the cursor, which belongs to the seat and not the process.
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let _ = remember_name(&data_dir(), &cwd, &base(), &handle());
+                // And the SESSION's seat is kept too: every other process of this Claude Code
+                // session asks under this name and joins this room, whatever folder it starts in.
+                if let Some(session) = &session {
+                    let _ = remember_session(&data_dir(), session, &handle(), &here);
+                }
                 let now = first["instance"].as_u64().unwrap_or(0);
                 let mut seen = self
                     .inner
