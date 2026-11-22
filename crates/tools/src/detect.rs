@@ -436,6 +436,10 @@ mod tests {
             std::env::temp_dir().join(format!("letibot-detect-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
+        // Canonical, because `git rev-parse --show-toplevel` answers the RESOLVED path: a Mac's temp
+        // dir is a symlink, and a fixture that kept the unresolved spelling would be comparing two
+        // names for one directory.
+        let root = root.canonicalize().unwrap_or(root);
         git(&root, &["init", "-q"]);
         std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
         git(&root, &["add", "-A"]);
