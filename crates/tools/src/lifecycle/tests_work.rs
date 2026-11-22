@@ -142,7 +142,7 @@ fn a_settled_owner_keeps_its_work_and_then_loses_it() {
     let owner = owner(&store, &places, "s-1", &repo, OwnerState::Closed, now);
 
     // One commit of the owner's, one modified tracked file, one untracked file.
-    let made = make_worktree(&places, &owner.id, &repo, "pkg", "HEAD").expect("the worktree");
+    let made = make_worktree(&places, &owner.id, &repo, "pkg", &repo).expect("the worktree");
     std::fs::write(made.path.join("wip-tracked"), "x\n").unwrap();
     git(&made.path, &["add", "-A"]);
     git(&made.path, &["commit", "-q", "-m", "the unmerged commit"]);
@@ -215,7 +215,7 @@ fn an_ignored_gigabyte_is_not_written_into_the_object_store() {
     let repo = f.repo();
     let now = now_ms();
     let owner = owner(&store, &places, "s-2", &repo, OwnerState::Settling, now);
-    let made = make_worktree(&places, &owner.id, &repo, "big", "HEAD").expect("the worktree");
+    let made = make_worktree(&places, &owner.id, &repo, "big", &repo).expect("the worktree");
     // A sparse file: a gigabyte of length and no blocks, because the guard is about bytes a build
     // dropped in the tree and not about what this test's disk can afford.
     let big = made.path.join("target");
@@ -265,7 +265,7 @@ fn a_tree_over_the_guard_goes_to_the_trash_instead_of_the_object_store() {
     let repo = f.repo();
     let now = now_ms();
     let owner = owner(&store, &places, "s-3", &repo, OwnerState::Settling, now);
-    let made = make_worktree(&places, &owner.id, &repo, "huge", "HEAD").expect("the worktree");
+    let made = make_worktree(&places, &owner.id, &repo, "huge", &repo).expect("the worktree");
     let huge = made.path.join("dump.bin");
     let file = std::fs::File::create(&huge).unwrap();
     file.set_len(600 * 1024 * 1024).unwrap();
@@ -312,7 +312,7 @@ fn a_branch_another_worktree_made_is_not_touched() {
     let repo = f.repo();
     let now = now_ms();
     let owner = owner(&store, &places, "s-4", &repo, OwnerState::Settling, now);
-    let made = make_worktree(&places, &owner.id, &repo, "pkg", "HEAD").expect("the worktree");
+    let made = make_worktree(&places, &owner.id, &repo, "pkg", &repo).expect("the worktree");
 
     // Somebody else's work, made in another worktree during the owner's life: another branch, no
     // stamp, and a tree outside the owner root. Nothing about settling the owner may reach it.
@@ -404,7 +404,7 @@ fn an_archive_step_that_fails_leaves_the_tree_and_marks_the_holding_stuck() {
     let repo = f.repo();
     let now = now_ms();
     let owner = owner(&store, &places, "s-5", &repo, OwnerState::Settling, now);
-    let made = make_worktree(&places, &owner.id, &repo, "hard", "HEAD").expect("the worktree");
+    let made = make_worktree(&places, &owner.id, &repo, "hard", &repo).expect("the worktree");
     // The refs live in the main checkout's `.git`, so a read-only `.git` is an archive that cannot
     // be written - which is exactly the failure the design says is `stuck`, not a delete.
     let gitdir = repo.join(".git");
@@ -495,5 +495,73 @@ fn the_session_is_put_away_when_its_work_is_settled() {
     assert!(
         session.archived_ms.is_some(),
         "a settled session is archived with its reason (R184's remainder)"
+    );
+}
+
+/// A package started on a linked worktree of the repository starts at THAT worktree's HEAD, and
+/// not at the main checkout's: a package pointed at a stack continues the stack (lead 74).
+#[test]
+fn a_package_cut_from_a_linked_worktree_starts_at_that_worktrees_head() {
+    let f = Fixture::new("cut-base");
+    let places = f.places();
+    let store = f.store();
+    let repo = f.repo();
+    let now = now_ms();
+    let owner = owner(&store, &places, "s-8", &repo, OwnerState::Settling, now);
+
+    // A stack worktree of the same repository, one commit ahead of main.
+    let stack = f.0.join("stack");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "stack",
+            &stack.to_string_lossy(),
+        ],
+    );
+    std::fs::write(stack.join("two"), "two\n").unwrap();
+    git(&stack, &["add", "-A"]);
+    git(&stack, &["commit", "-q", "-m", "two"]);
+    let stack_head = git(&stack, &["rev-parse", "HEAD"]).trim().to_string();
+    let main_head = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(stack_head, main_head, "the stack is ahead of main");
+
+    let made = make_worktree(&places, &owner.id, &repo, "pkg", &stack).expect("the worktree");
+    assert_eq!(
+        crate::git::branch_head(&repo, &made.branch).as_deref(),
+        Some(stack_head.as_str()),
+        "the package's branch starts at the HEAD of the worktree the caller named"
+    );
+    assert_eq!(
+        git(&made.path, &["rev-parse", "HEAD"]).trim(),
+        stack_head,
+        "and so does its tree"
+    );
+}
+
+/// A worktree whose HEAD cannot be read is refused, and the sentence names the base it would have
+/// used instead (lead 74).
+#[test]
+fn a_package_cut_from_a_worktree_with_no_head_is_refused_by_name() {
+    let f = Fixture::new("cut-nohead");
+    let places = f.places();
+    let store = f.store();
+    let repo = f.repo();
+    let now = now_ms();
+    let owner = owner(&store, &places, "s-9", &repo, OwnerState::Settling, now);
+
+    // A checkout with no commit yet: there is a repository and no HEAD to cut from.
+    let empty = f.at("empty");
+    git(&empty, &["init", "-q", "-b", "main"]);
+
+    let why = make_worktree(&places, &owner.id, &repo, "pkg", &empty)
+        .expect_err("a worktree with no HEAD has no base");
+    assert!(why.contains("HEAD"), "the refusal is about the HEAD: {why}");
+    assert!(
+        why.contains(&repo.display().to_string()) && why.contains("instead"),
+        "and it names the base it would have used instead: {why}"
     );
 }

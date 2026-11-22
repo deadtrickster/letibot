@@ -62,15 +62,17 @@ pub struct Place {
     pub branch: String,
 }
 
-/// Create `<gc root>/<box>/<owner>/wt/<package>` on branch `pk/<sid8>/<package>` from `repo`'s
-/// `base`, then stamp both. The caller writes the owner ROW first: a row with no resource is
-/// harmless, a resource with no row is the leak this package exists to stop (d.2).
+/// Create `<gc root>/<box>/<owner>/wt/<package>` on branch `pk/<sid8>/<package>` from the HEAD of
+/// `source`, then stamp both. `repo` is the repository the branch and the worktree admin live in;
+/// `source` is the worktree the caller NAMED, which may be a linked worktree ahead of `repo`.
+/// The caller writes the owner ROW first: a row with no resource is harmless, a resource with no
+/// row is the leak this package exists to stop (d.2).
 pub fn make(
     places: &Places,
     owner: &str,
     repo: &Path,
     package: &str,
-    base: &str,
+    source: &Path,
 ) -> Result<Place, String> {
     if !archive::is_repo(repo) {
         return Err(format!("{} is not a git checkout", repo.display()));
@@ -81,8 +83,9 @@ pub fn make(
         != std::fs::canonicalize(repo).ok()
     {
         return Err(format!(
-            "{} is itself a worktree: a package's worktree is cut from the repository a person \
-             keeps, so name the main checkout",
+            "{} is itself a worktree: the branch a package works on and the worktree's admin \
+             live in the repository, not in one of its worktrees, so name the main checkout and \
+             pass the worktree as `source`",
             repo.display()
         ));
     }
@@ -104,7 +107,20 @@ pub fn make(
             path.display()
         ));
     }
-    let base = if base.trim().is_empty() { "HEAD" } else { base };
+    // The base is the HEAD of the worktree the caller named, never `repo`'s own: a package
+    // pointed at a stack worktree builds on that stack, and cutting from the main checkout
+    // instead starts its branch behind the work it was asked to continue.
+    let base = match git::head_of(source) {
+        Ok(sha) => sha,
+        Err(why) => {
+            return Err(format!(
+                "a package is cut from the HEAD of the worktree it is named on, and that HEAD \
+                 cannot be read: {why}. Cutting it from {}'s HEAD instead would start it on \
+                 commits the caller did not name, so nothing was made",
+                repo.display()
+            ));
+        }
+    };
     git(
         repo,
         &[
@@ -114,7 +130,7 @@ pub fn make(
             "-b",
             &branch,
             &path.to_string_lossy(),
-            base,
+            &base,
         ],
     )?;
     if let Err(why) = stamp(repo, &path, &branch, owner) {

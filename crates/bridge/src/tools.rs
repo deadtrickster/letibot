@@ -677,8 +677,15 @@ impl Bridge {
         // this whole lifecycle exists to stop.
         letibot_tools::lifecycle::register(&store, &places, &row)
             .map_err(|e| format!("no root for {id}: {e}"))?;
-        let made = match letibot_tools::lifecycle::make_worktree(&places, &id, &repo, name, "HEAD")
-        {
+        // The base is the HEAD of the worktree the caller NAMED, not the main checkout's: a package
+        // pointed at a stack worktree continues that stack (lead 74).
+        let made = match letibot_tools::lifecycle::make_worktree(
+            &places,
+            &id,
+            &repo,
+            name,
+            Path::new(source),
+        ) {
             Ok(made) => made,
             Err(why) => {
                 store
@@ -1659,7 +1666,7 @@ pub fn list() -> Value {
                     "model": { "type": "string", "description": "What answers this session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's choice." },
                     "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`." },
                     "host": { "type": "string", "description": "A machine from `hosts.toml` (or the `hosts` tool), where this session's tools run. Omitted: on this box." },
-                    "package": { "type": "string", "description": "A name: make this a package, a worktree of that repository on its own branch. Omitted: run in `worktree` as it is." },
+                    "package": { "type": "string", "description": "A name: make this a package, a worktree of that repository on its own branch, cut from the HEAD of `worktree`. Omitted: run in `worktree` as it is." },
                     "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. Default false." }
                 },
                 "required": ["worktree", "brief"]
