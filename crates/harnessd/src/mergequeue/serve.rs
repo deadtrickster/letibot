@@ -1100,7 +1100,7 @@ impl RepoQueue {
             };
             (g.run_id.clone(), g.stop.is_some())
         };
-        let mut worked = false;
+        let worked = false;
         // The step, from the runner's own record - both machines write it as they start a step, so a
         // local gate and a host gate publish the same fact.
         if let Some(step) = gate::running(&self.key) {
@@ -1112,7 +1112,8 @@ impl RepoQueue {
                 &step.command,
                 step.started_ms,
             )?;
-            worked = true;
+            // Published for readers, and not work: the idle loop already looks for the gate's end
+            // every 100 ms, and a pass that counted this ran back to back for the whole gate.
         }
         if asked {
             return Ok(worked);

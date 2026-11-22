@@ -1355,6 +1355,44 @@ impl GateRunner for Blocking {
     }
 }
 
+/// A running gate's step is published for readers, and that is not work: a pass with nothing else to
+/// do while a gate runs is idle, so the worker sleeps. Counting the publish as work made the worker
+/// pass back to back for the whole gate - hundreds of `git` a minute, a third of a core.
+#[test]
+fn a_pass_while_a_gate_runs_and_nothing_else_moves_is_idle() {
+    let w = World::new("gate-idle");
+    let (wt, base, head) = branch(&w.repo, "gi", "gi.txt");
+    w.enqueue("gi", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    w.accept("gi", "test/a");
+    let q = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(Arc::new(Blocking), w.door.clone(), "a"),
+    );
+    let stop = AtomicBool::new(false);
+    q.pass(&stop).unwrap();
+    assert!(q.gate_in_flight(), "the landing's gate is running");
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while gate::running(&w.key()).is_none() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        gate::running(&w.key()).is_some(),
+        "the runner published its step"
+    );
+    // The first pass after the step appears publishes it; the ones after have nothing to do.
+    q.pass(&stop).unwrap();
+    assert_eq!(
+        q.pass(&stop).unwrap(),
+        Pass::Idle,
+        "a running step is not work"
+    );
+    assert_eq!(q.pass(&stop).unwrap(), Pass::Idle);
+    q.wind_down();
+}
+
 /// A model stops the gate of its own row: the worker notices on its next pass, kills the run, and the
 /// row goes back in line carrying the REQUESTER's words - not the runner's `the daemon is stopping`.
 #[test]
