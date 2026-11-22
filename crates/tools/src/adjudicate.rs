@@ -3928,10 +3928,8 @@ impl Gate for AdjudicatedGate {
                         ),
                     );
                     self.breaker.admitted(&direction);
-                    self.advise_on_a_settled_call(
-                        &req,
-                        format!("`permission` config allows `{}` for `{pattern}`", call.name),
-                    );
+                    // Nothing judged and no card: a rule the operator wrote is already the answer,
+                    // and a model asked about it spends a round trip on a question nobody asked.
                     self.record(req, d, "admit", direction.key());
                     return GateDecision::Admit;
                 }
@@ -3975,7 +3973,6 @@ impl Gate for AdjudicatedGate {
                     boundary: boundary.mechanism.clone(),
                 });
             }
-            self.advise_on_a_settled_call(&req, "inside a measured boundary".into());
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
@@ -4012,17 +4009,8 @@ impl Gate for AdjudicatedGate {
                 ),
             );
             self.breaker.admitted(&direction);
-            // The mode's own admission is a settled call like any other. It cannot fire at
-            // `supervised` today, and it is wired because a point is a value and the next one may
-            // admit something while still wanting the verdict.
-            self.advise_on_a_settled_call(
-                &req,
-                format!(
-                    "the `{}` mode admits {} unasked",
-                    self.mode.name,
-                    access.as_str()
-                ),
-            );
+            // An admission is not a question: the mode said yes, the operator reads it in the
+            // admission notice, and a model asked here would be judging a call nobody disputed.
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
@@ -4043,7 +4031,6 @@ impl Gate for AdjudicatedGate {
             );
             let d = AdjudicationDecision::selected(&req, "allow_once", "gate:reviewer", &basis);
             self.breaker.admitted(&direction);
-            self.advise_on_a_settled_call(&req, "a reviewer's probe inside its limits".into());
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }

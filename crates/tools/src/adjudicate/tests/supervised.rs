@@ -365,11 +365,11 @@ fn an_exec_call_is_not_covered_by_a_grant_at_a_supervised_point() {
     );
 }
 
-/// Both directions, because a `deny` is worth as much as an `allow` here: a model that routinely
-/// wants to admit what the operator's rules refuse is the miscalibration to find before automode,
-/// and it is invisible if only the admissions are measured.
+/// A rule the operator wrote is the answer, and only a REFUSAL is measured against the model: the
+/// calibration of a No (a rule refusing what the model would admit) is the signal, and an admitted
+/// call is not a question anybody asked.
 #[test]
-fn a_permission_rule_is_still_measured_against_the_model() {
+fn a_permission_rule_admits_unmeasured_and_a_deny_is_still_measured() {
     let rules = |json: serde_json::Value| {
         crate::permission::config_to_ruleset(json.as_object().unwrap()).unwrap()
     };
@@ -383,7 +383,7 @@ fn a_permission_rule_is_still_measured_against_the_model() {
             .with_permission(rules(cfg))
     };
 
-    // An `allow` rule admits, and the oracle's agreement is recorded.
+    // An `allow` rule admits, and nothing judged it: the row's verdict is the rule's own.
     let mut g = gate(json!({ "edit": "allow" }), true);
     assert_eq!(
         g.admit(&call("edit", &json!({"path": "a.rs"}))),
@@ -393,15 +393,14 @@ fn a_permission_rule_is_still_measured_against_the_model() {
     assert!(
         row.model_verdict
             .as_deref()
-            .unwrap()
-            .starts_with("admit by model:test")
+            .is_some_and(|v| v.contains("gate:permission")),
+        "the rule decided: {:?}",
+        row.model_verdict
     );
     assert!(!row.asked, "nobody was asked: a rule decided");
-    assert_eq!(
-        row.operator
-            .as_ref()
-            .map(crate::authorise::OperatorOverride::as_str),
-        Some("upheld")
+    assert!(
+        row.operator.is_none(),
+        "no model spoke, so there is nothing to uphold or revoke"
     );
 
     // A `deny` rule refuses and an oracle that would have admitted is recorded disagreeing: the
@@ -453,11 +452,11 @@ fn a_rule_at_a_non_supervised_point_consults_nothing() {
     assert!(row.operator.is_none());
 }
 
-/// One case per short-circuit in `admit`, so a path added later that forgets to ask fails here
-/// rather than quietly producing rows with no verdict. The breaker is the one deliberate exception
-/// and is asserted as such.
+/// A rule at a settled point is the answer, and no model is asked about it: the operator wrote the
+/// rule, the card is not drawn, and a round trip spent on an undisputed call is cost nobody chose.
+/// A refusal still gets its model label - the calibration of a No is what that row is for.
 #[test]
-fn every_settled_path_still_gives_the_model_its_turn() {
+fn an_admitted_call_consults_no_model_and_a_refusal_still_does() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Counts every consultation, whatever the answer.
@@ -499,37 +498,42 @@ fn every_settled_path_still_gives_the_model_its_turn() {
     let path = json!({"path": "src/lib.rs"});
     let secret = json!({"path": "/home/op/.ssh/id_ed25519"});
 
-    // 2. the never-write list
+    // 2. the never-write list: a REFUSAL, and its label is worth the round trip.
     let (mut g, n) = build(&|g| g);
     let _ = g.admit(&call("edit", &secret));
     assert_eq!(n.load(Ordering::SeqCst), 1, "never-write list: model asked");
     assert_eq!(g.log[0].effect, "refuse", "and the list still refuses");
 
-    // 4. a config `deny`, and a config `allow`
-    for (cfg, effect) in [("deny", "refuse"), ("allow", "admit")] {
-        let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": cfg }))));
-        let _ = g.admit(&call("edit", &path));
-        assert_eq!(n.load(Ordering::SeqCst), 1, "config {cfg}: model asked");
-        assert_eq!(g.log[0].effect, effect, "and the rule still decides");
-    }
+    // 4. a config `deny` asks (the label of a No), and a config `allow` does not: the rule is the
+    //    answer, and nothing judged it because nothing disputed it.
+    let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": "deny" }))));
+    let _ = g.admit(&call("edit", &path));
+    assert_eq!(n.load(Ordering::SeqCst), 1, "a config deny is labelled");
+    assert_eq!(g.log[0].effect, "refuse");
 
-    // 6. the mode admits unasked. `supervised` never does, so this is asserted at a point that
-    //    does: the wiring is shared and the rule is the same.
+    let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": "allow" }))));
+    let _ = g.admit(&call("edit", &path));
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        0,
+        "a config allow was judged anyway"
+    );
+    assert_eq!(g.log[0].effect, "admit", "and the rule still decides");
+    assert!(
+        g.log[0].advice.is_none(),
+        "an admitted call carries no model verdict"
+    );
+
+    // 6. the mode admits unasked, at a point that does: `writes-allowed` admits a write, and no
+    //    model is consulted for it.
     let n = std::sync::Arc::new(AtomicUsize::new(0));
-    let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Counting(n.clone()));
     let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
-        .with_mode(crate::mode::Mode::ALWAYS_ASK)
-        .with_advisor(advisor)
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .with_advisor(std::sync::Arc::new(Counting(n.clone())))
         .start_supervised(true);
     let _ = g.admit(&call("edit", &path));
-    let before = n.load(Ordering::SeqCst);
-
-    // 9. a standing grant, on the SAME gate: the second call is covered.
-    let _ = g.admit(&call("edit", &path));
-    assert!(
-        n.load(Ordering::SeqCst) > before,
-        "a grant-covered call still consults the model"
-    );
+    assert_eq!(n.load(Ordering::SeqCst), 0, "the mode's yes was judged");
+    assert_eq!(g.log[0].effect, "admit");
 
     // 0. the breaker is the exception on purpose: the calls reaching it are near-duplicates of
     //    rows already recorded, and an oracle round trip per iteration of a retry loop is what
