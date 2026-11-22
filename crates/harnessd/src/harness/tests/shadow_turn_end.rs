@@ -341,3 +341,21 @@ fn a_shadow_seat_refuses_a_prompt() {
     assert!(err.to_string().contains("read-only"), "{err}");
     assert!(!said(&h, ANNOUNCED), "no model turn ran");
 }
+
+/// The burst the operator complained about: at a turn's end, an allow the shadow took is no row.
+/// Its shape still counts toward a later No, and the decision itself is the gate's audit row.
+#[test]
+fn an_allow_the_shadow_took_owes_the_turn_end_no_row() {
+    let (mut h, _rang, _rows) = a_session_saying("allow-row", ANNOUNCED, None);
+    let before = h.session.items.len();
+    h.shadow_answering
+        .granted(crate::shadow::config::Stage::Reads, "/build/letibot-r1");
+    h.shadow_notices();
+    assert_eq!(
+        h.session.items.len(),
+        before,
+        "an allow is no card: {:?}",
+        h.session.items
+    );
+    assert!(h.shadow_answering.take_rows().is_empty(), "nothing owed");
+}
