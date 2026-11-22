@@ -30,7 +30,10 @@ install step.
   minutes, or `[queue] gate_deadline_minutes`. Past it the step in flight is killed with its
   process group and the row is `timed_out`.
 - The same steps, without the install, gate the target's own tip whenever it moves.
-- A step named `install-gate-build` runs only after the landing was pushed.
+- A step named `install-gate-build` runs only after the landing was pushed. It refuses when the
+  build it was told about is the directory the launcher already starts from, and when that build
+  is older than the newest `harnessd` it can see: both name `CARGO_TARGET_DIR`, because a step
+  that lost it used to copy every binary onto itself and still say installed.
 - With rows in line the queue fetches `origin`'s target (at most every 30 s) and fast-forwards the
   local target and its checkouts when origin is ahead. A push refused because origin moved since
   puts the local target back at origin's tip and requeues the row, which is rebased and gated

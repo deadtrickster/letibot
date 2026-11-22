@@ -55,7 +55,8 @@ esac
 dest=$main/target/release
 
 # `CARGO_TARGET_DIR` is set for every gate step. Unset means a by-hand run, so the tree's own
-# `target`; in the main tree that copies a file onto itself, a no-op.
+# `target`; run from the main tree that IS the directory installed into, and the two checks below
+# refuse rather than copy every binary onto itself and call it an install.
 target=${CARGO_TARGET_DIR:-$tree/target}
 case "$target" in
   /*) ;;
@@ -67,6 +68,35 @@ if [ ! -d "$built" ]; then
   echo "  The step before this one is \`cargo build --release --bins --features local\`, and it" >&2
   echo "  writes into \$CARGO_TARGET_DIR/release. A gate whose install step runs without it has" >&2
   echo "  nothing to install, and installing nothing quietly is the defect this script exists for." >&2
+  exit 1
+fi
+
+# One directory under two spellings is one directory, and `-nt` cannot tell a copy from a rename.
+same_dir() {
+  [ "$(cd "$1" 2>/dev/null && pwd -P)" = "$(cd "$2" 2>/dev/null && pwd -P)" ]
+}
+
+# **A gate whose install step was not told where the build went installs nothing.** Run by hand in
+# the main tree, `built` is `dest`, so every `cp` is a binary onto itself and the last line still
+# says installed. Refused, with the variable that names the real build.
+if same_dir "$built" "$dest"; then
+  echo "install-gate-build: $built and $dest are one directory, so this copies every binary onto" >&2
+  echo "  itself and installs nothing: pass CARGO_TARGET_DIR=<the directory the build went to>." >&2
+  exit 1
+fi
+
+# The newest `harnessd` this step can see, over the build directories it knows: the tree it was
+# built in, that tree's own `target`, and the one the launcher starts from. Installing an older
+# build than the one already there is how a green landing leaves the box on the old binary.
+newest=""
+for dir in "$built" "$tree/target/release" "$dest"; do
+  [ -f "$dir/harnessd" ] || continue
+  if [ -z "$newest" ] || [ "$dir/harnessd" -nt "$newest/harnessd" ]; then newest=$dir; fi
+done
+if [ -n "$newest" ] && ! same_dir "$newest" "$built"; then
+  echo "install-gate-build: the newest harnessd here is $newest/harnessd, and the build this step" >&2
+  echo "  would install ($built/harnessd) is older, so the installed daemon would go backwards." >&2
+  echo "  Pass CARGO_TARGET_DIR=<the directory the build went to> if that is the build you mean." >&2
   exit 1
 fi
 

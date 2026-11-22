@@ -1,6 +1,7 @@
 //! The shell half of the tree is judged by shell, so it is run from here: `tests/launcher.sh` and
-//! `tests/rrun.sh` judge `scripts/letibot` and `scripts/rrun`, and likewise `install.sh` and the
-//! plugin manifests. Inside `cargo test` they run in the step every gate already has.
+//! `tests/rrun.sh` judge `scripts/letibot` and `scripts/rrun`, and likewise `install.sh`,
+//! `install-gate-build.sh` and the plugin manifests. Inside `cargo test` they run in the step every
+//! gate already has.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ const SUITES: &[&str] = &[
     "tests/rrun.sh",
     "tests/claude-plugin.sh",
     "tests/install.sh",
+    "tests/install-gate-build.sh",
 ];
 
 /// What a suite is written in. Without both it cannot run at all, so an absence is said out loud
