@@ -27,8 +27,9 @@ pub const PORT: u16 = 47_311;
 /// dialled within a second or two, and the datagram is a few hundred bytes.
 pub const EVERY_MS: u64 = 2_000;
 
-/// What one box says about itself on the LAN: its host half, and the TCP port its coordinator
-/// listens on. Nothing here is a secret, and nothing here is proved - the handshake does that.
+/// What one box says about itself on the LAN: its host half, the TCP port its coordinator
+/// listens on, and the peering protocol it speaks. Nothing here is a secret, and nothing here is
+/// proved - the handshake does that.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Beacon {
     /// The beacon's own protocol number.
@@ -37,6 +38,10 @@ pub struct Beacon {
     pub host: String,
     /// Where its coordinator listens for a link.
     pub port: u16,
+    /// The peering protocol it speaks. A box this one gave up on is dialled again only when its
+    /// beacon says another number; a build older than this field says nothing, and `None` is that.
+    #[serde(default)]
+    pub proto: Option<u16>,
 }
 
 impl Beacon {
@@ -45,6 +50,7 @@ impl Beacon {
             letibot: BEACON,
             host: host.into(),
             port,
+            proto: Some(crate::peer::frame::PEER_PROTOCOL),
         }
     }
 

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::peer::announce::{self, Announcer, Beacon};
 use crate::peer::cookie::Cookie;
-use crate::peer::frame::{MAX_LINE, PeerFrame};
+use crate::peer::frame::{MAX_LINE, PEER_PROTOCOL, PeerFrame};
 use crate::peer::handshake::{Answerer, Dialer, Outcome, nonce};
 use crate::peer::mesh::{Mesh, PeerEvent, Tick};
 use crate::peer::profile::{ProjectProfile, SeatProfile};
@@ -136,6 +136,37 @@ struct Inner {
     /// The last few refusals, for the person reading the log and for a banner: a box that will not
     /// speak to this one is a thing an operator needs named, not a silence.
     refusals: Mutex<Vec<String>>,
+    /// The boxes whose handshake this build could not finish, by address, with the peering protocol
+    /// each said. A redial at the same protocol gets the same sentence, so there is none until that
+    /// box says a different number - see [`Refused`].
+    refused: Mutex<Refused>,
+}
+
+/// The peers this box gave up on, and the protocol each was refused at.
+#[derive(Default)]
+struct Refused {
+    boxes: BTreeMap<String, Option<u16>>,
+}
+
+impl Refused {
+    /// Would a dial at `proto` be the refusal that is already recorded for `key`? Yes while the box
+    /// says the number it was refused on: nothing of this build changed since the last attempt.
+    fn still(&self, key: &str, proto: Option<u16>) -> bool {
+        self.boxes.get(key).is_some_and(|was| *was == proto)
+    }
+
+    /// Record a refusal, and answer whether it is NEWS: the same box at the same protocol was
+    /// already said, and saying it again every two seconds is the noise this exists to end.
+    fn note(&mut self, key: &str, proto: Option<u16>) -> bool {
+        let news = !self.still(key, proto);
+        self.boxes.insert(key.to_string(), proto);
+        news
+    }
+
+    /// The box said another protocol, so the sentence about the old one is history.
+    fn forget(&mut self, key: &str) {
+        self.boxes.remove(key);
+    }
 }
 
 impl Inner {
@@ -151,6 +182,30 @@ impl Inner {
         while kept.len() > REFUSALS_KEPT {
             kept.remove(0);
         }
+    }
+
+    /// Note that a link with the box at `key` was refused at peering protocol `proto`, and say it
+    /// once: a box that cannot read this build's frames is not a thing a redial repairs.
+    fn refused_link(&self, key: &str, proto: Option<u16>, why: &str) {
+        if self
+            .refused
+            .lock()
+            .expect("the refused lock")
+            .note(key, proto)
+        {
+            self.refused(why);
+        }
+    }
+
+    /// Should this box be dialled at this protocol? Not while it answered the last dial with a
+    /// refusal at the same one; again as soon as it says another number.
+    fn may_dial(&self, key: &str, proto: Option<u16>) -> bool {
+        let mut refused = self.refused.lock().expect("the refused lock");
+        if refused.still(key, proto) {
+            return false;
+        }
+        refused.forget(key);
+        true
     }
 
     fn announce_event(&self, event: PeerEvent) {
@@ -292,6 +347,7 @@ impl Peer {
                 stop: AtomicBool::new(false),
                 dropped: AtomicU64::new(0),
                 refusals: Mutex::new(Vec::new()),
+                refused: Mutex::new(Refused::default()),
             }),
         };
         peer.spawn_accept(listener);
@@ -419,7 +475,7 @@ impl Peer {
         }
         let inner = Arc::clone(&self.inner);
         std::thread::spawn(move || {
-            if let Err(e) = dial(&inner, addr) {
+            if let Err(e) = dial(&inner, addr, None) {
                 eprintln!("room: dialling {addr} failed ({e})");
             }
         });
@@ -600,6 +656,12 @@ impl Peer {
                 if peer.alive(&beacon.host) || !announce::dials(peer.host(), &beacon.host) {
                     continue;
                 }
+                // A box whose handshake failed at this protocol is not dialled again at it: the next
+                // dial gets the same sentence, and the operator was told once. Its beacon saying
+                // another number is the one thing that makes this box worth dialling again.
+                if !peer.inner.may_dial(&beacon.host, beacon.proto) {
+                    continue;
+                }
                 // One dial at a time per box: beacons arrive every two seconds, and a box that is
                 // refusing the cookie would otherwise be dialled for ever.
                 if !peer
@@ -614,7 +676,7 @@ impl Peer {
                 let inner = Arc::clone(&peer.inner);
                 let host = beacon.host.clone();
                 std::thread::spawn(move || {
-                    if let Err(e) = dial(&inner, addr) {
+                    if let Err(e) = dial(&inner, addr, Some(&host)) {
                         eprintln!("room: dialling {host} at {addr} failed ({e})");
                     }
                     inner
@@ -631,13 +693,15 @@ impl Peer {
 /// Which end of a link this is: the box that dialled, or the box that was dialled.
 enum Dialed {
     In,
-    Out(SocketAddr),
+    Out(SocketAddr, Option<String>),
 }
 
-/// Dial one box and run the link until it ends.
-fn dial(inner: &Arc<Inner>, addr: SocketAddr) -> std::io::Result<()> {
+/// Dial one box and run the link until it ends. `host` is the name its beacon gave, when a beacon
+/// is what asked for the dial: it is what the refusal names, and the address is what stops the
+/// redial.
+fn dial(inner: &Arc<Inner>, addr: SocketAddr, host: Option<&str>) -> std::io::Result<()> {
     let stream = TcpStream::connect_timeout(&addr, DIAL)?;
-    run_link(inner, stream, Dialed::Out(addr))
+    run_link(inner, stream, Dialed::Out(addr, host.map(str::to_string)))
 }
 
 /// The link's whole life: the handshake, then every frame until the far side goes.
@@ -648,7 +712,7 @@ fn run_link(inner: &Arc<Inner>, stream: TcpStream, how: Dialed) -> std::io::Resu
     let mut writer = stream.try_clone()?;
     let up = match how {
         Dialed::In => answer_handshake(inner, &mut reader, &mut writer)?,
-        Dialed::Out(addr) => dial_handshake(inner, &mut reader, &mut writer, addr)?,
+        Dialed::Out(addr, host) => dial_handshake(inner, &mut reader, &mut writer, addr, host)?,
     };
     let Some((far, addr)) = up else {
         return Ok(());
@@ -659,6 +723,27 @@ fn run_link(inner: &Arc<Inner>, stream: TcpStream, how: Dialed) -> std::io::Resu
     Ok(())
 }
 
+/// The protocol a handshake frame declares, when it declares one.
+fn frame_proto(frame: &PeerFrame) -> Option<u16> {
+    match frame {
+        PeerFrame::Hello { proto, .. }
+        | PeerFrame::Challenge { proto, .. }
+        | PeerFrame::Ready { proto, .. } => Some(*proto),
+        _ => None,
+    }
+}
+
+/// The sentence for a handshake answered with a frame this build cannot read: the far side speaks
+/// another peering protocol, and WHICH of the two is older is not knowable from here.
+fn unreadable_sentence(label: &str, said: &str) -> String {
+    format!(
+        "{label} answered this box's peering handshake with a frame this build does not know \
+         ({said}), so the two boxes speak different peering protocols and nothing was linked. This \
+         box speaks peering protocol {PEER_PROTOCOL}; upgrade the older box's letibot (the release \
+         archive, or `cargo build --release --bins` in a checkout)"
+    )
+}
+
 fn answer_handshake(
     inner: &Arc<Inner>,
     reader: &mut BufReader<TcpStream>,
@@ -666,13 +751,25 @@ fn answer_handshake(
 ) -> std::io::Result<Option<(String, SocketAddr)>> {
     let mut state = Answerer::new(&inner.host, inner.port, nonce()?);
     let mut claimed: Option<(String, u16)> = None;
+    let mut theirs: Option<u16> = None;
     loop {
-        let Some(frame) = read_frame(reader)? else {
-            return Ok(None);
+        let frame = match read_handshake_frame(reader) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Ok(None),
+            Err(said) => {
+                let key = key_of(writer, claimed.as_ref().map(|(h, _)| h.as_str()));
+                let label = claimed
+                    .as_ref()
+                    .map(|(h, _)| h.clone())
+                    .unwrap_or_else(|| key.clone());
+                inner.refused_link(&key, theirs, &unreadable_sentence(&label, &said));
+                return Ok(None);
+            }
         };
         if let PeerFrame::Hello { host, port, .. } = &frame {
             claimed = Some((host.clone(), *port));
         }
+        theirs = frame_proto(&frame).or(theirs);
         let step = state.on(&frame, &inner.cookie);
         if let Some(say) = &step.say {
             write_frame(writer, say)?;
@@ -680,7 +777,8 @@ fn answer_handshake(
         match step.outcome {
             Outcome::More => {}
             Outcome::Refused(why) => {
-                inner.refused(&why);
+                let key = key_of(writer, claimed.as_ref().map(|(h, _)| h.as_str()));
+                inner.refused_link(&key, theirs, &why);
                 return Ok(None);
             }
             Outcome::Up { .. } => {
@@ -695,18 +793,41 @@ fn answer_handshake(
     }
 }
 
+/// What stops a box being dialled again: its address, which is the one thing both the beacon and
+/// the failed handshake know. The host name is for the sentence a person reads.
+fn key_of(writer: &TcpStream, host: Option<&str>) -> String {
+    match host {
+        Some(host) => host.to_string(),
+        None => writer
+            .peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "a box with no address".to_string()),
+    }
+}
+
 fn dial_handshake(
     inner: &Arc<Inner>,
     reader: &mut BufReader<TcpStream>,
     writer: &mut TcpStream,
     addr: SocketAddr,
+    host: Option<String>,
 ) -> std::io::Result<Option<(String, SocketAddr)>> {
     let mut state = Dialer::new(&inner.host, inner.port, nonce()?);
     write_frame(writer, &state.hello())?;
+    // The key the announce loop checks is the beacon's host, so a beacon's dial keys by that and a
+    // peer an operator named keys by its address.
+    let key = host.clone().unwrap_or_else(|| addr.to_string());
+    let mut theirs: Option<u16> = None;
     loop {
-        let Some(frame) = read_frame(reader)? else {
-            return Ok(None);
+        let frame = match read_handshake_frame(reader) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Ok(None),
+            Err(said) => {
+                inner.refused_link(&key, theirs, &unreadable_sentence(&key, &said));
+                return Ok(None);
+            }
         };
+        theirs = frame_proto(&frame).or(theirs);
         let step = state.on(&frame, &inner.cookie);
         if let Some(say) = &step.say {
             write_frame(writer, say)?;
@@ -714,7 +835,7 @@ fn dial_handshake(
         match step.outcome {
             Outcome::More => {}
             Outcome::Refused(why) => {
-                inner.refused(&why);
+                inner.refused_link(&key, theirs, &why);
                 return Ok(None);
             }
             Outcome::Up { host, .. } => return Ok(Some((host, addr))),
@@ -778,6 +899,24 @@ fn write_frame(writer: &mut TcpStream, frame: &PeerFrame) -> std::io::Result<()>
     writer.flush()
 }
 
+/// One line as a frame, for a handshake: a line this build cannot read is a REFUSAL and not a skip.
+/// Before a link is up there is nothing but a handshake that could have sent it, so a frame this
+/// build does not know is the far side speaking another peering protocol - which is what an old
+/// coordinator answers a newer box with, and what used to become a dial every two seconds.
+fn read_handshake_frame(reader: &mut BufReader<TcpStream>) -> Result<Option<PeerFrame>, String> {
+    let mut line = String::new();
+    let n = reader
+        .read_line(&mut line)
+        .map_err(|e| format!("reading the handshake failed ({e})"))?;
+    if n == 0 {
+        return Ok(None);
+    }
+    match PeerFrame::of(line.trim_end()) {
+        Some(frame) => Ok(Some(frame)),
+        None => Err(line.trim_end().chars().take(80).collect()),
+    }
+}
+
 /// One line as a frame. `Ok(None)` is a clean end; a line this build does not know is said and
 /// skipped, because [`PeerFrame::of`]'s own rule is that an unknown word is a newer peer's and a
 /// link that failed to read one line keeps reading.
@@ -818,5 +957,29 @@ mod tests {
         let quiet = cfg.clone().without_announce().with_port(47100);
         assert!(!quiet.announce);
         assert_eq!(quiet.port, 47100);
+    }
+
+    /// A peer this box gave up on is dialled again only when it says ANOTHER protocol: the answer a
+    /// redial gets is the same sentence, and the loop it caused was thousands of them.
+    #[test]
+    fn a_refused_peer_is_not_dialled_at_the_protocol_it_refused_at() {
+        let mut refused = Refused::default();
+        assert!(!refused.still("mac1", None), "nothing was refused yet");
+        assert!(refused.note("mac1", Some(4)), "the first refusal is news");
+        assert!(
+            !refused.note("mac1", Some(4)),
+            "the same box at the same protocol is not"
+        );
+        assert!(refused.still("mac1", Some(4)), "so it is not dialled at 4");
+        assert!(
+            !refused.still("mac1", Some(5)),
+            "another protocol is another question"
+        );
+        assert!(refused.note("mac1", Some(5)), "and a new sentence");
+        // A box that said nothing (a build older than the beacon's field) is a number of its own.
+        let mut silent = Refused::default();
+        assert!(silent.note("mac2", None));
+        assert!(silent.still("mac2", None));
+        assert!(!silent.still("mac2", Some(PEER_PROTOCOL)));
     }
 }

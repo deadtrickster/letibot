@@ -316,6 +316,71 @@ fn a_box_that_does_not_know_the_cookie_is_refused_by_its_name() {
     let _ = std::fs::remove_dir_all(small);
 }
 
+/// An old coordinator answers a newer box's handshake with a frame this build cannot read. That is
+/// a protocol the two do not share, so it is refused ONCE - with what to upgrade in the sentence -
+/// and the same word is not said again. Without this the link was made, refused, and made again
+/// every two seconds, and nobody was told.
+#[test]
+fn a_box_speaking_another_protocol_is_refused_once_and_says_so_once() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    let dir = scratch("old-protocol");
+    // An old build: it reads a line and answers with a word this one never wrote.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("the old box listens");
+    let old = listener.local_addr().expect("an address");
+    let answers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&answers);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut writer = stream.try_clone().expect("a writer");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            // The old side's own kind of answer: a frame the newer box does not know.
+            let _ = writeln!(
+                writer,
+                "{{\"type\":\"nope\",\"why\":\"a frame this build does not read\"}}"
+            );
+        }
+    });
+
+    let (peer, _events) = Peer::open(
+        PeerConfig::new("lab1", Cookie::of(COOKIE))
+            .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_tick(Tick::new(60, 4))
+            .without_announce(),
+    )
+    .expect("a peer");
+    peer.connect_at(old);
+    wait_until("the old box's refusal to be recorded", || {
+        !peer.refusals().is_empty()
+    });
+    // The sentence says which protocol this box speaks and what a person can do about it.
+    let said = peer.refusals();
+    let one = &said[0];
+    assert!(one.contains("peering protocol"), "{said:?}");
+    assert!(one.contains("upgrade"), "{said:?}");
+    assert!(!peer.alive("lab1"), "the old box linked anyway");
+
+    // A second dial is a second connection and NOT a second sentence: the refusal is one fact.
+    let first = answers.load(std::sync::atomic::Ordering::SeqCst);
+    peer.connect_at(old);
+    wait_until("the second dial to be answered", || {
+        answers.load(std::sync::atomic::Ordering::SeqCst) > first
+    });
+    assert_eq!(
+        peer.refusals().len(),
+        1,
+        "the same box at the same protocol was said twice: {:?}",
+        peer.refusals()
+    );
+    peer.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_cookie_at_another_mode_is_refused_by_name_and_no_peer_is_made() {
     let dir = scratch("cookie-mode");
