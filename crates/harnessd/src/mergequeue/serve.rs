@@ -1678,7 +1678,17 @@ impl RepoQueue {
         // the same worktree and branch, but the decision is about commits *on a target*, so two rows
         // naming one tree and different targets are two questions.
         let mut decided: HashMap<(String, String, String), Settled> = HashMap::new();
-        let heads = letibot_tools::git::ref_heads(&self.repo);
+        // **The branch heads are read only when a row will be asked about them.** The sweep used to
+        // spawn `git for-each-ref` over every `refs/heads` on every pass — the idle daemon's
+        // remaining spin, measured at ~13 spawns/s before `default_target` was cached and this
+        // was the next in line. A pass with no terminal row holding a worktree has nobody to ask,
+        // and the map is `None` until somebody is.
+        let asks_about_a_tree = merges
+            .iter()
+            .any(|m| !m.state.is_open() && m.worktree.is_some());
+        let heads = asks_about_a_tree
+            .then(|| letibot_tools::git::ref_heads(&self.repo))
+            .unwrap_or_default();
         for m in &merges {
             if m.state.is_open() || m.worktree.is_none() {
                 continue;
