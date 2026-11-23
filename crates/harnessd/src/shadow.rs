@@ -8,6 +8,8 @@ pub mod during;
 pub mod feed;
 pub mod guard;
 pub mod judge;
+/// The permission ask as it shipped before the split, frozen for `--shadow-arm`.
+pub mod legacy;
 pub mod oracle;
 pub mod permission;
 pub mod prompts;

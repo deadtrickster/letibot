@@ -1,6 +1,11 @@
 //! Replaying the corpus against the guard, which is how an oracle's scope stops being a grant and
 //! becomes a measurement: widening an [`letibot_tools::authorise::OracleScope`] is a configuration
 //! change with a measurement attached.
+//!
+//! [`shadow`] is the same corpus through the SHADOW's permission ask instead: the prompt and the
+//! brief it is shown, before and after a change to either.
+
+pub mod shadow;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -267,107 +272,17 @@ pub fn replay_rows(
     answered.reverse();
     let mut answered_before: Vec<letibot_tools::authorise::DecisionExample> = Vec::new();
     for row in answered {
-        let Some(acc) = access.get(row.tool.as_str()).copied() else {
-            report.skipped.push((
-                row.request_id.clone(),
-                format!("`{}` is not a tool this build seats", row.tool),
-            ));
-            continue;
-        };
-        let args: serde_json::Value = match serde_json::from_str(&row.arguments_json) {
-            Ok(v) => v,
-            Err(e) => {
-                report
-                    .skipped
-                    .push((row.request_id.clone(), format!("arguments: {e}")));
-                continue;
-            }
-        };
-        let trail: AuthorisationTrail = match serde_json::from_str(&row.trail_json) {
-            Ok(t) => t,
-            Err(e) => {
-                report
-                    .skipped
-                    .push((row.request_id.clone(), format!("trail: {e}")));
-                continue;
-            }
-        };
-        // The session's own tree, because a region is relative to one. A row whose
-        // session has left the store is skipped rather than measured against this
-        // daemon's workspace, which would classify its paths as somebody else's.
-        let workspace = match db.session(&row.session_id) {
-            Ok(Some(s)) if !s.workspace_root.is_empty() => s.workspace_root,
-            _ => {
-                report.skipped.push((
-                    row.request_id.clone(),
-                    "the session's workspace is not in this store, so its paths \
-                     cannot be placed"
-                        .into(),
-                ));
-                continue;
-            }
-        };
-        let mode = letibot_tools::mode::Mode::parse(&row.mode).unwrap_or(cfg.mode);
-
-        // The surroundings a real session declares. Without them the shell is
-        // `ShellTrust::Unknown`, under which a bare command name does not resolve - and an
-        // unresolved reading is a worse measurement
-        let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
-            "replaying a command that already ran in a session whose exec backend spawns /bin/sh -c with the environment cleared and PATH fixed at seat time",
-        );
-        let mut gate = AdjudicatedGate::closed()
-            .with_mode(mode)
-            .with_surroundings(sur)
-            .with_trail_source({
-                let trail = trail.clone();
-                move |_call: &GateCall<'_>| trail.clone()
-            });
-        let mut req = gate.request_for(&GateCall {
-            // A replay of recorded rows: the scripts those commands ran are not
-            // on this disk, and reading whatever is at the path today would show
-            // the oracle a file the original call never saw.
-            scripts: &[],
-            preview: &[],
-            name: &row.tool,
+        let Prepared {
+            req,
+            args,
             access: acc,
-            args: &args,
-            turn_id: &row.turn_id,
-            call_id: &row.request_id,
-            workspace: &workspace,
-            target_exists: None,
-        });
-        // The examples the guard would have had AT THIS POINT, and not one answer later. A live
-        // gate builds these from its own audit log; a replay opens a fresh gate per row, so
-        // without this the brief carries none.
-        req.examples = answered_before.clone();
-        answered_before.insert(
-            0,
-            letibot_tools::authorise::DecisionExample {
-                action: req.baseline.clone(),
-                verdict: if row.effect == "admit" {
-                    "allowed"
-                } else {
-                    "refused"
-                },
-                turns_ago: None,
-            },
-        );
-        answered_before.truncate(6);
-
-        // The arm being measured. One row, one question wording, one decision
-        // about whether the operator's own answers are in front of the guard - so a
-        // difference in the table below belongs to exactly one change.
-        req.brief_variant = arm.variant;
-        if !arm.examples {
-            req.examples.clear();
-        }
-        // The agent's own sentence for the round this call came from. Recovered from the
-        // transcript rather than the corpus, which does not store it: the assistant item
-        // immediately before this decision is the prose a model puts in front of its tool calls.
-        req.agent_claim = if arm.claim {
-            claim_before(&db, &row.session_id, row.decided_ms)
-        } else {
-            None
+            workspace,
+        } = match request_of(&db, &row, &mut answered_before, arm, &access, cfg.mode) {
+            Ok(p) => p,
+            Err(why) => {
+                report.skipped.push((row.request_id.clone(), why));
+                continue;
+            }
         };
         let started = std::time::Instant::now();
         let _ = adjudicator.decide(&req);
@@ -412,6 +327,117 @@ pub fn replay_rows(
         report.rows.push(r);
     }
     Ok(report)
+}
+
+/// A stored row as the gate would have asked it: the request, plus the facts a replay still
+/// needs after it (`req_intents` reads all three).
+struct Prepared {
+    req: letibot_tools::AdjudicationRequest,
+    args: serde_json::Value,
+    access: Access,
+    workspace: String,
+}
+
+/// Build one stored row's request. `Err` is why the row cannot be replayed.
+///
+/// One body for both measurements - the brief arms and `--shadow-arm`'s - because two copies of
+/// this setup would drift and the two tables would stop describing the same calls.
+fn request_of(
+    db: &Store,
+    row: &StoredAdjudication,
+    answered_before: &mut Vec<letibot_tools::authorise::DecisionExample>,
+    arm: Arm,
+    access: &BTreeMap<&'static str, Access>,
+    // The mode a row that names none is replayed under.
+    fallback_mode: letibot_tools::mode::Mode,
+) -> Result<Prepared, String> {
+    let Some(acc) = access.get(row.tool.as_str()).copied() else {
+        return Err(format!("`{}` is not a tool this build seats", row.tool));
+    };
+    let args: serde_json::Value =
+        serde_json::from_str(&row.arguments_json).map_err(|e| format!("arguments: {e}"))?;
+    let trail: AuthorisationTrail =
+        serde_json::from_str(&row.trail_json).map_err(|e| format!("trail: {e}"))?;
+    // The session's own tree, because a region is relative to one. A row whose
+    // session has left the store is skipped rather than measured against this
+    // daemon's workspace, which would classify its paths as somebody else's.
+    let workspace = match db.session(&row.session_id) {
+        Ok(Some(s)) if !s.workspace_root.is_empty() => s.workspace_root,
+        _ => {
+            return Err(
+                "the session's workspace is not in this store, so its paths \
+                        cannot be placed"
+                    .into(),
+            );
+        }
+    };
+    let mode = letibot_tools::mode::Mode::parse(&row.mode).unwrap_or(fallback_mode);
+    // The surroundings a real session declares. Without them the shell is
+    // `ShellTrust::Unknown`, under which a bare command name does not resolve - and an
+    // unresolved reading is a worse measurement
+    let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
+        "replaying a command that already ran in a session whose exec backend spawns /bin/sh -c with the environment cleared and PATH fixed at seat time",
+    );
+    let mut gate = AdjudicatedGate::closed()
+        .with_mode(mode)
+        .with_surroundings(sur)
+        .with_trail_source({
+            let trail = trail.clone();
+            move |_call: &GateCall<'_>| trail.clone()
+        });
+    let mut req = gate.request_for(&GateCall {
+        // A replay of recorded rows: the scripts those commands ran are not
+        // on this disk, and reading whatever is at the path today would show
+        // the oracle a file the original call never saw.
+        scripts: &[],
+        preview: &[],
+        name: &row.tool,
+        access: acc,
+        args: &args,
+        turn_id: &row.turn_id,
+        call_id: &row.request_id,
+        workspace: &workspace,
+        target_exists: None,
+    });
+    // The examples the guard would have had AT THIS POINT, and not one answer later. A live
+    // gate builds these from its own audit log; a replay opens a fresh gate per row, so
+    // without this the brief carries none.
+    req.examples = answered_before.clone();
+    answered_before.insert(
+        0,
+        letibot_tools::authorise::DecisionExample {
+            action: req.baseline.clone(),
+            verdict: if row.effect == "admit" {
+                "allowed"
+            } else {
+                "refused"
+            },
+            turns_ago: None,
+        },
+    );
+    answered_before.truncate(6);
+
+    // The arm being measured. One row, one question wording, one decision
+    // about whether the operator's own answers are in front of the guard - so a
+    // difference in the table below belongs to exactly one change.
+    req.brief_variant = arm.variant;
+    if !arm.examples {
+        req.examples.clear();
+    }
+    // The agent's own sentence for the round this call came from. Recovered from the
+    // transcript rather than the corpus, which does not store it: the assistant item
+    // immediately before this decision is the prose a model puts in front of its tool calls.
+    req.agent_claim = if arm.claim {
+        claim_before(db, &row.session_id, row.decided_ms)
+    } else {
+        None
+    };
+    Ok(Prepared {
+        req,
+        args,
+        access: acc,
+        workspace,
+    })
 }
 
 /// The agent's own prose for the round a decision came from. The corpus does not store it

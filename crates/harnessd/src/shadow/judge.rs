@@ -212,9 +212,19 @@ pub fn build(
     providers_file: Option<&std::path::Path>,
     local: &Endpoint,
 ) -> Result<Arc<dyn Judge>, String> {
+    build_timed(spelling, providers_file, local, job.deadline())
+}
+
+/// [`build`] with a deadline of the caller's choosing: `--shadow-arm` measures a job whose live
+/// budget is 2.5 s, and a measured call has no turn behind it to protect.
+pub fn build_timed(
+    spelling: &str,
+    providers_file: Option<&std::path::Path>,
+    local: &Endpoint,
+    deadline: std::time::Duration,
+) -> Result<Arc<dyn Judge>, String> {
     let m = crate::harness::subagent_model_in(providers_file, spelling, None)
         .map_err(|lines| lines.join("; "))?;
-    let deadline = job.deadline();
     if let Some(pc) = m.provider {
         let notes: letibot_provider::openai::Notes = Arc::new(|_| {});
         let deadlines = crate::leticode_config::Deadlines {

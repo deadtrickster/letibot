@@ -556,6 +556,18 @@ pub(super) const FLAGS: &[Flag] = &[
         "the same, and record it where the daemon reads it at startup",
         None,
     ),
+    flag(
+        &["--shadow-arm"],
+        Some("MODEL"),
+        "the same rows through the shadow's ask, before vs after",
+        None,
+    ),
+    flag(
+        &["--limit"],
+        Some("N"),
+        "read at most N answered calls, for the replays below",
+        None,
+    ),
     // --- what every program has ---------------------------------------------------------
     flag(
         &["-h", "--help"],

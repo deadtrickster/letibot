@@ -45,7 +45,12 @@ Nothing lands on a claim. Two instruments:
 1. **The store** - the adjudication rows in `~/.local/share/letibot/sessions.db`. `harnessd --calibrate`
    replays them through the guard, `--compare` runs every prompt arm over the same rows, and
    `--show-brief` prints the bytes the guard was handed. This is the in-distribution held-out set and is
-   never trained on.
+   never trained on. The shadow's ask is a different brief and a different prompt, so it has its own
+   arm: `harnessd --store <path> --shadow-arm deepseek/deepseek-flash --limit 300` replays the same rows
+   through the shadow's permission path twice - the composition as it shipped before a change and the
+   one in the tree - and prints, per arm, allow/ask/void/failed counts, agreement with the operator's
+   own answer, the void reasons, and the median and p90 of prompt size and latency. `--limit` caps the
+   run; `FALSE ALLOWS` is the column a change must not raise.
 2. **The etalon** (§7) - every tool call in every conversation on this box (Claude Code, opencode,
    letibot), each with the operator's preceding message and whether it ran or was refused.
    `harnessd --etalon <jsonl>`, `--etalon-oracle`, `--etalon-map` and `scripts/etalon-extract.py` are the

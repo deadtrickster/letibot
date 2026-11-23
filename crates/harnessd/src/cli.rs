@@ -571,6 +571,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     let mut query: Option<Query> = None;
     let mut tsv = false;
+    // How many answered calls a replay reads. A corpus on a working box is thousands of rows and a
+    // model arm is one call per row, so a measurement needs a cap it can be trusted to finish
+    // inside: `--limit 300` is a sample, and the table says how many rows it actually is.
+    let mut limit: usize = REPLAY_LIMIT;
     // Which sessions a listing shows, by archive state: `--archived` puts the ones out of sight back
     // in the list, `--archived-only` asks for them and nothing else. Read after the loop, because
     // the flags may come on either side of `--list-sessions`.
@@ -692,6 +696,26 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--backfill-shapes-write" => query = Some(Query::Backfill { write: true }),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
+            // The same rows, through the SHADOW's permission ask instead of the guard: one prompt
+            // and a full brief against two prompts and the slim one. See `crate::calibrate::shadow`.
+            "--shadow-arm" => {
+                let model = next()?;
+                if model.trim().is_empty() {
+                    return Err(
+                        "--shadow-arm needs the model the shadow runs on, as `/models` \
+                                spells one (`deepseek/deepseek-flash`)"
+                            .into(),
+                    );
+                }
+                query = Some(Query::ShadowArm { model });
+            }
+            // How many answered calls `--compare`, `--calibrate` and `--shadow-arm` read.
+            "--limit" => {
+                limit = next()?.parse().map_err(|e| format!("--limit: {e}"))?;
+                if limit == 0 {
+                    return Err("--limit 0 would replay nothing; leave it off for every row".into());
+                }
+            }
             // An empty scope is a missing argument, not "everywhere".
             // `Path::new("/anything").starts_with("")` is true in Rust, so an empty `--scope` matched
             // every session in the store and `--continue` handed back the newest one on the box - the
@@ -1112,7 +1136,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // Before the vocabulary, before the socket, before the model. See the module
     // header for why that ordering is load-bearing rather than tidy.
     if let Some(q) = query {
-        return run_query(&cfg, q, scope.as_deref(), tsv, show_archived);
+        return run_query(&cfg, q, scope.as_deref(), tsv, show_archived, limit);
     }
 
     // A bad `[provider.NAME]` entry refuses the daemon by name, before a turn finds it.
@@ -2439,6 +2463,10 @@ fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
     }
 }
 
+/// How many operator-answered calls a replay reads unless `--limit` says otherwise. Every arm is
+/// one model call per row, so this is a ceiling on a run nobody meant to be unbounded.
+const REPLAY_LIMIT: usize = 10_000;
+
 /// What a store query was asked for.
 enum Query {
     List,
@@ -2469,6 +2497,11 @@ enum Query {
     EtalonMap(PathBuf, PathBuf),
     RepairPrefixes,
     Compare,
+    /// The same rows through the shadow's permission ask, before and after the split, on the model
+    /// the shadow runs on.
+    ShadowArm {
+        model: String,
+    },
     ShowBrief,
     /// What Claude Code has under `~/.claude/projects` (Package H).
     ListClaude,
@@ -2563,6 +2596,7 @@ fn run_query(
     scope: Option<&std::path::Path>,
     tsv: bool,
     show_archived: letibot_tokencore::store::Archived,
+    limit: usize,
 ) -> Result<i32, String> {
     // The three Claude Code verbs that need no store of ours, answered before `--store` is
     // required - so `--list-claude` works on a box whose daemon has never started, and
@@ -2669,7 +2703,7 @@ fn run_query(
         }
         Query::ShowBrief => {
             drop(store);
-            let r = crate::calibrate::replay(cfg, path, 10_000)?;
+            let r = crate::calibrate::replay(cfg, path, limit)?;
             let pick = r
                 .rows
                 .iter()
@@ -2699,7 +2733,7 @@ fn run_query(
                 "arm", "agreed", "asks", "FALSE ALLOWS"
             );
             // One snapshot, every arm. The store is live.
-            let rows = crate::calibrate::rows_to_replay(path, 10_000)?;
+            let rows = crate::calibrate::rows_to_replay(path, limit)?;
             for arm in crate::calibrate::ARMS {
                 let r = crate::calibrate::replay_rows(cfg, path, rows.clone(), *arm)?;
                 let agreed = r.rows.iter().filter(|x| x.is_saved_prompt()).count();
@@ -2716,6 +2750,28 @@ fn run_query(
                  still have come to you. FALSE ALLOWS: times it would have admitted \
                  what you refused — the only column that is a fault, and the one a \
                  wording change must not raise."
+            );
+            Ok(0)
+        }
+        Query::ShadowArm { model } => {
+            drop(store);
+            println!(
+                "replaying the same operator-answered calls through the shadow's permission \
+                 ask, twice: the prompt and the brief it had, and the ones it has.\n"
+            );
+            // One snapshot, both arms: the store is live, and two arms that read it separately
+            // would not be describing the same calls.
+            let rows = crate::calibrate::rows_to_replay(path, limit)?;
+            println!("  {} answered call(s) in the sample\n", rows.len());
+            for arm in crate::calibrate::shadow::ARMS {
+                let r = crate::calibrate::shadow::replay(cfg, path, rows.clone(), &model, *arm)?;
+                print!("{}", r.render());
+                println!();
+            }
+            println!(
+                "a smaller ask is an improvement only if FALSE ALLOWS does not rise and \
+                 agreement does not fall: a prompt a model skims is a prompt it answers with \
+                 an empty string, and that is a void, not an ask."
             );
             Ok(0)
         }
@@ -2780,7 +2836,7 @@ fn run_query(
             // The store handle above is dropped before the replay opens the same file: both are
             // the process's one connection, so the drop gives back a handle and not a descriptor.
             drop(store);
-            let report = crate::calibrate::replay(cfg, path, 10_000)?;
+            let report = crate::calibrate::replay(cfg, path, limit)?;
             print!("{}", report.render());
             match (write, report.earned_scope()) {
                 (true, Some(scope)) => {
