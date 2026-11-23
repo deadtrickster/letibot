@@ -280,11 +280,49 @@ of 27` is a different fact from `showing 3`), and the rewritten query when Brave
 something else. A missing key refuses **at attach**, naming all three places. Fetched text is
 untrusted, and the tool result says so.
 
-## 7. sudo: the password comes from the head, never a tty
+## 7. Secrets: the value comes from the head, never a tty, and never the conversation
 
-A `sudo …` from a letibot shell does not reach for a terminal (there is none). The command is
-privilege escalation, so it asks the operator first like anything on the always-ask list; once
-admitted, `sudo` runs through a shim that adds `-A`, `letibot-askpass` asks the daemon, and the
-head shows a masked field naming the command. Type the password there - it goes to `sudo` and
-nowhere else: not the log, not the transcript, not the model. Two minutes, Esc refuses. `sudo
--n` is untouched, so a probe still answers *no*.
+**One helper, four names.** `letibot-secret ask --for "…"` blocks, raises a masked card at the
+head, prints the value on stdout and exits 0; a refusal or a deadline is exit 1 with a sentence
+on stderr and an empty stdout. The same binary is what `SUDO_ASKPASS`, `SSH_ASKPASS` and
+`GIT_ASKPASS` point at (as `letibot-askpass`), so `sudo`, `ssh` password/passphrase prompts and
+`git` credential prompts all become cards with no tty and no change to the program.
+
+```sh
+letibot-secret ask --for "the deploy token"                 # this command only
+letibot-secret ask --for "sudo on lubuntu1-3" --key fleet-sudo --keep 15m
+secret GITHUB_TOKEN 'pushing the release branch'            # the shim on a session's PATH
+```
+
+`--key` + `--keep` is what makes a value reusable: the daemon may hold it **in its own memory**
+for the window (an hour is the most), scoped to this session tree, so the next ask with the same
+key is answered without a card. The person decides on the card - Enter is *this command only*,
+alt-k is *keep it N min* - and two asks for the same key at once are ONE card that says how many
+commands it settles. Nothing is ever written to disk or to the store, and the value joins the
+session's output masking the moment it is given, so a command that echoes it prints `****`.
+
+**A local `sudo`** needs nothing: the shim on `PATH` adds `-A`. `sudo -n` is untouched, so a
+probe still answers *no*.
+
+**A remote host, pattern A - works on any host.** The secret is produced here and piped into the
+program there:
+
+```sh
+letibot-secret ask --for "sudo on lubuntu1-3" --key fleet-sudo --keep 15m \
+  | ssh lubuntu1 'sudo -S -p "" apt-get -y upgrade'
+```
+
+`sudo -S` reads the password from stdin and `-p ""` keeps sudo from writing a prompt; the secret
+stage runs here, so the remote host needs nothing installed. The command is privilege escalation
+because of the `sudo` in the operand, and the harness's classifier reads that operand.
+
+**A remote host, pattern B - for a session whose tools run there** (`hosts.toml` placement):
+letibot forwards its askpass-only socket back over the connection it already has
+(`ssh -R` to `<head>-ask.sock`), installs the `sudo` shim and the helper in the session's remote
+directory, and exports `SUDO_ASKPASS`/`SSH_ASKPASS`/`GIT_ASKPASS` there. Plain `sudo` on that
+host then asks this head. Only the askpass door is forwarded: that socket answers one frame and
+hands out no seat.
+
+Either way the value goes to the program and nowhere else - not the log, not the transcript, not
+the tool result, not the model. A password is asked for 120 seconds, Esc puts the card away
+without refusing, ctrl-c refuses.
