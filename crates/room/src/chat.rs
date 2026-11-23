@@ -28,6 +28,10 @@ pub const MAX_READ: usize = 200;
 /// How many lines one away box's queue keeps, per host. Past it the oldest goes and the drop is
 /// said: the room's log still holds the line, so what an overflow costs is the crossing.
 pub const MAX_HELD: usize = 64;
+/// How long a peer box's seats stay addressees after its last announcement. The mesh holds them in
+/// memory only, so this is the store a restart reads; past it a box that never came back is
+/// forgotten rather than left as a name anything can be sent to.
+pub const PEER_SEAT_KEEP_MS: u64 = 14 * 24 * 60 * 60 * 1000;
 /// Request ids remembered so a repeated `say` is answered, not appended twice.
 const REPLAY: usize = 256;
 /// The size a log segment grows to before the next append starts a new one. A segment is never
@@ -1383,6 +1387,13 @@ enum Record {
         host: String,
         up_to: u64,
     },
+    /// What a peer box last said its seats were, and when it said so. The mesh that holds them is
+    /// memory only, so this is what makes an id it announced an addressee after a restart.
+    Peer {
+        host: String,
+        seats: Vec<crate::peer::SeatProfile>,
+        at: u64,
+    },
 }
 
 /// The log chat is kept in. The file the caller named is its first segment; the state sits beside
@@ -1465,6 +1476,17 @@ pub struct Chat {
     /// Lines this box keeps for a box that is away, by that box's host, in the order they were
     /// said: the promise `pending` makes for a principal with no connection, kept for a whole box.
     held: BTreeMap<String, VecDeque<Message>>,
+    /// The seats each peer box last announced, by its host: the mesh a restart has no memory of.
+    peers: BTreeMap<String, PeerSeats>,
+}
+
+/// What one peer box last said its seats were, and when: the whole list it announced, so a seat it
+/// stopped announcing is gone rather than remembered beside the others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSeats {
+    pub seats: Vec<crate::peer::SeatProfile>,
+    /// When it announced them, on this box's clock.
+    pub at: u64,
 }
 
 /// The key a stored cursor or seen mark is filed under. A session id (`s-...`) is its seat's, so a
@@ -1603,6 +1625,7 @@ impl Chat {
                     self.held.remove(&host);
                 }
             }
+            Record::Peer { host, seats, at } => self.put_peer(&host, seats, at),
         }
     }
 
@@ -1854,6 +1877,13 @@ impl Chat {
                     message: message.clone(),
                 });
             }
+        }
+        for (host, known) in &self.peers {
+            records.push(Record::Peer {
+                host: host.clone(),
+                seats: known.seats.clone(),
+                at: known.at,
+            });
         }
         let mut buf = String::new();
         for r in &records {
@@ -2801,6 +2831,58 @@ impl Chat {
             host: host.to_string(),
             up_to,
         }]);
+    }
+
+    /// Take on what a peer box announced, and keep it: the set it named REPLACES the one before,
+    /// so a seat it no longer announces stops being an addressee here. In the chat store, because
+    /// the mesh the seats came from does not outlive the coordinator.
+    pub fn peer_announced(&mut self, host: &str, seats: &[crate::peer::SeatProfile], now: u64) {
+        // An announcement is when a box shows it is still there, so it is the moment the boxes that
+        // are not can be forgotten: the store shrinks with the next state rewrite.
+        self.forget_stale_peers(now);
+        self.put_peer(host, seats.to_vec(), now);
+        self.write(&[Record::Peer {
+            host: host.to_string(),
+            seats: seats.to_vec(),
+            at: now,
+        }]);
+    }
+
+    /// Is `id` a seat a peer box announced within [`PEER_SEAT_KEEP_MS`]? A box this one never
+    /// heard of, and one that has been away longer than the bound, are neither of them addressees.
+    pub fn remembers_seat(&self, id: &str, now: u64) -> bool {
+        let Some((host, _)) = id.split_once('/') else {
+            return false;
+        };
+        let Some(known) = self.peers.get(host) else {
+            return false;
+        };
+        now.saturating_sub(known.at) <= PEER_SEAT_KEEP_MS && known.seats.iter().any(|s| s.id == id)
+    }
+
+    /// What `host` last said its seats were, for a pane or a test.
+    pub fn peer_seats(&self, host: &str) -> Option<PeerSeats> {
+        self.peers.get(host).cloned()
+    }
+
+    /// The store's half of an announcement: no write, because a replay is not a change.
+    fn put_peer(&mut self, host: &str, seats: Vec<crate::peer::SeatProfile>, at: u64) {
+        self.peers.insert(host.to_string(), PeerSeats { seats, at });
+    }
+
+    /// Drop every box that has been away longer than [`PEER_SEAT_KEEP_MS`]. Memory only, and the
+    /// next write of the state file is what stops the store growing with boxes that never return.
+    pub fn forget_stale_peers(&mut self, now: u64) -> Vec<String> {
+        let stale: Vec<String> = self
+            .peers
+            .iter()
+            .filter(|(_, known)| now.saturating_sub(known.at) > PEER_SEAT_KEEP_MS)
+            .map(|(host, _)| host.clone())
+            .collect();
+        for host in &stale {
+            self.peers.remove(host);
+        }
+        stale
     }
 
     /// One row per box this one owes lines to, with how many: what a banner or a test reads.

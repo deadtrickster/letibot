@@ -558,13 +558,26 @@ impl Server {
     }
 
     /// Is `id` a seat of a box this one KNOWS of - linked now, or away with its seats still in the
-    /// mesh? An away box keeps its seats, so a line for one is accepted and held rather than
-    /// refused; a box this one has never heard of, and a seat such a box never announced, are both
-    /// still nobody.
+    /// mesh, or away since before this coordinator started? An away box keeps its seats, so a line
+    /// for one is accepted and held rather than refused; a box this one has never heard of, and a
+    /// seat such a box never announced, are both still nobody.
     fn peer_holds(&self, id: &crate::SeatId) -> bool {
         let seat = id.to_string();
-        self.peer()
-            .is_some_and(|p| p.seats_with_state().iter().any(|(s, _)| s.id == seat))
+        // A box with no cookie has no mesh, and nothing of it is elsewhere: an id this one cannot
+        // reach is nobody, whatever a store written by an older configuration still says.
+        let Some(peer) = self.peer() else {
+            return false;
+        };
+        if peer.seats_with_state().iter().any(|(s, _)| s.id == seat) {
+            return true;
+        }
+        // The mesh lives in memory, so a restart empties it. What each box announced is in the chat
+        // store, and that is what a dm to a sleeping laptop's seat is answered from.
+        self.inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .remembers_seat(&seat, now_ms())
     }
 
     /// What the mesh learned, done to the room. A refusal is said on the log rather than to the far
@@ -581,10 +594,24 @@ impl Server {
                 self.ship_held(&host);
             }
             PeerEvent::Down { why, .. } => eprintln!("room: {why}"),
-            PeerEvent::Profiles { seats, .. } => self.introduce(&seats),
+            PeerEvent::Profiles { host, seats } => {
+                // Kept before it is acted on: an id in this list stays an addressee after a restart.
+                self.remember_seats(&host, &seats);
+                self.introduce(&seats)
+            }
             PeerEvent::Message(message) => self.accept_remote(*message),
             PeerEvent::Consents(rows) => self.learn_consents(rows),
         }
+    }
+
+    /// Keep what a linked box said its seats are, in the room's own store: the mesh that holds them
+    /// is memory only, and the seats are what a dm to that box is accepted by once it is away.
+    fn remember_seats(&self, host: &str, seats: &[SeatProfile]) {
+        self.inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .peer_announced(host, seats, now_ms());
     }
 
     /// A peer seat whose repository is one of this box's lands in that project's room, once: the

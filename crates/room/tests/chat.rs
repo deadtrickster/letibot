@@ -2073,3 +2073,70 @@ fn the_lines_kept_for_an_away_box_outlive_a_restart() {
     );
     assert_eq!(last.held_for("lab2")[0].seq, seqs[1]);
 }
+
+/// One seat of `lab2`, on branch `s-<branch>`: what a box announces and a dm is addressed to.
+fn a_peer_seat(branch: &str) -> letibot_room::peer::SeatProfile {
+    let identity = letibot_room::peer::RepoIdentity::of(
+        "/w/letibot",
+        "git@github.com:deadtrickster/letibot.git",
+    );
+    let mut seat = letibot_room::peer::SeatProfile::new(
+        format!("lab2/s-{branch}"),
+        &identity,
+        "main",
+        "provider fixes",
+    );
+    seat.label = "letibot".to_string();
+    seat
+}
+
+/// What a box announced is room state, not a field of a coordinator: a restart still knows the
+/// seats, a later announcement REPLACES the list, and a box away longer than the bound is nobody.
+#[test]
+fn the_seats_a_peer_announced_outlive_a_restart_and_are_bounded() {
+    use letibot_room::chat::{Chat, PEER_SEAT_KEEP_MS};
+    let dir = Scratch::new();
+    let path = dir.0.join("room.chat");
+    let mut chat = Chat::open(&path);
+    let (one, two) = (a_peer_seat("b1"), a_peer_seat("b2"));
+    chat.peer_announced("lab2", &[one.clone(), two.clone()], 1_000);
+    assert!(chat.remembers_seat("lab2/s-b1", 1_000));
+    assert!(!chat.remembers_seat("lab3/s-b1", 1_000), "never announced");
+    drop(chat);
+
+    // A restart reads them back, with the time the box said them.
+    let mut again = Chat::open(&path);
+    assert_eq!(
+        again.peer_seats("lab2").map(|k| (k.seats.len(), k.at)),
+        Some((2, 1_000)),
+        "the announcement is the store's, not a field a new process starts empty"
+    );
+    assert!(again.remembers_seat("lab2/s-b2", 1_000));
+
+    // The next announcement is the whole truth: a seat the box no longer names is nobody.
+    again.peer_announced("lab2", std::slice::from_ref(&one), 2_000);
+    assert!(again.remembers_seat("lab2/s-b1", 2_000));
+    assert!(
+        !again.remembers_seat("lab2/s-b2", 2_000),
+        "dropped by the box"
+    );
+    drop(again);
+    let after_drop = Chat::open(&path);
+    assert!(
+        !after_drop.remembers_seat("lab2/s-b2", 2_000),
+        "and stays gone"
+    );
+
+    // The bound: a box not heard from within the keep time is forgotten, not held for ever.
+    assert!(after_drop.remembers_seat("lab2/s-b1", 2_000 + PEER_SEAT_KEEP_MS));
+    assert!(!after_drop.remembers_seat("lab2/s-b1", 2_001 + PEER_SEAT_KEEP_MS));
+    let mut stale = after_drop;
+    assert_eq!(
+        stale.forget_stale_peers(2_001 + PEER_SEAT_KEEP_MS),
+        vec!["lab2".to_string()]
+    );
+    assert!(
+        stale.peer_seats("lab2").is_none(),
+        "forgotten, not just aged"
+    );
+}

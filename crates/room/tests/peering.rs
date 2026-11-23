@@ -1015,3 +1015,135 @@ fn an_away_boxs_queue_drops_the_oldest_past_its_bound() {
         "an overflowed line was sent too"
     );
 }
+
+/// One box's coordinator in `dir`, with a chat store beside its socket and a peer on loopback: what
+/// a RESTART of that box reads, and what a peer's announced seats must outlive.
+fn a_box_in(dir: &std::path::Path, host: &str) -> (Server, Peer) {
+    let server = Server::serve(&dir.join("room.sock"), Room::new()).expect("a room");
+    server.with_seat_host(host);
+    server.with_chat_store(&dir.join("room.chat"));
+    let (peer, events) = Peer::open(
+        PeerConfig::new(host, Cookie::of(COOKIE))
+            .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_tick(Tick::new(60, 4))
+            .without_announce(),
+    )
+    .expect("a peer");
+    server.with_peer(peer.clone(), events);
+    (server, peer)
+}
+
+/// A far box that announced one seat and then stopped answering, and a coordinator that restarted
+/// after it did. The mesh that held the seat was in memory, so only the chat store can say who the
+/// box's seats are - which is the case seen on lab2x1: mac1 linked for a few seconds and stopped.
+#[test]
+fn a_seat_announced_before_a_restart_is_still_held_with_its_box_away() {
+    let dir = scratch("away-restart");
+    let (first, first_peer) = a_box_in(&dir, "lab1");
+    let mut far = FakeBox::up(first_peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the far box to link", || first_peer.alive("lab2"));
+    far.say(&letibot_room::peer::PeerFrame::Profiles {
+        seats: vec![SeatProfile::new(
+            "lab2/s-b1",
+            &RepoIdentity::named(&an_identity("aaaa1111bbbb")),
+            "main",
+            "provider fixes",
+        )],
+    });
+    wait_until("the far box's seat to arrive", || {
+        first_peer.holds("lab2/s-b1")
+    });
+    drop(far);
+    wait_until("the far box to go away", || !first_peer.alive("lab2"));
+    first.stop();
+    drop(first_peer);
+    wait_until("the first coordinator to end", || first.connections() == 0);
+
+    let (second, second_peer) = a_box_in(&dir, "lab1");
+    assert!(
+        second.mesh().is_empty(),
+        "the restart kept a mesh in memory: {:?}",
+        second.mesh()
+    );
+    let sender = seat(&second, "s-a1", A);
+    match sender.dm("restart-1", "lab2/s-b1", "the queue is clear, land it") {
+        Response::Said { message, .. } => assert_eq!(message.to.as_deref(), Some("lab2/s-b1")),
+        other => panic!("a seat announced before the restart was refused: {other:?}"),
+    }
+    assert_eq!(
+        second.held_away(),
+        vec![("lab2".to_string(), 1)],
+        "the line is kept for the box the restart has no link to"
+    );
+    // And a box this one never heard of is still nobody, restart or not.
+    match sender.dm("restart-2", "lab3/s-c1", "for somebody who was never here") {
+        Response::Refused {
+            why: Refused::UnknownAddressee { name, .. },
+            ..
+        } => assert_eq!(name, "lab3/s-c1"),
+        other => panic!("an unknown box was answered with {other:?}"),
+    }
+
+    // The box comes back: what was kept for it goes over the link.
+    let mut back = FakeBox::up(second_peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the box that came back to link", || {
+        second_peer.alive("lab2")
+    });
+    let line = back.next_message(10_000).expect("the held line");
+    assert_eq!(line.text, "the queue is clear, land it");
+    assert_eq!(
+        line.author, "lab1/s-a1",
+        "the author is the id it was sent from"
+    );
+    assert!(
+        back.next_message(300).is_none(),
+        "a held line was sent twice"
+    );
+    assert!(
+        second.held_away().is_empty(),
+        "what went over the link is still queued: {:?}",
+        second.held_away()
+    );
+    second.stop();
+    drop(second_peer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A box's announcement is the whole truth about its seats: one it stops naming stops being an
+/// addressee, so an id a closed session left behind is not a place to send lines for ever.
+#[test]
+fn a_seat_dropped_from_a_boxs_next_announcement_is_refused() {
+    let a = Box::open("away-drop", "lab1", A);
+    let identity = RepoIdentity::named(&an_identity("aaaa1111bbbb"));
+    let seat_of = |id: &str| SeatProfile::new(id, &identity, "main", "provider fixes");
+    let mut far = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the far box to link", || a.peer.alive("lab2"));
+    far.say(&letibot_room::peer::PeerFrame::Profiles {
+        seats: vec![seat_of("lab2/s-b1"), seat_of("lab2/s-b2")],
+    });
+    wait_until("both of the far box's seats to arrive", || {
+        a.peer.holds("lab2/s-b1") && a.peer.holds("lab2/s-b2")
+    });
+    far.say(&letibot_room::peer::PeerFrame::Profiles {
+        seats: vec![seat_of("lab2/s-b1")],
+    });
+    wait_until("the dropped seat to go", || !a.peer.holds("lab2/s-b2"));
+
+    let sender = a.seat("s-a1");
+    match sender.dm("drop-1", "lab2/s-b1", "still there?") {
+        Response::Said { .. } => {}
+        other => panic!("the seat the box still names was refused: {other:?}"),
+    }
+    match sender.dm("drop-2", "lab2/s-b2", "and you?") {
+        Response::Refused {
+            why: Refused::UnknownAddressee { name, .. },
+            ..
+        } => assert_eq!(name, "lab2/s-b2"),
+        other => panic!("a seat the box stopped announcing was answered with {other:?}"),
+    }
+    assert!(
+        a.server.held_away().is_empty(),
+        "a live box's line was queued: {:?}",
+        a.server.held_away()
+    );
+}
