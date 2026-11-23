@@ -157,6 +157,16 @@ Amounts: a size (64M, 2G) or a fraction of free memory (0.5, 50%). Over provider
 | `default` | amount | providers.toml, else 64M | both, project wins | cap for a bash call that names none |
 | `ceiling` | amount | providers.toml, else 0.5 | both, project wins | most a call may take without asking; may only narrow |
 
+## `[dotenv]`
+
+A project's `.env` files: whether a command starts with them, and which machines a placement carries them to. `docker compose`'s precedence: a pair letibot set, or one the call named, wins over the file. A loaded value is masked in a tool's output and never reaches a transcript row.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `load` | bool | true | both, user wins | a command starts with the tree's `.env` then `.env.local`, reloaded when either changes |
+| `carry_to` | list of host names | [] | user only | remote placements that carry the files; empty, because they hold credentials |
+| `carry_to_vm` | bool | false | user only | also carry them into a firecode VM on those hosts |
+
 ## `[notes]`
 
 | key | type | default | level | meaning |

@@ -177,6 +177,16 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "dotenv",
+            note: "A project's `.env` files: whether a command starts with them, and which machines a placement carries them to. `docker compose`'s precedence: a pair letibot set, or one the call named, wins over the file. A loaded value is masked in a tool's output and never reaches a transcript row.",
+            needs: "",
+            keys: &[
+                k("load", "bool", "true", UW, "a command starts with the tree's `.env` then `.env.local`, reloaded when either changes", "true"),
+                k("carry_to", "list of host names", "[]", U, "remote placements that carry the files; empty, because they hold credentials", "[\"xmg\"]"),
+                k("carry_to_vm", "bool", "false", U, "also carry them into a firecode VM on those hosts", "false"),
+            ],
+        },
+        Table {
             path: "notes",
             note: "",
             needs: "",

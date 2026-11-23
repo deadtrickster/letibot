@@ -3353,6 +3353,9 @@ pub struct SshSpec {
     /// builds there: the same list a seat on this box would hold, unexpanded, because a `~/` path is
     /// that machine's home. The host says which exist; one that does not is a note, not a refusal.
     pub grants: Vec<crate::exec::boundary::HostGrant>,
+    /// `[dotenv]`: whether this placement carries the project's `.env` files, and whether a VM
+    /// there does. A host must be named by the operator; a VM needs the second switch too.
+    pub dotenv: crate::dotenv::Settings,
 }
 
 /// What a placement's branch needs to come home: the local repository, the url the fetch reads and
@@ -3715,6 +3718,25 @@ impl SshBackend {
         )
         .map_err(place)?;
 
+        // The project's `.env` files: untracked, so the bundle does not bring them, and the operator
+        // has to name this host before they travel (a VM on it needs the second switch too). Written
+        // BEFORE `vm_up`: the guest's tree is a copy of this checkout, so a file that must not reach a
+        // guest is a file that is never written. Values are never said - the line names files.
+        let mut dotenv_said = Vec::new();
+        let carry_dotenv = match spec.vm {
+            true => spec.dotenv.carries_to_vm(&host),
+            false => spec.dotenv.carries_to(&host),
+        };
+        if carry_dotenv {
+            let carried = carry_dotenv_files(&ssh, &worktree, &[&spec.source, &local_repo]);
+            if !carried.is_empty() {
+                dotenv_said.push(format!(
+                    "carried {} to {host}; they are git-ignored in that checkout",
+                    carried.join(", ")
+                ));
+            }
+        }
+
         // The combined placement, booted once the checkout exists: the guest is a copy of that checkout
         // at the same path, so this is after every arranging step whose result the guest starts with
         // (the exclude file above) and before any command.
@@ -3732,6 +3754,7 @@ impl SshBackend {
             format!("the tree is the branch `{branch}` at {worktree} on {host}"),
             format!("what the session commits there comes back as `{back_branch}`"),
         ];
+        notes.extend(dotenv_said);
         let dirty = git(&local_repo, &["status", "--porcelain"])
             .unwrap_or_default()
             .lines()
@@ -4308,6 +4331,43 @@ fn ssh_program_default() -> PathBuf {
     std::env::var_os("LETIBOT_SSH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("ssh"))
+}
+
+/// Carry a project's `.env` files into the checkout `worktree` on the far side of `ssh`, read from
+/// the directories in order (the source and the repository's own root are usually one directory).
+/// 0600 on that machine, and git-ignored there so a carried credential is never a commit. Returns
+/// the names carried; a file that cannot be read is left out and costs no placement, and a caller
+/// that has to say so reads the same list the copy did.
+fn carry_dotenv_files(ssh: &Ssh, worktree: &str, dirs: &[&PathBuf]) -> Vec<String> {
+    let dirs: Vec<PathBuf> = dirs.iter().map(|d| (*d).clone()).collect();
+    let files = crate::dotenv::carry::found(&dirs);
+    let mut carried = Vec::new();
+    for (name, from) in files {
+        let bytes = match crate::dotenv::carry::read_one(&from) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let at = format!("{worktree}/{name}");
+        // The mode is set AFTER the bytes land, because `write_abs` stages a temp file and a mode
+        // applied before the `mv` would be the temp's. A failure here is not a placement's, and the
+        // step is bounded like the write it follows.
+        if ssh.write_abs(&at, &bytes).is_err() {
+            continue;
+        }
+        let chmod = ssh.must(
+            "setting the mode of a carried file",
+            &format!("chmod 600 {}", crate::remote::quote(&at)),
+        );
+        if chmod.is_err() {
+            continue;
+        }
+        carried.push(name);
+    }
+    if !carried.is_empty() {
+        let script = crate::dotenv::carry::exclude_script(worktree, &carried);
+        let _ = ssh.must("excluding the carried .env files from git", &script);
+    }
+    carried
 }
 
 /// The remote root, resolved once on the host: `~/letibot-remote` is that machine's home, so every

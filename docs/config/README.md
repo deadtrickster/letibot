@@ -21,6 +21,9 @@ file (`FILE.bak` first). `head.toml` gets it on every save.
 Not a file of its own: [language.md](language.md) says what `[ui] language` in `leticode.toml`
 does, which of the head's words it covers, and which it leaves in English on purpose.
 
+One feature has a page of its own because it is not a file of its own:
+[`.env` loading and carrying](dotenv.md), which is the `[dotenv]` table of `leticode.toml`.
+
 ## Changing one
 
 A session does not edit these files: `~/.config/letibot` is masked inside a session so a model

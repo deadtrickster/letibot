@@ -149,6 +149,7 @@ impl Rig {
             env: Vec::new(),
             env_secrets: Vec::new(),
             grants: Vec::new(),
+            dotenv: letibot_tools::dotenv::Settings::default(),
         }
     }
 

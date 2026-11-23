@@ -2164,6 +2164,9 @@ pub(crate) const QUEUED_NOTE: &str = "queued: the `[subagents]` running cap is f
 /// draws it by. Its own word and not `running` with a note beside it: the pane draws a state, and a
 /// child the cap has parked has not started.
 pub(crate) const QUEUED_STATE: &str = "queued";
+/// A `task_start` worktree's `.env` files: what was carried into it, and why one was not. Names and
+/// paths only - a carried file holds credentials, and this line reaches a head and the store.
+pub(crate) const WORKTREE_DOTENV: &str = "worktree_dotenv";
 
 /// A queued child that was stopped before it got a place.
 pub(crate) const QUEUED_STOP: &str =
@@ -2353,6 +2356,20 @@ struct ForeignWeights {
 }
 
 impl HarnessTaskRunner {
+    /// A warning said on THIS session's hub, so a placement's own line reaches the reader looking
+    /// at the session it is about and nowhere else. The daemon's list is the one held here; the
+    /// hub is found by the session id it was opened under, and a hub that has gone says nothing.
+    fn say_here(&self, code: &str, detail: String) {
+        let hubs = self.hubs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hub) = hubs
+            .iter()
+            .filter_map(|h| h.upgrade())
+            .find(|h| h.session_id() == self.base.session_id)
+        {
+            hub.warn(code.to_string(), detail);
+        }
+    }
+
     /// This session's slot for one handle, if it started one under that name; `None` is a handle this runner
     /// never minted, the same answer `collect` gives as `Unknown`. A helper rather than a fourth copy of the
     /// lookup, which `send` and `collect` both read.
@@ -3188,6 +3205,31 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     leftover_hint(&workspace, &branch, &e)
                 )
             })?;
+            // The package's `.env` files travel with the tree. They are untracked, so
+            // `git worktree add` leaves them behind and every command the child runs would start
+            // without the project's variables. A file git does not ignore is added to the new
+            // worktree's exclude, so a carried credential is never a commit.
+            let (carried, said) = letibot_tools::dotenv::carry::into_worktree(
+                &[
+                    std::path::PathBuf::from(&root),
+                    std::path::PathBuf::from(&workspace),
+                ],
+                std::path::Path::new(&path),
+            );
+            for why in said {
+                self.say_here(WORKTREE_DOTENV, format!("`{path}`: {why}"));
+            }
+            if !carried.is_empty() {
+                // Names only: a carried file's values are its own business.
+                self.say_here(
+                    WORKTREE_DOTENV,
+                    format!(
+                        "carried {} into `{path}`; they are git-ignored there and their values \
+                         are masked in a tool's output",
+                        carried.join(", ")
+                    ),
+                );
+            }
             // No file is written into the tree: the build cache is shared through the child's environment. Writing
             // `.cargo/config.toml` hidden in a git exclude that git does not read inside a
             // worktree would show `?? .cargo/` in every worktree and a child's `git add -A` would commit it.

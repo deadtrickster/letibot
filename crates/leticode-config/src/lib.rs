@@ -4058,6 +4058,11 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     firecode: Option<toml::Value>,
+    /// `[dotenv]`, read by `letibot_tools::dotenv::Settings`; accepted for `[gc]`'s reason, and
+    /// because the host list a placement may carry `.env` files to is the operator's to give.
+    #[serde(default)]
+    #[allow(dead_code)]
+    dotenv: Option<toml::Value>,
     /// The `[notes]` table, see [`NotesKeys`].
     #[serde(default)]
     notes: Option<toml::Value>,

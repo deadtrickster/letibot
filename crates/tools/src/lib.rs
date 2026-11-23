@@ -37,6 +37,9 @@ pub mod detect;
 /// of its own rather than part of [`lifecycle`] because a proxy is not a reaper: the reaper reads the
 /// labels the proxy puts on.
 pub mod docker;
+/// A project's `.env` files: which ones a placement carries, how one is parsed, and the env every
+/// command of a session starts with.
+pub mod dotenv;
 pub mod edit;
 pub mod edit_preview;
 pub mod events;

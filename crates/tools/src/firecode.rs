@@ -463,6 +463,10 @@ pub struct FirecodeSpec {
     pub runs: Option<PathBuf>,
     /// The box's boot queue. `None` boots at once, still with the load-scaled deadline.
     pub boot: Option<boot::BootQueue>,
+    /// `[dotenv] carry_to_vm`: whether the copy keeps the project's `.env` files. False - the
+    /// default - means they are REMOVED from the copy, because a guest is another machine and these
+    /// files hold credentials. A mounted folder is the operator's own tree and is never touched.
+    pub dotenv_carry_vm: bool,
 }
 
 impl FirecodeSpec {
@@ -514,6 +518,8 @@ impl FirecodeSpec {
             state: None,
             runs: None,
             boot: None,
+            // Off by default: a `.env` holds credentials, and a guest is another machine.
+            dotenv_carry_vm: false,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -627,6 +633,13 @@ impl FirecodeBackend {
         if !mounted {
             copy_tree(&spec.source, &project, &spec.exclude, spec.copy_max)?;
             own_git(&project, &spec.source)?;
+            // The project's `.env` files: rsync brought the source's, and `[dotenv] carry_to_vm`
+            // decides whether they stay. Off by default - these files hold credentials and a guest
+            // is another machine - so they are REMOVED from the copy; on, and they are 0600 and
+            // git-ignored in it. A mounted folder is the operator's own tree and takes neither.
+            for why in crate::dotenv::carry::settle_vm_copy(&project, spec.dotenv_carry_vm) {
+                eprintln!("letibot: {why}");
+            }
         }
 
         // Layers are attached to a PATH, and the copy has a path of its own: the source's

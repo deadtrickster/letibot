@@ -1053,6 +1053,10 @@ impl Harness {
         }
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
+        // `[dotenv]`, read once per open: whether a command starts with the project's `.env`, and
+        // which machines a placement carries those files to. Read here rather than in `tools`
+        // because a host list is the operator's, and a session's config is resolved above it.
+        let dotenv = letibot_tools::dotenv::Settings::load();
         // Set by the arms that hand the session the whole host, so the prompt and the head both
         // say it: silence here is how a session reads as confined when nothing bounds it.
         let mut whole_host = false;
@@ -1369,6 +1373,10 @@ impl Harness {
                 spec.mount_rw = mounts;
                 spec.writable = may_write;
                 spec.exec = may_exec;
+                // A VM's own switch: the operator's second decision, on top of naming a host. A
+                // copy that was not carried has the files removed from it, and a mounted folder
+                // is the operator's own tree and is left alone.
+                spec.dotenv_carry_vm = dotenv.carry_to_vm;
                 spec.up_args = cfg.vm_args.clone();
                 spec.verify = cfg.vm_verify.clone();
                 // The owner stamp firecode's run directory carries, so a discovery pass can say
@@ -1461,6 +1469,9 @@ impl Harness {
                 // The operator's `[boundary]` and `[perimeter.<name>]` grants, for the view built on
                 // that machine: what a local seat gets from `boundary::apply`, unexpanded.
                 grants: placement_grants.clone(),
+                // `[dotenv]`: a host the operator named gets the project's `.env` files, and a VM
+                // there gets them only under its own switch.
+                dotenv,
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;
