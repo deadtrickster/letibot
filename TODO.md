@@ -1954,7 +1954,7 @@ Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's 
 
 ## R284 - Tool calls of one message run one at a time
 
-**Status:** built, 2026-11-15. Package J11, plan item 1.2. left (sweep 2026-11-16): landed 7f79499b4; left: `runs_pooled` keys on the declared access (`tools/src/runtime.rs:2041`), so a Write tool that narrows to Read runs alone - no harness-level pool test.
+**Status:** built, 2026-11-15. Package J11, plan item 1.2; switch, stop and harness-level tests 2026-11-23. left (sweep 2026-11-16): landed 7f79499b4; left: `runs_pooled` keys on the declared access (`tools/src/runtime.rs:2196`), so a Write tool that narrows to Read runs alone.
 
 A round with three `read` calls waited for each in turn, so a model that batches its lookups gained nothing from batching them.
 
@@ -1963,12 +1963,15 @@ A round with three `read` calls waited for each in turn, so a model that batches
 - `ToolRuntime::invoke_pooled` runs a batch as dsh's rolling pool: `POOL_WIDTH` (10) workers take the next call as each finishes. Events are forwarded to the session's sink on the harness thread as they happen, keyed by call id, and results come back in call order.
 - `run_the_rounds_calls` (`harnessd/src/harness/turns.rs`) runs batch by batch and settles each result in call order (`settle_call`: meter, ask, plugin layer, `pr_watch`, progress), so the rows the template sorts by call order are unchanged.
 - The class is the schema's declared one, not `access_for`'s narrowing: narrowing reads salvaged arguments, and a guess before salvage could let a write run in the pool.
-- Tests (`tools/tests/pool.rs`): `three_reads_of_200_ms_finish_under_400_ms_in_call_order`, `a_write_between_two_reads_runs_alone`, `the_pool_holds_at_most_its_width_at_once`, `an_unknown_tool_is_a_barrier`.
+- `[tools] parallel` (default on, `leticode-config`'s `ToolKeys`, read at open by `ToolRuntime::with_parallel_reads`) turns the pool off from a file: `runs_pooled` then answers `false` for every call and `batches` is one call per batch, so nothing but the wall clock changes.
+- A stop queued mid-group takes the calls the pool has not started yet, answered `NotRun` rather than started by a turn told to end; the calls already running are joined, not abandoned - no read tool polls the backend's interrupt probe, so nothing of the group outlives the round and every call the model made keeps its row.
+- A pooled call is never asked about: the gate runs only for a non-read declaration, and a layer's rewrite keeps the tool's own name, so a read cannot become a write inside the pool.
+- Tests (`tools/tests/pool.rs`): `three_reads_of_200_ms_finish_under_400_ms_in_call_order`, `a_write_between_two_reads_runs_alone`, `the_pool_holds_at_most_its_width_at_once`, `an_unknown_tool_is_a_barrier`, `with_parallel_off_a_round_is_one_call_per_batch`, `a_stop_mid_group_runs_only_what_had_started`.
+- Tests (`harnessd/src/harness/tests/parallel_reads.rs`, through `run_the_rounds_calls`): `a_rounds_reads_run_at_once_and_their_rows_keep_call_order` (three reads rendezvous, so a serial round fails rather than measuring a clock), `a_panicking_read_costs_only_its_own_row`, `with_parallel_off_every_call_of_a_round_runs_alone`.
 
 **Left.**
 - A tool declared `Write` whose verb narrows to `Read` (`notes list`, `queue status`) still runs alone.
-- The pool is tested through the runtime, the same composition the harness runs. No harness-level test drives a scripted model round through it.
-- Head events of a pooled batch arrive in completion order, interleaved by call id. A head that assumed one call at a time between `Started` and `Finished` would need to key by call id; the sinks in tree already do.
+- `job_wait` and `job_output` are declared read-class, so a round of them fills the pool's width while they wait; a batch of long waits is the caller's choice, not the pool's.
 
 ## R261 - Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model
 

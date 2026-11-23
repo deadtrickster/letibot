@@ -50,12 +50,12 @@ impl Rendezvous {
     /// Hold the lock until `ready`, or panic with `why`. A panic inside a tool is caught by the
     /// runtime and becomes that call's own failed row, which is how a round that did not pool reads
     /// instead of hanging.
-    fn until<F>(
+    fn until<'a, F>(
         &self,
-        s: std::sync::MutexGuard<'_, State>,
+        s: std::sync::MutexGuard<'a, State>,
         ready: F,
         why: String,
-    ) -> std::sync::MutexGuard<'_, State>
+    ) -> std::sync::MutexGuard<'a, State>
     where
         F: Fn(&State) -> bool,
     {
