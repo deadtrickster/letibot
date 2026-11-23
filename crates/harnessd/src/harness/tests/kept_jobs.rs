@@ -467,7 +467,6 @@ fn a_restart_keeps_the_job_through_every_stop_step_and_the_next_daemon_takes_it_
         })
         .expect("the job starts");
     let view = host.job(&id).expect("the job");
-    let stamp = stamp_of(view.pid);
     // The marker's own close: every run ender keeps what can outlive this daemon.
     h.session_registry.close_for_restart();
     let db = dir.0.join("sessions.db");
@@ -478,6 +477,13 @@ fn a_restart_keeps_the_job_through_every_stop_step_and_the_next_daemon_takes_it_
         .expect("the kept job's row");
     let _end = kept.cgroup.as_deref().map(EndsTree::of);
     assert_eq!(kept.state, ProcState::Detached, "{kept:?}");
+    // The stamp is the one the spawn recorded, which is the fact `adopt` proves the job by after a
+    // restart - not a second look at `/proc`, which answers nothing for a job that ended since.
+    let stamp = kept.identity.clone();
+    assert!(
+        !stamp.is_empty(),
+        "the kept job carries no identity, so nothing proves it later: {kept:?}"
+    );
     // Every step after it ends what a session owns through the supervisor: `close_backends` says
     // `the daemon stopping`, and a session's own close says `the session closing`.
     let sup = crate::supervise::Supervisor::new(

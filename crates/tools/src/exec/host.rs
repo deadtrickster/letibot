@@ -2652,6 +2652,13 @@ impl ProcessHost for HostProcesses {
                 .map(|m| m.contains(&pid))
                 .unwrap_or(false)
             {
+                // A member is a live process, so this is where a stamp is provable: the read after
+                // the fork can miss one that ends at once, and a kept job is proven by its stamp.
+                if job.identity().is_empty()
+                    && let Some(p) = super::procs::read(pid)
+                {
+                    job.set_identity(format!("start:{}", p.start));
+                }
                 break true;
             }
             if !job.state().is_running() {
