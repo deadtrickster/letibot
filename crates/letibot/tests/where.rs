@@ -298,7 +298,19 @@ fn the_launcher_socket_equals_where_json() {
     let mut asked = std::process::Command::new(&me);
     asked.args(["where"]).arg(&sub).arg("--json");
     env(&mut asked);
-    let asked = asked.output().expect("where runs");
+    // The copy is `ETXTBSY` while a child another test thread forked still holds its write fd.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let asked = loop {
+        match asked.output() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            r => break r.expect("where runs"),
+        }
+    };
     let v: serde_json::Value =
         serde_json::from_slice(&asked.stdout).expect("where --json is one object");
     let socket = v["socket"].as_str().expect("a socket").to_string();
