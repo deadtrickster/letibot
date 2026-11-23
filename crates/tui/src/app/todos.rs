@@ -692,9 +692,26 @@ impl App {
         let body = match std::fs::read_to_string(&path) {
             Ok(b) => b,
             Err(e) => {
-                // Not marked - see the docstring: the file may still be written.
+                // Not marked - see the docstring: the file may still be written. The sentence says
+                // what the failure MEANS and what to do about it; the io error's own words are the
+                // detail behind it rather than the message ("No such file or directory (os error 2)"
+                // is not a thing a person acts on).
+                let (what, what_to_do) = match e.kind() {
+                    std::io::ErrorKind::NotFound => (
+                        "there is no such file",
+                        "write one, or turn `todo_template` off in leticode.toml",
+                    ),
+                    std::io::ErrorKind::PermissionDenied => (
+                        "this session may not read it",
+                        "check the file's mode, or turn `todo_template` off",
+                    ),
+                    _ => (
+                        "it could not be read",
+                        "fix the file, or turn `todo_template` off in leticode.toml",
+                    ),
+                };
                 self.say(&format!(
-                    "todo_template is on but {} is not there: {e}",
+                    "todo_template is on but {} {what} ({e}) — {what_to_do}",
                     path.display()
                 ));
                 return;

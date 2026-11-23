@@ -7,6 +7,22 @@
 pub(crate) struct KeyAsk {
     pub(crate) choice: String,
     pub(crate) provider: String,
+    /// What the card is for, which decides the words on it and the line Enter sends. One card and
+    /// one buffer for every secret the operator types: `/models X --key` and `/flowy login`, and a
+    /// third that arrives later is a variant here rather than a second card.
+    pub(crate) kind: KeyKind,
+}
+
+/// The secrets the masked card collects, and the line each one becomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KeyKind {
+    /// A provider's key: Enter sends `/models CHOICE --key …`, which stores it at mode 600 and
+    /// switches the session to that model.
+    Provider,
+    /// The fabric's token: Enter sends `/flowy login REST --token …`, where `rest` is what the
+    /// operator typed between `login` and the flag - the seat and the address, which a card that
+    /// dropped them would make them type again.
+    Flowy { rest: String },
 }
 
 /// An open password request, as the head shows it.

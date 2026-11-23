@@ -144,6 +144,8 @@ setup.hint.key_ask = "введите ключ · enter сохранит · esc �
 setup.key.no_key = "ключ не введён — строка не выбрана"
 setup.key.storing = "сохраняю ключ {provider} и переключаюсь на {choice}…"
 setup.key.cancelled = "отменено — ничего не сохранено, строка не выбрана"
+setup.flowy.sending = "отправляю токен flowy…"
+setup.flowy.cancelled = "отменено — токен flowy не отправлен"
 
 # -- шапка и подвал справки -------------------------------------------------
 

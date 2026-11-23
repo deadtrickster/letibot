@@ -176,7 +176,9 @@ impl App {
                 Key::Esc | Key::CtrlC => {
                     self.todo_draft = None;
                     self.set_composer("");
-                    self.say("nothing added");
+                    // The card's cancel, in the words every other setup card's cancel uses: what
+                    // was NOT done, so a card that goes can be told from one that took.
+                    self.say("cancelled — no todo row was added");
                     return ControlFlow::Break(None);
                 }
                 _ => {}
@@ -326,24 +328,42 @@ impl App {
                         self.say(crate::i18n::t("setup.key.no_key"));
                         return ControlFlow::Break(None);
                     }
-                    self.say(&crate::i18n::tf(
-                        "setup.key.storing",
-                        &[("provider", &ask.provider), ("choice", &ask.choice)],
-                    ));
-                    // The switch, then a re-read of the rows it changed - the same order the
-                    // plain switch keeps, so the header names what answers now.
-                    self.queued.push(Action::Settings);
-                    // And, when the chooser was opened because the local model could not be
-                    // reached, the default and the held message after it - `app::reach`.
-                    self.took_cloud_row(&ask.choice);
-                    return ControlFlow::Break(Some(Action::Slash {
-                        line: format!("models {} --key {}", ask.choice, key),
-                    }));
+                    // What the typed secret is for decides both what is said and what is sent:
+                    // one card, two verbs, and a third is an arm here.
+                    return match &ask.kind {
+                        KeyKind::Provider => {
+                            self.say(&crate::i18n::tf(
+                                "setup.key.storing",
+                                &[("provider", &ask.provider), ("choice", &ask.choice)],
+                            ));
+                            // The switch, then a re-read of the rows it changed - the same order the
+                            // plain switch keeps, so the header names what answers now.
+                            self.queued.push(Action::Settings);
+                            // And, when the chooser was opened because the local model could not be
+                            // reached, the default and the held message after it - `app::reach`.
+                            self.took_cloud_row(&ask.choice);
+                            ControlFlow::Break(Some(Action::Slash {
+                                line: format!("models {} --key {}", ask.choice, key),
+                            }))
+                        }
+                        // `/flowy login [SEAT] [--addr URL] --token …`: the words the operator
+                        // typed beside the flag are carried, and the token is the only part the
+                        // card supplies.
+                        KeyKind::Flowy { rest } => {
+                            self.say(crate::i18n::t("setup.flowy.sending"));
+                            ControlFlow::Break(Some(Action::Slash {
+                                line: format!("flowy login {rest}--token {key}"),
+                            }))
+                        }
+                    };
                 }
                 Key::Esc | Key::CtrlC => {
                     self.key_buf.clear();
                     self.key_ask = None;
-                    self.say(crate::i18n::t("setup.key.cancelled"));
+                    self.say(match ask.kind {
+                        KeyKind::Provider => crate::i18n::t("setup.key.cancelled"),
+                        KeyKind::Flowy { .. } => crate::i18n::t("setup.flowy.cancelled"),
+                    });
                     return ControlFlow::Break(None);
                 }
                 _ => {}
@@ -534,9 +554,12 @@ impl App {
             }
             // Esc leaves the setting alone and closes the card - the card's own key now,
             // because the card is in front of any surface, not one arm of a
-            // block that closed every pane and card at once.
+            // block that closed every pane and card at once. It SAYS so: a setup card that
+            // vanishes in silence reads as an act, and the operator cannot tell a cancelled
+            // setting from one that was applied.
             Key::Esc | Key::CtrlC => {
                 self.pick = None;
+                self.say(&format!("cancelled — {} did not change", subject.setting()));
                 return ControlFlow::Break(None);
             }
             _ => {}

@@ -364,9 +364,16 @@ impl App {
     ) -> Result<String, String> {
         let line = line.trim();
         if line.starts_with('{') {
-            // Checked for BEING json and for nothing else - the original rule, kept.
-            let v: serde_json::Value = serde_json::from_str(line)
-                .map_err(|e| format!("`{}` with `{{…}}` arguments: {e}", tool.name))?;
+            // Checked for BEING json and for nothing else - the original rule, kept. A line that is
+            // not JSON is a typo, so the sentence says that and what to type instead, with the
+            // parser's own words as the detail.
+            let v: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+                format!(
+                    "`{}` was given a line that is not JSON ({e}) — type `/{0} {{…}}` with an \
+                     object of arguments, or `/{0}` on its own for the card",
+                    tool.name
+                )
+            })?;
             if !v.is_object() {
                 return Err(format!(
                     "`{}` takes an object of arguments; `{line}` is a {}",
@@ -968,10 +975,32 @@ impl App {
             ""
         };
         if words[0] == "flowy" {
+            // The fabric's token is typed into the SAME masked card a provider's key is: it was the
+            // one secret with no card, refused with a flag instead, which left a person holding a
+            // token with nowhere to put it. What the operator typed beside the flag - the seat, the
+            // address - rides into the card's line, so nothing has to be typed twice.
+            let mut kept: Vec<&str> = Vec::new();
+            for (i, w) in words.iter().enumerate().skip(2) {
+                // The flag itself, and its value when it is a separate word.
+                if i == at || (i == at + 1 && !words[at].contains('=')) {
+                    continue;
+                }
+                kept.push(w);
+            }
+            let rest = match kept.is_empty() {
+                true => String::new(),
+                false => format!("{} ", kept.join(" ")),
+            };
             self.say(&format!(
-                "{dropped}a token is never typed on the line: `/flowy login --token-file PATH` \
-                 reads it from a file"
+                "{dropped}paste the flowy token below: enter sends `/flowy login {rest}--token …` \
+                 and attaches the seat, esc cancels"
             ));
+            self.key_ask = Some(KeyAsk {
+                choice: "flowy".to_string(),
+                provider: "flowy".to_string(),
+                kind: KeyKind::Flowy { rest },
+            });
+            self.key_buf.clear();
             return Some(None);
         }
         let Some(choice) = words.get(1).filter(|w| !w.starts_with("--")) else {
@@ -992,6 +1021,7 @@ impl App {
         self.key_ask = Some(KeyAsk {
             choice: choice.to_string(),
             provider,
+            kind: KeyKind::Provider,
         });
         self.key_buf.clear();
         Some(None)

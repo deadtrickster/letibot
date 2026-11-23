@@ -477,6 +477,59 @@ fn esc_puts_a_card_away_and_the_explicit_key_refuses() {
     );
 }
 
+// ──────────────────── a setup card's cancel says so ────────────────────
+
+/// Every card that SETS something says what it did not do when it is cancelled. A setup card that
+/// vanishes in silence reads as an act: the operator cannot tell a cancelled setting from one that
+/// was applied, which is the whole reason the sentence exists.
+#[test]
+fn each_setup_card_names_what_its_cancel_did_not_do() {
+    // The values card: `/verbosity` then esc.
+    let mut a = app();
+    typed(&mut a, "/verbosity");
+    a.key(Key::Enter);
+    assert!(a.pick.is_some(), "the values card opened");
+    a.key(Key::Esc);
+    assert!(a.pick.is_none());
+    assert_eq!(
+        a.notice.as_deref(),
+        Some("cancelled — the verbosity did not change"),
+        "a values card closed in silence"
+    );
+
+    // The model card: esc at the top level closes it (the query and the open provider are one step
+    // each and say nothing, since the card stays up).
+    let mut b = app();
+    typed(&mut b, "/models");
+    b.key(Key::Enter);
+    assert_eq!(
+        b.pick,
+        Some(crate::app::Pick::Model),
+        "the model card opened"
+    );
+    b.key(Key::Esc);
+    assert!(b.pick.is_none(), "the card is closed");
+    assert_eq!(
+        b.notice.as_deref(),
+        Some("cancelled — the model did not change"),
+        "a model card closed in silence"
+    );
+
+    // The draft card: `/todo` bare opens it, esc drops the draft.
+    let mut c = app();
+    c.session_id = "s".into();
+    typed(&mut c, "/todo");
+    c.key(Key::Enter);
+    assert!(c.todo_draft.is_some(), "the draft card opened");
+    c.key(Key::Esc);
+    assert!(c.todo_draft.is_none());
+    assert_eq!(
+        c.notice.as_deref(),
+        Some("cancelled — no todo row was added"),
+        "a draft card closed in silence"
+    );
+}
+
 // ──────────────────── the panes' bars ────────────────────
 
 fn waiting_board(a: &mut App) {

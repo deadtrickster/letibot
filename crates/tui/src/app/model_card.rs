@@ -554,6 +554,10 @@ impl App {
             self.mode_sel = 0;
         } else {
             self.pick = None;
+            // The one step that is a CANCEL, said: the two above move a level and leave the card
+            // up, which the card's own bar shows, but this one closes it and a silent close reads
+            // as the model having changed.
+            self.say("cancelled — the model did not change");
         }
         self.pick_unseeded = false;
     }

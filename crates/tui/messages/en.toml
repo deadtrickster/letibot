@@ -137,6 +137,8 @@ setup.hint.key_ask = "type the key · enter stores it · esc cancels"
 setup.key.no_key = "no key given — the row was not taken"
 setup.key.storing = "storing the {provider} key and switching to {choice}…"
 setup.key.cancelled = "cancelled — nothing was stored and the row was not taken"
+setup.flowy.sending = "sending the flowy token…"
+setup.flowy.cancelled = "cancelled — no flowy token was sent"
 
 # -- the help screen's own chrome -------------------------------------------
 

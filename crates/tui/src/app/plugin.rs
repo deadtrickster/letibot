@@ -37,9 +37,16 @@ impl PluginState {
                     ..Default::default()
                 },
             },
+            // The pane's view is not the shape this build knows: the daemon and this head are
+            // different builds, or a layer answered a contract it is not held to. The words are the
+            // operator's and the action is theirs; the serde error rides in parentheses as detail.
             Err(e) => PluginState {
                 held: None,
-                why: Some(format!("this head cannot read that pane's view: {e}")),
+                why: Some(format!(
+                    "this pane's view is not the shape this head draws ({e}) — the daemon and this \
+                     head are probably different builds: restart both from one build, and if it \
+                     stays, the layer that answered is the defect"
+                )),
                 cursor: false,
             },
         }

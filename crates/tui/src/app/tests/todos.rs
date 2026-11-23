@@ -1778,8 +1778,16 @@ fn template_refusals_are_notes() {
     assert!(
         b.notice
             .as_deref()
-            .is_some_and(|s| s.contains("is not there")),
-        "said: {:?}",
+            .is_some_and(|s| s.contains("there is no such file")),
+        "said in words, not with the io error as the message: {:?}",
+        b.notice
+    );
+    // And it says what to do about it, which the io error's own words never did.
+    assert!(
+        b.notice
+            .as_deref()
+            .is_some_and(|s| s.contains("turn `todo_template` off")),
+        "the action is missing: {:?}",
         b.notice
     );
     let _ = std::fs::remove_dir_all(&dir);

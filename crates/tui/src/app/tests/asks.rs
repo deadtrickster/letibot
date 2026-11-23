@@ -536,14 +536,70 @@ fn a_key_typed_on_the_line_goes_through_the_masked_card_and_nowhere_else() {
     a.refresh_prompt_history();
     assert!(!leaked(&mut a), "no recall carries the key");
 
-    // Bare `--key` opens the card too, and a flowy token is refused with the file form.
+    // Bare `--key` opens the card too.
     typed(&mut a, "/models glm --key");
     a.key(Key::Enter);
     assert_eq!(a.key_ask.as_ref().map(|k| k.provider.as_str()), Some("glm"));
     a.key(Key::Esc);
-    typed(&mut a, "/flowy login --token tok-SECRET-3");
-    assert_eq!(a.key(Key::Enter), None);
+    assert!(!leaked(&mut a));
+}
+
+/// `/flowy login --token …` is the second secret the masked card collects. It used to be refused
+/// with a `--token-file` flag, which left a person holding a token with nowhere to put it: the card
+/// asks for it, on a line of its own, and what the operator typed beside the flag - the seat - rides
+/// into the verb Enter sends. Nothing of the token reaches the history, the notice or the screen.
+#[test]
+fn a_flowy_token_is_typed_into_the_masked_card_and_sent_as_the_login_verb() {
+    let mut a = app();
+    a.session_id = "s".into();
+    typed(&mut a, "/flowy login my-seat --token tok-SECRET-3");
+    assert_eq!(a.key(Key::Enter), None, "nothing is sent");
+    let ask = a.key_ask.clone().expect("the masked card opens");
+    assert_eq!(ask.provider, "flowy");
+    assert_eq!(
+        ask.kind,
+        KeyKind::Flowy {
+            rest: "my-seat ".into()
+        },
+        "the seat the operator typed is carried, and the token is not"
+    );
+    let leaked = |a: &mut App| {
+        a.editor.history().iter().any(|l| l.contains("SECRET"))
+            || a.notice.as_deref().is_some_and(|n| n.contains("SECRET"))
+            || a.screen(110, 30).join("\n").contains("SECRET")
+    };
+    assert!(!leaked(&mut a), "the typed token is nowhere");
+
+    // The card says what it is for, and it is not a provider's key: rano's card is the provider's.
+    let screen = a.screen(110, 30).join("\n");
+    assert!(
+        screen.contains("flowy seat needs a token"),
+        "the card does not say what is being asked for:\n{screen}"
+    );
+    assert!(
+        !screen.contains("needs a key this box does not hold"),
+        "a token was drawn as a provider's key:\n{screen}"
+    );
+
+    for c in "tok-9".chars() {
+        a.key(Key::Char(c));
+    }
+    assert!(!leaked(&mut a), "the card masks what is typed into it");
+    match a.key(Key::Enter) {
+        Some(Action::Slash { line }) => {
+            assert_eq!(line, "flowy login my-seat --token tok-9");
+        }
+        other => panic!("the card's enter sends the login verb, not {other:?}"),
+    }
+    // And esc is a cancel that says so, in the card's own words.
+    typed(&mut a, "/flowy login --token tok-SECRET-4");
+    a.key(Key::Enter);
+    assert!(a.key_ask.is_some(), "the card is up");
+    a.key(Key::Esc);
     assert!(a.key_ask.is_none());
-    assert!(a.notice.as_deref().unwrap_or("").contains("--token-file"));
+    assert_eq!(
+        a.notice.as_deref(),
+        Some("cancelled — no flowy token was sent")
+    );
     assert!(!leaked(&mut a));
 }

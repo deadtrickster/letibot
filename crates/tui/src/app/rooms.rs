@@ -848,7 +848,13 @@ impl App {
             if let Some(room) = id.strip_prefix(OLDER) {
                 self.rooms.paging.remove(room);
             }
-            self.rooms.error = Some(e.to_string());
+            // The footer is one line under a pane, and it gets a sentence in the operator's words
+            // plus what happens next; the coordinator's own text is the detail behind it, not the
+            // message. A bare Rust error there reads as the harness breaking rather than as one
+            // question the room could not answer.
+            self.rooms.error = Some(format!(
+                "the room could not answer — {e} · the next poll asks again"
+            ));
             return;
         }
         let rows = |v: &Value| -> Value { v.get("rows").cloned().unwrap_or(Value::Null) };

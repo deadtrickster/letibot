@@ -342,6 +342,7 @@ impl App {
                     self.key_ask = Some(KeyAsk {
                         choice: name,
                         provider,
+                        kind: KeyKind::Provider,
                     });
                     self.key_buf.clear();
                     return None;
@@ -536,6 +537,18 @@ impl Pick {
             Pick::Mode => Some("mode"),
             Pick::Model => Some("model"),
             Pick::Verbosity | Pick::Diff | Pick::Repo => None,
+        }
+    }
+
+    /// What the card sets, in the words a cancel names it by: `cancelled — the mode did not change`.
+    /// One spelling per setting, because the sentence is read as the answer to "did that take?".
+    pub(crate) fn setting(self) -> &'static str {
+        match self {
+            Pick::Mode => "the mode",
+            Pick::Model => "the model",
+            Pick::Verbosity => "the verbosity",
+            Pick::Diff => "the diff layout",
+            Pick::Repo => "the repository the header follows",
         }
     }
 

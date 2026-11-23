@@ -14,10 +14,16 @@ impl App {
         let Some(ask) = &self.key_ask else {
             return Vec::new();
         };
-        let card = asks::KeyAsk {
-            provider: ask.provider.clone(),
+        let lines = match &ask.kind {
+            KeyKind::Provider => asks::KeyAsk {
+                provider: ask.provider.clone(),
+            }
+            .lines(w),
+            // rano's `KeyAsk` card is a provider key's - "needs a key this box does not hold" - and
+            // a fabric token is not one. The same card, the same masked field, this head's words.
+            KeyKind::Flowy { rest } => flowy_key_lines(rest, w),
         };
-        row_strings(&card.lines(w), self.cfg.palette())
+        row_strings(&lines, self.cfg.palette())
     }
 
     /// The card that asks before a pane is ended - the daemon's question about killing a
@@ -110,5 +116,32 @@ fn unreadable_prompt_lines(ask: &PromptAsk, w: usize) -> Vec<rano::render::Line>
         ),
         Role::Faint,
     ));
+    out
+}
+
+/// The masked card's words for the fabric's token. The same card a provider's key is typed into -
+/// the composer draws the dots and one line of this sits above it - because a token is exactly the
+/// kind of thing the masked field exists for, and rano's `KeyAsk` card is a provider's: it says
+/// "needs a key this box does not hold", which is not what a seat has not got.
+///
+/// `rest` is what the operator typed between `login` and the flag, echoed so they can see the seat
+/// and address the token will be sent with.
+fn flowy_key_lines(rest: &str, w: usize) -> Vec<rano::render::Line> {
+    use rano::agent::text::{one, wrapped};
+    use rano::style::Role;
+    let mut out = wrapped(
+        "? the flowy seat needs a token this box does not have",
+        w,
+        Role::Pending,
+    );
+    for l in wrapped(
+        "  paste the token below — shown as dots, sent once to the daemon, and it never enters the \
+         conversation or the transcript. enter attaches the seat; esc cancels",
+        w,
+        Role::Faint,
+    ) {
+        out.push(l);
+    }
+    out.push(one(format!("  /flowy login {rest}--token …"), Role::Faint));
     out
 }
