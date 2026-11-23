@@ -312,6 +312,9 @@ fn holds(args: &[String]) -> Result<(), String> {
         .filter(|o| matches_folder(o.repo.as_deref(), parsed.folder.as_deref()))
         .collect();
     let remote = remote_holdings(&store, &places, &owners, parsed.owner.as_deref());
+    // Item 6: the VMs firecode holds for this box, whatever the owner rows say - a VM whose owner
+    // is gone is exactly what a person is looking for here.
+    let firecode = firecode_vms(&store);
     if parsed.json {
         let filtered = Plan {
             owners: owners.iter().map(|o| (*o).clone()).collect(),
@@ -324,6 +327,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         };
         let mut json = filtered.to_json();
         json["remote"] = remote_json(&remote);
+        json["firecode"] = firecode_json(&firecode);
         println!("{json}");
         return Ok(());
     }
@@ -338,6 +342,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         print_spills(&plan.spills);
         print_bounded(&plan.bounded);
         print_remote(&remote);
+        print_firecode(&firecode);
         return Ok(());
     }
     if parsed.top {
@@ -377,6 +382,7 @@ fn holds(args: &[String]) -> Result<(), String> {
     print_spills(&plan.spills);
     print_bounded(&plan.bounded);
     print_remote(&remote);
+    print_firecode(&firecode);
     Ok(())
 }
 
@@ -405,6 +411,145 @@ fn print_remote(by_host: &std::collections::BTreeMap<String, Vec<HoldingRow>>) {
     for line in lifecycle::remote_holdings_lines(by_host) {
         println!("  {line}");
     }
+}
+
+/// Every firecode VM this box knows of, and what it costs: item 6 of the wiring. Read from
+/// `state ls --json` and `pool status --json`, with the owner's session resolved to its title so a
+/// person reads `fc-wiring` and not `s-1794509750373521593`. `None` is a box with no firecode, or
+/// one too old to list its state: `holds` is a report and must never fail over a missing tool.
+struct FirecodeVms {
+    rows: Vec<FirecodeVm>,
+    pool: Vec<letibot_tools::firecode::cli::PoolRow>,
+    /// The last hourly `gc --state` said, and when.
+    gc: Option<letibot_tools::firecode::cli::GcNote>,
+}
+
+struct FirecodeVm {
+    name: String,
+    owner: Option<String>,
+    title: Option<String>,
+    purpose: Option<String>,
+    size: Option<u64>,
+    last_used: Option<String>,
+    work: Option<String>,
+    flagged: bool,
+}
+
+fn firecode_vms(store: &Store) -> FirecodeVms {
+    let mut out = FirecodeVms {
+        rows: Vec::new(),
+        pool: Vec::new(),
+        gc: letibot_tools::firecode::cli::read_gc_note(&lifecycle::data_dir()),
+    };
+    let Some(bin) = letibot_tools::firecode::cli::installed() else {
+        return out;
+    };
+    let Ok(ls) = letibot_tools::firecode::cli::state_ls(&bin) else {
+        return out;
+    };
+    for row in ls.sessions {
+        let owner = row.owner_session().map(str::to_string);
+        let title = owner
+            .as_deref()
+            .and_then(|id| store.session(id).ok().flatten())
+            .and_then(|s| s.title);
+        out.rows.push(FirecodeVm {
+            name: row.name_or_project(),
+            owner,
+            title,
+            purpose: row.purpose,
+            size: row.size,
+            last_used: row.last_used,
+            work: row.work,
+            flagged: row.flagged,
+        });
+    }
+    out.pool = letibot_tools::firecode::cli::pool_status(&bin)
+        .map(|s| s.pool)
+        .unwrap_or_default();
+    out
+}
+
+fn print_firecode(vms: &FirecodeVms) {
+    if vms.rows.is_empty() && vms.pool.is_empty() && vms.gc.is_none() {
+        return;
+    }
+    println!("firecode VMs:");
+    for v in &vms.rows {
+        println!(
+            "  {} {} · {} · {} · last used {} · work {}{}",
+            v.name,
+            match (&v.title, &v.owner) {
+                (Some(t), _) => format!("[{t}]"),
+                (None, Some(o)) => format!("[{o}]"),
+                (None, None) => "[no owner]".to_string(),
+            },
+            v.purpose.as_deref().unwrap_or("purpose not said"),
+            match v.size {
+                Some(n) => bytes(n),
+                None => "size not said".to_string(),
+            },
+            v.last_used.as_deref().unwrap_or("never"),
+            v.work.as_deref().unwrap_or("unknown"),
+            if v.flagged {
+                " · FLAGGED: its work was never copied out"
+            } else {
+                ""
+            },
+        );
+    }
+    if !vms.pool.is_empty() {
+        println!(
+            "  pool: {}",
+            vms.pool
+                .iter()
+                .map(|p| format!(
+                    "{} ({}, {})",
+                    p.name.as_deref().unwrap_or("unnamed"),
+                    p.state.as_deref().unwrap_or("state not said"),
+                    p.purpose.as_deref().unwrap_or("purpose not said")
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if let Some(note) = &vms.gc {
+        println!("  {}", note.gc.sentence());
+    }
+}
+
+fn firecode_json(vms: &FirecodeVms) -> serde_json::Value {
+    serde_json::json!({
+        "vms": vms
+            .rows
+            .iter()
+            .map(|v| serde_json::json!({
+                "name": v.name,
+                "owner": v.owner,
+                "title": v.title,
+                "purpose": v.purpose,
+                "bytes": v.size,
+                "last_used": v.last_used,
+                "work": v.work,
+                "flagged": v.flagged,
+            }))
+            .collect::<Vec<_>>(),
+        "pool": vms
+            .pool
+            .iter()
+            .map(|p| serde_json::json!({
+                "name": p.name,
+                "state": p.state,
+                "purpose": p.purpose,
+            }))
+            .collect::<Vec<_>>(),
+        "gc": vms.gc.as_ref().map(|n| serde_json::json!({
+            "at_ms": n.at_ms,
+            "freed_bytes": n.gc.freed_bytes,
+            "target_reached": n.gc.target_reached,
+            "reason": n.gc.reason,
+        })),
+    })
 }
 
 fn remote_json(by_host: &std::collections::BTreeMap<String, Vec<HoldingRow>>) -> serde_json::Value {

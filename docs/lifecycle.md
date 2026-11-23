@@ -1154,3 +1154,35 @@ Done when:
   label are pruned.
 
 Depends on: G1, G2.
+
+## (f) The firecode lifecycle, wired (2026-11-23)
+
+firecode now offers the primitives (ownership stamps, a pool, `state release`, `state reap`,
+`gc --state`), so letibot drives the VM lifecycle itself and a person has no step left. Every call
+goes through one module, `crates/tools/src/firecode/cli.rs`: the JSON types, one deadline per
+verb, and a refusal - [`Failure::Missing`] - that a caller turns into a single notice and a no-op
+when there is no firecode on the box.
+
+| Step | When | Verb |
+|---|---|---|
+| stamp | every run letibot starts | `up --owner letibot:<session>:<pid> --owner-project <key> --purpose session\|reviewer\|ephemeral\|test [--reuse]`, plus the same facts as `FIRECODE_OWNER…` for an older CLI |
+| release | the end of a session, one-shot, child or package (the backend's `down`) | `state release <project> --json`; exit 3 (`unextracted: true`) keeps the copy, says one line and leaves a record |
+| collect | a firecode-placed package's `leticode_collect` | `state release`, and the collect refuses unless `extraction: out` (or nothing to extract) |
+| reviewer | reviewer dispatch, and its verdict | `pool take --project … --purpose reviewer` before a boot, `pool return --sleep` after; a `running_processes` refusal is answered with `--kill`, reviewers only |
+| reaper | every daemon pass / `letibot gc` | `state reap --owners -` with the live owner ids on stdin, `pool sleep --idle 300`; hourly `gc --state --budget … --max-age …` |
+| report | `letibot holds` | `state ls --json` + `pool status --json`, each VM with its owner's title, purpose, size, last use, work out/in and flagged |
+
+The record a refused release leaves is `<cache>/<name>.unextracted.json` beside the VM's copy. The
+reaper retries `extract <run> --bundle <cache>/<name>.rescue.bundle` once, and flags the run on the
+second pass. The last `gc --state` is written to `<data dir>/firecode-gc.json`, which is where
+`letibot holds` reads a box that is still over its budget.
+
+Config, in `~/.config/letibot/leticode.toml`:
+
+```toml
+[firecode]
+budget = "150G"          # what the hourly `gc --state` keeps the layers under
+max_age_days = 14        # state older than this goes whatever the budget says
+pool_per_project = 2     # this box's answer; firecode's own `limits.per_project` is what it enforces
+```
+
