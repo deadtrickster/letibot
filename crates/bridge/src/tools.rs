@@ -1401,6 +1401,15 @@ impl Bridge {
         folder: Option<&str>,
         vm: bool,
     ) -> Result<Value, String> {
+        let session = session.trim();
+        // Item 3: a package placed in a VM on THIS box is collected by firecode's own answer, not
+        // by an ssh to a host - there is no host to name, and where the work IS decides whether
+        // "collected" is true.
+        if let Ok(h) = self.head(session)
+            && matches!(h.placement, Some(Placement::Firecode))
+        {
+            return firecode_collect(session);
+        }
         let hosts = Hosts::load();
         let name = host.trim();
         let Some(declared) = hosts.get(name) else {
@@ -2374,6 +2383,46 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Item 3: what "collected" means for a package this box placed in a firecode VM. The guest's work
+/// has to be OUT (`extraction: out`, or nothing to extract) before anything says so; a release that
+/// refuses is the collect saying what is missing, never a success.
+fn firecode_collect(session: &str) -> Result<Value, String> {
+    let Some(bin) = letibot_tools::firecode::cli::installed() else {
+        return Err(format!(
+            "`{session}` is placed in a firecode VM on this box and there is no `firecode` here to \
+             say whether its work came out. Nothing was collected"
+        ));
+    };
+    firecode_collect_with(&bin, session)
+}
+
+/// [`firecode_collect`] with the CLI a caller names, so a test drives it with a stub rather than
+/// `$FIRECODE_BIN`, which every other reader in the binary shares.
+pub fn firecode_collect_with(bin: &Path, session: &str) -> Result<Value, String> {
+    use letibot_tools::firecode::cli;
+    let project = letibot_tools::firecode::FirecodeBackend::project_of(session);
+    let released = cli::release(bin, cli::Which::Project(&project));
+    match released {
+        Ok(r) if r.work_is_out() => Ok(json!({
+            "session": session,
+            "vm": "firecode",
+            "collected": true,
+            "extraction": r.extraction.clone(),
+            "bytes": r.bytes,
+            "said": r.sentence(session),
+        })),
+        Ok(r) => Err(format!(
+            "`{session}` is NOT collected: {} A collect that said so would be claiming work that \
+             is still in the VM.",
+            r.sentence(session)
+        )),
+        Err(e) => Err(format!(
+            "`{session}` is NOT collected: {}. Nothing was claimed",
+            e.sentence()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2762,5 +2811,45 @@ mod tests {
             "hello there"
         );
         assert_eq!(first_line(""), "");
+    }
+
+    /// Item 3: a firecode-placed package is collected only when firecode says its work came out.
+    /// `extraction: out` collects; a refusal is the collect naming what is missing, never a success.
+    #[test]
+    fn a_firecode_package_is_collected_only_when_its_work_is_out() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = letibot_sessionlog::testing::scratch_root()
+            .join(format!("fc-collect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("firecode");
+        let write = |body: &str, code: i32| {
+            std::fs::write(
+                &bin,
+                format!("#!/bin/sh\n[ \"$#\" -eq 0 ] && exit 0\necho '{body}'\nexit {code}\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // `out`: collected, and the answer carries the extraction.
+        write(
+            "{\"released\":true,\"extraction\":\"out\",\"bytes\":131072}",
+            0,
+        );
+        let ok = firecode_collect_with(&bin, "s-1794").expect("work is out");
+        assert_eq!(ok["collected"], true);
+        assert_eq!(ok["extraction"], "out");
+        assert_eq!(ok["bytes"], 131072);
+
+        // A release that refuses (exit 3) is a refusal to claim: what is missing is the answer.
+        write(
+            "{\"released\":false,\"reason\":\"its work was never copied out\",\
+             \"unextracted\":true,\"hint\":\"firecode extract r1 --bundle b\"}",
+            3,
+        );
+        let why = firecode_collect_with(&bin, "s-1794").expect_err("work never came out");
+        assert!(why.contains("NOT collected"), "{why}");
+        assert!(why.contains("never copied out"), "{why}");
+        assert!(why.contains("firecode extract r1"), "{why}");
     }
 }
