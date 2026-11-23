@@ -72,6 +72,7 @@ pub mod scrub;
 pub mod server;
 pub mod suggest;
 pub mod testing;
+pub mod vault;
 pub mod view;
 pub mod warning;
 pub mod wire;

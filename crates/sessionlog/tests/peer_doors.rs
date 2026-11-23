@@ -33,6 +33,16 @@ const SEAT_CHILD: &str = "LETIBOT_PEER_SEAT_CHILD";
 const LAUNCHER_CHILD: &str = "LETIBOT_PEER_LAUNCHER_CHILD";
 const CHILD_SOCKET: &str = "LETIBOT_PEER_DOORS_SOCKET";
 
+/// One ask, as a helper sends it: a prompt and the command it came from. No key, so nothing is
+/// cached and every card is its own question.
+fn want(prompt: &str, command: &str) -> letibot_sessionlog::vault::SecretWant {
+    letibot_sessionlog::vault::SecretWant {
+        prompt: prompt.to_string(),
+        command: command.to_string(),
+        ..Default::default()
+    }
+}
+
 fn socket_path(tag: &str) -> std::path::PathBuf {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -173,7 +183,10 @@ fn the_tool_trees_child() {
 
     // And the one door this connection is here for: `sudo`'s password.
     client
-        .askpass("[sudo] password for dead: ", "sudo apt install x")
+        .askpass(
+            &want("[sudo] password for dead: ", "sudo apt install x"),
+            "",
+        )
         .expect("the ask is written");
     let (secret, why) = secret(&mut reader);
     println!("ASKED {secret:?} why={why:?}");

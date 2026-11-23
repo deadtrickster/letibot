@@ -855,14 +855,37 @@ pub enum ClientFrame {
         #[serde(default)]
         item_id: Option<String>,
     },
-    /// `sudo` wants a password: sent by the askpass helper the session's shell runs as
-    /// `SUDO_ASKPASS`, attached as a head of its own kind.
-    Askpass { prompt: String, command: String },
-    /// A head's answer to a `SecretRequested`: the password, or `None` for a refusal. Never logged,
+    /// A program wants a secret: sent by the helper the session's shell runs as `SUDO_ASKPASS`,
+    /// `SSH_ASKPASS` or `GIT_ASKPASS` (one binary, by path), or by `letibot-secret ask`, attached
+    /// as a connection of its own kind.
+    Askpass {
+        prompt: String,
+        command: String,
+        /// `letibot-secret --for`: what will use the value.
+        #[serde(default)]
+        for_what: String,
+        /// The name the value may be kept under. With no key there is no cache and no merge.
+        #[serde(default)]
+        key: Option<String>,
+        /// How long the asker allows the value to be kept, in ms.
+        #[serde(default)]
+        keep_ms: Option<u64>,
+        /// The machine(s) it is going to, as the asker spelled them.
+        #[serde(default)]
+        host: String,
+        /// The session to ask in. Empty on a connection that is already seated in one; named on
+        /// the askpass-only socket, which is reached through a forward and holds no session.
+        #[serde(default)]
+        session: String,
+    },
+    /// A head's answer to a `SecretRequested`: the value, or `None` for a refusal. Never logged,
     /// never persisted, never in a `CommandIssued`.
     Secret {
         req_id: String,
         secret: Option<String>,
+        /// How long the person chose to keep it, in ms: `None` is this command only.
+        #[serde(default)]
+        keep_ms: Option<u64>,
     },
     /// A head's own screen as it drew it: the answer to `ScreenRequested`, the exact rows this head
     /// last rendered.

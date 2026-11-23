@@ -22,6 +22,16 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
     ))
 }
 
+/// One ask, as a helper sends it: the prompt the program used and the command it came from.
+/// A test's ask names no key, so nothing is cached and each card is its own question.
+fn want(prompt: &str, command: &str) -> letibot_sessionlog::vault::SecretWant {
+    letibot_sessionlog::vault::SecretWant {
+        prompt: prompt.to_string(),
+        command: command.to_string(),
+        ..Default::default()
+    }
+}
+
 fn start(tag: &str) -> (Arc<Hub>, ServerHandle) {
     let hub = Hub::new("s");
     let h = serve(hub.clone(), socket_path(tag)).expect("bind");
@@ -69,8 +79,11 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
         let (mut c, _h, mut r) =
             HeadClient::attach(&helper_path, "s", u64::MAX, "askpass", "sudo", caps)
                 .expect("helper");
-        c.askpass("[sudo] password for dead: ", "sudo apt install x")
-            .expect("ask");
+        c.askpass(
+            &want("[sudo] password for dead: ", "sudo apt install x"),
+            "",
+        )
+        .expect("ask");
         wait_for(&mut r, |f| match f {
             ServerFrame::Secret { secret, .. } => Some(secret.clone()),
             _ => None,
@@ -86,6 +99,7 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
                 prompt,
                 command,
                 deadline,
+                ..
             } => {
                 assert!(prompt.contains("password for dead"));
                 assert_eq!(command, "sudo apt install x");
@@ -150,7 +164,7 @@ fn a_refusal_and_a_late_answer_are_both_honest() {
             Caps::default(),
         )
         .expect("helper");
-        c.askpass("[sudo] password: ", "sudo rm -rf /")
+        c.askpass(&want("[sudo] password: ", "sudo rm -rf /"), "")
             .expect("ask");
         wait_for(&mut r, |f| match f {
             ServerFrame::Secret { secret, .. } => Some(secret.clone()),

@@ -12,6 +12,16 @@ use letibot_sessionlog::server::{ServerHandle, serve_registry};
 use letibot_sessionlog::testing::{PATIENCE, wait_within};
 use letibot_sessionlog::{SessionEvent, send_line};
 
+/// One ask, as a helper sends it: a prompt and the command it came from. No key, so nothing is
+/// cached and every card is its own question.
+fn want(prompt: &str, command: &str) -> letibot_sessionlog::vault::SecretWant {
+    letibot_sessionlog::vault::SecretWant {
+        prompt: prompt.to_string(),
+        command: command.to_string(),
+        ..Default::default()
+    }
+}
+
 fn socket_path(tag: &str) -> std::path::PathBuf {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -287,7 +297,7 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
     // the way that path is answered. `askpass` only writes the frame - the server's reader
     // thread is the one that blocks - so this needs no thread of its own.
     helper
-        .askpass("[sudo] password for dead: ", "sudo true")
+        .askpass(&want("[sudo] password for dead: ", "sudo true"), "")
         .expect("the helper asks");
     let req_id = {
         let deadline = Instant::now() + Duration::from_secs(10);

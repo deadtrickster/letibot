@@ -1381,14 +1381,34 @@ pub enum SessionEvent {
     /// A tool asked what the operator is looking at. Every attached head that can render answers
     /// with the pane it is showing.
     ScreenRequested { req_id: String },
-    /// `sudo` inside a session's command wants a password: the head shows the command and sudo's
-    /// prompt, takes the password and answers down the same connection.
+    /// A program inside a session's command wants a secret: `sudo`'s password, an `ssh`
+    /// passphrase, a `git` password, or anything a command asked for by name
+    /// (`letibot-secret`). The head shows what will use it and what it came from, takes the value
+    /// masked, and answers down the same connection.
     SecretRequested {
         req_id: String,
         prompt: String,
         command: String,
-        /// Unix millis; after it the helper gives up and `sudo` fails.
+        /// Unix millis; after it the helper gives up and the program fails.
         deadline: u64,
+        /// What will use it: `letibot-secret --for`, in the asker's words. Empty for a plain
+        /// `sudo`, whose `prompt` already says what it is for.
+        #[serde(default)]
+        for_what: String,
+        /// The name this value would be filed under. `None` is a one-off and cannot be kept.
+        #[serde(default)]
+        key: Option<String>,
+        /// How long the person may choose to keep it, in ms. `None` when the ask has no key, so
+        /// "this command only" is the only answer.
+        #[serde(default)]
+        keep_ms: Option<u64>,
+        /// The machine(s) the value is going to, as the asker spelled them.
+        #[serde(default)]
+        host: String,
+        /// How many asks this ONE card settles: `1`, and more when a second helper asked for the
+        /// same key while the card was up.
+        #[serde(default)]
+        waiting: u32,
     },
     /// A run of the operator's own is waiting for an answer. The `!` line is the one run whose
     /// input the daemon cannot supply, so a person is asked and the answer goes to the program.

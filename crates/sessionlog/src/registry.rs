@@ -906,6 +906,11 @@ pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> 
 /// head that asked in between kept the old table until the next event.
 pub type JobListSource = Arc<dyn Fn() -> Vec<crate::protocol::JobEntry> + Send + Sync>;
 
+/// What happens to a value the person gave, for one session tree: the daemon's masker, handed the
+/// tree and the value. Installed once at startup - see [`Registry::set_secret_kept`] - because the
+/// masking belongs to the process host and this crate has none.
+pub type SecretKept = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 /// The settings row that says what holds the daemon's idle exit.
 pub const IDLE_EXIT_KEY: &str = "idle exit";
 
@@ -1006,6 +1011,14 @@ pub struct Registry {
     /// protocol. A skew is a fact about a head's own connection, so one attachment says it once:
     /// a head that reconnects on every keystroke must not fill the transcript with it.
     skew_said: Mutex<std::collections::BTreeSet<String>>,
+    /// The secrets the person has given this daemon, by session tree and key. In memory only: a
+    /// value here is one a command may be answered from, never one that can be read back.
+    /// See [`crate::vault`].
+    vault: crate::vault::SecretVault,
+    /// Where a given value goes so it cannot come back out through a tool's output. Installed by
+    /// the daemon at startup, because the masking is the process host's and this crate has no
+    /// process host. `None` in a test, whose outputs are its own.
+    secret_kept: Mutex<Option<SecretKept>>,
 }
 
 /// What the worker was woken for. A second variant rather than a second loop:
@@ -1159,7 +1172,35 @@ impl Registry {
             slugs: Mutex::new(std::collections::HashMap::new()),
             store_older: Mutex::new(None),
             skew_said: Mutex::new(std::collections::BTreeSet::new()),
+            vault: crate::vault::SecretVault::new(),
+            secret_kept: Mutex::new(None),
         })
+    }
+
+    /// The secrets the person has given this daemon. See [`crate::vault`].
+    pub fn vault(&self) -> &crate::vault::SecretVault {
+        &self.vault
+    }
+
+    /// Install what happens to a value the person gave: every command of the session tree it was
+    /// given in must not be able to show it. Called by the daemon at startup with its process
+    /// host's masker, and by nothing else - the masking is a fact about a running command, which
+    /// this crate does not have.
+    pub fn set_secret_kept(&self, kept: SecretKept) {
+        *self.secret_kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(kept);
+    }
+
+    /// A value was given in `tree`: hand it to the masker, or to nothing when no daemon installed
+    /// one. Never logged, and never stored: the callback is the only copy that outlives this call.
+    pub fn secret_given(&self, tree: &str, value: &str) {
+        let kept = self
+            .secret_kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(kept) = kept {
+            kept(tree, value);
+        }
     }
 
     /// A subagent's name, recorded by the runner that spawned it: what the brief carries for a

@@ -18,7 +18,7 @@ use crate::protocol::{
     REJECT_UNKNOWN_SESSION, ServerFrame,
 };
 use crate::registry::{Registry, SessionWiring};
-use crate::wire::{FrameReader, FrameWriter, WireError};
+use crate::wire::{FrameReader, FrameWriter, MAX_DAEMON_FRAME_BYTES, WireError};
 
 /// Answer a `Settings` request: `rows` is called under the lock that writes the frame. The
 /// pump and this answer both write rows, so a read outside the lock could land after a newer
@@ -50,6 +50,20 @@ pub fn peer_socket_path(head: &Path) -> PathBuf {
     head.with_file_name(format!("{stem}-peer.sock"))
 }
 
+/// The socket that serves the password ask and nothing else: `$KEY.sock` -> `$KEY-ask.sock`.
+///
+/// It exists for the machine on the other end of an `ssh -R` forward (a session whose tools run
+/// on a host): a forwarded connection arrives from a process this daemon cannot claim as its own
+/// tree, so it must not be able to reach the seats the visible socket's own peers reach. The
+/// frame it accepts is `Askpass`, it holds no seat, and every other frame is refused by name.
+pub fn askpass_socket_path(head: &Path) -> PathBuf {
+    let stem = head
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "harnessd".into());
+    head.with_file_name(format!("{stem}-ask.sock"))
+}
+
 fn libc_getuid() -> u32 {
     // No `libc` dependency in a crate that otherwise has none: `getuid` is in the C library
     // every target links, and declaring it works on Linux and macOS alike. The uid only
@@ -76,6 +90,10 @@ pub struct ServerHandle {
     visible: Option<PathBuf>,
     visible_id: Option<(u64, u64)>,
     visible_accept: Option<JoinHandle<()>>,
+    /// The password-ask-only socket, which an `ssh -R` forward reaches: no seat, one frame.
+    askpass: Option<PathBuf>,
+    askpass_id: Option<(u64, u64)>,
+    askpass_accept: Option<JoinHandle<()>>,
     /// The claim on this folder, held for the process's life. Dropped LAST (declaration
     /// order), after the socket file is gone, so no daemon can slip in between.
     claim: Option<FolderClaim>,
@@ -218,10 +236,16 @@ impl ServerHandle {
         if let Some(v) = self.visible.clone() {
             let _ = UnixStream::connect(&v);
         }
+        if let Some(a) = self.askpass.clone() {
+            let _ = UnixStream::connect(&a);
+        }
         if let Some(h) = self.accept.take() {
             let _ = h.join();
         }
         if let Some(h) = self.visible_accept.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.askpass_accept.take() {
             let _ = h.join();
         }
         // Our own files, and only ours - see [`unlink_if_ours`]. The accept threads remove them
@@ -231,6 +255,9 @@ impl ServerHandle {
         }
         if let (Some(v), Some(id)) = (self.visible.as_ref(), self.visible_id) {
             unlink_if_ours(v, id);
+        }
+        if let (Some(a), Some(id)) = (self.askpass.as_ref(), self.askpass_id) {
+            unlink_if_ours(a, id);
         }
         // `self.claim` is dropped here, last, after the paths are clear: the lock is released
         // only once this daemon's sockets are gone, so a start that slots in behind us cannot
@@ -247,6 +274,9 @@ impl Drop for ServerHandle {
         }
         if let (Some(v), Some(id)) = (self.visible.as_ref(), self.visible_id) {
             unlink_if_ours(v, id);
+        }
+        if let (Some(a), Some(id)) = (self.askpass.as_ref(), self.askpass_id) {
+            unlink_if_ours(a, id);
         }
     }
 }
@@ -305,6 +335,86 @@ fn refusal_for(session_id: &str, live: &[String]) -> String {
         "{REJECT_UNKNOWN_SESSION} {session_id:?}; it holds {}{rest}",
         named.join(", ")
     )
+}
+
+/// Serve one connection on the askpass-only socket: the password ask, and nothing else.
+///
+/// The forward from a remote host is the reason this socket exists, and it is the reason the
+/// door is this narrow. The connection arrives from a process this daemon cannot claim as its own
+/// tree (the ssh client's forward), so the visible socket's rule - *a peer from inside the tree
+/// gets the password ask* - cannot classify it. Here there is nothing to classify: the frame
+/// `Askpass` is answered, every other frame is refused by name, and no seat, snapshot, event or
+/// vote is ever handed out.
+fn serve_askpass_on(registry: Arc<Registry>, stream: UnixStream) -> Result<(), WireError> {
+    let mut reader = FrameReader::with_limit(stream.try_clone()?, MAX_DAEMON_FRAME_BYTES);
+    let mut writer = FrameWriter::new(stream);
+    loop {
+        match reader.read::<ClientFrame>() {
+            Ok(ClientFrame::Askpass {
+                prompt,
+                command,
+                for_what,
+                key,
+                keep_ms,
+                host,
+                session,
+            }) => {
+                // A session is NAMED here, because this connection holds none. The ask is
+                // scoped to that session's tree, and a session this daemon does not hold is a
+                // refusal rather than a guess at the default one.
+                let hub = registry.get(&session);
+                let Some(hub) = hub else {
+                    writer.write(&ServerFrame::Secret {
+                        secret: None,
+                        why: Some(format!(
+                            "this daemon holds no session {session:?}: the askpass socket asks \
+                             in the session the caller names, and nothing was shown"
+                        )),
+                    })?;
+                    return Ok(());
+                };
+                const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+                let want = crate::vault::SecretWant {
+                    prompt,
+                    command,
+                    for_what,
+                    key,
+                    keep: keep_ms.map(std::time::Duration::from_millis),
+                    host,
+                };
+                let heads = hub.attached_heads();
+                let (secret, why) = match crate::vault::obtain(&registry, &hub, want, PATIENCE) {
+                    crate::vault::Answered::Value(v) => (Some(v), None),
+                    crate::vault::Answered::Refused => (
+                        None,
+                        Some("a head was shown the card and the person declined it".to_string()),
+                    ),
+                    crate::vault::Answered::TimedOut => (None, Some(no_password_sentence(heads))),
+                };
+                writer.write(&ServerFrame::Secret { secret, why })?;
+            }
+            // A head going away says nothing.
+            Err(WireError::Eof) => return Ok(()),
+            Ok(_) => {
+                let reason =
+                    ("this socket serves the password ask and nothing else, and the frame this \
+                     connection sent is not one. A session's commands reach the daemon on its \
+                     visible socket; this one is opened only so a program on another machine \
+                     can raise a card.")
+                        .to_string();
+                writer.write(&ServerFrame::Bye { reason })?;
+                return Ok(());
+            }
+            Err(e) => {
+                let reason = format!(
+                    "this connection sent a frame this daemon could not read ({e}). This \
+                     daemon speaks protocol {PROTOCOL_VERSION}."
+                );
+                let _ = writer.write(&ServerFrame::Bye { reason });
+                return Err(e);
+            }
+        }
+    }
 }
 
 /// Serve a connection to a daemon that holds no live session. It has no seat: there is no hub to
@@ -725,6 +835,66 @@ pub fn serve_registry_rooted(
             }
         })?;
 
+    // And the socket that serves the password ask and nothing else, for the machine on the far
+    // end of an `ssh -R` forward: no seat is taken on it, so a connection this daemon cannot
+    // claim as its own tree reaches exactly one door.
+    let ask_path = askpass_socket_path(&path);
+    let _ = std::fs::remove_file(&ask_path);
+    let ask_listener = UnixListener::bind(&ask_path)?;
+    std::fs::set_permissions(&ask_path, std::fs::Permissions::from_mode(0o600))?;
+    let _ = ask_listener.set_nonblocking(true);
+    let ask_id = std::fs::metadata(&ask_path)
+        .ok()
+        .map(|m| (m.dev(), m.ino()));
+    let ar = registry.clone();
+    let apath = ask_path.clone();
+    let aid = ask_id;
+    let ask_accept = std::thread::Builder::new()
+        .name("ask-accept".into())
+        .spawn(move || {
+            loop {
+                if ar.is_closed() {
+                    break;
+                }
+                match ask_listener.accept() {
+                    Ok((s, _)) => {
+                        let _ = s.set_nonblocking(false);
+                        if ar.is_closed() {
+                            break;
+                        }
+                        let r2 = ar.clone();
+                        let _ =
+                            std::thread::Builder::new()
+                                .name("ask-conn".into())
+                                .spawn(move || {
+                                    if let Err(e) = serve_askpass_on(r2, s)
+                                        && !matches!(e, WireError::Eof)
+                                    {
+                                        eprintln!("askpass connection ended: {e}");
+                                    }
+                                });
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(e) if is_transient(&e) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "askpass accept failed and cannot continue: {e} ({:?}). A remote \
+                             session's `sudo` has no door until this daemon is restarted.",
+                            e.kind()
+                        );
+                        break;
+                    }
+                }
+            }
+            if let Some(id) = aid {
+                unlink_if_ours(&apath, id);
+            }
+        })?;
+
     Ok(ServerHandle {
         path,
         registry,
@@ -733,6 +903,9 @@ pub fn serve_registry_rooted(
         visible: Some(visible_path),
         visible_id,
         visible_accept: Some(visible_accept),
+        askpass: Some(ask_path),
+        askpass_id: ask_id,
+        askpass_accept: Some(ask_accept),
         claim,
     })
 }
@@ -1017,38 +1190,79 @@ pub fn serve_conn_on(
                 })?;
                 break Ok(());
             }
-            Ok(ClientFrame::Askpass { prompt, command }) => {
-                // `sudo` in this session wants a password. Raise it and wait here: this connection is
-                // the helper's, and it sends nothing else.
+            Ok(ClientFrame::Askpass {
+                prompt,
+                command,
+                for_what,
+                key,
+                keep_ms,
+                host,
+                session,
+            }) => {
+                // A program in this session wants a secret. Raise it (or answer it from the
+                // vault) and wait here: this connection is the helper's, and it sends nothing
+                // else. The whole rule - the cache, the merge, the masking - is `vault::obtain`.
                 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
-                let deadline = crate::event::now_ms() + PATIENCE.as_millis() as u64;
+                // A seated connection names no session, or names its own: naming ANOTHER one
+                // would be a command raising a card in a session it does not speak for.
+                if !session.is_empty() && session != seat.hub.session_id() {
+                    seat.hub.warn(
+                        "secret_wrong_session",
+                        format!(
+                            "a helper asked for a secret in {session} from a connection seated in \
+                             {}: refused, and nothing was shown",
+                            seat.hub.session_id()
+                        ),
+                    );
+                    writer.lock().unwrap().write(&ServerFrame::Secret {
+                        secret: None,
+                        why: Some(
+                            "this helper is attached to another session and may not raise a \
+                             card here"
+                                .to_string(),
+                        ),
+                    })?;
+                    return Ok(());
+                }
+                let want = crate::vault::SecretWant {
+                    prompt,
+                    command,
+                    for_what,
+                    key,
+                    keep: keep_ms.map(std::time::Duration::from_millis),
+                    host,
+                };
                 let heads = seat.hub.attached_heads();
-                let (req_id, rx) = seat.hub.request_secret(&prompt, &command, deadline);
-                let (secret, why) = match rx.recv_timeout(PATIENCE) {
-                    // A password: nothing to explain.
-                    Ok(Some(s)) => (Some(s), None),
-                    // A head answered the card and declined it. That is a decision, and
-                    // the helper must not report it as a timeout.
-                    Ok(None) => (
+                let (secret, why) = match crate::vault::obtain(&registry, &seat.hub, want, PATIENCE)
+                {
+                    crate::vault::Answered::Value(v) => (Some(v), None),
+                    // A head answered the card and declined it. That is a decision, and the
+                    // helper must not report it as a timeout.
+                    crate::vault::Answered::Refused => (
                         None,
                         Some("a head was shown the card and the person declined it".to_string()),
                     ),
                     // The deadline - and WHICH silence, which the one sentence cannot carry.
-                    Err(_) => {
-                        seat.hub
-                            .abandon_secret(&req_id, "nobody, before the deadline");
-                        (None, Some(no_password_sentence(heads)))
-                    }
+                    crate::vault::Answered::TimedOut => (None, Some(no_password_sentence(heads))),
                 };
                 writer
                     .lock()
                     .unwrap()
                     .write(&ServerFrame::Secret { secret, why })?;
             }
-            Ok(ClientFrame::Secret { req_id, secret }) => {
+            Ok(ClientFrame::Secret {
+                req_id,
+                secret,
+                keep_ms,
+            }) => {
                 // A head's answer. Not a command: it is never queued, announced or
                 // logged with its payload. `give_secret` publishes the settlement.
-                if !seat.hub.give_secret(&req_id, secret, &identity) {
+                if !seat.hub.give_secret(
+                    &req_id,
+                    secret,
+                    keep_ms.map(std::time::Duration::from_millis),
+                    &identity,
+                ) {
                     seat.hub.warn(
                         "secret_late",
                         format!(

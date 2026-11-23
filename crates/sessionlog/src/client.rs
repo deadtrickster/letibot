@@ -44,6 +44,52 @@ impl From<WireError> for ClientError {
     }
 }
 
+/// What a helper got back for one ask: the value, or the sentence saying why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretAnswer {
+    pub secret: Option<String>,
+    /// The daemon's own words for a refusal or a silence. `None` when a value came back.
+    pub why: Option<String>,
+}
+
+/// Ask on the askpass-only socket: no seat, one frame, one answer.
+///
+/// That socket is what an `ssh -R` forward points at (a session whose tools run on another
+/// host), so the connection holds no session and NAMES the one it is asking in. There is no
+/// `Attach` and no `Hello`: the first frame this daemon writes back is the answer.
+pub fn askpass_unseated(
+    path: impl AsRef<Path>,
+    session: &str,
+    want: &crate::vault::SecretWant,
+) -> Result<SecretAnswer, String> {
+    let stream = UnixStream::connect(path.as_ref())
+        .map_err(|e| format!("{}: {e}", path.as_ref().display()))?;
+    let clone = stream
+        .try_clone()
+        .map_err(|e| format!("{}: {e}", path.as_ref().display()))?;
+    let mut reader = FrameReader::with_limit(clone, MAX_DAEMON_FRAME_BYTES);
+    let mut writer = FrameWriter::new(stream);
+    writer
+        .write(&ClientFrame::Askpass {
+            prompt: want.prompt.clone(),
+            command: want.command.clone(),
+            for_what: want.for_what.clone(),
+            key: want.key.clone(),
+            keep_ms: want
+                .keep
+                .map(|k| k.as_millis().min(u128::from(u64::MAX)) as u64),
+            host: want.host.clone(),
+            session: session.to_string(),
+        })
+        .map_err(|e| e.to_string())?;
+    match reader.read::<ServerFrame>() {
+        Ok(ServerFrame::Secret { secret, why }) => Ok(SecretAnswer { secret, why }),
+        Ok(ServerFrame::Bye { reason }) => Err(reason),
+        Ok(_) => Err("the askpass socket answered with a frame that is not an answer".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// A connected head.
 pub struct HeadClient {
     writer: FrameWriter<UnixStream>,
@@ -721,12 +767,24 @@ impl HeadClient {
         Ok(())
     }
 
-    /// A head's answer to a `SecretRequested`: the password, or `None` to refuse.
+    /// A head's answer to a `SecretRequested`: the value, or `None` to refuse, this command only.
     /// Not a command: no request id comes back, nothing is announced.
     pub fn secret(&mut self, req_id: &str, secret: Option<String>) -> Result<(), ClientError> {
+        self.secret_keeping(req_id, secret, None)
+    }
+
+    /// The same answer, with the person's choice of a window written down: `Some(ms)` keeps the
+    /// value in the daemon's memory for that long, and only the ask's key can find it again.
+    pub fn secret_keeping(
+        &mut self,
+        req_id: &str,
+        secret: Option<String>,
+        keep_ms: Option<u64>,
+    ) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Secret {
             req_id: req_id.to_string(),
             secret,
+            keep_ms,
         })?;
         Ok(())
     }
@@ -750,12 +808,24 @@ impl HeadClient {
         Ok(())
     }
 
-    /// The `askpass` helper's one frame: `sudo` wants a password for `command`.
-    /// The answer arrives on the reader as [`ServerFrame::Secret`].
-    pub fn askpass(&mut self, prompt: &str, command: &str) -> Result<(), ClientError> {
+    /// The helper's one frame: a program wants a secret, and here is everything the card shows.
+    /// The answer arrives on the reader as [`ServerFrame::Secret`]. `session` is empty on a
+    /// connection seated in a session, and named only on the askpass-only socket.
+    pub fn askpass(
+        &mut self,
+        want: &crate::vault::SecretWant,
+        session: &str,
+    ) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Askpass {
-            prompt: prompt.to_string(),
-            command: command.to_string(),
+            prompt: want.prompt.clone(),
+            command: want.command.clone(),
+            for_what: want.for_what.clone(),
+            key: want.key.clone(),
+            keep_ms: want
+                .keep
+                .map(|k| k.as_millis().min(u128::from(u64::MAX)) as u64),
+            host: want.host.clone(),
+            session: session.to_string(),
         })?;
         Ok(())
     }

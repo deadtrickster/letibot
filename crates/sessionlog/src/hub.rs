@@ -716,11 +716,15 @@ struct Inner {
     /// Where a card goes when no head here can decide it: the daemon's pending set. `None` keeps
     /// the card here alone. See [`crate::pending_asks`].
     escalation: Option<Arc<crate::pending_asks::PendingAsks>>,
-    /// Open password requests: `req_id` -> the channel to the `askpass` connection
-    /// waiting on it. The secret goes through the channel and nowhere else - not the log,
-    /// not the view, not a `CommandIssued`.
-    secrets: HashMap<String, std::sync::mpsc::SyncSender<Option<String>>>,
+    /// Open secret requests: `req_id` -> what the ask is for and the channel the `askpass`
+    /// connection waits on. The value goes through the channel and nowhere else - not the log,
+    /// not the view, not a `CommandIssued`. The ask is kept beside it so a card that turns out to
+    /// answer MORE than one ask can say so without raising a second question.
+    secrets: HashMap<String, OpenSecret>,
     next_secret: u64,
+    /// The session whose tree this one belongs to: `""` until the daemon says, and then the
+    /// root's id. What a kept secret is scoped by - see [`Hub::tree_root`].
+    tree_root: String,
     /// Open screen requests: `req_id` -> the tool call waiting for a head to draw itself.
     /// First answer wins; later ones find nothing and are dropped.
     screens: HashMap<String, std::sync::mpsc::SyncSender<(usize, usize, Vec<String>)>>,
@@ -737,6 +741,42 @@ pub type ActivitySource = Arc<dyn Fn(&Hub) -> crate::activity::Activity + Send +
 /// How the daemon above a hub says what this session's harness holds. A closure like
 /// [`ActivitySource`], and for its reason.
 pub type FootprintSource = Arc<dyn Fn() -> Footprint + Send + Sync>;
+
+/// One open secret request, as the daemon is holding it: what the person is being asked for, and
+/// where the answer goes. The value itself is on the channel and nowhere else.
+#[derive(Debug)]
+pub struct OpenSecret {
+    pub want: crate::vault::SecretWant,
+    /// The deadline the helper gave, in unix millis: what a card that gains a waiter re-says.
+    pub deadline: u64,
+    pub tx: std::sync::mpsc::SyncSender<Option<(String, Option<std::time::Duration>)>>,
+}
+
+/// The event that raises a secret card, from the ask plus how many waits this one card settles.
+///
+/// Two fields are the CARD's rather than the asker's: `keep_ms` is what the person may choose (the
+/// asker's requested window clamped to the daemon's ceiling, and `None` for an ask with no key),
+/// and `waiting` is `1` until a second ask joins the same key.
+fn told(
+    req_id: &str,
+    want: &crate::vault::SecretWant,
+    deadline: u64,
+    waiting: u32,
+) -> SessionEvent {
+    SessionEvent::SecretRequested {
+        req_id: req_id.to_string(),
+        prompt: want.prompt.clone(),
+        command: want.command.clone(),
+        deadline,
+        for_what: want.for_what.clone(),
+        key: want.key.clone(),
+        keep_ms: want
+            .offered_keep()
+            .map(|k| k.as_millis().min(u128::from(u64::MAX)) as u64),
+        host: want.host.clone(),
+        waiting,
+    }
+}
 
 /// What a session looks like from outside it: enough for a picker, and cheap enough to compute
 /// for every session on every list.
@@ -864,6 +904,7 @@ impl Hub {
                 escalation: None,
                 secrets: HashMap::new(),
                 next_secret: 0,
+                tree_root: String::new(),
                 screens: HashMap::new(),
                 next_screen: 0,
                 tap: Default::default(),
@@ -1163,48 +1204,95 @@ impl Hub {
         self.lock().relays.keys().cloned().collect()
     }
 
-    /// `sudo` wants a password: raise it to every head, hand back the receiver
-    /// the `askpass` connection waits on. `deadline` is when the helper gives up,
-    /// so a head can show it.
+    /// `sudo` (or `ssh`, or `git`) wants a secret: raise it to every head, hand back the receiver
+    /// the helper's connection waits on. `deadline` is when the helper gives up, so a head can
+    /// show it.
+    #[allow(clippy::type_complexity)] // the answer is a value and the keep the person chose
     pub fn request_secret(
         &self,
-        prompt: &str,
-        command: &str,
+        want: &crate::vault::SecretWant,
         deadline_ms: u64,
-    ) -> (String, std::sync::mpsc::Receiver<Option<String>>) {
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<Option<(String, Option<std::time::Duration>)>>,
+    ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let req_id = {
             let mut g = self.lock();
             g.next_secret += 1;
             let id = format!("secret-{}-{}", g.log.session_id(), g.next_secret);
-            g.secrets.insert(id.clone(), tx);
+            g.secrets.insert(
+                id.clone(),
+                OpenSecret {
+                    want: want.clone(),
+                    deadline: deadline_ms,
+                    tx,
+                },
+            );
             id
         };
-        self.publish(SessionEvent::SecretRequested {
-            req_id: req_id.clone(),
-            prompt: prompt.to_string(),
-            command: command.to_string(),
-            deadline: deadline_ms,
-        });
+        self.publish(told(&req_id, want, deadline_ms, 1));
         (req_id, rx)
     }
 
-    /// A head answered a password request. `true` when a helper was still
-    /// waiting on it; the log records that it was answered and by whom, never
+    /// A second ask joined the card `req_id`: say how many waits this one card settles, so the
+    /// person knows one password covers both. The card keeps its id, so a head replaces the fact
+    /// and not what is being typed into it.
+    pub fn announce_secret_waiting(&self, req_id: &str, waiting: u32) {
+        let open = self
+            .lock()
+            .secrets
+            .get(req_id)
+            .map(|s| (s.want.clone(), s.deadline));
+        if let Some((want, deadline)) = open {
+            self.publish(told(req_id, &want, deadline, waiting));
+        }
+    }
+
+    /// A head answered a secret request, and said how long the value may be kept. `true` when a
+    /// helper was still waiting on it; the log records that it was answered and by whom, never
     /// what with.
-    pub fn give_secret(&self, req_id: &str, secret: Option<String>, by: &str) -> bool {
-        let tx = self.lock().secrets.remove(req_id);
-        let Some(tx) = tx else {
+    pub fn give_secret(
+        &self,
+        req_id: &str,
+        secret: Option<String>,
+        keep: Option<std::time::Duration>,
+        by: &str,
+    ) -> bool {
+        let open = self.lock().secrets.remove(req_id);
+        let Some(open) = open else {
             return false;
         };
         let given = secret.is_some();
-        let delivered = tx.try_send(secret).is_ok();
+        // A keep on a refusal is not a fact, and a keep longer than the daemon allows is the
+        // head's mistake: both are dropped here rather than kept as a window nobody asked for.
+        let keep = keep
+            .filter(|_| given)
+            .map(|k| k.min(crate::vault::KEEP_MOST));
+        let delivered = open.tx.try_send(secret.map(|s| (s, keep))).is_ok();
         self.publish(SessionEvent::SecretSettled {
             req_id: req_id.to_string(),
             given: given && delivered,
             by: by.to_string(),
         });
         delivered
+    }
+
+    /// The session whose tree this one belongs to: what a kept secret is scoped by, so a subagent
+    /// shares its parent's window and a stranger shares nothing. This session's own id until the
+    /// daemon says otherwise.
+    pub fn tree_root(&self) -> String {
+        let g = self.lock();
+        if g.tree_root.is_empty() {
+            g.log.session_id().to_string()
+        } else {
+            g.tree_root.clone()
+        }
+    }
+
+    /// Set at open by the daemon, from the session's own record of who spawned it.
+    pub fn set_tree_root(&self, root: impl Into<String>) {
+        self.lock().tree_root = root.into();
     }
 
     /// Ask every attached head to draw itself; the first head to answer wins. The daemon cannot
