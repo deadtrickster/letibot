@@ -80,10 +80,15 @@ provider, for one person's box ([README.md:46-56](../README.md)).
   answer its parent and then run a `[meanwhile]` turn nobody hears; closing a root session drops held
   results. R91 leaves five items in all, and these three are the ones an operator meets
   ([TODO.md:593](../TODO.md)).
-- **The queue can lose a push and leaves debris.** A commit pushed after the first review is never
-  re-enqueued, and nothing reaps failed or refused children's worktrees; the filed measurement is 48
-  registered trees, 62 directories and 240 GB of checkouts ([TODO.md:668](../TODO.md) R92, items 11
-  and 15).
+- **The queue can lose a push.** A commit pushed after a review row exists does not move that row:
+  the enqueue is an `INSERT OR IGNORE`, so only a `withdrawn` row whose head moved is put back in
+  line (`mergequeue/review.rs`, `enqueue_finished`). Debris is no longer part of this: a failed
+  child's empty clean tree is retired (`mergequeue::git::retire_if_empty`), and every queue pass
+  sweeps a registration whose directory is gone and a tree whose `.git` names a missing gitdir,
+  keeping every tree that is still there, is its own repository, or that a row or a live process
+  names (`serve::reap_worktree_debris` over `git::reap_worktrees`). The filed measurement, before
+  either sweep, was 48 registered trees, 62 directories and 240 GB of checkouts
+  ([2026-10-12-edge-cases.md:580](reviews/2026-10-12-edge-cases.md) R92, items 11 and 15).
 - **An inherited `LETIBOT_SOCKET` outranks the workspace's own socket**, so `--status` and `--stop`
   can act on another workspace's daemon while printing this one ([bootstrap.md:177](bootstrap.md)).
 - **One test is a broken instrument.** `loop_closes` drives live inference on `127.0.0.1:8080`, passes
@@ -105,9 +110,10 @@ provider, for one person's box ([README.md:46-56](../README.md)).
 2. **Close the three deferred core-loop findings** ([2026-11-03-harnessd.md:628-636](reviews/2026-11-03-harnessd.md)).
    Each already has a named smallest fix and each fails silently, so no head can show the operator
    that it happened.
-3. **Reap worktrees and re-review pushes** ([TODO.md:668](../TODO.md) R92, items 11 and 15). Dead
-   checkouts and a commit that is never reviewed are both met by the operator rather than by a test,
-   and neither needs a decision from anyone.
+3. **Re-review pushes** ([2026-10-12-edge-cases.md:580](reviews/2026-10-12-edge-cases.md) R92,
+   item 11). Dead checkouts are reaped now (R92 item 15, `serve::reap_worktree_debris` and
+   `git::retire_if_empty`); a commit pushed onto a branch whose review row already exists still
+   reaches no reviewer, and that needs no decision from anyone.
 4. **Run a placement on a real host and close its live facts** ([TODO.md:312](../TODO.md),
    [TODO.md:362](../TODO.md), [TODO.md:166](../TODO.md)). Every placement path has tests of its
    shape, and none has carried a commit out of a guest or held six packages at once, so the riskiest

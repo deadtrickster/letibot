@@ -22,8 +22,9 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// on it this instant.
 const TICK: Duration = Duration::from_millis(250);
 /// The pace a monitor may speak at besides its TTL: one ring a window. A condition that holds every
-/// tick would otherwise spend a turn a tick. Thirty seconds is above the 15 s `promote` threshold
-/// and far below any TTL.
+/// tick would otherwise spend a turn a tick. Thirty seconds is far below any TTL, and below the 60 s
+/// a foreground command runs before the runtime promotes it to the background
+/// ([`crate::builtins::bash::SLOW_FOREGROUND`]), so a ring never races that promotion.
 pub const FIRING_RATE: Duration = Duration::from_secs(30);
 
 /// What a monitor watches. The built-in conditions are the first-class, listable
