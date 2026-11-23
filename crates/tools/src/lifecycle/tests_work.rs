@@ -60,6 +60,10 @@ impl Fixture {
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "t@example.com"],
             vec!["config", "user.name", "T"],
+            // The fixture's own signing policy: the reaper's git inherits the box's config,
+            // and a global `commit.gpgsign` needs a key no seat has.
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["config", "tag.gpgSign", "false"],
         ] {
             let out = std::process::Command::new("git")
                 .arg("-C")

@@ -419,6 +419,10 @@ mod tests {
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "t@example.com"],
             vec!["config", "user.name", "T"],
+            // The fixture states its own signing policy: `git` here is the product's, so it
+            // inherits the box's config, and a global `commit.gpgsign` needs a key no seat has.
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["config", "tag.gpgSign", "false"],
         ] {
             let out = std::process::Command::new("git")
                 .arg("-C")
