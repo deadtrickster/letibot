@@ -379,8 +379,11 @@ impl Mode {
         requires: &[Prereq::WritableBackend, Prereq::Confinement],
         summary: "write, exec and network all go through without asking, the always-ask \
                   list included: the VM is the boundary and nothing inside it reaches \
-                  this box. Only a secret leaving the boundary is still refused. The \
-                  confinement prerequisite is what refuses this point on a bare host.",
+                  this box. Nothing inside the VM is refused either: this box's secret \
+                  stores are not on the guest's disk, so the flow rule has nothing there \
+                  to protect. What still holds is a call that runs HERE - a copy-out \
+                  target on this box, a tool that acts on it. The confinement \
+                  prerequisite is what refuses this point on a bare host.",
     };
 
     /// `allow-all` on a box with no boundary, which the operator consented to: the boundary

@@ -1456,7 +1456,9 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
         // operator's box.
         Boundary::Structural => {
             "The always-ask list does not ask here: the boundary is structural and nothing inside \
-             it reaches this box. A secret leaving the boundary is still refused."
+             it reaches this box. The flow rule does not refuse there either — this box's secret \
+             stores are not on the guest's disk. What still holds is a call that runs on THIS \
+             box: a copy-out target, or a tool that acts here."
         }
         // The same absent list on a box with no boundary at all, and the reason it is absent is a
         // person's answer rather than a confinement - which is exactly the difference the two

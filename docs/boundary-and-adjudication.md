@@ -80,6 +80,16 @@ them, including at `allow-all`:
 browser entries are session-cookie stores, and the list is kept in step with the read-side
 `intent::SECRET_DIRS`.
 
+### Where these rules are about THIS box
+
+Every row above, and every store the flow rule knows, is a path on the machine the daemon runs on.
+A session whose tools run in a firecode VM works on a filesystem that has none of them:
+`Surroundings.guest` (set from `Config::placement` by `surroundings_for`) makes `region_of` place no
+store, and the never-write list holds only outside a guest. `allow-all` there refuses nothing and
+asks nothing. What is not exempt is a call that runs on this box - a copy-out target, a tool that
+acts on the host - and the guest's own secret values still cannot travel into it
+(`FirecodeBackend::run` refuses a secret environment pair).
+
 `never_hit` asks the question of the **spelling**: every string argument is split on `/` and `\`, and
 a segment equal to an entry refuses (a multi-segment entry is matched against the whole string).
 `ssh_resolution_hit` asks it of the **path**: a path argument, resolved through `remote::real`, that
@@ -88,6 +98,14 @@ workspace named `keys`. Arguments that are content and not a path - `content`, `
 `new_string`, `pattern`, `text`, `abstract`, `query` - are skipped, because a write's body names no
 path; `bash`'s `command` is scanned word by word, the one place a string is the only evidence there
 is.
+
+### What a store is NOT
+
+`secret_hit` only names a store for a path that resolves to one: absolute, `~`-rooted, or relative
+to the directory the command runs in (`cd ~ && cat .netrc`). A relative word is a name in the
+workspace, and inside the workspace the file-NAME rule is off, so a project's `.netrc` - a fixture,
+a denylist entry, a `grep` pattern - is the project's file. The directory rules (`.ssh`, `.aws`) do
+stand anywhere, because a key directory is a key directory wherever it sits.
 
 ## 4. The three layers
 

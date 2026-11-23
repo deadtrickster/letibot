@@ -113,6 +113,45 @@ fn the_vocab_comparison_is_the_file_name_not_the_path() {
     );
 }
 
+/// A VM's filesystem is the guest's. The classifier is handed a guest seat there, so this box's
+/// secret stores say nothing about a path in it - see `Surroundings::guest` - while the host keeps
+/// them. An ssh placement is NOT this: its rules are that machine's own and its own stores are
+/// still somebody's, so it is left as it was.
+#[test]
+fn a_vm_placement_makes_the_gate_a_guest_seat() {
+    let mut cfg = Config::for_this_box("/w");
+    cfg.seat = Seat::Runner;
+    let here = surroundings_for(&cfg);
+    assert!(!here.guest, "the host seat is this box");
+    assert!(here.home.is_some(), "and it knows the home it protects");
+
+    for placement in [
+        letibot_tools::builtins::task::Placement::Firecode,
+        letibot_tools::builtins::task::Placement::RemoteVm("lab2x1".to_string()),
+    ] {
+        cfg.placement = placement.clone();
+        let away = surroundings_for(&cfg);
+        assert!(away.guest, "{placement:?} runs in a guest");
+        assert!(
+            away.home.is_none(),
+            "{placement:?} is not this box's home, and `~` there is the guest's"
+        );
+        assert!(
+            !matches!(
+                away.region_of("~/.ssh/id_rsa"),
+                letibot_tools::intent::Region::Secret(_)
+            ),
+            "{placement:?} named a store of this box's"
+        );
+    }
+
+    cfg.placement = letibot_tools::builtins::task::Placement::Remote("lab2x1".to_string());
+    assert!(
+        !surroundings_for(&cfg).guest,
+        "an ssh placement is that machine's rules, not a VM's copy"
+    );
+}
+
 #[test]
 fn the_shell_is_declared_pinned_only_where_an_exec_backend_exists() {
     // The wiring: the pin claim rides on the host spawn's env hygiene, which `letibot-tools` holds, so a seat with an

@@ -5424,12 +5424,22 @@ pub(crate) fn whole_host_brief() -> String {
 }
 
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
-    let mut env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
-        .with_known_hosts();
+    // WHICH MACHINE the tools run on decides what a path means. In a VM the filesystem is the
+    // guest's: nothing of this box's is on it, `~` is the guest's home, and the store table has
+    // nothing to say - see `Surroundings::guest`. The placement is what chose the backend, so this
+    // is read from it and from nowhere else.
+    let mut env = if cfg.placement.is_vm() {
+        letibot_tools::Surroundings::in_a_guest(cfg.workspace.display().to_string())
+    } else {
+        letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
+            .with_known_hosts()
+    };
     // The gate places a path by region, and the scratch is its own region - see
     // `Region::Scratch`. Without this it reads as shared `/tmp`, and destruction
-    // there is an ask.
-    env.scratch = Some(scratch_dir().display().to_string());
+    // there is an ask. A guest has the host's scratch path in no sense at all.
+    if !env.guest {
+        env.scratch = Some(scratch_dir().display().to_string());
+    }
     // The shell is pinned whenever the backend can start a process: both the confined and the unconfined backend spawn
     // through `HostProcesses`, which `env_clear`s and fixes `PATH`, so a bare command resolves through a pinned PATH and
     // the `Unknown` that refused `echo` was the wrong claim for an unconfined seat.
