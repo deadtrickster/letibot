@@ -1,0 +1,7 @@
+# The terminal's own palette: the head draws no role of its own, so every colour on the screen is
+# one the reader's terminal already chose (the sixteen ANSI slots, or whatever their theme is).
+#
+# This file therefore names NOTHING, and that is its whole content: an empty theme is rano's
+# default table, which is spelled in ANSI slot names. `terminal` is the default when head.toml
+# names no theme, and what `auto` falls back to when the terminal will not say how light its
+# background is (OSC 11). `dark` and `light` are this directory's other two files.

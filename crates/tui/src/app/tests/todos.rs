@@ -733,7 +733,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
     let hint = SLASH_COMMANDS
         .iter()
         .find(|(n, _)| *n == "todo")
-        .map(|(_, h)| *h)
+        .map(|(_, key)| crate::i18n::t(key))
         .unwrap_or("");
     assert!(
         hint.contains("postpone") && hint.contains("resume"),

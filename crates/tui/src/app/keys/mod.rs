@@ -2,7 +2,7 @@
 //! composer owns it, and what a typed line means to the card that is up.
 
 use super::*;
-use crate::ui::cards::decision::{ARMING_SAID, MarkedWords, marked_words};
+use crate::ui::cards::decision::{MarkedWords, arming_said, marked_words};
 use letibot_sessionlog::view::OpenDecision;
 use letibot_ui::editor::Reaction;
 
@@ -57,6 +57,9 @@ impl App {
                 if self.light_background != Some(light) {
                     self.light_background = Some(light);
                     self.invalidate_history();
+                    // The one setting whose answer this is: `theme = "auto"` is dark or light by
+                    // this report, so a head that started before the terminal spoke re-picks.
+                    self.retheme();
                 }
                 return None;
             }
@@ -506,7 +509,7 @@ impl App {
         // A card in its first moments does not take the Enter: it may be the keystroke that sent
         // the line the operator was typing. See `DEC_ARM_MS`.
         if self.card_arming() {
-            self.say(ARMING_SAID);
+            self.say(arming_said());
             return None;
         }
         let d = self.open.first()?;

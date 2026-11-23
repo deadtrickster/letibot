@@ -2,7 +2,7 @@
 //! shell command, and the prompt history Up recalls.
 
 use super::*;
-use crate::ui::cards::decision::{ARMING_SAID, marked_words};
+use crate::ui::cards::decision::{arming_said, marked_words};
 use letibot_transcript::{TranscriptItem, UserPart};
 
 impl App {
@@ -129,7 +129,7 @@ impl App {
             // the keystroke that sent this line.
             if self.card_arming() {
                 self.set_composer(&text);
-                self.say(ARMING_SAID);
+                self.say(arming_said());
                 return None;
             }
             let at = self.sel.min(d.options.len().saturating_sub(1));
@@ -294,7 +294,7 @@ impl App {
     pub(crate) fn command_names(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = SLASH_COMMANDS
             .iter()
-            .map(|(n, h)| ((*n).to_string(), (*h).to_string()))
+            .map(|(n, key)| ((*n).to_string(), verb_hint(key)))
             .collect();
         for v in self.daemon_verbs() {
             // A verb both halves reach is offered once, with the head's hint. `/jobs`

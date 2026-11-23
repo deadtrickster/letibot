@@ -254,6 +254,106 @@ impl App {
         None
     }
 
+    /// `/theme`, bare: every name this build offers - `auto`, the three it ships, and the reader's
+    /// own files - with the one in force marked. A listing and not a picker, because the names are
+    /// the whole of it and a card would put the same four words behind a keystroke.
+    pub(crate) fn theme_lines(&self) -> Vec<String> {
+        let dir = self
+            .prefs_path
+            .as_deref()
+            .map(crate::theme::dir_of)
+            .unwrap_or_default();
+        let in_force = self.theme_name();
+        let asked = self
+            .theme_pref
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or("terminal");
+        let mut out = vec![format!(
+            "themes — `/theme NAME` sets one; head.toml names the one this head starts on ({asked})"
+        )];
+        out.push(String::new());
+        for (name, source) in crate::theme::listing(&dir) {
+            let now = if name == in_force { "▸" } else { " " };
+            let mut row = format!("{now} {name:<10} {}", source.as_str());
+            // What `auto` resolved to, said on the row that chose it: the answer a person is
+            // looking for when their terminal is light and the screen is not.
+            if name == crate::theme::AUTO {
+                row.push_str(&format!(" — `{in_force}` here"));
+            }
+            out.push(row);
+        }
+        out.push(String::new());
+        out.push(
+            "a file of the same name in ~/.config/letibot/themes overrides one this build ships"
+                .to_string(),
+        );
+        out
+    }
+
+    /// `/theme NAME`: the palette, and the one line of `head.toml` that makes it survive a restart.
+    /// A name nothing has is said and not written: `/theme` is the list to read it off.
+    pub(crate) fn set_theme(&mut self, typed: &str) -> Option<Action> {
+        let name = typed.trim();
+        if name.is_empty() {
+            self.slash_out = Some(("/theme".to_string(), self.theme_lines()));
+            self.push_surface(Surface::Listing);
+            return None;
+        }
+        let dir = self
+            .prefs_path
+            .as_deref()
+            .map(crate::theme::dir_of)
+            .unwrap_or_default();
+        let known = crate::theme::listing(&dir)
+            .into_iter()
+            .any(|(n, _)| n == name);
+        if !known {
+            self.say(&format!(
+                "`{name}` is not a theme — {}; `/theme` lists them with the file each one is in",
+                crate::theme::shipped()
+            ));
+            return None;
+        }
+        let written = match self.prefs_path.clone() {
+            Some(path) => match crate::prefs::set_theme(&path, name) {
+                Ok(()) => String::new(),
+                Err(e) => format!(" (not saved: {e})"),
+            },
+            None => " (not saved: this head has no head.toml)".to_string(),
+        };
+        self.theme_pref = Some(name.to_string());
+        // The same read the start does, so `/theme` and a restart cannot disagree about what a name
+        // means - and so the `color.` lines still ride on top. The NAME is the one just chosen even
+        // when the write failed: the palette the reader asked for is what this head draws now.
+        let (mut p, said) = match self.prefs_path.clone() {
+            Some(path) => crate::prefs::load(&path),
+            None => (Default::default(), Vec::new()),
+        };
+        p.theme = Some(name.to_string());
+        let path = self.prefs_path.clone().unwrap_or_default();
+        self.apply_theme(&path, &p);
+        // Colours changed under every drawn row, and the history holds rendered rows.
+        self.invalidate_history();
+        let mut trouble: Vec<String> = said;
+        trouble.extend(std::mem::take(&mut self.theme_problems));
+        let trouble = if trouble.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", trouble.join(" · "))
+        };
+        let now = self.theme_name();
+        self.say(&format!("theme {now}{written}{trouble}"));
+        None
+    }
+
+    /// The theme's own name for the status row and the config pane: what is in force, after `auto`
+    /// has read the terminal's background.
+    pub(crate) fn theme_name(&self) -> String {
+        crate::theme::effective(self.theme_pref.as_deref(), self.light_background)
+    }
+
     /// A door verb the person typed, turned into the call the wire wants, or a sentence saying why not.
     /// The head knows only the three facts on the row: which field a bare line fills, what kind it is, and
     /// which fields have defaults. A row with no bare form returns the daemon's own `why_json`.
@@ -588,6 +688,12 @@ impl App {
                     return None;
                 }
                 self.set_diff(&rest)
+            }
+            // The palette: `/theme` lists every name this build offers and where each one lives,
+            // `/theme NAME` sets it and writes the one line of `head.toml` that keeps it.
+            _ if verb_arg(cmd, "theme").is_some() => {
+                let rest = verb_arg(cmd, "theme").unwrap_or("").trim().to_string();
+                self.set_theme(&rest)
             }
             // `/v` keeps meaning the next rung: it is an alias in `HEAD_COMMAND_ALIASES`, deliberately not offered by
             // tab and deliberately still taken, since one key's worth of cycling is a promise this head made.
@@ -1384,170 +1490,77 @@ impl App {
     }
 }
 
+/// Every slash verb, and the catalog id of its one-line help.
+///
+/// The NAME is not translated - a command is a command in every language, and a translated one is a
+/// verb nobody can type - so only the sentence after it comes from the catalog, in
+/// `crates/tui/messages/`. A verb's id is `verb.<name>`, with the space in `/reseat summarise`
+/// spelled `-`.
 pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("new", "TITLE — start a fresh session"),
-    ("sessions", "the session picker"),
-    ("switch", "ID or list number — go to another session"),
-    (
-        "forget",
-        "ID — nothing here deletes: this points at /archive",
-    ),
-    (
-        "archive",
-        "[ID] — put a session out of sight and keep every row of it",
-    ),
-    (
-        "close",
-        "[ID] — let go of a session without hiding it; its rows stay in the store",
-    ),
-    ("rename", "NAME — name the session you are in"),
-    (
-        "invite",
-        "SESSION [ROOM] - let a session hear and speak in another project's room",
-    ),
-    (
-        "leave",
-        "SESSION [ROOM] - take an invited session out of a project room",
-    ),
-    ("help", "the key and command reference"),
-    ("status", "the bottom border's telemetry, full screen"),
-    ("think", "fold or unfold the model's reasoning"),
-    (
-        "tools",
-        "what this conversation can call, and what it only looks like it can",
-    ),
-    (
-        "default-model",
-        "what a NEW session starts on; /models switches this one",
-    ),
-    (
-        "verbosity",
-        "how much reaches the transcript: the card, or a rung by name",
-    ),
-    ("diff", "how a diff is drawn: unified or side by side"),
-    (
-        "repo",
-        "which of the workspace's repositories the header follows",
-    ),
-    (
-        "copy",
-        "the open ctrl-v output, or the last reply, onto the clipboard",
-    ),
-    ("notes", "what this head has shown — and how to retire one"),
-    (
-        "config",
-        "every setting, the runtime-editable ones editable in place",
-    ),
-    ("mode", "the mode picker — or /mode NAME to type it"),
-    ("jobs", "open or close the background-jobs pane"),
-    (
-        "asks",
-        "every question waiting on you, listed whole without answering any",
-    ),
-    (
-        "monitors",
-        "open or close the monitors pane: what this session is watching",
-    ),
-    (
-        "pane",
-        "the plugin panes this session has — /pane NAME opens one: a dashboard a plugin \
-         describes, drawn by this head",
-    ),
-    (
-        "plugin",
-        "the plugin layers a person placed here, and whether each is pinned — /plugin trust NAME \
-         pins the bytes on disk now (a built-in needs no pin: it is this binary's own), \
-         /plugin untrust NAME takes a pin back",
-    ),
-    (
-        "queue",
-        "open or close the merge-queue pane: what is landing on main, and why it is not",
-    ),
+    ("new", "verb.new"),
+    ("sessions", "verb.sessions"),
+    ("switch", "verb.switch"),
+    ("forget", "verb.forget"),
+    ("archive", "verb.archive"),
+    ("close", "verb.close"),
+    ("rename", "verb.rename"),
+    ("invite", "verb.invite"),
+    ("leave", "verb.leave"),
+    ("help", "verb.help"),
+    ("status", "verb.status"),
+    ("think", "verb.think"),
+    ("tools", "verb.tools"),
+    ("default-model", "verb.default-model"),
+    ("verbosity", "verb.verbosity"),
+    ("diff", "verb.diff"),
+    ("theme", "verb.theme"),
+    ("repo", "verb.repo"),
+    ("copy", "verb.copy"),
+    ("notes", "verb.notes"),
+    ("config", "verb.config"),
+    ("mode", "verb.mode"),
+    ("jobs", "verb.jobs"),
+    ("asks", "verb.asks"),
+    ("monitors", "verb.monitors"),
+    ("pane", "verb.pane"),
+    ("plugin", "verb.plugin"),
+    ("queue", "verb.queue"),
     // `/skills NAME` hands the body over; the daemon injects it, so the head sends the name and
     // the rest of the line.
-    (
-        "skills",
-        "the skills this box has, one row each: enter opens the skill's file in the editor, `s` \
-         (or `/skills NAME`) hands its body to the session, and `/skills NAME rest of line` \
-         sends the rest on as your prompt in the same turn",
-    ),
-    (
-        "rooms",
-        "open or close the chat rooms: the host room, one room per project and your DMs; what you \
-         type posts as operator; `/rooms sidebar on|off` keeps the list beside the transcript",
-    ),
-    (
-        "signals",
-        "what followed each sender's room messages: acted on, replies, silent wakes with their \
-         tokens, null posts refused. Needs `/rooms` to have been open",
-    ),
-    (
-        "dm",
-        "NAME TEXT - a direct message as operator, in the rooms view",
-    ),
-    (
-        "search",
-        "TEXT - matches in the room /rooms has open; `n` and `N` step through them, and \
-         `/search` with nothing after it closes the search",
-    ),
-    (
-        "standing",
-        "open or close the standing-notes pane: every note the harness reads into the prompt, \
-         with the form the budget gave each one — verbatim, or an index over it",
-    ),
+    ("skills", "verb.skills"),
+    ("rooms", "verb.rooms"),
+    ("signals", "verb.signals"),
+    ("dm", "verb.dm"),
+    ("search", "verb.search"),
+    ("standing", "verb.standing"),
     // The verbs and the ruling that the table is the union: five of these had a chord and no word, so they were
     // unreachable from a pipe and `/help` had no name for them, and two were implemented and simply not listed.
-    ("todos", "open or close the todos pane (ctrl-t)"),
-    (
-        "todo",
-        "TEXT adds one of YOUR rows · done N · rm N · postpone N · resume N — N numbers your half; \
-         `postpone`/`resume` also take a row's own WORDS, which is how you set aside one the model \
-         wrote",
-    ),
-    ("subagents", "open or close the subagent tree (ctrl-g)"),
-    (
-        "peek",
-        "ID — read one subagent's output without leaving this session",
-    ),
-    ("resume", "ID — bring a session on disk back and go there"),
-    (
-        "promote",
-        "move the running command to the background (ctrl-o)",
-    ),
-    (
-        "models",
-        "which model answers: /models is a menu, /models PROVIDER/MODEL switches \
-         (/models glm-coding --key opens the masked card that stores the key)",
-    ),
-    (
-        "resync",
-        "throw this head's state away and take a fresh snapshot",
-    ),
-    ("cells", "MESSAGE — send it with a copy of this screen"),
-    (
-        "fb",
-        "NOTE — mark this moment (fb+ good, fb- bad; #words are tags; alt-g / alt-b without typing)",
-    ),
-    ("compact", "summarise this session and fork it"),
-    (
-        "reseat",
-        "rebuild the prompt from the tools seated now, keeping the conversation",
-    ),
-    (
-        "reseat summarise",
-        "the same, but summarise the conversation instead of carrying it",
-    ),
-    ("interrupt", "stop the running turn"),
-    ("quit", "leave the head"),
+    ("todos", "verb.todos"),
+    ("todo", "verb.todo"),
+    ("subagents", "verb.subagents"),
+    ("peek", "verb.peek"),
+    ("resume", "verb.resume"),
+    ("promote", "verb.promote"),
+    ("models", "verb.models"),
+    ("resync", "verb.resync"),
+    ("cells", "verb.cells"),
+    ("fb", "verb.fb"),
+    ("compact", "verb.compact"),
+    ("reseat", "verb.reseat"),
+    ("reseat summarise", "verb.reseat-summarise"),
+    ("interrupt", "verb.interrupt"),
+    ("quit", "verb.quit"),
     // The three this table was missing, and the test below is why they cannot be missed again: `/dismiss` and
     // `/notes` are one action under two words, and two aliases the dispatcher already answered.
-    (
-        "dismiss",
-        "retire this head's notes — the same as /notes dismiss",
-    ),
-    ("settings", "every setting — the same as /config"),
-    ("stats", "this head's counters — the same as /status"),
+    ("dismiss", "verb.dismiss"),
+    ("settings", "verb.settings"),
+    ("stats", "verb.stats"),
 ];
+
+/// A verb's one-line help, in the language the head draws in.
+pub(crate) fn verb_hint(key: &str) -> String {
+    crate::i18n::t(key).to_string()
+}
 
 /// Which of a daemon row's `choices` its `value` names - the reading both the picker's cursor and the card's `← now` use.
 /// A row's `value` is a name plus whatever qualifies it:

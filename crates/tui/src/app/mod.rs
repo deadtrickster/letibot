@@ -645,6 +645,13 @@ pub struct App {
     /// started a clock on, which a direct write to `notice` can still make: a note with no clock
     /// is the note that can never be cleared, so every writer goes through [`App::say`].
     pub(crate) notice_until: Option<u64>,
+    /// The theme `head.toml` names, as written: `auto` included, because what it resolves to is a
+    /// function of the terminal's background, and that report can still arrive.
+    pub(crate) theme_pref: Option<String>,
+    /// The language the head draws its own words in - `[ui] language` and the environment, resolved
+    /// once at start. The catalogs are `crate::i18n`'s; this is the fact for `/language` and for a
+    /// test that has to know which words a frame was drawn with.
+    pub(crate) lang: crate::i18n::Lang,
     /// What the theme `head.toml` names could not supply, held from `apply_theme` until
     /// `load_prefs` says every problem of the file in one notice.
     pub(crate) theme_problems: Vec<String>,
@@ -1528,7 +1535,9 @@ impl App {
             raw_calls: false,
             notice: None,
             notice_until: None,
+            theme_pref: None,
             theme_problems: Vec::new(),
+            lang: crate::i18n::Lang::En,
             pick: None,
             mode_confirm: None,
             mode_asked: None,

@@ -1200,7 +1200,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
         assert!(screen.contains(opt), "`{opt}` was trimmed away:\n{screen}");
     }
     assert!(
-        screen.contains(crate::ui::cards::decision::LADDER_HINT),
+        screen.contains(crate::ui::cards::decision::ladder_hint()),
         "the hint is the fourth thing the loop used to eat:\n{screen}"
     );
     // And the wall is where it belongs: above, with a seam. The count is the
@@ -1694,4 +1694,103 @@ fn a_stored_fact_fills_only_what_the_head_did_not_watch() {
         a.call_decisions.contains_key("s.0"),
         "the stored decision did not fill the gap"
     );
+}
+
+/// A permission card in Russian, at 80 columns: the rungs, the sentence about what a grant lasts,
+/// the keys row and the words a typed line becomes are the head's own and are all translated; the
+/// diacritics and the longer words do not push a row past the frame; and nothing of the migrated
+/// English is left on the card.
+#[test]
+fn a_permission_card_reads_in_russian_at_eighty_columns() {
+    use letibot_sessionlog::event::{DecisionOption, OptionKind};
+    // The labels the DAEMON sends for a call that could write a rule, which is the shape a person
+    // meets on this card: two fixed rungs and two that carry a value.
+    let rung = |id: &str, label: &str, kind: OptionKind| DecisionOption {
+        option_id: id.into(),
+        label: label.into(),
+        kind,
+    };
+    let d = OpenDecision {
+        options: vec![
+            rung("allow_once", "Allow this one", OptionKind::AllowOnce),
+            rung(
+                "allow_session",
+                "Allow `cargo` (this class) for the rest of the session",
+                OptionKind::AllowSession,
+            ),
+            rung(
+                "allow_always",
+                "Always allow `cargo test` (written to ~/.config/letibot/permission.json)",
+                OptionKind::AllowAlways,
+            ),
+            rung("deny", "Deny", OptionKind::RejectOnce),
+            rung(
+                "deny_and_tell",
+                "Deny, and tell the model why",
+                OptionKind::RejectAlways,
+            ),
+        ],
+        ..decision_with(&[])
+    };
+
+    let a = app();
+    let english = a.decision_lines(&d, 80).join("\n");
+    crate::i18n::set_active(crate::i18n::Lang::Ru);
+    let russian = a.decision_lines(&d, 80).join("\n");
+    // A sentence the card wraps over two rows is still that sentence: compare with runs of
+    // whitespace flattened, or a wrapped line reads as a missing one.
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let russian_flat = flat(&russian);
+    // The rungs, in Russian, with the values the daemon put in them kept as they are.
+    for said in [
+        "Разрешить один раз",
+        "Запретить",
+        "Запретить и объяснить модели почему",
+        "Разрешить `cargo` (этот класс) до конца сеанса",
+        "Разрешить всегда `cargo test`",
+    ] {
+        assert!(
+            russian.contains(said),
+            "`{said}` is not on the card:\n{russian}"
+        );
+    }
+    // The fixed lines: the keys, what a grant lasts, and the way out.
+    for said in [
+        crate::i18n::t("card.ladder_hint"),
+        crate::i18n::t("card.grant.session"),
+        crate::i18n::t("card.grant.durable"),
+        crate::i18n::t("card.put_away"),
+    ] {
+        assert!(
+            russian_flat.contains(&flat(said)),
+            "`{said}` is not on the card:\n{russian}"
+        );
+    }
+    // And nothing of the migrated English is left. `edit a file` is the daemon's summary of the
+    // call - data, and not this card's to translate.
+    for gone in [
+        "Allow this one",
+        "Deny, and tell the model why",
+        "Always allow",
+        "esc puts it away",
+        "a session grant lasts",
+        "a durable rule is written",
+        "↑↓ or a row number marks",
+    ] {
+        assert!(
+            !russian.contains(gone),
+            "`{gone}` is still there:\n{russian}"
+        );
+        assert!(
+            english.contains(gone),
+            "`{gone}` is missing from the English card"
+        );
+    }
+
+    // The frame holds: no row is wider than the terminal, in COLUMNS.
+    for (i, line) in russian.lines().enumerate() {
+        let w = crate::ui::render::visible_width(line);
+        assert!(w <= 80, "row {i} is {w} columns wide: {line:?}");
+    }
+    crate::i18n::set_active(crate::i18n::Lang::En);
 }

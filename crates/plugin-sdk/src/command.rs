@@ -110,6 +110,7 @@ pub const HOST_VERBS: &[&str] = &[
     "switch",
     "t",
     "think",
+    "theme",
     "todos",
     "tools",
     "v",

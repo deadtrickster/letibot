@@ -2473,12 +2473,16 @@ pub struct RoomKeys {
 }
 
 /// `[ui]` in a `leticode.toml`: how the head lays itself out. `rooms_sidebar` keeps the Rooms,
-/// Sessions and Queues list beside the transcript; `None` is off.
+/// Sessions and Queues list beside the transcript; `language` is the head's own language - `auto`
+/// follows the environment's `LC_ALL` / `LC_MESSAGES` / `LANG`. `None` is off, and English.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiKeys {
     pub rooms_sidebar: Option<bool>,
     /// The sidebar's starting width in columns; a width the operator drags to wins over it.
     pub rooms_sidebar_width: Option<u16>,
+    /// A language code (`en`, `ru`) or `auto`. Read by the head (`tui/src/app/prefs.rs`), which is
+    /// where the catalogs are: a code this build does not carry is refused there, by name.
+    pub language: Option<String>,
 }
 
 /// `[sessions]` in a `leticode.toml`. `auto_reseat: None` is on: a seat nobody answers moves to
@@ -2721,12 +2725,31 @@ fn peering_keys(
 }
 
 fn ui_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<UiKeys, String> {
-    let keys = "the keys are `rooms_sidebar` (true or false) and `rooms_sidebar_width` (columns)";
+    let keys = "the keys are `rooms_sidebar` (true or false), `rooms_sidebar_width` (columns) and \
+                `language` (a two-letter code, or `auto`)";
     let table = table_at(value, path, text, "ui", keys)?;
     let mut out = UiKeys::default();
     for (key, v) in table {
         let from = at(path, text, key, user);
         match key.as_str() {
+            "language" => {
+                let word = v.as_str().ok_or_else(|| {
+                    format!("{from}: [ui] language is a word, not {}", kind_of(v))
+                })?;
+                // The SHAPE is checked here and the words are the head's: which languages this
+                // build carries is a fact about its catalogs, and a list here would be a second
+                // copy of it that can drift.
+                let ok = word.len() >= 2
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+                if !ok {
+                    return Err(format!(
+                        "{from}: [ui] language `{word}` is a language code (`ru`, `en`) or `auto`"
+                    ));
+                }
+                out.language = Some(word.to_string());
+            }
             "rooms_sidebar" => {
                 out.rooms_sidebar = Some(v.as_bool().ok_or_else(|| {
                     format!(
@@ -3489,6 +3512,9 @@ impl LeticodeConfig {
             ui: UiKeys {
                 rooms_sidebar: other.ui.rooms_sidebar.or(self.ui.rooms_sidebar),
                 rooms_sidebar_width: other.ui.rooms_sidebar_width.or(self.ui.rooms_sidebar_width),
+                // A project may set its own language: this is the head's own reading, and a
+                // repository that says `ru` is saying it for the people who work in it.
+                language: other.ui.language.clone().or(self.ui.language.clone()),
             },
             sessions: SessionKeys {
                 auto_reseat: other.sessions.auto_reseat.or(self.sessions.auto_reseat),

@@ -18,6 +18,9 @@ file (`FILE.bak` first). `head.toml` gets it on every save.
 - [modes.tsv](modes.tsv.md)
 - [commands/*.md](commands.md) (Markdown slash commands)
 
+Not a file of its own: [language.md](language.md) says what `[ui] language` in `leticode.toml`
+does, which of the head's words it covers, and which it leaves in English on purpose.
+
 ## Changing one
 
 A session does not edit these files: `~/.config/letibot` is masked inside a session so a model

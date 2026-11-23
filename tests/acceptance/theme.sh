@@ -24,4 +24,19 @@ fi
 spec "a colour line naming no role is reported by name"
 expect "head.toml: color.wat: \`wat\` is not a role"
 
+# A theme this build SHIPS: no file in `themes/`, so the name can only be answered by the binary's
+# own `dark` palette - and its `user_block` band is the one that reaches the operator's row.
+printf 'theme = "dark"\n' >"$CONFIG/letibot/head.toml"
+rm -f "$CONFIG/letibot/themes/loud.toml"
+restart --replay "$FIXTURES/edit.jsonl"
+
+spec "a built-in theme is drawn without a file beside head.toml"
+wait_for "please fix line eleven"
+settle
+if screen -e | grep -F "please fix line eleven" | grep -qE '48;2;35;43;58'; then
+  pass "the shipped dark theme's #232b3a band is on the operator's row"
+else
+  fail "the shipped dark theme did not reach the screen: $(screen -e | grep -F 'please fix line eleven' | cat -v)"
+fi
+
 done_spec

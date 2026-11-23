@@ -4,8 +4,8 @@ use crate::{File, Format, Table, k};
 pub const THEME: File = File {
     name: "theme.toml",
     format: Format::Toml,
-    location: "themes/NAME.toml beside head.toml, chosen by head.toml `theme = \"NAME\"`",
-    about: "a head palette: one `role = \"look\"` line per role. Read by rano::theme; a bad line is reported and skipped",
+    location: "themes/NAME.toml beside head.toml, chosen by head.toml `theme = \"NAME\"`; `terminal`, `dark`, `light` and `auto` are built in",
+    about: "a head palette: one `role = \"look\"` line per role. Read by rano::theme; a bad line is reported and skipped. A file here named after a built-in overrides that built-in",
     writer: "",
     reload: "the head reads it when it starts, and when `theme` names another",
     tables: &[Table {

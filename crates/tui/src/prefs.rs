@@ -457,6 +457,58 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Write the `theme` line and nothing else. `/theme` changes one key of a file that also holds the
+/// config pane's rows, and a save from here would rewrite those: a setting is not a reason to
+/// reformat somebody's file. Every other line, comments included, keeps its own text.
+pub fn set_theme(path: &Path, name: &str) -> Result<(), String> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let line = format!("theme = \"{name}\"");
+    let mut out: Vec<String> = Vec::new();
+    let mut written = false;
+    for raw in existing.lines() {
+        let trimmed = raw.trim_start();
+        let is_theme = !trimmed.starts_with('#')
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == "theme");
+        if is_theme {
+            // Two lines naming the theme are one line's worth of meaning, and the first wins.
+            if !written {
+                out.push(line.clone());
+                written = true;
+            }
+            continue;
+        }
+        out.push(raw.to_string());
+    }
+    if !written {
+        // Above the reference block, which `save` regenerates where it stands.
+        let at = out
+            .iter()
+            .position(|l| l.starts_with(letibot_config_ref::BEGIN))
+            .unwrap_or(out.len());
+        out.insert(at, line);
+    }
+    let mut body = out.join("\n");
+    body.push('\n');
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    // A temporary file and one rename, for `save`'s reason: a reader between the two syscalls of a
+    // plain write sees half a file.
+    let tmp = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => path.with_file_name(format!(".{n}.tmp")),
+        None => {
+            return Err(format!(
+                "{}: has no file name to write beside",
+                path.display()
+            ));
+        }
+    };
+    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
 

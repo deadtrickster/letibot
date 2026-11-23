@@ -13,19 +13,42 @@ fn known_warning(code: &str) -> bool {
 
 impl App {
     /// The theme `head.toml` names, and its `color.` lines, made the look of every role. The file
-    /// is `themes/NAME.toml` beside it; `terminal` or no key is the terminal's own palette. What
-    /// cannot be used is said and not obeyed: a typo must not draw as a deliberate default.
+    /// is `themes/NAME.toml` beside it, over one of the themes this binary ships (`crate::theme`),
+    /// and `terminal` or no key is the terminal's own palette. What cannot be used is said and not
+    /// obeyed: a typo must not draw as a deliberate default.
     pub(crate) fn apply_theme(&mut self, head_toml: &std::path::Path, p: &crate::prefs::HeadPrefs) {
-        let dir = head_toml
-            .parent()
-            .map(|d| d.join("themes"))
-            .unwrap_or_default();
-        let (theme, problems) = rano::theme::resolve(&dir, p.theme.as_deref(), &p.colors);
+        let dir = crate::theme::dir_of(head_toml);
+        let (theme, problems) =
+            crate::theme::resolve(&dir, p.theme.as_deref(), &p.colors, self.light_background);
         rano::theme::set_active(theme);
+        // Kept for the one case whose answer arrives later: `auto` is a function of the terminal's
+        // background, and that report lands after the head has started.
+        self.theme_pref = p.theme.clone();
         self.theme_problems = problems
             .into_iter()
             .map(|s| format!("head.toml: {s}"))
             .collect();
+    }
+
+    /// The terminal has just said how light its background is, and `theme = "auto"` is a function
+    /// of that answer: re-read the file - it is the only thing that knows which `color.` lines are
+    /// in force - and install the theme again. Nothing else in `head.toml` is re-applied, because
+    /// nothing else depends on this report.
+    pub(crate) fn retheme(&mut self) {
+        if self.theme_pref.as_deref().map(str::trim) != Some(crate::theme::AUTO) {
+            return;
+        }
+        let Some(path) = self.prefs_path.clone() else {
+            return;
+        };
+        let (p, _) = crate::prefs::load(&path);
+        self.apply_theme(&path, &p);
+        // Something the theme could not supply is said now, not held for a `load_prefs` that has
+        // already run.
+        let said = std::mem::take(&mut self.theme_problems);
+        if !said.is_empty() {
+            self.say(&said.join(" · "));
+        }
     }
 
     /// Take a git reading from the LOOP, on a thread: it spawns a process, so the frame cannot draw
@@ -342,6 +365,15 @@ impl App {
         self.quiet.muted.retain(|code| known_warning(code));
         self.sidebar_set(cfg.ui.rooms_sidebar.unwrap_or(false));
         self.sidebar.default_width = cfg.ui.rooms_sidebar_width.map(usize::from);
+        // The head's own language: `auto` is the environment's LC_ALL / LC_MESSAGES / LANG, and a
+        // code this build does not carry is said by name and English is drawn.
+        let (lang, lang_said) = crate::i18n::choose(
+            cfg.ui.language.as_deref(),
+            crate::i18n::from_env().as_deref(),
+        );
+        crate::i18n::set_active(lang);
+        self.lang = lang;
+        problems.extend(lang_said);
         let (overrides, key_said) = KeyOverrides::resolve(&cfg.keys);
         self.key_overrides = overrides;
         problems.extend(key_said);

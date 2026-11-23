@@ -349,6 +349,7 @@ pub const LETICODE: File = File {
             keys: &[
                 k("rooms_sidebar", "bool", "false", PW, "Rooms, Sessions and Queues beside the transcript", "true"),
                 k("rooms_sidebar_width", "columns", "the head's own", PW, "starting width; head.toml's dragged width wins", "30"),
+                k("language", "word", "auto", PW, "the head's own language: `en`, `ru`, or `auto` for LC_ALL / LC_MESSAGES / LANG", "ru"),
             ],
         },
         Table {

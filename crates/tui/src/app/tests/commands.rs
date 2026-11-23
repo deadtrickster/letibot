@@ -360,7 +360,7 @@ fn the_facts_and_the_keys_are_on_their_own_rows_not_in_the_field() {
 /// the head advertising something it does not have.
 #[test]
 fn every_listed_slash_command_is_one_this_head_answers() {
-    for (name, hint) in SLASH_COMMANDS {
+    for (name, _key) in SLASH_COMMANDS {
         // A stated contract, checked rather than assumed: the head documents itself with this table,
         // so an entry that does nothing is `/help` lying. "Something happened" is an action for the
         // driver or a line said into the notice - the composer is untouched either way.
@@ -395,8 +395,9 @@ fn every_listed_slash_command_is_one_this_head_answers() {
         let action = a.submit(format!("/{name}"));
         assert!(
             action.is_some() || a.notice.is_some() || panes(&a) != before,
-            "/{name} ({hint}) is listed and did nothing — no action, no notice, \
-                 no pane changed"
+            "/{name} ({}) is listed and did nothing — no action, no notice, \
+                 no pane changed",
+            crate::i18n::t(_key)
         );
         assert_eq!(a.input(), "", "/{name} left the composer dirty");
         assert!(
@@ -651,4 +652,71 @@ fn slash_models_reaches_the_daemon() {
     // While `/mode` still opens the picker, and `/mode NAME` still types it.
     assert!(matches!(a.command("mode"), Some(Action::Settings) | None));
     assert!(a.pick == Some(Pick::Mode) || a.settings.is_empty());
+}
+
+/// `/theme` is the setting's whole door: bare it lists every palette this build offers - the three
+/// it ships, `auto`, and the reader's own files - with the one in force marked; with a name it sets
+/// one and writes the ONE line of `head.toml` that keeps it, leaving every other line alone.
+#[test]
+fn the_theme_verb_lists_sets_and_refuses() {
+    let dir = std::env::temp_dir().join(format!("lb-theme-verb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("head.toml"),
+        "# mine\ntheme = \"auto\"\ndiff = \"unified\"\ncolor.plain = \"bold\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("themes").join("mine.toml"), "info = \"fg:6\"\n").unwrap();
+    let mut a = app();
+    a.prefs_path = Some(dir.join("head.toml"));
+    // As `load_prefs` would have left them: `auto`, and a terminal that said it is light - so
+    // `auto` has an answer to resolve to.
+    a.theme_pref = Some("auto".into());
+    a.light_background = Some(true);
+
+    assert_eq!(a.command("theme"), None);
+    let (title, lines) = a.slash_out.clone().expect("bare /theme opens a listing");
+    assert_eq!(title, "/theme");
+    let text = lines.join("\n");
+    for name in ["auto", "terminal", "dark", "light", "mine"] {
+        assert!(text.contains(name), "`{name}` is not offered:\n{text}");
+    }
+    assert!(
+        lines.iter().any(|l| l.trim_start().starts_with("▸ light")),
+        "`auto` resolved to the light palette and nothing says so:\n{text}"
+    );
+
+    assert_eq!(a.command("theme dark"), None);
+    let file = std::fs::read_to_string(dir.join("head.toml")).unwrap();
+    assert!(file.contains("theme = \"dark\""), "{file}");
+    assert_eq!(
+        file.matches("theme =").count(),
+        1,
+        "one line, not two:\n{file}"
+    );
+    assert!(
+        file.contains("# mine") && file.contains("diff = \"unified\""),
+        "the setting's write touched another line:\n{file}"
+    );
+    assert_eq!(a.theme_pref.as_deref(), Some("dark"));
+    // The theme is process-wide in rano (`ACTIVE` is a lock, not a thread-local, for a dependency
+    // built without `cfg(test)`), so it goes back at once: a test running beside this one measures
+    // the DEFAULT table's looks, and a `dark` palette on its thread would fail it for no reason.
+    rano::theme::set_active(None);
+
+    // A name nothing has is said, and nothing is written.
+    assert_eq!(a.command("theme drak"), None);
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("drak"), "{said}");
+    assert!(
+        said.contains("auto"),
+        "the refusal names what exists: {said}"
+    );
+    assert!(
+        std::fs::read_to_string(dir.join("head.toml"))
+            .unwrap()
+            .contains("theme = \"dark\"")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

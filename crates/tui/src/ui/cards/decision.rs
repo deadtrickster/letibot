@@ -11,21 +11,30 @@ use letibot_sessionlog::view::SettledDecision;
 use rano::agent::decision as card;
 
 /// How a question card says Esc and alt-a - on the card's last row and on the hint bar under it,
-/// one spelling for both. Esc puts the card away and answers nothing; alt-a brings it back.
-pub(crate) const PUT_AWAY_HINT: &str = "esc puts it away — alt-a brings it back";
+/// one spelling for both. Esc puts the card away and answers nothing; alt-a brings it back. The
+/// words are the catalog's, so a card and the bar under it cannot be drawn in two languages.
+pub(crate) fn put_away_hint() -> &'static str {
+    crate::i18n::t("card.put_away")
+}
 
 /// How a ladder says its keys: a row number or the arrows marks a row, Enter answers it - on the
 /// card and on the bar, one spelling. Digits and arrows are the only selectors: nothing typed here
 /// picks a rung, it is the marked rung's material.
-pub(crate) const LADDER_HINT: &str = "↑↓ or a row number marks · enter answers";
+pub(crate) fn ladder_hint() -> &'static str {
+    crate::i18n::t("card.ladder_hint")
+}
 
 /// A question's ladder: its digits are the answer being typed, so only the arrows mark a row, and
 /// typing is the other way to answer. Its rows carry no number, since a drawn number is the promise
 /// that the digit marks the row.
-pub(crate) const QUESTION_LADDER_HINT: &str = "↑↓ marks · enter answers · or type your own answer";
+pub(crate) fn question_ladder_hint() -> &'static str {
+    crate::i18n::t("card.question_ladder_hint")
+}
 
 /// A question with nothing to choose from: its line is the answer, and Enter is the only key.
-pub(crate) const NO_LADDER_HINT: &str = "type your answer · enter sends it";
+pub(crate) fn no_ladder_hint() -> &'static str {
+    crate::i18n::t("card.no_ladder_hint")
+}
 
 /// What a rung does with the words in the composer, typed alongside the mark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +53,9 @@ pub(crate) enum Words {
 pub(crate) const DEC_ARM_MS: u64 = 500;
 
 /// What a card that has just appeared says when it refuses the key that would answer it.
-pub(crate) const ARMING_SAID: &str = "the card just came up — press enter again to answer it";
+pub(crate) fn arming_said() -> &'static str {
+    crate::i18n::t("card.arm_waiting")
+}
 
 /// How many diff rows a permission card draws before it folds the rest: a small edit fits whole,
 /// and a big one cannot push the ladder off the screen.
@@ -63,10 +74,9 @@ pub(crate) fn marked_words(
 ) -> Result<MarkedWords, String> {
     let words = typed.trim();
     match words_for_kind(kind) {
-        Words::None if !words.is_empty() => Err(format!(
-            "`{label}` takes no words — ↑↓ marks a rung that does (a deny, an always-allow), or \
-             ctrl-c clears the line"
-        )),
+        Words::None if !words.is_empty() => {
+            Err(crate::i18n::tf("card.words.refused", &[("label", label)]))
+        }
         _ if words.is_empty() => Ok(MarkedWords::Bare),
         Words::Glob => Ok(MarkedWords::Glob(words.to_string())),
         Words::Reason => Ok(MarkedWords::Reason(words.to_string())),
@@ -123,17 +133,17 @@ fn grant_sentence(d: &OpenDecision, mode: &str) -> Option<String> {
     let relayed = relayed_role(d).is_some();
     if d.options.iter().any(|o| o.kind == K::AllowSession) {
         said.push(match relayed {
-            true => "a session grant covers the asking session only, not this one",
-            false => "a session grant lasts until the daemon stops",
+            true => crate::i18n::t("card.grant.session_relayed"),
+            false => crate::i18n::t("card.grant.session"),
         });
     }
     if d.options.iter().any(|o| o.kind == K::AllowAlways) {
-        said.push("a durable rule is written to ~/.config/letibot/permission.json");
+        said.push(crate::i18n::t("card.grant.durable"));
     }
     let mode = match mode.trim() {
         _ if relayed => String::new(),
         "" => String::new(),
-        m => format!("mode `{m}` · "),
+        m => crate::i18n::tf("card.grant.mode", &[("mode", m)]),
     };
     (!said.is_empty()).then(|| format!("{mode}{}", said.join(" · ")))
 }
@@ -159,7 +169,55 @@ pub(crate) fn reading_is_empty(detail: &str) -> bool {
     rest.trim().is_empty() && intents.split_whitespace().all(|i| i == "unknown")
 }
 
-/// rano's sentence for a card no oracle saw.
+/// A rung's label in the language this head draws in.
+///
+/// In English the daemon's own label is drawn unchanged: those words ARE the English source, and a
+/// daemon that words a rung differently must not be relabelled by a head that thinks it knows
+/// better. A translated language has to choose, and this is the choice: the rung's id is the
+/// daemon's stable name, so the words come from the catalog - except where two rungs share an id,
+/// and except for the two that carry a VALUE (the rule an always-allow writes, the program a
+/// session grant covers), whose value is the daemon's data and is taken out of its sentence.
+fn option_label(o: &letibot_sessionlog::event::DecisionOption) -> String {
+    use letibot_sessionlog::event::OptionKind as K;
+    if crate::i18n::active() == crate::i18n::Lang::En {
+        return o.label.clone();
+    }
+    const MEMORY_DENY: &str = "No — it does not start";
+    if o.label.trim() == MEMORY_DENY {
+        return crate::i18n::t("card.option.memory_deny").to_string();
+    }
+    match o.option_id.as_str() {
+        "allow_once" => crate::i18n::t("card.option.allow_once").to_string(),
+        "deny" => crate::i18n::t("card.option.deny").to_string(),
+        "deny_and_tell" => crate::i18n::t("card.option.deny_and_tell").to_string(),
+        "grant_memory" => crate::i18n::t("card.option.grant_memory").to_string(),
+        "grant_memory_session" => crate::i18n::t("card.option.grant_memory_session").to_string(),
+        _ => match (o.kind, backticked(&o.label)) {
+            (K::AllowAlways, Some(rule)) => {
+                crate::i18n::tf("card.option.allow_always", &[("rule", &rule)])
+            }
+            (K::AllowSession, Some(program)) => crate::i18n::tf(
+                "card.option.allow_program_session",
+                &[("program", &program)],
+            ),
+            (K::AllowSession, None) => {
+                crate::i18n::t("card.option.allow_class_session").to_string()
+            }
+            _ => o.label.clone(),
+        },
+    }
+}
+
+/// The first `…` span of a label - the rule or the program the daemon put in it.
+fn backticked(label: &str) -> Option<String> {
+    let open = label.find('`')? + 1;
+    let close = label[open..].find('`')? + open;
+    (!label[open..close].trim().is_empty()).then(|| label[open..close].to_string())
+}
+
+/// rano's sentence for a card no oracle saw, in rano's own words: it is DRAWN by rano's card, and
+/// this head only counts its rows and finds where it landed, so translating it here would look for
+/// a sentence that is not on the screen.
 const NO_ORACLE: &str = "  no oracle was consulted for this one — the judgement is yours alone";
 
 /// A ladder row with its number: the digit that marks it is drawn on it, `1`-`9`; a row past the
@@ -177,7 +235,7 @@ pub(crate) fn numbered(i: usize, body: &str) -> String {
 /// than as a blank highlighted row.
 fn row_body(body: &str) -> String {
     if body.trim().is_empty() {
-        "(an empty answer)".to_string()
+        crate::i18n::t("card.empty_answer").to_string()
     } else {
         body.to_string()
     }
@@ -211,10 +269,19 @@ impl App {
             );
             let said = match rows.len() - keep {
                 0 if open && rows.len() > CARD_DIFF_ROWS => {
-                    format!("  {CARD_DIFF_KEY} folds the diff")
+                    format!(
+                        "  {}",
+                        crate::i18n::tf("card.diff.folded", &[("key", CARD_DIFF_KEY)])
+                    )
                 }
                 0 => continue,
-                hidden => format!("  … +{hidden} diff rows · {CARD_DIFF_KEY} shows the whole diff"),
+                hidden => format!(
+                    "  {}",
+                    crate::i18n::tf(
+                        "card.diff.more",
+                        &[("n", &hidden.to_string()), ("key", CARD_DIFF_KEY)],
+                    )
+                ),
             };
             out.push(row(
                 &rano::agent::pane::faint(rano::agent::text::trim_to(&said, w)),
@@ -227,7 +294,7 @@ impl App {
     /// alt-d: the front card's diff whole, or folded again.
     pub(crate) fn toggle_card_diff(&mut self) {
         let Some(d) = self.open.first().filter(|d| !d.edits.is_empty()) else {
-            self.say("alt-d opens a permission card's diff — no card with one is up");
+            self.say(crate::i18n::t("card.no_card"));
             return;
         };
         if self.dec_diff_open == d.req_id {
@@ -252,7 +319,9 @@ impl App {
             let first = rows.len();
             let picked = i == sel;
             let marker = if picked { "▸" } else { " " };
-            for l in rano::agent::text::wrap(&format!("  {marker} {}", numbered(i, &o.label)), w) {
+            for l in
+                rano::agent::text::wrap(&format!("  {marker} {}", numbered(i, &option_label(o))), w)
+            {
                 rows.push(if picked {
                     rano::agent::text::styled(l, rano::render::Style::new().reverse())
                 } else {
@@ -293,17 +362,15 @@ impl App {
             Some(left) => rano::agent::text::countdown(left),
             // Past its deadline: the daemon settled it without telling this head, and a count into
             // negative seconds reads as a rendering fault.
-            None => format!(
-                "past its deadline by {}s; the daemon has not said what became of it",
-                (self.now_ms - deadline) / 1000
+            None => crate::i18n::tf(
+                "card.deadline_past",
+                &[("s", &((self.now_ms - deadline) / 1000).to_string())],
             ),
         };
         let clause = match d.on_timeout {
-            letibot_sessionlog::event::OnTimeout::Deny => "if nobody answers, nothing runs",
-            letibot_sessionlog::event::OnTimeout::Allow => "if nobody answers, it RUNS anyway",
-            letibot_sessionlog::event::OnTimeout::Ask => {
-                "if nobody answers, the guard model decides"
-            }
+            letibot_sessionlog::event::OnTimeout::Deny => crate::i18n::t("card.timeout.deny"),
+            letibot_sessionlog::event::OnTimeout::Allow => crate::i18n::t("card.timeout.allow"),
+            letibot_sessionlog::event::OnTimeout::Ask => crate::i18n::t("card.timeout.ask"),
         };
         rano::agent::text::wrap(&format!("  {left} · {clause}"), w)
             .into_iter()
@@ -322,12 +389,17 @@ impl App {
         }
         let at = self.sel.min(d.options.len().saturating_sub(1));
         let said = match words_for(d, at) {
-            Words::Glob => format!("  writes the rule `{words}` to permission.json"),
-            Words::Reason => format!("  tells the model: {words}"),
-            Words::None => {
-                "  words go nowhere on this rung — deny and an always-allow take them, ↑↓ marks one"
-                    .to_string()
+            Words::Glob => format!(
+                "  {}",
+                crate::i18n::tf("card.words.glob", &[("rule", words)])
+            ),
+            Words::Reason => {
+                format!(
+                    "  {}",
+                    crate::i18n::tf("card.words.reason", &[("words", words)])
+                )
             }
+            Words::None => format!("  {}", crate::i18n::t("card.words.none")),
         };
         Some(rano::agent::text::one(
             rano::agent::text::trim_to(&said, w),
@@ -340,16 +412,22 @@ impl App {
     pub(crate) fn ladder_hint(&self, d: &OpenDecision) -> String {
         if d.kind == "question" {
             return if decision_rows(d) == 0 {
-                format!("  {NO_LADDER_HINT}")
+                format!("  {}", no_ladder_hint())
             } else {
-                format!("  {QUESTION_LADDER_HINT}")
+                format!("  {}", question_ladder_hint())
             };
         }
         let at = self.sel.min(d.options.len().saturating_sub(1));
         match words_for(d, at) {
-            Words::Glob => format!("  {LADDER_HINT} · type the rule"),
-            Words::Reason => format!("  {LADDER_HINT} · type the reason"),
-            Words::None => format!("  {LADDER_HINT}"),
+            Words::Glob => format!("  {} · {}", ladder_hint(), crate::i18n::t("card.hint.rule")),
+            Words::Reason => {
+                format!(
+                    "  {} · {}",
+                    ladder_hint(),
+                    crate::i18n::t("card.hint.reason")
+                )
+            }
+            Words::None => format!("  {}", ladder_hint()),
         }
     }
 
@@ -364,7 +442,8 @@ impl App {
         // A relayed card names its asker by role, under the question, where rano names a child.
         if let Some(role) = relayed_role(d) {
             let at = 1.min(content.len());
-            for (i, l) in rano::agent::text::wrap(&format!("    from the {role}"), w)
+            let said = crate::i18n::tf("card.from_role", &[("role", role)]);
+            for (i, l) in rano::agent::text::wrap(&format!("    {said}"), w)
                 .into_iter()
                 .enumerate()
             {
@@ -425,7 +504,8 @@ impl App {
         if d.kind == "question" {
             choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
                 &format!(
-                    "  type `{ABSTAIN}` to answer nothing · `<choice> {NOTE_SEP} <note>` puts your note on that choice"
+                    "  {}",
+                    crate::i18n::tf("card.abstain", &[("abstain", ABSTAIN), ("sep", NOTE_SEP)],)
                 ),
                 w,
             )));
@@ -444,12 +524,16 @@ impl App {
         let behind = self.open.iter().skip(1).count();
         if behind > 0 && self.open.first().is_some_and(|f| f.req_id == d.req_id) {
             let clock = if self.open.iter().skip(1).any(|o| o.deadline.is_some()) {
-                " — one has a deadline"
+                crate::i18n::t("card.behind.clock")
             } else {
                 ""
             };
+            let said = crate::i18n::tf(
+                "card.behind",
+                &[("n", &behind.to_string()), ("clock", clock)],
+            );
             choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
-                &format!("  +{behind} more waiting behind this card{clock}"),
+                &format!("  {said}"),
                 w,
             )));
         }
@@ -457,7 +541,7 @@ impl App {
         // the line above and not this, and on every decision card, because Esc means the same on
         // every one.
         choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
-            &format!("  {PUT_AWAY_HINT}"),
+            &format!("  {}", put_away_hint()),
             w,
         )));
         // The diff last in the content half, so the facts above it stay on the first screenful.

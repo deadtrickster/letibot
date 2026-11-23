@@ -60,10 +60,10 @@ impl App {
     /// marks the row and Enter answers. The ladder's sentence comes from the card, so the bar and
     /// the card cannot spell the keys two ways.
     pub(crate) fn deciding_tail(&self) -> String {
-        use crate::ui::cards::decision::PUT_AWAY_HINT;
+        let put_away = crate::ui::cards::decision::put_away_hint();
         match self.open.first() {
-            Some(d) => format!("{} · {PUT_AWAY_HINT}", self.ladder_hint(d).trim()),
-            None => PUT_AWAY_HINT.to_string(),
+            Some(d) => format!("{} · {put_away}", self.ladder_hint(d).trim()),
+            None => put_away.to_string(),
         }
     }
 
@@ -72,7 +72,7 @@ impl App {
     /// [`App::card_up`]'s answer, so this bar, `App::key` and `App::focused_surface` read one list.
     pub(crate) fn card_hint(&self) -> Option<(String, bool)> {
         use crate::app::Card;
-        use crate::ui::cards::decision::PUT_AWAY_HINT;
+        let put_away = crate::ui::cards::decision::put_away_hint();
         let (tail, composer) = match self.card_up()? {
             Card::ModeConfirm => (
                 "y or enter confirms · n refuses · esc puts it away".to_string(),
@@ -88,13 +88,10 @@ impl App {
                 false,
             ),
             Card::Prompt => (
-                format!("type the line · enter sends it · {PUT_AWAY_HINT}"),
+                format!("type the line · enter sends it · {put_away}"),
                 false,
             ),
-            Card::KeyAsk => (
-                "type the key · enter stores it · esc cancels".to_string(),
-                false,
-            ),
+            Card::KeyAsk => (crate::i18n::t("setup.hint.key_ask").to_string(), false),
             Card::TodoDraft => (
                 "tab next field · enter adds it · esc cancels".to_string(),
                 true,
