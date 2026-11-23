@@ -1118,6 +1118,45 @@ fn a_calls_decision_is_one_settled_after_the_mark() {
     assert_eq!(hub.settled_after(mark.as_deref(), "other"), None);
 }
 
+/// A subagent's card is raised on the session that has the head and settles there, and the call it
+/// names is the CHILD's: the same id as this session's own call is not this call's decision, so a
+/// row keyed on the id alone would wear the child's approval.
+#[test]
+fn a_subagents_decision_with_this_call_id_is_not_this_sessions() {
+    let hub = Hub::new("s");
+    let mut child = requested("r-child", "cargo test in the child");
+    if let SessionEvent::DecisionRequested { subagent, .. } = &mut child {
+        *subagent = Some(crate::event::SubagentAsk {
+            handle: "s-sub-1".into(),
+            task: "run it".into(),
+            root: "s".into(),
+            ..Default::default()
+        });
+    }
+    hub.publish(child);
+    hub.publish(answered("r-child", "allow"));
+    let settled = hub.snapshot().settled_decisions;
+    assert_eq!(
+        settled[0].session.as_deref(),
+        Some("s-sub-1"),
+        "the settled record does not say whose call it was: {settled:?}"
+    );
+    // Both cards name call `c1` (the fixture's), so only the session half tells them apart.
+    assert_eq!(
+        hub.settled_after(None, "c1"),
+        None,
+        "the child's approval was taken for this session's call"
+    );
+
+    hub.publish(requested("r-own", "rm -rf /"));
+    hub.publish(answered("r-own", "deny"));
+    let own = hub
+        .settled_after(None, "c1")
+        .expect("this session's own decision");
+    assert_eq!(own.req_id, "r-own");
+    assert_eq!(own.session, None, "this session's own call names no child");
+}
+
 /// A second load of a skill still queued is collapsed into the first, and says so.
 #[test]
 fn a_second_load_of_a_queued_skill_is_collapsed() {

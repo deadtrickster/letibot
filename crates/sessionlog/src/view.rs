@@ -103,6 +103,12 @@ pub struct SettledDecision {
     /// as a standalone note rather than on the call's card.
     #[serde(default)]
     pub call_id: Option<String>,
+    /// The session whose call it was, when that is not the session this log belongs to: a
+    /// subagent's card, raised where the head is and settled on the hub that has one. A call id
+    /// repeats across sessions and across rounds, so a fact matched to a row needs both halves.
+    /// `None` - and empty from a daemon older than the field - is this log's own call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     pub summary: String,
     pub outcome: DecisionOutcome,
     pub by: Decider,
@@ -567,7 +573,7 @@ impl SessionView {
             } => {
                 // The removal is the scrub: no path leaves a settled decision open, so no snapshot can
                 // carry one.
-                let (summary, call_id, kind, advice) = self
+                let (summary, call_id, kind, advice, session) = self
                     .open
                     .iter()
                     .find(|d| &d.req_id == req_id)
@@ -577,6 +583,13 @@ impl SessionView {
                             d.call_id.clone(),
                             d.kind.clone(),
                             d.advice.clone(),
+                            // The card says whose call it is: a subagent's, relayed to the session
+                            // that has the head. Kept so a fact matched to a row is keyed on the
+                            // session as well as the id.
+                            d.subagent
+                                .as_ref()
+                                .map(|s| s.handle.clone())
+                                .filter(|h| !h.is_empty()),
                         )
                     })
                     .unwrap_or_default();
@@ -585,6 +598,7 @@ impl SessionView {
                     req_id: req_id.clone(),
                     kind,
                     call_id,
+                    session,
                     summary,
                     outcome: outcome.clone(),
                     by: by.clone(),

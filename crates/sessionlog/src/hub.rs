@@ -1561,9 +1561,11 @@ impl Hub {
             .map(|d| d.req_id.clone())
     }
 
-    /// The newest decision about `call_id` settled after `mark`. A call id repeats across rounds, so
-    /// only what settled since the call was handed to the gate can be its decision.
+    /// The newest decision about THIS session's `call_id` settled after `mark`. A call id repeats
+    /// across rounds and across sessions - a subagent's card settles on the hub that has the head
+    /// - so a decision about another session's call is not this session's answer, whatever its id.
     pub fn settled_after(&self, mark: Option<&str>, call_id: &str) -> Option<SettledDecision> {
+        let own = self.session_id();
         let g = self.lock();
         let all = g.view.settled_decisions();
         // A mark bounded out of the view means everything held settled after it.
@@ -1573,7 +1575,10 @@ impl Hub {
         all[from..]
             .iter()
             .rev()
-            .find(|d| d.call_id.as_deref() == Some(call_id))
+            .find(|d| {
+                d.call_id.as_deref() == Some(call_id)
+                    && d.session.as_deref().is_none_or(|s| s == own)
+            })
             .cloned()
     }
 

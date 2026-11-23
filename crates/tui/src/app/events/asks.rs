@@ -161,7 +161,7 @@ impl App {
                 // Read off the open decision BEFORE it is removed: the answer event carries
                 // only the `req_id`, and the oracle's `advice` can never ride it - its `basis`
                 // is the DECIDER's. `kind` too: a question's ending travels as `Cancelled`.
-                let (summary, call_id, kind, advice) = self
+                let (summary, call_id, kind, advice, asker) = self
                     .open
                     .iter()
                     .find(|d| d.req_id == req_id)
@@ -171,9 +171,15 @@ impl App {
                             d.call_id.clone(),
                             d.kind.clone(),
                             d.advice.clone(),
+                            // Whose call it was, when it was not this session's: a subagent's card
+                            // is raised where the head is, and its call id may be one of this
+                            // round's - the id alone would put the child's approval on the
+                            // parent's row.
+                            d.subagent.as_ref().map(|s| s.handle.clone()),
                         )
                     })
                     .unwrap_or_default();
+                let own_call = asker.as_deref().is_none_or(|who| who == self.session_id);
                 // The front card, before the settlement takes it: the composer's words are that
                 // card's answer, and only a question on screen owns them.
                 let was_asking = self.open.first().cloned();
@@ -188,6 +194,7 @@ impl App {
                     req_id,
                     kind: kind.clone(),
                     call_id: call_id.clone(),
+                    session: asker.filter(|_| !own_call),
                     summary,
                     outcome,
                     by,
@@ -197,8 +204,10 @@ impl App {
                 };
                 // A permission settles on the call it gated, so it rides that call's card in
                 // the dim register. A question has no call to ride and stays a note - as does
-                // a log recorded before the field existed.
+                // a log recorded before the field existed - and so does another session's call,
+                // whose id says nothing about this round's rows.
                 if let Some(call_id) = &call_id
+                    && own_call
                     && let Some(t) = self.turn.as_mut()
                     && let Some(c) = t.calls.iter_mut().find(|c| &c.call_id == call_id)
                 {

@@ -1098,6 +1098,49 @@ fn a_click_on_an_open_runs_rows_unfolds_them() {
     );
 }
 
+/// The hover reads the click's table over an OPEN RUN too: the run is one door, so every row it
+/// drew lights together, whichever of them the pointer is over - and a click on one of them acts on
+/// the run rather than on that row.
+#[test]
+fn hovering_a_row_of_an_open_run_lights_the_whole_run() {
+    let mut a = an_open_run_of_long_results();
+    let screen = a.screen(200, 60);
+    let (x, first) = find(&screen, "CONTENTS-0");
+    let (_, last) = find(&screen, "CONTENTS-3");
+    let lit = |a: &App| -> Vec<usize> {
+        a.hovered
+            .as_ref()
+            .map(|h| h.rows.iter().map(|(r, _)| *r).collect())
+            .unwrap_or_default()
+    };
+
+    a.hover_at(x, first);
+    let run = lit(&a);
+    assert!(
+        run.contains(&usize::from(first)) && run.contains(&usize::from(last)),
+        "the open run's rows are not lit together: {run:?}"
+    );
+    assert!(run.len() > 2, "the run is one block, not two rows: {run:?}");
+    // The same door from another of its rows: the light is the ACT, not the row under the pointer.
+    a.hover_at(x, last);
+    assert_eq!(lit(&a), run, "two rows of one run lit different sets");
+
+    // And the click on the lowest lit row is the run's: its rows unfold, and it stays open.
+    a.hover_at(x, first);
+    let low = usize::from(first).max(usize::from(last));
+    a.key(Key::Click { x, y: low as u16 });
+    assert!(a.run_is_open(), "the click closed the run");
+    assert!(
+        !a.tools.is_open(),
+        "the click moved the transcript-wide fold"
+    );
+    let open = a.screen(200, 60).join("\n");
+    assert!(
+        open.contains("LINE-0-5"),
+        "a lit row did not unfold the run:\n{open}"
+    );
+}
+
 #[test]
 fn esc_folds_an_unfolded_run_back_and_the_next_one_starts_folded() {
     let mut a = an_open_run_of_long_results();

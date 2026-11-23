@@ -355,11 +355,14 @@ impl App {
         }
         // A permission settles on the call it gated, so it rides the call's card rather than the
         // note list; a question has no call to ride and stays a note. The live arm makes the same
-        // split, and the two have to agree.
-        let (call_bound, notes_bound): (Vec<SettledDecision>, Vec<SettledDecision>) = s
-            .settled_decisions
-            .into_iter()
-            .partition(|d| d.call_id.is_some());
+        // split, and the two have to agree. Another session's call - a subagent's card, settled on
+        // the hub that has the head - is a note too: its id repeats here and says nothing about
+        // this session's rows.
+        let own = self.session_id.clone();
+        let (call_bound, notes_bound): (Vec<SettledDecision>, Vec<SettledDecision>) =
+            s.settled_decisions.into_iter().partition(|d| {
+                d.call_id.is_some() && d.session.as_deref().is_none_or(|who| *who == own)
+            });
         // A snapshot's notes are history and this head's own are not, so the two are sorted rather than
         // merged: notes this head filed keep their seam, and what the snapshot adds is [`Placed::Before`],
         // listed and counted and not drawn. A seam the new transcript lacks is not a seam.

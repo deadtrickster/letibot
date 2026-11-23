@@ -163,10 +163,16 @@ impl App {
         if let Some(ms) = ran_ms {
             self.call_ms.entry(item_id.to_string()).or_insert(*ms);
         }
-        // A value the head cannot read is dropped: the card then shows no approval, as before the field.
+        // A value the head cannot read is dropped: the card then shows no approval, as before the field -
+        // and so is one that names another session's call, whose id alone would have put it on this row.
         if let Some(d) = decision
             .as_ref()
             .and_then(|v| serde_json::from_value::<SettledDecision>(v.clone()).ok())
+            .filter(|d| {
+                d.session
+                    .as_deref()
+                    .is_none_or(|who| who == self.session_id)
+            })
         {
             self.call_decisions.entry(item_id.to_string()).or_insert(d);
         }

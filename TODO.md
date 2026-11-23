@@ -160,7 +160,7 @@ Older backlog:
 | R277 | One effort scale across both CLIs and every door, and provider quirks as config keys | Code work | built (132875320); left: effort on the compatible Messages doors is unmeasured, `/effort` on the local server is refused |
 | R273 | A parked turn's end line reads `interrupted: paused until ... (nothing kept)` and the spinner stays up | Code work | built (7d7b2a9a1); left: live check |
 | R309 | The edge says `1 stuck` and the queue pane it opens is empty | Code work | built (e9c9eafc5); left: conflict evidence reads git's stderr, `CONFLICT` lines are on stdout |
-| R287 | A re-paged row loses its duration and approval, facts match by position, and the hover lights another unit than the click | Code work | built (651a41063); left: no hover test over an open run, a child's decision with the same call id lands on the parent's row |
+| R287 | A re-paged row loses its duration and approval, facts match by position, and the hover lights another unit than the click | Code work | built (651a41063); left: a subagent's own row carries no decision — its card settles on the hub that has the head, so the child's `stamp_decision` finds nothing |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built (d8c99cfb7); left: live check |
 | R276 | Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list | Code work | built (eb60eceb5); left: the reviewer kill race, an archived session given a turn stays archived, `claude -p` reviewers uncovered |
 | R290 | A prompt typed mid-turn can only steer: no lane that waits for the turn to end | Code work | built (6f538d24a); left: only the TUI sends `queue`; bridge, ACP and rano always steer |
@@ -5995,7 +5995,7 @@ Tests: `a_click_on_n_stuck_lists_exactly_the_rows_the_edge_counts`, `a_stuck_row
 
 ## R287 - Row facts by call id, hover by the click's table
 
-**Status:** built, 2026-11-15. Audit package J5, plan 1.12 and 1.13 (`/build/oss-harnesses/PLAN-fable-5.2.md`).
+**Status:** built, 2026-11-15; its Left closed 2026-11-23. Audit package J5, plan 1.12 and 1.13 (`/build/oss-harnesses/PLAN-fable-5.2.md`).
 
 1. `prune_to_the_rows` dropped `call_ms` and `call_decisions` with the row, so a row paged out and back drew without its duration and approval.
 2. A result's facts were carried from `calls[settled_calls]`, by position, so a result delivered out of order took another call's duration, edit pair and decision. The resync match let a snapshot decision overwrite one bound live.
@@ -6007,9 +6007,9 @@ Tests: `a_click_on_n_stuck_lists_exactly_the_rows_the_edge_counts`, `a_stuck_row
 3. `App::conversation_act` is the click's table for conversation rows (edit stop, open run, row window). The click and the hover both read it, and the hover lights every row whose act is the same.
 4. `TranscriptItem::ToolResult` carries `ran_ms` and `decision`, both defaulted and skipped when absent, so an old row reads and serialises as before (protocol 78). The runtime times a call from `ToolStarted` to its result, so a decision wait is not running time and a refused call has none. The daemon stamps the decision settled for the call id since a mark taken before the batch ran (`Hub::settled_after`), since ids repeat by round. The head reads both off the row on load, resync, page-in and body arrival, and never over a fact it bound live (`App::stored_call_fact`).
 
-Tests: `results_out_of_order_keep_their_own_call_facts`, `a_row_that_leaves_the_window_keeps_its_duration_and_decision`, `hovering_an_edit_card_lights_the_rows_a_click_opens`, `a_result_row_stores_its_duration_and_decision_and_an_old_row_still_reads`, `a_call_that_ran_stores_its_duration_and_a_refused_one_does_not`, `a_calls_decision_is_one_settled_after_the_mark`, `a_gated_calls_row_stores_its_decision_and_not_an_earlier_rounds`, `a_restarted_or_resynced_head_draws_the_stored_duration_and_decision`, `a_stored_fact_fills_only_what_the_head_did_not_watch`.
+Tests: `results_out_of_order_keep_their_own_call_facts`, `a_row_that_leaves_the_window_keeps_its_duration_and_decision`, `hovering_an_edit_card_lights_the_rows_a_click_opens`, `hovering_a_row_of_an_open_run_lights_the_whole_run`, `a_result_row_stores_its_duration_and_decision_and_an_old_row_still_reads`, `a_call_that_ran_stores_its_duration_and_a_refused_one_does_not`, `a_calls_decision_is_one_settled_after_the_mark`, `a_subagents_decision_with_this_call_id_is_not_this_sessions`, `a_childs_decision_with_the_same_call_id_stays_off_the_parents_row`, `a_gated_calls_row_stores_its_decision_and_not_an_earlier_rounds`, `a_restarted_or_resynced_head_draws_the_stored_duration_and_decision`, `a_stored_fact_fills_only_what_the_head_did_not_watch`.
 
-**Left.** No test drives the hover over an open run. A settled decision does not say whose call it was, so a child's decision relayed to this hub with the same call id inside one batch would be stamped on the parent's row.
+**Left closed, 2026-11-23.** The hover over an OPEN RUN is tested (`hovering_a_row_of_an_open_run_lights_the_whole_run`: the run's rows light together from whichever of them the pointer is over, and a click on the lowest lit row unfolds the run and leaves it open). A fact that settles is now keyed on (session, call id) wherever it is matched to a row: `SettledDecision::session` carries the card's subagent handle (empty from a daemon older than the field, and for this log's own calls), `Hub::settled_after` refuses a decision about another session's call however its id reads, the head files such a decision as a note rather than a call's, and a row's stored decision naming another session is dropped on the way in. A child's card settles on the hub that has the HEAD and the child's own row is stamped from the child's hub, which never sees the `DecisionAnswered`, so a subagent's own tool row still carries no decision.
 
 # Review records
 

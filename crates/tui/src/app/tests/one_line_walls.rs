@@ -616,6 +616,7 @@ fn a_settled_decision_leads_with_its_verdict() {
             req_id: "r1".into(),
             kind: String::new(),
             call_id: None,
+            session: None,
             summary: summary.into(),
             outcome: DecisionOutcome::Selected {
                 option_id: "deny".into(),
@@ -659,6 +660,7 @@ fn a_settled_decision_is_one_row_at_eighty_columns() {
         req_id: "r1".into(),
         kind: String::new(),
         call_id: None,
+        session: None,
         summary: "run `cargo publish --dry-run` on the branch".into(),
         outcome: DecisionOutcome::Selected {
             option_id: "deny".into(),

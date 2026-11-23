@@ -652,6 +652,75 @@ fn a_permission_settles_on_the_call_it_gated() {
     assert!(open.contains("no oracle was consulted"), "{open}");
 }
 
+/// A call id repeats across sessions as well as rounds: a subagent's card is raised where the head
+/// is, so its approval arrives here naming a call of THIS round. Keyed on the id alone it rode the
+/// parent's row; the session the card names is the other half of the key.
+#[test]
+fn a_childs_decision_with_the_same_call_id_stays_off_the_parents_row() {
+    use letibot_sessionlog::event::SubagentAsk;
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::proposed("t1", "c1", "bash"),
+    )));
+    // The child's card: this round's id, and a handle that says whose call it is.
+    let mut child = testing::requested("r-child", "cargo test in the child");
+    if let SessionEvent::DecisionRequested { subagent, .. } = &mut child {
+        *subagent = Some(SubagentAsk {
+            handle: "s-sub-1".into(),
+            task: "run the suite".into(),
+            root: "s".into(),
+            ..Default::default()
+        });
+    }
+    a.apply(ServerFrame::Event(env(2, child)));
+    a.apply(ServerFrame::Event(env(
+        3,
+        testing::answered("r-child", "allow"),
+    )));
+    let c = a
+        .turn
+        .as_ref()
+        .and_then(|t| t.calls.iter().find(|c| c.call_id == "c1"))
+        .expect("the call");
+    assert!(
+        c.decision.is_none(),
+        "the child's approval was put on this session's call: {:?}",
+        c.decision
+    );
+    // Filed where a person reads it, and the record says whose call it was.
+    let filed = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Decided(d) => Some(d.clone()),
+            _ => None,
+        })
+        .expect("the child's decision is a note");
+    assert_eq!(filed.session.as_deref(), Some("s-sub-1"));
+
+    // This session's own card for the same id, and its row wears that one.
+    a.apply(ServerFrame::Event(env(
+        4,
+        testing::requested("r-own", "rm -rf build/"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        5,
+        testing::answered("r-own", "deny"),
+    )));
+    let c = a
+        .turn
+        .as_ref()
+        .and_then(|t| t.calls.iter().find(|c| c.call_id == "c1"))
+        .expect("the call");
+    assert_eq!(
+        c.decision.as_ref().map(|d| d.req_id.as_str()),
+        Some("r-own"),
+        "this session's own decision is not on its row"
+    );
+}
+
 /// The bug this labelling was built for: under `/supervise` the oracle advises and the OPERATOR
 /// answers, so the decision carries two reasons. Rendered as one line they printed the operator's
 /// own words under the oracle's name - a lie that reads exactly like the truth.
@@ -756,6 +825,7 @@ fn an_oracle_that_cited_nothing_says_so_loudly() {
         // A permission: the rendering this test is about is the ladder's.
         kind: "permission".into(),
         call_id: Some("c1".into()),
+        session: None,
         summary: "run it".into(),
         outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
             option_id: "allow".into(),
@@ -1514,6 +1584,7 @@ fn stored_result(call: &str, ran_ms: Option<u64>, decided: bool) -> TranscriptIt
             req_id: format!("r.{call}"),
             kind: "permission".into(),
             call_id: Some(call.to_string()),
+            session: None,
             summary: "run it".into(),
             outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
                 option_id: "allow".into(),

@@ -5443,6 +5443,7 @@ fn settled(call: &str) -> SettledDecision {
         req_id: format!("r.{call}"),
         kind: "permission".into(),
         call_id: Some(call.to_string()),
+        session: None,
         summary: "run it".into(),
         outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
             option_id: "allow".into(),
