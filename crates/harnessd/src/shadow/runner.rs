@@ -183,6 +183,9 @@ struct Inner {
     timing: Timing,
     system: String,
     source: String,
+    /// The permission job's second question, and where it came from: `Some` for that job alone.
+    /// Which one is sent is the CALLER's answer (`Shown::oracle`), never a marker in the data.
+    asking: Option<(String, String)>,
     slot: Mutex<Slot>,
     cv: Condvar,
     health: Mutex<Health>,
@@ -212,7 +215,8 @@ impl Drop for JobRunner {
 }
 
 impl JobRunner {
-    /// A worker for `job`. `system` is the prompt (builtin or the project's), `source` says which.
+    /// A worker for `job`. `system` is the prompt (builtin or the project's), `source` says which,
+    /// and `asking` is the second question a job may be asked (permission's alone).
     #[allow(clippy::too_many_arguments)] // each is a separate seam the tests replace
     pub fn start(
         job: Job,
@@ -222,6 +226,7 @@ impl JobRunner {
         timing: Timing,
         system: String,
         source: String,
+        asking: Option<(String, String)>,
         on_outcome: OnOutcome,
     ) -> JobRunner {
         Self::launch(
@@ -232,6 +237,7 @@ impl JobRunner {
             timing,
             system,
             source,
+            asking,
             on_outcome,
             None,
             Arc::new(Mutex::new(Vec::new())),
@@ -249,12 +255,14 @@ impl JobRunner {
         timing: Timing,
         system: String,
         source: String,
+        asking: Option<(String, String)>,
         on_outcome: OnOutcome,
         persist: Option<Persist>,
         notices: Arc<Mutex<Vec<(&'static str, String)>>>,
     ) -> JobRunner {
         Self::launch(
-            job, judge, recorder, position, timing, system, source, on_outcome, persist, notices,
+            job, judge, recorder, position, timing, system, source, asking, on_outcome, persist,
+            notices,
         )
     }
 
@@ -268,6 +276,7 @@ impl JobRunner {
         timing: Timing,
         system: String,
         source: String,
+        asking: Option<(String, String)>,
         on_outcome: OnOutcome,
         persist: Persist,
     ) -> JobRunner {
@@ -279,6 +288,7 @@ impl JobRunner {
             timing,
             system,
             source,
+            asking,
             on_outcome,
             Some(persist),
             Arc::new(Mutex::new(Vec::new())),
@@ -294,6 +304,7 @@ impl JobRunner {
         timing: Timing,
         system: String,
         source: String,
+        asking: Option<(String, String)>,
         on_outcome: OnOutcome,
         persist: Option<Persist>,
         notices: Arc<Mutex<Vec<(&'static str, String)>>>,
@@ -313,6 +324,7 @@ impl JobRunner {
             timing,
             system,
             source,
+            asking,
             slot: Mutex::new(Slot {
                 pending: None,
                 coalesced: 0,
@@ -386,6 +398,16 @@ impl Inner {
 
     fn lock_health(&self) -> std::sync::MutexGuard<'_, Health> {
         self.health.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The prompt this request is judged with, and where it came from. The permission job asks
+    /// two questions and the CALLER says which one this is: a `Shown` marked `oracle` is an
+    /// authorisation brief. Nothing in the data selects a prompt.
+    fn system_for(&self, shown: &Shown) -> (&str, &str) {
+        match &self.asking {
+            Some((prompt, source)) if shown.oracle => (prompt, source),
+            _ => (&self.system, &self.source),
+        }
     }
 
     fn finish(&self, req: Request, outcome: Outcome) {
@@ -495,17 +517,19 @@ impl Inner {
         }
         let user = super::prompts::fence(&req.shown.data);
         let started = Instant::now();
-        let (system, u) = (self.system.clone(), user.clone());
-        let got = self.call(Box::new(move |j| j.judge(&system, &u).map(|r| (r, None))));
+        let (system, source) = self.system_for(&req.shown);
+        let (system, source) = (system.to_string(), source.to_string());
+        let (sys, u) = (system.clone(), user.clone());
+        let got = self.call(Box::new(move |j| j.judge(&sys, &u).map(|r| (r, None))));
         let took = started.elapsed();
         let (reply, checks, outcome) = self.settle(req.position, got, took, &req.shown);
         let body = format!(
             "model: {}\nprompt: {}\nposition: #{}\ncoalesced before it: {coalesced}\n\n\
              --- system\n{}\n--- user\n{user}\n--- reply\n{reply}\n--- checks\n{}\n--- outcome\n{}\n",
             self.judge.label(),
-            self.source,
+            source,
             req.position,
-            self.system,
+            system,
             checks.join("\n"),
             self.said(&outcome),
         );
@@ -589,7 +613,7 @@ impl Inner {
     /// never acted on; the breaker does not count it.
     fn fresh_check(&self, position: u64, shown: &Shown, persistent: &Outcome) {
         let user = super::prompts::fence(&shown.data);
-        let (system, u) = (self.system.clone(), user.clone());
+        let (system, u) = (self.system_for(shown).0.to_string(), user.clone());
         let started = Instant::now();
         let got = self.call(Box::new(move |j| j.judge(&system, &u).map(|r| (r, None))));
         let took = started.elapsed();
@@ -870,6 +894,13 @@ impl Shadow {
             let model = cfg.model_for(job, watched_model).unwrap_or_default();
             let (system, source) = super::prompts::load(workspace, job);
             said.push(format!("{} prompt: {source}", job.as_str()));
+            // The permission job's second question rides beside the first: one job, two prompts,
+            // and the caller picks. Its own source line says which file it came from.
+            let asking = super::prompts::builtin_asking(job).map(|_| {
+                let (text, from) = super::prompts::load_asking(workspace, job);
+                said.push(format!("{} asking prompt: {from}", job.as_str()));
+                (text, from)
+            });
             let (judge, timing, on) = (judge_for(job, &model), timing_for(job), on_outcome(job));
             let r = match &log {
                 Some(log) => JobRunner::sharing(
@@ -880,6 +911,7 @@ impl Shadow {
                     timing,
                     system,
                     source,
+                    asking,
                     on,
                     Some(Persist {
                         log: log.clone(),
@@ -897,6 +929,7 @@ impl Shadow {
                     timing,
                     system,
                     source,
+                    asking,
                     on,
                     None,
                     notices.clone(),

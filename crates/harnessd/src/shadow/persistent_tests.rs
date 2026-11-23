@@ -229,6 +229,7 @@ fn persistent(job: Job, judge: Arc<dyn Judge>, rows: Arc<Rows>, fresh_every: u32
         timing(),
         prompts::builtin(job).to_string(),
         "builtin".into(),
+        prompts::builtin_asking(job).map(|t| (t.to_string(), "builtin".into())),
         Box::new(move |_, o| {
             let _ = tx.lock().unwrap().send(o.clone());
         }),

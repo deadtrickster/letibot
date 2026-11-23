@@ -42,11 +42,17 @@ pub enum OpenError {
 pub fn shadow_prefix(
     like: &letibot_tokencore::store::StablePrefixRecord,
 ) -> letibot_tokencore::store::StablePrefixRecord {
-    let system = [Job::TurnEnd, Job::During, Job::Permission]
-        .iter()
-        .map(|j| format!("[{}]\n{}", j.as_str(), super::prompts::builtin(*j)))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut system = String::new();
+    for job in Job::ALL {
+        system.push_str(&format!("[{}]\n", job.as_str()));
+        system.push_str(super::prompts::builtin(job));
+        // The permission job is two questions, and both are its prefix: a shadow whose second
+        // prompt changed is a different prefix, as a changed first one is.
+        if let Some(asking) = super::prompts::builtin_asking(job) {
+            system.push_str(&format!("\n[{} asking]\n{asking}", job.as_str()));
+        }
+        system.push('\n');
+    }
     letibot_tokencore::store::StablePrefixRecord {
         dialect_sha: like.dialect_sha.clone(),
         system,

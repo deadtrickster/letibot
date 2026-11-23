@@ -26,9 +26,6 @@ use super::permission::{Answering, Cell};
 use super::runner::Outcome;
 use super::verdict::{Decision, Shown, Verdict};
 
-/// The line an oracle brief opens with, so the permission prompt knows which question it is.
-pub const QUESTION: &str = "question: did the operator ask for this?";
-
 /// The scope the stages in force earn. `reads` reaches outside the project at most; exec reaches
 /// the host when the call only looks at it (see [`stage_of`]) and the workspace plus the operator's
 /// writable grants when it writes, which one scope cannot say per call.
@@ -252,8 +249,10 @@ impl AuthorisationOracle for ShadowOracle {
         let Some((shadow, _)) = self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
             return Self::unsure("the shadow is not open yet", UnsureKind::Unreadable);
         };
+        // The caller's own flag says which question this is: the data carries no marker, so no
+        // transcript line can choose the prompt. See `runner::Inner::system_for`.
         let shown = Shown {
-            data: format!("{QUESTION}\n\n{}", brief.render()),
+            data: brief.render(),
             oracle: true,
             ..Shown::default()
         };
