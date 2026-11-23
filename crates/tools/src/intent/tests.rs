@@ -348,6 +348,132 @@ fn an_ordinary_build_is_may_approve_and_asks() {
     assert!(x.intents.contains(&Intent::ExecuteCode));
 }
 
+fn scoped_lines(x: &Baseline) -> Vec<String> {
+    x.scoped.iter().map(ScopedIntent::render).collect()
+}
+
+fn scoped_writes(x: &Baseline) -> Vec<String> {
+    x.scoped
+        .iter()
+        .filter(|s| s.intent == Intent::WriteFile)
+        .map(|s| s.target.clone())
+        .collect()
+}
+
+/// The survey's shape (`adj-s-1794057745451974498-3192`, 35 prompts): a build run through `env`,
+/// and the brief listed every word of the wrapper's own argument list as a file the call writes —
+/// `write_file GH_TOKEN`, `write_file CARGO_TARGET_DIR=/data/target-preview`, `write_file cargo`.
+/// `env` puts its flags and its assignments into the child's environment; the words before the
+/// program it names are arguments of nothing that touches a file.
+#[test]
+fn an_env_wrappers_words_are_not_files_the_wrapped_program_writes() {
+    let run = "env -u GH_TOKEN -u GITHUB_TOKEN CARGO_TARGET_DIR=/data/target-preview \
+               TMPDIR=/var/tmp cargo test --lib markdown::render";
+    for cmd in [
+        // As the survey had it: the SECOND stage of a list, which is how a `cd` gets in front.
+        format!("cd crates/tools && {run}"),
+        // And alone, so the wrapper is stage one and nothing else can be blamed.
+        run.to_string(),
+    ] {
+        let x = b(&cmd);
+        let writes = scoped_writes(&x);
+        assert!(
+            writes.is_empty(),
+            "`{cmd}` writes no word of its own: the wrapper's are the child's environment and the \
+             run's are a subcommand, a flag and a test filter. The brief said write_file \
+             {writes:?}; every scoped line was {:?}",
+            scoped_lines(&x)
+        );
+        // Nothing else is scoped either: `cargo test` destroys nothing and reaches no host, so a
+        // brief that lists anything here lists something the call does not do.
+        assert_eq!(scoped_lines(&x), Vec::<String>::new(), "`{cmd}`");
+        // What the call DOES do is still declared: `cargo test` runs code from the tree and
+        // writes into it, and reading it as anything less would under-declare the call.
+        for i in [Intent::ExecuteCode, Intent::WriteFile, Intent::ReadFile] {
+            assert!(x.intents.contains(&i), "`{cmd}`: {:?}", x.intents);
+        }
+        // The run is over the workspace, from wherever the `cd` put it.
+        assert!(
+            x.regions
+                .iter()
+                .all(|r| matches!(r, Region::Workspace | Region::Scratch | Region::None)),
+            "`{cmd}` reaches only the tree it builds: {:?}",
+            x.regions
+        );
+        assert_eq!(x.tier, Tier::MayApprove, "`{cmd}` is ordinary work");
+    }
+    // The narrow form of the same wrapper: one assignment, no flags.
+    let one = b("env FOO=1 cargo build");
+    assert!(
+        !one.scoped.iter().any(|s| s.target == "FOO=1"),
+        "`env FOO=1 cargo build` sets a variable, it writes no file called FOO=1: {:?}",
+        scoped_lines(&one)
+    );
+    // And a wrapped program whose operand IS a file keeps its scoped write: the wrapper is
+    // transparent to what the inner call really touches.
+    let rm = b("env -u GH_TOKEN rm -rf target/debug");
+    assert_eq!(
+        rm.scoped
+            .iter()
+            .map(|s| (s.intent.as_str(), s.target.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("destroy", "target/debug")],
+        "the wrapper must not lose the inner call's own target"
+    );
+}
+
+/// The same misreading without a wrapper in front of it: a build or test runner's declared write is
+/// the TREE it runs over, so `cargo test -p letibot-tools` writes `target/` and not a file called
+/// `letibot-tools`. The runner table is one list, read here and in `name_intents`.
+#[test]
+fn a_runners_operands_are_not_the_files_it_writes() {
+    for cmd in [
+        "cargo test --lib markdown::render",
+        "cargo test -p letibot-tools",
+        "cargo build --workspace",
+        "cargo clippy --all-targets -- -D warnings",
+        "go vet ./...",
+        "make -j8 release",
+        "pytest -q tests/test_x.py",
+    ] {
+        let x = b(cmd);
+        assert_eq!(
+            scoped_writes(&x),
+            Vec::<String>::new(),
+            "`{cmd}`: every scoped line was {:?}",
+            scoped_lines(&x)
+        );
+        // And the write is still declared: the run does write, into the tree.
+        assert!(
+            x.intents.contains(&Intent::WriteFile),
+            "`{cmd}`: {:?}",
+            x.intents
+        );
+    }
+    // The compilers are deliberately not in that table: `gcc -o out in.c` names the file it
+    // writes, and that write is exactly what a scoped line is for. This change leaves a compiler's
+    // operands read exactly as they were before it - what it must not do is drop the output.
+    assert!(
+        scoped_writes(&b("gcc -o out in.c")).contains(&"out".to_string()),
+        "the output the line names is still scoped"
+    );
+}
+
+/// The same misreading one flag away: `git worktree add ../x -b agent/preview-reload master`
+/// names a DIRECTORY, a branch and a ref, and it creates exactly one of them. A branch with a
+/// `/` in it is a ref as `master` is - `git_names_a_ref` says so of a bare word and cannot say
+/// it of this one - and `-b` is what makes it a branch rather than an operand.
+#[test]
+fn a_git_worktree_branch_is_not_a_file_the_call_writes() {
+    let x = b("git worktree add ../x -b agent/preview-reload master");
+    assert_eq!(
+        scoped_writes(&x),
+        vec!["../x".to_string()],
+        "the worktree is the one place this creates; every scoped line was {:?}",
+        scoped_lines(&x)
+    );
+}
+
 /// git's global options are not its subcommand: `git -C DIR status` read as `Unknown`
 /// because `argv[0]` is `-C`, and `Unknown` is outside every oracle's earned scope.
 #[test]

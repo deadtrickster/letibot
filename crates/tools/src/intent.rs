@@ -1278,11 +1278,11 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         | "coproc" => {
             vec![ExecuteCode]
         }
-        "make" | "cmake" | "ninja" | "cargo" | "go" | "rustc" | "gcc" | "g++" | "clang" | "javac"
-        | "tsc" | "bazel" | "poetry" | "jest" | "mocha" | "vitest" | "nose2" | "rspec"
-        | "mvn" | "gradle" | "pytest" | "tox" => {
+        _ if BUILD_RUNNERS.contains(&program) => {
             // A build runs arbitrary code from the tree and writes into it, so reading
-            // it as `Inspect` alone would under-declare what the call does.
+            // it as `Inspect` alone would under-declare what the call does. The names live in
+            // [`BUILD_RUNNERS`] because a second reader asks the same list a different question:
+            // whether a word after the run can be the place that write lands.
             let mut v = vec![ExecuteCode, WriteFile, ReadFile];
             // `fetch` is here because it reaches the network without saying so in
             // its name, and it is not `PackageChange`: it fills the cache.
@@ -2393,6 +2393,57 @@ fn keeps_nothing(text: &str) -> bool {
     )
 }
 
+/// Flags whose VALUE names a ref rather than a place. [`git_names_a_ref`] reads a bare `master`
+/// correctly and cannot read `agent/preview-reload`: the `/` in it is what a relative path looks
+/// like, so `git worktree add ../x -b agent/preview-reload master` scoped the BRANCH as a file the
+/// call writes. The flag is the fact that settles it, and only these flags name a ref.
+const GIT_REF_FLAGS: &[&str] = &[
+    "-b",
+    "-B",
+    "--branch",
+    "-c",
+    "--create",
+    "--orphan",
+    "-t",
+    "--track",
+    "-u",
+    "--set-upstream-to",
+    "-m",
+    "--move",
+    "--into-name",
+];
+
+/// The same question as [`git_names_a_ref`] for a word in context: the value of a flag that names
+/// a ref is a ref, whatever it looks like.
+fn git_ref_flag_value(program: &str, argv: &[Word], i: usize) -> bool {
+    program == "git"
+        && i.checked_sub(1)
+            .and_then(|p| argv.get(p))
+            .and_then(|w| w.text())
+            .is_some_and(|t| GIT_REF_FLAGS.contains(&t))
+}
+
+/// The programs whose declared write is the TREE they run over, never a word they were handed.
+/// `cargo test --lib markdown::render` writes `target/`, and `markdown::render` is a test filter:
+/// placing that write on every operand is a claim about files nobody named, which is what the
+/// survey's brief did. The same list `name_intents` reads, so the intent and the scope cannot
+/// disagree about what a run writes.
+const BUILD_RUNNERS: &[&str] = &[
+    "make", "cmake", "ninja", "cargo", "go", "rustc", "gcc", "g++", "clang", "javac", "tsc",
+    "bazel", "poetry", "jest", "mocha", "vitest", "nose2", "rspec", "mvn", "gradle", "pytest",
+    "tox",
+];
+
+/// The compilers among [`BUILD_RUNNERS`] that DO name the file they write - `rustc main.rs` beside
+/// it, `gcc -o out in.c` in the word after `-o` - so their operands stay places. Nothing here
+/// widens the change beyond the runners whose output is their tree: a compiler's operand can be
+/// the output, and dropping it would under-declare `gcc -o out in.c`.
+const COMPILERS: &[&str] = &["rustc", "gcc", "g++", "clang", "javac", "tsc"];
+
+fn writes_its_tree(program: &str) -> bool {
+    BUILD_RUNNERS.contains(&program) && !COMPILERS.contains(&program)
+}
+
 /// A resolved path inside letibot's config directory, or one of its rule files wherever
 /// `$XDG_CONFIG_HOME` put them. Every file there decides what runs or who is trusted.
 fn is_own_config(path: &str, home: Option<&str>) -> bool {
@@ -3091,6 +3142,10 @@ impl Baseline {
         effective: &str,
         index: usize,
         identity: &[usize],
+        // The verbs this word can be the target of, as the resolved loop reads them: the two loops
+        // are the same question asked of a word whose text nobody could recover, so they must not
+        // disagree about which verbs it could carry.
+        verbs: &[Intent],
     ) {
         let Some(u) = n.unresolved.get(at) else {
             return;
@@ -3106,8 +3161,11 @@ impl Baseline {
             return;
         }
         self.regions.insert(Region::Unbounded);
-        for verb in [Intent::Destroy, Intent::WriteFile, Intent::Network] {
-            if self.intents.contains(&verb) && !identity.contains(&index) {
+        for &verb in verbs {
+            if matches!(verb, Intent::Destroy | Intent::WriteFile | Intent::Network)
+                && self.intents.contains(&verb)
+                && !identity.contains(&index)
+            {
                 self.scoped.push(ScopedIntent {
                     intent: verb,
                     target: UNRESOLVED_TARGET.to_string(),
@@ -3441,19 +3499,39 @@ impl Baseline {
         // log` hands `git` everything after `git`, and a vehicle test run over the
         // whole thing would be reading `sudo`'s own flags as `git`'s.
         let mut effective_argv: &[Word] = &stage.argv;
-        for i in intents_of(&program, &stage.argv) {
-            self.intents.insert(i);
-        }
-        if let Some((inner, at)) = unwrap_wrapper(&program, &stage.argv) {
-            self.findings.push(format!(
-                "`{program}` wraps `{inner}`; the effective program is the inner one"
-            ));
-            effective_argv = &stage.argv[(at + 1).min(stage.argv.len())..];
-            for i in intents_of(&inner, effective_argv) {
-                self.intents.insert(i);
+        // The wrapper, kept because the operand loop below has to know whose words it is reading.
+        let wrapped = unwrap_wrapper(&program, &stage.argv);
+        // The verbs the wrapper's own argument list can carry, and the ones its child's can.
+        let own_verbs = intents_of(&program, &stage.argv);
+        let child_verbs = match &wrapped {
+            Some((inner, at)) => {
+                self.findings.push(format!(
+                    "`{program}` wraps `{inner}`; the effective program is the inner one"
+                ));
+                effective_argv = &stage.argv[(at + 1).min(stage.argv.len())..];
+                effective = inner.clone();
+                intents_of(inner, effective_argv)
             }
-            effective = inner;
+            None => Vec::new(),
+        };
+        for i in own_verbs.iter().chain(child_verbs.iter()) {
+            self.intents.insert(*i);
         }
+
+        // Whose words the operand loop is reading, because a wrapper's own argument list is not its
+        // child's: `env -u GH_TOKEN CARGO_TARGET_DIR=/x cargo test` hands those words to `cargo`'s
+        // ENVIRONMENT, so a verb `cargo` carries is over no file of `env`'s - and a wrapper carries
+        // no verb of its own that lands on a place (`sudo` escalates, `env` runs a program). Read as
+        // one list, every word of the wrapper's argv became a file the call writes: the survey's
+        // `write_file GH_TOKEN`, `write_file CARGO_TARGET_DIR=/data/target-preview`, `write_file cargo`.
+        // The verbs a word at `i` can be the target of: the program that RECEIVES it, and without a
+        // wrapper that is the stage's own reading, exactly as before.
+        let verbs_at = |i: usize| -> &[Intent] {
+            match &wrapped {
+                Some((_, at)) if i > *at => &child_verbs,
+                _ => &own_verbs,
+            }
+        };
 
         // Which stage would a person name if they answered "stop asking me about this"? Asked here
         // because this pass has the stage's own intents, and a second reader of the program table would
@@ -3709,10 +3787,13 @@ impl Baseline {
                 continue;
             }
             for w in word.flatten() {
+                let verbs = verbs_at(i);
                 // A construct nobody can read is a widened scope, not a missing word: the region decides
-                // whether this is a read and the scoped intent feeds the destruction rule.
+                // whether this is a read and the scoped intent feeds the destruction rule. The verbs
+                // are this word's, which for a wrapper's own argument list is nothing that lands on
+                // a place: `env TOKEN=$X cargo test` names no file either way.
                 if let Word::Unresolved(at) = w {
-                    self.widen_argument(n, *at, &effective, i, &identity);
+                    self.widen_argument(n, *at, &effective, i, &identity, verbs);
                     continue;
                 }
                 let Some(text) = w.text() else { continue };
@@ -3765,9 +3846,10 @@ impl Baseline {
                     }
                 }
                 // The scoped intent: the verb and its target, which is the line layer B checks against
-                // what the operator said. The STAGE's intents, since a union scoped one stage's `Destroy`
-                // onto the next stage's operands.
-                for verb in stage_intents(stage) {
+                // what the operator said. This WORD's verbs, from the program that receives it - a
+                // stage's union scoped one stage's `Destroy` onto the next stage's operands, and a
+                // wrapper's `ExecuteCode` onto words its child never sees as operands.
+                for &verb in verbs {
                     if matches!(verb, Intent::Destroy | Intent::WriteFile)
                         && self.own_config.is_none()
                     {
@@ -3778,7 +3860,13 @@ impl Baseline {
                     }
                     if matches!(verb, Intent::Destroy | Intent::WriteFile | Intent::Network)
                         && !identity.contains(&i)
-                        && !(verb == Intent::WriteFile && git_names_a_ref(&effective, text))
+                        // A word that names no place writes no file: a git ref, the value of a
+                        // flag that names one, and any operand of a build or test runner, whose
+                        // write is the tree it runs over.
+                        && !(verb == Intent::WriteFile
+                            && (git_names_a_ref(&effective, text)
+                                || git_ref_flag_value(&effective, &stage.argv, i)
+                                || writes_its_tree(&effective)))
                     {
                         self.scoped.push(ScopedIntent {
                             intent: verb,
