@@ -11,6 +11,7 @@ use crate::backend::{BackendError, Command, DirEntry, ExecBackend, Output};
 use crate::exec::{Boundary, ConfinePlan, Confinement, ExecError, HostProcesses};
 
 pub mod boot;
+pub mod cli;
 pub mod held;
 pub mod keep;
 
@@ -338,6 +339,12 @@ pub struct FirecodeBackend {
     rescued: std::sync::Mutex<Option<Result<keep::Rescue, String>>>,
     /// Why the booted copy was kept instead of removed.
     kept: std::sync::Mutex<Option<String>>,
+    /// The pooled VM this backend took ([`FirecodeSpec::pool_take`]), by firecode's own name: its
+    /// end hands it back with `pool return` instead of bringing it down.
+    pool: Option<String>,
+    /// What this VM is for, which decides what a `pool return` refusal may do about it: a
+    /// reviewer's VM is killed when its guest still runs, because its work is a verdict.
+    purpose: cli::Purpose,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -449,10 +456,21 @@ pub struct FirecodeSpec {
     /// the session works in, so edits, worktrees beside a repository and commits land on the host
     /// as they are made. A VM already running with it mounted is joined, not booted again.
     pub mount_rw: bool,
-    /// The owner this VM belongs to: the session id, written into firecode's own run directory as
-    /// `owner` once the run exists. That file is the stamp a discovery pass reads, so a VM is
-    /// attributable with no store and no daemon (`docs/lifecycle.md` d.4).
+    /// The owner this VM belongs to: the session id. It is passed to `firecode up` as the
+    /// [`cli::Stamp`] item 1 asks for (`--owner letibot:<session>:<pid>`, `--owner-project`,
+    /// `--purpose`, `--reuse`) and also written into firecode's own run directory as `owner`,
+    /// which is the stamp a discovery pass reads with no store and no daemon
+    /// (`docs/lifecycle.md` d.4).
     pub owner: Option<String>,
+    /// What this run is for, and whether its VM goes back to the pool: the rest of the stamp.
+    pub purpose: cli::Purpose,
+    pub reuse: bool,
+    /// The project key the stamp names (`--owner-project`): twelve hex, the store's spelling.
+    /// [`FirecodeSpec::for_box`] fills it from the boot source, so every caller gets it for free.
+    pub owner_project: Option<String>,
+    /// Take a pooled VM of this purpose before booting one, and hand it back asleep at the end
+    /// (`pool take` / `pool return --sleep`): item 4's policy, and only a reviewer's.
+    pub pool_take: bool,
     /// The VM's state goes when its copy-out is published (`FIRECODE_EPHEMERAL=1`): the default,
     /// because a stopped package VM's 32 GiB layer is what filled this box's root disk. A session
     /// that is resumable on purpose sets this false and opts out of the whole point.
@@ -483,6 +501,7 @@ impl FirecodeSpec {
         spec.state = settings.firecode_state;
         spec.runs = settings.firecode_runs;
         spec.boot = Some(boot::BootQueue::for_box());
+        spec.owner_project = Some(cli::project_key(&spec.source));
         spec
     }
 
@@ -514,6 +533,10 @@ impl FirecodeSpec {
             verify: None,
             mount_rw: false,
             owner: None,
+            purpose: cli::Purpose::Session,
+            reuse: false,
+            owner_project: None,
+            pool_take: false,
             ephemeral: true,
             state: None,
             runs: None,
@@ -525,6 +548,16 @@ impl FirecodeSpec {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(DEFAULT_COPY_MAX),
         }
+    }
+
+    /// The stamp this run is started with, when the caller named the session it is for. `None` is
+    /// a placement that owns itself (a gate's or a test's own VM), and it passes no owner.
+    pub fn stamp(&self) -> Option<cli::Stamp> {
+        let session = self.owner.as_ref()?;
+        let mut stamp = cli::Stamp::here(session, self.purpose);
+        stamp.project = self.owner_project.clone();
+        stamp.reuse = self.reuse || self.purpose.reusable();
+        Some(stamp)
     }
 }
 
@@ -546,6 +579,36 @@ fn layer_env() -> Vec<(String, String)> {
     )]
 }
 
+/// Item 4's first half: `firecode pool take --project <source> --purpose <p>` before anything is
+/// copied or booted. A VM that comes back is RESUMED and joined, never copied: its tree is the
+/// pool's. `None` is the ordinary answer (nothing pooled, or a firecode without the verb) and the
+/// caller boots fresh.
+fn take_pooled(spec: &FirecodeSpec, bin: &Path) -> Result<Option<FirecodeBackend>, BackendError> {
+    let taken = match cli::take(bin, &spec.source, spec.purpose) {
+        Ok(t) => t,
+        Err(e) if e.is_missing() => return Ok(None),
+        // A firecode older than the pool, or one whose pool refused: a boot, said once.
+        Err(e) => {
+            eprintln!("letibot: no pooled VM: {}", e.sentence());
+            return Ok(None);
+        }
+    };
+    let (Some(name), Some(path)) = (taken.name.clone(), taken.project_path.clone()) else {
+        return Ok(None);
+    };
+    if !taken.taken {
+        return Ok(None);
+    }
+    let mut b = FirecodeBackend::attach(Some(bin.to_path_buf()), path, spec.writable, spec.exec)?;
+    // It IS this backend's to hand back: `owns` is what makes its drop return the VM to the pool.
+    b.owns = true;
+    b.pool = Some(name);
+    b.purpose = spec.purpose;
+    b.source = spec.source.clone();
+    b.mounted = false;
+    Ok(Some(b))
+}
+
 /// And the pairs that decide where a VM's disks live and whether it leaves any (`docs/lifecycle.md`
 /// d.5's firecode rows): `FIRECODE_EPHEMERAL=1` unless the owner is resumable on purpose, and the
 /// box's `[firecode] state`/`runs` when it named them.
@@ -563,6 +626,11 @@ fn firecode_env(spec: &FirecodeSpec) -> Vec<(String, String)> {
     }
     if let Some(runs) = &spec.runs {
         out.push(("FIRECODE_RUNS".to_string(), runs.display().to_string()));
+    }
+    // The same facts as the flags `up` is given, for a firecode older than them: the flags win
+    // where both are read, so passing both can never disagree.
+    if let Some(stamp) = spec.stamp() {
+        out.extend(stamp.env());
     }
     out
 }
@@ -585,6 +653,14 @@ impl FirecodeBackend {
             }
             None => firecode_available().map_err(BackendError::Io)?,
         };
+        // Item 4: a reviewer's VM comes from the pool when firecode has one for this project - a
+        // sleeping VM of the right purpose, resumed rather than booted. A take that answers
+        // `taken: false` (or a firecode with no `pool` verb) is a boot, not a failure.
+        if spec.pool_take
+            && let Some(b) = take_pooled(spec, &bin)?
+        {
+            return Ok(b);
+        }
         // The folder itself, read-write: joined if a VM already holds it mounted, booted with
         // `--mount-rw` otherwise. Never a copy, never removed - it is the operator's folder.
         if spec.mount_rw
@@ -686,6 +762,11 @@ impl FirecodeBackend {
             project.display().to_string(),
         ];
         args.extend(spec.up_args.iter().cloned());
+        // Item 1: every run letibot starts says who owns it, in which project, and what for - the
+        // flags a firecode that has them reads, and the pairs beside them for one that has not.
+        if let Some(stamp) = spec.stamp() {
+            args.extend(stamp.flags());
+        }
         if spec.mount_rw {
             args.push("--mount-rw".to_string());
         }
@@ -721,12 +802,12 @@ impl FirecodeBackend {
         }
         unwind.vm = true;
         let run = run_id(&bin, &project).unwrap_or_default();
-        // The stamp: firecode's own run directory, named for the owner it was booted for. Written
-        // from here rather than by firecode, so it is there whatever version answered `up`.
-        if let Some(owner) = &spec.owner
+        // The stamp, again in firecode's own run directory: `--owner` is the newer door, and this
+        // file is what a discovery pass with no store reads.
+        if let Some(stamp) = spec.stamp()
             && let Some(runs) = held::runs_dir(&bin)
         {
-            let _ = std::fs::write(runs.join(&run).join("owner"), owner);
+            let _ = std::fs::write(runs.join(&run).join("owner"), stamp.owner());
         }
 
         let processes = if spec.exec {
@@ -773,6 +854,8 @@ impl FirecodeBackend {
             exclude: Vec::new(),
             rescued: std::sync::Mutex::new(None),
             kept: std::sync::Mutex::new(None),
+            pool: None,
+            purpose: spec.purpose,
         };
         if !mounted {
             b.base = keep::git_head(&spec.source);
@@ -843,6 +926,8 @@ impl FirecodeBackend {
             exclude: Vec::new(),
             rescued: std::sync::Mutex::new(None),
             kept: std::sync::Mutex::new(None),
+            pool: None,
+            purpose: cli::Purpose::Session,
         };
         // The parent's VM has to be up and taking commands, or there is nothing to run in.
         b.guest("true").map_err(|e| {
@@ -878,6 +963,8 @@ impl FirecodeBackend {
             exclude: Vec::new(),
             rescued: std::sync::Mutex::new(None),
             kept: std::sync::Mutex::new(None),
+            pool: None,
+            purpose: cli::Purpose::Session,
         }
     }
 
@@ -1074,6 +1161,12 @@ impl FirecodeBackend {
         if !self.owns {
             return;
         }
+        // Item 4's second half: a VM taken from the pool goes back to it asleep, never down. Its
+        // tree is the pool's, so nothing here is copied out or removed.
+        if self.pool.is_some() {
+            self.return_to_pool();
+            return;
+        }
         let was_live = {
             let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
             let n = live.len();
@@ -1102,6 +1195,11 @@ impl FirecodeBackend {
         // `none` is a guest that changed nothing; `failed` keeps the copy, which is the only copy.
         let started = std::time::Instant::now();
         let mut recorded = false;
+        // `failed` is the one record that keeps the copy on its own: it is the only place the
+        // work is. `settled` is the other two: firecode said the work is out (`done`) or that
+        // there was nothing to copy (`none`).
+        let mut copy_out_failed = false;
+        let mut settled = false;
         loop {
             match self.copy_out() {
                 Some(r) if r == "pending" => {
@@ -1114,15 +1212,18 @@ impl FirecodeBackend {
                     let landed = PathBuf::from(r["done ".len()..].trim());
                     self.drop_rescue_held_by(&landed);
                     *self.landed.lock().unwrap_or_else(|e| e.into_inner()) = Some(landed);
-                    self.remove_copy();
-                    return;
+                    settled = true;
+                    break;
                 }
                 Some(r) if r == "none" => {
-                    self.remove_copy();
-                    return;
+                    settled = true;
+                    break;
                 }
-                Some(_failed) => return,
-                None if recorded => return,
+                Some(_failed) => {
+                    copy_out_failed = true;
+                    break;
+                }
+                None if recorded => break,
                 None => {
                     let now = siblings(&self.project);
                     if let Some(new) = now.into_iter().find(|s| !before.contains(s)) {
@@ -1136,15 +1237,96 @@ impl FirecodeBackend {
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
-        if self.landed().is_some() || self.run_finished() {
+        // Item 2: the VM is down and its work is wherever the copy-out put it, so firecode is told
+        // the session has ended. A release that refuses - the guest's work was never copied out -
+        // is the one answer that keeps the copy: nothing else holds that work.
+        let refused = self.release_work();
+        if refused.is_none()
+            && !copy_out_failed
+            && (settled || self.landed().is_some() || self.run_finished())
+        {
             self.remove_copy();
         }
     }
 
+    /// Item 2: `firecode state release <name> --json` at the end of a session. `Ok` is work that
+    /// came out (or nothing to extract) and the copy may go; `Err` is a refusal, whose holder
+    /// keeps the copy and leaves a record the reaper retries the extraction from once.
+    fn release_work(&self) -> Option<String> {
+        let which = cli::Which::Project(&self.project);
+        let released = match cli::release(&self.bin, which) {
+            Ok(r) => r,
+            // No firecode on this box, or one older than the `state` verb, whose usage line is
+            // not a document: nothing to release, and nothing a person needs to hear.
+            Err(e) if e.is_missing() => return None,
+            Err(cli::Failure::Unreadable { .. }) => return None,
+            Err(e) => {
+                eprintln!("letibot: {}: {}", self.project.display(), e.sentence());
+                return None;
+            }
+        };
+        if released.work_is_out() {
+            if let Some(dir) = self.project.parent() {
+                cli::Unextracted::forget(dir, &self.name());
+            }
+            return None;
+        }
+        let line = released.sentence(&self.name());
+        eprintln!("letibot: {line}");
+        let record = cli::Unextracted {
+            name: self.name(),
+            run: self.run.clone(),
+            project: self.project.display().to_string(),
+            hint: released.hint.clone(),
+            attempts: 0,
+            flagged: false,
+            since_ms: crate::lifecycle::now_ms() as u64,
+        };
+        if let Some(dir) = self.project.parent() {
+            record.save(dir);
+        }
+        Some(line)
+    }
+
+    /// Item 4's second half: hand a taken VM back with `pool return --sleep`. A guest that still
+    /// has a process REFUSES the return, and that refusal is answered with `--kill` only for a
+    /// reviewer - a reviewer's work is a verdict that is already stored, never code somebody wants.
+    fn return_to_pool(&self) -> Option<String> {
+        let name = self.pool.as_ref()?;
+        let line = match cli::give_back(&self.bin, name, false) {
+            Ok(r) if r.returned => r.sentence(name),
+            Ok(r) if r.still_running() && self.purpose == cli::Purpose::Reviewer => {
+                let killed = cli::give_back(&self.bin, name, true);
+                match killed {
+                    Ok(k) => format!(
+                        "{} Then killed, as a reviewer's: {}.",
+                        r.sentence(name),
+                        k.sentence(name)
+                    ),
+                    Err(e) => format!("{} {}", r.sentence(name), e.sentence()),
+                }
+            }
+            Ok(r) => r.sentence(name),
+            Err(e) => e.sentence(),
+        };
+        eprintln!("letibot: {line}");
+        Some(line)
+    }
+
+    /// What this VM is called, when a name is a thing firecode knows: its project's own last
+    /// segment (the session id a copy is named by).
+    fn name(&self) -> String {
+        self.project
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.run.clone())
+    }
+
     /// The copy the VM was booted on, gone once its work has landed - and never a mounted
-    /// worktree, which is the operator's own and is where the work landed.
+    /// worktree, which is the operator's own and is where the work landed, nor a pooled VM's tree,
+    /// which is firecode's and outlives every review that borrows it.
     fn remove_copy(&self) {
-        if self.mounted {
+        if self.mounted || self.pool.is_some() {
             return;
         }
         if let Some(why) = keep::holds_work(&self.project, &self.source, &self.exclude) {
@@ -1493,7 +1675,16 @@ impl ExecBackend for FirecodeBackend {
     }
 
     fn close(&self) -> Option<String> {
+        let pooled = self.pool.clone();
         self.down();
+        // A VM taken from the pool: its tree is firecode's and stays there, so the sentence is
+        // about the VM rather than about work that was copied out.
+        if let Some(name) = pooled {
+            return Some(format!(
+                "this reviewer ran in the pooled VM `{name}`, which went back to the pool asleep. \
+                 Its tree is the pool's, so nothing was copied out; the verdict is the work"
+            ));
+        }
         // In a VM this session did not start: nothing is brought down, nothing is copied out.
         // Not the "neither a result directory ... appeared" wording, which is about
         // a copy-out this session was never going to see.

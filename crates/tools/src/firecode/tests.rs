@@ -1404,3 +1404,59 @@ fn a_vm_boot_queues_for_the_boxs_boot_slot() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Item 1: the run letibot starts says who owns it, in which project, and what for - as the flags
+/// a new firecode reads and as the pairs an older one does. The stub records the argv it got.
+#[test]
+fn a_placement_stamps_its_owner_its_project_and_its_purpose_on_the_boot() {
+    let root = tmp("stamp");
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    // Not `HAPPY`: its `up` arm answers before any arm of this test's could record the argv.
+    let arms = "up) mkdir -p \"$ROOT/runs/r1\"; printf '%s\\n' \"$*\" > \"$ROOT/argv\"; \
+                printf '%s\\n' \"$FIRECODE_OWNER / $FIRECODE_PURPOSE / $FIRECODE_REUSABLE\" > \"$ROOT/env\"; \
+                exit 0 ;;\n\
+                info) echo '{\"run\":\"r1\"}' ;;\n\
+                layer) [ \"$2\" = inherit ] && exit 0; exit 1 ;;";
+    let bin = stub_firecode(&root.join("fc"), arms);
+    let mut spec = spec_with(&src, &root.join("cache"), &bin);
+    spec.owner = Some("s-1794".into());
+    spec.purpose = cli::Purpose::Reviewer;
+    spec.owner_project = Some("defc553f46c3".into());
+    let b = FirecodeBackend::up(&spec).expect("a stamped VM");
+    let argv = std::fs::read_to_string(root.join("fc").join("argv")).expect("the boot's argv");
+    let owner = format!("letibot:s-1794:{}", std::process::id());
+    assert!(argv.contains(&format!("--owner {owner}")), "{argv}");
+    assert!(argv.contains("--owner-project defc553f46c3"), "{argv}");
+    assert!(argv.contains("--purpose reviewer"), "{argv}");
+    assert!(
+        argv.contains("--reuse"),
+        "a reviewer's VM is the one reused: {argv}"
+    );
+    let env = std::fs::read_to_string(root.join("fc").join("env")).expect("the boot's env");
+    assert_eq!(env.trim(), format!("{owner} / reviewer / 1"));
+    // And the same stamp in firecode's own run directory, which a discovery pass reads.
+    let stamped = std::fs::read_to_string(root.join("fc").join("runs").join("r1").join("owner"));
+    assert_eq!(stamped.ok().as_deref(), Some(owner.as_str()));
+    drop(b);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A placement that names no owner passes no stamp: a gate's or a test's own VM belongs to nobody.
+#[test]
+fn a_placement_with_no_owner_passes_no_stamp() {
+    let root = tmp("unstamped");
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    // Not `HAPPY`: its `up` arm answers before any arm of this test's could record the argv.
+    let arms = "up) printf '%s\\n' \"$*\" > \"$ROOT/argv\"; exit 0 ;;\n\
+                info) echo '{\"run\":\"r1\"}' ;;\n\
+                layer) [ \"$2\" = inherit ] && exit 0; exit 1 ;;";
+    let bin = stub_firecode(&root.join("fc"), arms);
+    let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).expect("a VM");
+    let argv = std::fs::read_to_string(root.join("fc").join("argv")).expect("the boot's argv");
+    assert!(!argv.contains("--owner"), "{argv}");
+    assert!(!argv.contains("--purpose"), "{argv}");
+    drop(b);
+    let _ = std::fs::remove_dir_all(&root);
+}
