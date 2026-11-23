@@ -264,8 +264,7 @@ fn a_read_inside_the_worktree_or_temp_is_owned() {
     ] {
         let mut r = request(command);
         r.tier = crate::adjudicate::Tier::MayApprove;
-        super::admits(&r, &owned(), &workspace())
-            .unwrap_or_else(|e| panic!("{command}: {e}"));
+        super::admits(&r, &owned(), &workspace()).unwrap_or_else(|e| panic!("{command}: {e}"));
     }
 }
 

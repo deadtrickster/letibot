@@ -94,7 +94,10 @@ pub enum Kept {
     /// another card for this session's tree until the row is revoked. Not a grant - it narrows
     /// where the others widen - and it lives in the same row, the same scopes and under the same
     /// revoke that lifts it.
-    Deny { shape: String, target: String },
+    Deny {
+        shape: String,
+        target: String,
+    },
 }
 
 impl Kept {

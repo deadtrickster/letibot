@@ -145,6 +145,7 @@ impl Answers {
         budget: Duration,
         subagent: Option<&SubagentAsk>,
         gate: Option<&letibot_sessionlog::pending_asks::AskerGate>,
+        unattended: crate::leticode_config::Unattended,
     ) -> AdjudicationDecision {
         let started = Instant::now();
         let (mut who, route) = match escalation(hub) {
@@ -188,6 +189,41 @@ impl Answers {
                 return d;
             }
             line = Some(format!("{} would ask - {}", d.by, one_line(&d.basis)));
+        }
+
+        // Nobody can answer, and the operator said what that means: a session with no head is not
+        // one where a card is a question, it is one where the card waits out its whole budget and
+        // then fails closed, every time. `Review` is that old behaviour and needs nothing here.
+        // "Nobody" includes the escalation route: a queue session with no head of its own hands its
+        // cards to the main session's, and a main session nobody is attached to is nobody too.
+        // Neither arm publishes anything: the ask's own row is written by the gate, and that row is
+        // what `/gate grant` reaches, so a card nobody can see would be a screen nobody is at.
+        let can_answer = match &route {
+            Some(set) => set.main().is_some_and(|m| !m.deciding_heads().is_empty()),
+            None => !who.is_empty(),
+        };
+        if !can_answer && unattended != crate::leticode_config::Unattended::Review {
+            let basis = match unattended {
+                crate::leticode_config::Unattended::Queue => format!(
+                    "no head is attached to this session, and `[automode] unattended = \"queue\"`: the \
+                     ask is filed as the row `{}` and this call did not run. Nothing was asked, so \
+                     nothing was refused; the operator answers it with `/gate grant {}` and the \
+                     session is told when they do",
+                    req.id, req.id
+                ),
+                _ => "no head is attached to this session, and `[automode] unattended = \"refuse\"`: \
+                      the call did not run and no card was raised. Nothing was decided - change what \
+                      you are doing, or take a path that needs no answer"
+                    .to_string(),
+            };
+            return AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome: DecisionOutcome::Unavailable,
+                by: "gate:unattended".into(),
+                basis,
+                latency_ms: started.elapsed().as_millis() as u64,
+                grant_at: None,
+            };
         }
 
         let deadline_ms = unix_millis() + budget.as_millis() as u64;
@@ -1293,6 +1329,9 @@ pub struct HeadAdjudicator {
     pattern: Mutex<Option<String>>,
     /// This session's own gate, for a judge of its relayed asks.
     gate: Option<letibot_sessionlog::pending_asks::AskerGate>,
+    /// What a session with no head attached does with a call that would be a card: the operator's
+    /// `[automode] unattended`. `Review` waits for a head, as a card always has.
+    unattended: crate::leticode_config::Unattended,
 }
 
 impl HeadAdjudicator {
@@ -1304,7 +1343,14 @@ impl HeadAdjudicator {
             shown: Mutex::new(None),
             pattern: Mutex::new(None),
             gate: None,
+            unattended: crate::leticode_config::Unattended::Review,
         }
+    }
+
+    /// The operator's `[automode] unattended`: what this session does when nobody can answer.
+    pub fn with_unattended(mut self, u: crate::leticode_config::Unattended) -> Self {
+        self.unattended = u;
+        self
     }
 
     /// The asking session's rules and workspace, carried on its relayed calls.
@@ -1333,7 +1379,7 @@ impl HeadAdjudicator {
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let d = self
             .answers
-            .ask(&self.hub, req, self.budget, subagent, gate);
+            .ask(&self.hub, req, self.budget, subagent, gate, self.unattended);
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
             self.answers.take_pattern(&req.id);
         d

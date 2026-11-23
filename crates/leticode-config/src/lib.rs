@@ -479,6 +479,9 @@ pub struct LeticodeConfig {
     /// The `[nag]` table: the idle plan-check's window, floor and ceiling. `None`s are the
     /// clock's own numbers; see [`NagKeys`] and [`LeticodeConfig::nag_timings`].
     pub nag: NagKeys,
+    /// The `[automode]` table: what an unattended session does with a call that would be a card,
+    /// and the two block counts. See [`AutomodeKeys`].
+    pub automode: AutomodeKeys,
     /// The `[queue]` table's two census numbers. See [`QueueKeys`].
     pub queue: QueueKeys,
     /// The `[room]` table: the model the room's tie-breaker arbitrates on.
@@ -2432,6 +2435,71 @@ pub struct NagKeys {
     pub repeat_cap_seconds: Option<u64>,
 }
 
+/// `[automode]` in a `leticode.toml`: what a session with no head does with a call the reviewer
+/// did not settle, and how many blocks it takes before the operator is asked instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomodeKeys {
+    /// `review` (the default), `queue` or `refuse`; see [`Unattended`]. Validated at load, so a
+    /// misspelt word is refused with its line rather than read as the default.
+    pub unattended: Option<String>,
+    /// Blocks in a row before the operator is asked. `None` is the daemon's own number.
+    pub blocks_in_a_row: Option<u32>,
+    /// Blocks in one session before the operator is asked. `None` is the daemon's own number.
+    pub blocks_per_session: Option<u32>,
+}
+
+impl AutomodeKeys {
+    /// Whether the file said anything, so the disclosure does not claim a setting nobody made.
+    pub fn is_empty(&self) -> bool {
+        self.unattended.is_none()
+            && self.blocks_in_a_row.is_none()
+            && self.blocks_per_session.is_none()
+    }
+
+    /// The policy this level names, `review` when it names none.
+    pub fn unattended(&self) -> Unattended {
+        self.unattended
+            .as_deref()
+            .and_then(Unattended::parse)
+            .unwrap_or_default()
+    }
+}
+
+/// What a session nobody is watching does with a call that would be a card.
+///
+/// A session with no head attached is not one where a card is a question: it is one where the card
+/// waits out its whole budget and then fails closed, for as long as the run lasts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Unattended {
+    /// Wait for a head, as a card always has: a head that attaches in time answers it, and one that
+    /// never does leaves the call refused.
+    #[default]
+    Review,
+    /// Do not wait: the ask is queued as its own row - `/gate recent` lists it and
+    /// `/gate grant <row>` answers it, which is the queue the operator reads - and this call is
+    /// refused at once with that row's id. Nothing is drawn on a screen nobody is at.
+    Queue,
+    /// Do not ask at all: refuse the call and say that the setting is why.
+    Refuse,
+}
+
+impl Unattended {
+    pub const ALL: [Unattended; 3] = [Unattended::Review, Unattended::Queue, Unattended::Refuse];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Unattended::Review => "review",
+            Unattended::Queue => "queue",
+            Unattended::Refuse => "refuse",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Unattended> {
+        let s = s.trim();
+        Unattended::ALL.into_iter().find(|u| u.as_str() == s)
+    }
+}
+
 impl NagKeys {
     /// Whether the file said anything, so the disclosure does not claim a setting nobody made.
     pub fn is_empty(&self) -> bool {
@@ -3037,6 +3105,61 @@ fn nag_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<
     Ok(out)
 }
 
+fn automode_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<AutomodeKeys, String> {
+    let keys = "the keys are `unattended` (`review`, `queue` or `refuse`), `blocks_in_a_row` and \
+                `blocks_per_session`";
+    let table = table_at(value, path, text, "automode", keys)?;
+    let mut out = AutomodeKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "unattended" => {
+                let word = v.as_str().map(str::trim).unwrap_or_default();
+                if Unattended::parse(word).is_none() {
+                    return Err(format!(
+                        "{from}: [automode] unattended = {} is not one of {}",
+                        match v.as_str() {
+                            Some(w) => format!("{w:?}"),
+                            None => kind_of(v).to_string(),
+                        },
+                        Unattended::ALL
+                            .iter()
+                            .map(|u| format!("`{}`", u.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                out.unattended = Some(word.to_string());
+            }
+            "blocks_in_a_row" => out.blocks_in_a_row = Some(count_at(v, &from, "automode", key)?),
+            "blocks_per_session" => {
+                out.blocks_per_session = Some(count_at(v, &from, "automode", key)?)
+            }
+            other => return Err(format!("{from}: [automode] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
+/// A positive whole number, for a count rather than a schedule.
+fn count_at(v: &toml::Value, from: &Origin, table: &str, key: &str) -> Result<u32, String> {
+    let n = v.as_integer().ok_or_else(|| {
+        format!(
+            "{from}: [{table}] {key} is a whole number, not {}",
+            kind_of(v)
+        )
+    })?;
+    u32::try_from(n)
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("{from}: [{table}] {key} = {n} — a count of blocks is at least one"))
+}
+
 fn room_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<RoomKeys, String> {
     let keys = "the keys are `tie_breaker` (the model that arbitrates the room's items) and \
                 `held_quiet_seconds` (how long a held room line waits for its digest turn)";
@@ -3192,6 +3315,10 @@ impl LeticodeConfig {
             nag: match &file.nag {
                 Some(v) => nag_keys(v, path, text, level == Level::User)?,
                 None => NagKeys::default(),
+            },
+            automode: match &file.automode {
+                Some(v) => automode_keys(v, path, text, level == Level::User)?,
+                None => AutomodeKeys::default(),
             },
             queue: match &file.queue {
                 Some(v) => queue_keys(v, path, text, level == Level::User)?,
@@ -3469,6 +3596,21 @@ impl LeticodeConfig {
                 after_seconds: other.nag.after_seconds.or(self.nag.after_seconds),
                 floor_seconds: other.nag.floor_seconds.or(self.nag.floor_seconds),
                 repeat_cap_seconds: other.nag.repeat_cap_seconds.or(self.nag.repeat_cap_seconds),
+            },
+            automode: AutomodeKeys {
+                unattended: other
+                    .automode
+                    .unattended
+                    .clone()
+                    .or(self.automode.unattended.clone()),
+                blocks_in_a_row: other
+                    .automode
+                    .blocks_in_a_row
+                    .or(self.automode.blocks_in_a_row),
+                blocks_per_session: other
+                    .automode
+                    .blocks_per_session
+                    .or(self.automode.blocks_per_session),
             },
             queue: QueueKeys {
                 stuck_after_seconds: other
@@ -3817,6 +3959,9 @@ struct LeticodeConfigFile {
     /// The `[nag]` table, see [`NagKeys`].
     #[serde(default)]
     nag: Option<toml::Value>,
+    /// The `[automode]` table, see [`AutomodeKeys`].
+    #[serde(default)]
+    automode: Option<toml::Value>,
     /// The `[room]` table, see [`RoomKeys`].
     #[serde(default)]
     room: Option<toml::Value>,

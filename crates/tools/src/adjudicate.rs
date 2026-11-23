@@ -4444,10 +4444,8 @@ impl Gate for AdjudicatedGate {
                             && decision.by.starts_with("human")
                             && !self.mode.admits_everything();
                         if sticky {
-                            let why = format!(
-                                "denied by an answer to {}: {}",
-                                req.id, decision.basis
-                            );
+                            let why =
+                                format!("denied by an answer to {}: {}", req.id, decision.basis);
                             self.keep_grant(
                                 crate::grant_ledger::Kept::Deny {
                                     shape: req.shape.clone().unwrap_or_default(),

@@ -1826,11 +1826,17 @@ fn the_six_tables_are_read_and_an_empty_file_is_the_shipped_daemon() {
         "no key is the clock every daemon already had"
     );
     assert_eq!(none.stuck_after_seconds(), None);
+    assert!(
+        none.automode.is_empty(),
+        "a file that says nothing is the shipped policy"
+    );
+    assert_eq!(none.automode.unattended(), Unattended::Review);
 
     let full = write_file(
         &sub(&dir, "full"),
         "[queue]\nstuck_after_seconds = 900\nstuck_repeat_seconds = 7200\n\
              [nag]\nafter_seconds = 60\nfloor_seconds = 10\nrepeat_cap_seconds = 1800\n\
+             [automode]\nunattended = \"queue\"\nblocks_in_a_row = 4\nblocks_per_session = 12\n\
              [room]\ntie_breaker = \"glm-coding/glm-5.3\"\n\
              [warnings]\nmute = [\"model_slow_first_byte\", \"denied\"]\n\
              [keys]\n\"todos.d\" = \"f\"\n\
@@ -1842,6 +1848,10 @@ fn the_six_tables_are_read_and_an_empty_file_is_the_shipped_daemon() {
     assert_eq!(c.nag.after_seconds, Some(60));
     assert_eq!(c.nag.floor_seconds, Some(10));
     assert_eq!(c.nag.repeat_cap_seconds, Some(1800));
+    // `[automode]`: the word, and the two counts that move the reviewer's threshold.
+    assert_eq!(c.automode.unattended(), Unattended::Queue);
+    assert_eq!(c.automode.blocks_in_a_row, Some(4));
+    assert_eq!(c.automode.blocks_per_session, Some(12));
     assert_eq!(c.room.tie_breaker.as_deref(), Some("glm-coding/glm-5.3"));
     assert_eq!(
         c.warnings
@@ -1898,6 +1908,24 @@ fn a_bad_value_in_every_table_is_refused_with_its_file_and_line() {
             3,
         ),
         ("qmute", "\n[queue]\nmute = \"a\"\n", "mute is a list", 3),
+        (
+            "automode_word",
+            "\n[automode]\nunattended = \"maybe\"\n",
+            "[automode] unattended",
+            3,
+        ),
+        (
+            "automode_count",
+            "\n[automode]\nblocks_in_a_row = 0\n",
+            "[automode] blocks_in_a_row",
+            3,
+        ),
+        (
+            "automode_key",
+            "\n[automode]\nqueue = true\n",
+            "`queue` is not a key",
+            3,
+        ),
         (
             "qmute_entry",
             "\n[queue]\nmute = [\"a\", 3]\n",

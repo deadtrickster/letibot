@@ -261,8 +261,9 @@ impl Answering {
         })
     }
 
-    /// The limits as configured (`[automode]`), for a box that wants other numbers.
-    pub fn with_block_limits(self, run: u32, session: u32) {
+    /// The limits as configured (`[automode]`), for a box that wants other numbers: blocks in a row
+    /// before the operator is asked, and blocks in one session.
+    pub fn with_block_limits(&self, run: u32, session: u32) {
         *self.block_limits.lock().unwrap_or_else(|e| e.into_inner()) = (run.max(1), session.max(1));
     }
 

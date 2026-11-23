@@ -2205,6 +2205,18 @@ impl Harness {
             cfg.shadow.answers_anything(),
             cfg.store_at().map(|at| (at, cfg.session_id.clone())),
         );
+        // How many blocks it takes before the operator is asked instead: `[automode]`, defaulting
+        // to the numbers the tree shipped with.
+        shadow_answering.with_block_limits(
+            cfg.leticode
+                .automode
+                .blocks_in_a_row
+                .unwrap_or(crate::shadow::permission::BLOCKS_IN_A_ROW),
+            cfg.leticode
+                .automode
+                .blocks_per_session
+                .unwrap_or(crate::shadow::permission::BLOCKS_A_SESSION),
+        );
         Self::say_the_embedder(&hub, &cfg);
         // The owner row and its root, before anything this session creates: a row with no resource is
         // harmless, a resource with no row is a leak. A store that refuses leaves a note rather than
@@ -3240,12 +3252,12 @@ impl Harness {
                                 .with_workspace(cfg.workspace.clone()),
                         ));
                         Box::new(
-                            crate::answers::HeadAdjudicator::new(hub.clone(), answers).with_gate(
-                                crate::shadow::permission::asker_gate(
+                            crate::answers::HeadAdjudicator::new(hub.clone(), answers)
+                                .with_gate(crate::shadow::permission::asker_gate(
                                     &cfg.permission,
                                     &cfg.workspace,
-                                ),
-                            ),
+                                ))
+                                .with_unattended(cfg.leticode.automode.unattended()),
                         )
                     }
                     (None, AdjudicatorChoice::Console) => {
@@ -3278,7 +3290,8 @@ impl Harness {
                                     .with_gate(crate::shadow::permission::asker_gate(
                                         &cfg.permission,
                                         &cfg.workspace,
-                                    )),
+                                    ))
+                                    .with_unattended(cfg.leticode.automode.unattended()),
                             ),
                         ))
                     }

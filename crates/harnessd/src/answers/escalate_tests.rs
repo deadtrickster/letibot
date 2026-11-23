@@ -272,6 +272,53 @@ fn with_no_main_session_a_queue_card_waits_its_expiry_and_fails_closed() {
 
 const CLONE: &str = "/tmp/letibot-review-clones/review-agent-p2-followups-34db3e56";
 
+/// `[automode] unattended`: with nobody who can answer, `queue` and `refuse` do not wait out the
+/// budget - the call is refused at once and NO card is published, so a session nobody is watching
+/// does not spend its whole allowance on cards nobody can answer. `review` is the old behaviour and
+/// is asserted by the test above.
+#[test]
+fn an_unattended_session_does_not_wait_for_a_card_nobody_can_answer() {
+    for policy in [
+        crate::leticode_config::Unattended::Queue,
+        crate::leticode_config::Unattended::Refuse,
+    ] {
+        // A queue session with no head of its own, whose cards would go to a main session that has
+        // no head either: the escalation route exists and nobody is on it.
+        let gatekeeper = Hub::new(GATEKEEPER);
+        let answers = Arc::new(Answers::new());
+        gatekeeper.set_answer_sink(answers.clone());
+        gatekeeper.set_escalation(PendingAsks::new());
+        let adj = HeadAdjudicator::new(gatekeeper.clone(), answers)
+            .with_budget(Duration::from_secs(30))
+            .with_unattended(policy);
+        let started = std::time::Instant::now();
+        let d = adj.decide(&request());
+        assert_eq!(
+            d.outcome,
+            DecisionOutcome::Unavailable,
+            "{}: {d:?}",
+            policy.as_str()
+        );
+        assert_eq!(d.by, "gate:unattended");
+        assert!(
+            d.basis.contains(policy.as_str()),
+            "the sentence names the setting that did it: {}",
+            d.basis
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{}: it waited for a card nobody could answer",
+            policy.as_str()
+        );
+        assert!(
+            open_of(&gatekeeper).is_empty(),
+            "{}: a card nobody can see is not a question: {:?}",
+            policy.as_str(),
+            open_of(&gatekeeper)
+        );
+    }
+}
+
 /// The reviewer's workspace in these tests: the shadow's reads land under it.
 const REVIEW_WORKSPACE: &str = "/build";
 
@@ -887,7 +934,8 @@ const NO_BLOCK: &str = r#"{"block":false,"category":"","reason":""}"#;
 /// An answer the check voids - a category this build does not know - so the reviewer did not settle
 /// the call and the card stands. The new vocabulary's spelling of "it could not decide", and the
 /// shape a later No is scored against.
-const VOID_ANSWER: &str = r#"{"block":true,"category":"not_a_category","reason":"a category this build does not know"}"#;
+const VOID_ANSWER: &str =
+    r#"{"block":true,"category":"not_a_category","reason":"a category this build does not know"}"#;
 
 /// The reviewer's trail: one operator message, `[0]`, that asks for the review's reads.
 fn reviewer_trail() -> letibot_tools::authorise::AuthorisationTrail {
@@ -1262,19 +1310,6 @@ fn a_shadow_grant_is_kept_like_any_other_and_both_revokes_trip_the_breaker() {
     let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::from_millis(250));
     assert!(card.is_some(), "{d:?}");
     assert!(d.by.starts_with("human:"), "{}", d.by);
-}
-
-/// A judge that gives its replies in order, the last one from then on.
-struct Replies(std::sync::Mutex<Vec<&'static str>>);
-
-impl crate::shadow::judge::Judge for Replies {
-    fn label(&self) -> String {
-        "deepseek".into()
-    }
-    fn judge(&self, _system: &str, _user: &str) -> Result<String, String> {
-        let mut g = self.0.lock().unwrap();
-        Ok(if g.len() > 1 { g.remove(0) } else { g[0] }.to_string())
-    }
 }
 
 #[test]
