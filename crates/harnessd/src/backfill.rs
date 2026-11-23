@@ -148,6 +148,7 @@ fn surroundings(workspace: &str) -> Surroundings {
         // A replayed row was judged against the view the session had then, which this does
         // not have: an empty list judges every path by the workspace alone.
         granted: Vec::new(),
+        guest: false,
     }
 }
 

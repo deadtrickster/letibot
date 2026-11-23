@@ -537,8 +537,13 @@ fn an_admitted_call_consults_no_model_and_a_refusal_still_does() {
 
     // 0. the breaker is the exception on purpose: the calls reaching it are near-duplicates of
     //    rows already recorded, and an oracle round trip per iteration of a retry loop is what
-    //    the breaker exists to prevent.
-    let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": "deny" }))));
+    //    the breaker exists to prevent. Only an ANSWER counts toward it - a rule's refusal is the
+    //    same refusal every time, so it opens nothing (see `authorise::tests`).
+    let n = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", false)))
+        .with_mode(crate::mode::Mode::ALWAYS_ASK)
+        .with_advisor(std::sync::Arc::new(Counting(n.clone())))
+        .start_supervised(true);
     for _ in 0..5 {
         let _ = g.admit(&call("edit", &path));
     }

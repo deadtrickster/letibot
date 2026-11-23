@@ -494,6 +494,7 @@ fn req_intents(
         shell_path: None,
         // Rows replayed went through a session's own view, which this does not have.
         granted: Vec::new(),
+        guest: false,
     };
     let b = match (access, args.get("command").and_then(|v| v.as_str())) {
         (Access::Exec, Some(cmd)) => letibot_tools::intent::Baseline::of_command(cmd, &sur),

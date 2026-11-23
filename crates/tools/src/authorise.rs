@@ -1195,8 +1195,18 @@ impl Breaker {
         }
     }
 
-    /// Record a refusal. Returns the state after counting it.
-    pub fn refused(&mut self, d: &TaskDirection) -> BreakerState {
+    /// Record a refusal, by the decider the audit row names.
+    ///
+    /// Only an ANSWER counts: a person or a model said no, and asking the same thing again is the
+    /// loop this breaker exists to stop. A refusal a RULE made is not counted - the same call is
+    /// refused identically however many times it is repeated, nobody was asked, and there is no
+    /// loop to break. At `allow-all` the flow rule is the only thing that refuses at all, so
+    /// counting its refusals closed `bash` for a session on three commands nobody had been shown,
+    /// and only a person could open it again - which in that mode is nobody.
+    pub fn refused(&mut self, d: &TaskDirection, by: &str) -> BreakerState {
+        if decided_by_a_rule(by) {
+            return self.state(d);
+        }
         let k = d.key();
         let n = self.counts.entry(k.clone()).or_insert(0);
         *n += 1;
@@ -1233,6 +1243,14 @@ impl Breaker {
     pub fn open_directions(&self) -> Vec<&str> {
         self.open.iter().map(String::as_str).collect()
     }
+}
+
+/// Is this decider one of the deterministic rules rather than a person or a model? `boundary:*` is
+/// layer A's own reading of the command, `gate:permission` and `gate:mode` are the operator's
+/// written rules: none of them is asked anything, and none of them can answer differently the
+/// second time.
+fn decided_by_a_rule(by: &str) -> bool {
+    by.starts_with("boundary:") || matches!(by, "gate:permission" | "gate:mode")
 }
 
 // ---------------------------------------------------------------------------

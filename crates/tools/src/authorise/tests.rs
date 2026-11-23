@@ -123,6 +123,7 @@ fn env() -> Surroundings {
         programs: Default::default(),
         shell_path: None,
         granted: Vec::new(),
+        guest: false,
     }
 }
 
@@ -660,9 +661,18 @@ fn three_consecutive_refusals_open_the_breaker_and_only_a_human_closes_it() {
     let mut br = Breaker::default();
     let d = direction("/bin/cat /w/a.rs");
     assert_eq!(br.state(&d), BreakerState::Closed);
-    assert_eq!(br.refused(&d), BreakerState::Repeat { consecutive: 1 });
-    assert_eq!(br.refused(&d), BreakerState::Repeat { consecutive: 2 });
-    assert_eq!(br.refused(&d), BreakerState::Open { consecutive: 3 });
+    assert_eq!(
+        br.refused(&d, "human:test"),
+        BreakerState::Repeat { consecutive: 1 }
+    );
+    assert_eq!(
+        br.refused(&d, "human:test"),
+        BreakerState::Repeat { consecutive: 2 }
+    );
+    assert_eq!(
+        br.refused(&d, "human:test"),
+        BreakerState::Open { consecutive: 3 }
+    );
     assert_eq!(br.state(&d), BreakerState::Open { consecutive: 3 });
     assert_eq!(br.open_directions().len(), 1);
     br.reset_by_human(&d);
@@ -674,12 +684,41 @@ fn an_admission_resets_the_direction_and_another_direction_is_untouched() {
     let mut br = Breaker::default();
     let a = direction("/bin/cat /w/a.rs");
     let b = direction("/usr/bin/curl https://example.com");
-    br.refused(&a);
-    br.refused(&a);
-    br.refused(&b);
+    br.refused(&a, "model:fake");
+    br.refused(&a, "model:fake");
+    br.refused(&b, "model:fake");
     br.admitted(&a);
     assert_eq!(br.state(&a), BreakerState::Closed);
     assert_eq!(br.state(&b), BreakerState::Repeat { consecutive: 1 });
+}
+
+/// A rule's refusal is not a loop: the same call is refused identically however many times it is
+/// repeated, nobody was asked, and at `allow-all` the flow rule is the only thing that refuses at
+/// all - counting it closed `bash` for a session on three commands nobody had been shown.
+#[test]
+fn a_rules_refusal_never_opens_the_breaker() {
+    let mut br = Breaker::default();
+    let d = direction("/bin/cat /home/dead/.ssh/id_rsa");
+    for by in [
+        "boundary:flow",
+        "boundary:normaliser",
+        "boundary:host",
+        "gate:permission",
+        "gate:mode",
+    ] {
+        for _ in 0..5 {
+            assert_eq!(br.refused(&d, by), BreakerState::Closed, "{by}");
+        }
+    }
+    assert!(br.open_directions().is_empty(), "a rule closed the session");
+    // What a person or a model says still counts, and still closes it.
+    br.refused(&d, "human:dead");
+    br.refused(&d, "model:fake");
+    assert_eq!(br.state(&d), BreakerState::Repeat { consecutive: 2 });
+    assert_eq!(
+        br.refused(&d, "human:dead"),
+        BreakerState::Open { consecutive: 3 }
+    );
 }
 
 // -- surfacing ---------------------------------------------------------

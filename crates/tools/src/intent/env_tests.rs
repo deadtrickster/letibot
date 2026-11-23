@@ -26,6 +26,7 @@ fn sur() -> Surroundings {
         programs: ProgramLookup::Host,
         shell_path: Some(path),
         granted: Vec::new(),
+        guest: false,
     }
 }
 

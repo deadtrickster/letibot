@@ -191,6 +191,46 @@ fn a_trail_source_is_what_puts_the_operators_words_in_front_of_an_adjudicator() 
 }
 
 #[test]
+fn a_rule_that_refuses_three_times_does_not_close_bash_at_allow_all() {
+    // The misread of 2026-11-23: three commands that a denylist or a fixture made look like a read
+    // of `~/.netrc` were refused `boundary:flow`, the breaker counted them, and the rest of the
+    // session's `bash` calls went to `Escalate { to: human }` - in a mode where nobody is there to
+    // lift it. A rule's refusal is the same refusal every time; it is not a loop to break.
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_mode(crate::mode::Mode::ALLOW_ALL_HERE);
+    for cmd in [
+        "cat ~/.ssh/id_ed25519",
+        "head -1 ~/.ssh/id_ed25519",
+        "wc -l ~/.ssh/id_ed25519",
+    ] {
+        let args = json!({ "command": cmd });
+        match g.admit(&bash(&args)) {
+            GateDecision::Refuse { tell, .. } => {
+                assert!(tell.contains("boundary:flow"), "`{cmd}`: {tell}");
+            }
+            other => panic!("`{cmd}`: {other:?}"),
+        }
+    }
+    assert!(
+        g.breaker.open_directions().is_empty(),
+        "three rule refusals opened the breaker: {:?}",
+        g.breaker.open_directions()
+    );
+    // A fourth read of the same store is still refused BY THE RULE, not as an escalation, and
+    // ordinary work is not caught in it.
+    let args = json!({ "command": "cat ~/.ssh/id_ed25519" });
+    match g.admit(&bash(&args)) {
+        GateDecision::Refuse { tell, .. } => assert!(tell.contains("boundary:flow"), "{tell}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        g.admit(&bash(&json!({ "command": "shfmt -l bin/firecode" }))),
+        GateDecision::Admit
+    );
+}
+
+#[test]
 fn escalation_is_refused_with_the_reason_and_not_treated_as_an_allow() {
     let adj = AskAdjudicator::new("test", |req: &AdjudicationRequest| {
         Some(AdjudicationDecision {

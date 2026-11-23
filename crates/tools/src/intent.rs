@@ -2125,6 +2125,12 @@ pub struct Surroundings {
     /// comparison only: a name resolved against a `PATH` this session set is renamed when that file
     /// is not the one the bare name already meant.
     pub shell_path: Option<String>,
+    /// Do these tools look at a filesystem that is not this box's - a firecode VM's copy, a machine
+    /// reached over ssh? Then none of THIS box's secret stores is on it: `~` is that machine's home,
+    /// the operator's keys were never copied in, and what the same spelling means here is a fact
+    /// about a disk nothing here can open. `false` is this box, which is the safe default: a caller
+    /// that does not know says nothing and keeps every rule.
+    pub guest: bool,
 }
 
 impl Surroundings {
@@ -2142,6 +2148,26 @@ impl Surroundings {
             programs: ProgramLookup::None,
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
+        }
+    }
+
+    /// For a session whose tools run in a GUEST - a firecode VM - where `workspace` is that machine's
+    /// path and `home` is its own, not this box's. Nothing of this box's is reachable from there, so
+    /// the store table has nothing to say about a path ([`Surroundings::guest`]), and `~` is not
+    /// expanded at all: the host's home is not a directory the guest has.
+    pub fn in_a_guest(workspace: impl Into<String>) -> Self {
+        Surroundings {
+            home: None,
+            workspace: Some(workspace.into()),
+            scratch: None,
+            shell: ShellTrust::Unknown,
+            seen_hosts: BTreeSet::new(),
+            session: env::SessionEnv::default(),
+            programs: ProgramLookup::None,
+            shell_path: None,
+            granted: Vec::new(),
+            guest: true,
         }
     }
 
@@ -2176,7 +2202,7 @@ impl Surroundings {
     /// whether anybody may open a file. Apart from [`Surroundings::region_of`] because the reader
     /// is not always here, and that read is the one that must not happen.
     pub fn secret_store_of(path: &str, home: Option<&str>) -> Option<String> {
-        secret_hit(&collapse(&Self::expand_home(path, home)), home)
+        secret_hit(&collapse(&Self::expand_home(path, home)), home, None)
     }
 
     /// Hosts the operator's tooling is already logged into are not unseen: `gh` wrote its hosts file
@@ -2226,7 +2252,11 @@ impl Surroundings {
         }
         let p = self.expand(path);
         let p = collapse(&p);
-        if let Some(which) = secret_hit(&p, self.home.as_deref()) {
+        // This box's stores are not on another machine's disk. A VM's `~/.ssh` is the guest's own, and
+        // nothing there is the operator's credential, so the flow rule has nothing to protect.
+        if !self.guest
+            && let Some(which) = secret_hit(&p, self.home.as_deref(), self.workspace.as_deref())
+        {
             return Region::Secret(which);
         }
         if p == "/" {
@@ -2505,10 +2535,37 @@ fn is_public_ca(path: &str) -> bool {
 /// Which secret store a path is in, if any. Directories before file names, and the order is
 /// load-bearing: `~/.ssh/id_rsa` reports `.ssh`, because the store is what the circuit breaker keys
 /// on and a file name would make re-spelling the key reset the counter.
-fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
+///
+/// A store is a PLACE, and only a path that is anchored names one: absolute, or `~`-rooted with a
+/// home to root it at. A relative path is a name in the directory the call runs in - the workspace -
+/// so a denylist entry, a `grep` pattern, or another file's text that happens to spell `.netrc` is
+/// not the operator's `~/.netrc`, and a script whose *body* holds the word names nothing.
+///
+/// `workspace` is the session's own tree, and inside it the file-NAME rule is off: a project's
+/// `.netrc` is a fixture, a fake or a line in a denylist - it is not a credential - while the
+/// same file under the operator's home or anywhere else on the box still is. The directory rules
+/// stand everywhere, because a `.ssh` directory is a key store wherever it sits.
+fn secret_hit(path: &str, home: Option<&str>, workspace: Option<&str>) -> Option<String> {
     if is_public_ca(path) {
         return None;
     }
+    // `~` is home, so it is anchored even when the home is not known: `~/.ssh/id_rsa` names the
+    // same place either way, and leaving it relative is what let a bare word in a script match.
+    // `~user` is somebody else's home, which is not a store of this operator's.
+    let path = match path.strip_prefix('~') {
+        Some("") | Some("/") => match home {
+            Some(h) => h.trim_end_matches('/').to_string(),
+            None => "~".to_string(),
+        },
+        Some(rest) if rest.starts_with('/') => match home {
+            Some(h) => format!("{}{rest}", h.trim_end_matches('/')),
+            None => format!("~{rest}"),
+        },
+        Some(_) => return None,
+        None if path.starts_with('/') => path.to_string(),
+        None => return None,
+    };
+    let path = path.as_str();
     for dir in crate::secrets::read_secrets() {
         if dir.starts_with('/') {
             if under(path, dir) {
@@ -2518,9 +2575,20 @@ fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
         }
         // A relative entry like `.ssh` means "in the home directory", matched as a whole
         // path segment: `/srv/backup/.ssh` is somebody's secret store too, which is why
-        // the segment test stands on its own.
+        // the segment test stands on its own. A `~` with no home to expand is the same
+        // answer one level down.
+        if let Some(rest) = path.strip_prefix("~/") {
+            if rest == dir || rest.starts_with(&format!("{dir}/")) {
+                return Some(dir.to_string());
+            }
+            continue;
+        }
         let needle = format!("/{dir}");
-        if path.ends_with(&needle) || path.contains(&format!("{needle}/")) {
+        // A single-segment entry that is a FILE name (`.netrc`) is a place only inside the home it
+        // belongs to. The segment test is for a DIRECTORY (`.ssh`), which is a key store wherever
+        // it sits; a file name is not - `tests/.netrc` is a project's fixture, not a credential.
+        let a_file_name = !dir.contains('/') && crate::secrets::SECRET_FILE_NAMES.contains(&dir);
+        if !a_file_name && (path.ends_with(&needle) || path.contains(&format!("{needle}/"))) {
             return Some(dir.to_string());
         }
         if let Some(h) = home
@@ -2529,7 +2597,11 @@ fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
             return Some(dir.to_string());
         }
     }
-    // Only then the file itself: a key or a credential file outside any known store.
+    // Only then the file itself: a key or a credential file outside any known store, and outside
+    // the session's own tree. A workspace file with one of these names is the project's.
+    if workspace.is_some_and(|ws| under(path, &collapse(ws))) {
+        return None;
+    }
     let last = path.rsplit('/').next().unwrap_or(path);
     if crate::secrets::SECRET_FILE_NAMES.contains(&last) {
         return Some(last.to_string());
@@ -5098,6 +5170,7 @@ mod destructive_flags {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -5208,6 +5281,7 @@ mod flag_coverage_survey {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         };
         let cases = [
             (
@@ -5289,6 +5363,7 @@ mod flag_rules {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
     fn saw_destroy(cmd: &str) -> bool {
@@ -5532,6 +5607,7 @@ mod flag_rules {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         };
         let mut spurious: Vec<&str> = Vec::new();
         for line in key
@@ -5573,6 +5649,7 @@ mod secret_is_not_destruction {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         };
         let look = |cmd: &str| {
             let b = Baseline::of_command(cmd, &sur);
@@ -5632,6 +5709,7 @@ mod recall {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         };
         let (mut tp, mut fnn, mut fp, mut tn) = (0, 0, 0, 0);
         let mut missed: Vec<&str> = Vec::new();
@@ -5701,6 +5779,7 @@ mod model_findings_gap {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         };
         // (program, a flag the model reported, whether it is a default-unless row)
         let cases: &[(&str, &str, bool)] = &[
@@ -5768,6 +5847,7 @@ mod heredoc_bodies {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -6007,6 +6087,7 @@ mod loopback_and_literals {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -6098,6 +6179,7 @@ mod inline_scripts {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -6169,6 +6251,7 @@ mod hosts_by_other_names {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
     fn egress(x: &Baseline) -> bool {
@@ -6288,6 +6371,7 @@ mod known_and_seen_hosts {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
         .with_known_hosts();
         for h in ["github.com", "gitlab.example.org", "codeberg.org"] {
@@ -6336,6 +6420,7 @@ mod operands_that_are_not_places {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -6385,6 +6470,7 @@ mod scratch_tests {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -6561,6 +6647,7 @@ mod a_script_that_writes_a_file {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -6908,6 +6995,7 @@ mod a_script_named_as_a_path {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -7194,6 +7282,7 @@ mod a_read_is_not_a_write {
             programs: Default::default(),
             shell_path: None,
             granted: Vec::new(),
+            guest: false,
         }
     }
 
@@ -7241,5 +7330,210 @@ mod a_read_is_not_a_write {
                 x.intents
             );
         }
+    }
+}
+
+/// A store is a place, not a word.
+///
+/// Measured 2026-11-23: `shfmt -l bin/firecode tests/run-tests.sh`, `bash -n bin/firecode ...` and
+/// `shellcheck bin/firecode ...` were refused `boundary:flow` because the files being CHECKED hold
+/// `.netrc` - a denylist entry and a test fixture - and a bare word was read as `~/.netrc`. Three
+/// of those closed `bash` for the session through the breaker. Nothing read `~/.netrc`.
+#[cfg(test)]
+mod a_store_is_a_place {
+    use super::*;
+    use crate::runtime::{ScriptBody, ScriptSource};
+
+    fn env() -> Surroundings {
+        Surroundings {
+            home: Some("/home/dead".into()),
+            workspace: Some("/home/dead/Projects/firecode".into()),
+            scratch: None,
+            shell: ShellTrust::Pinned { how: "test".into() },
+            seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
+            granted: Vec::new(),
+            guest: false,
+        }
+    }
+
+    fn b(cmd: &str) -> Baseline {
+        Baseline::of_command(cmd, &env())
+    }
+
+    fn flow_rule(x: &Baseline) -> Option<&str> {
+        match &x.tier {
+            Tier::Blocked { rule, .. } => Some(rule.as_str()),
+            _ => None,
+        }
+    }
+
+    fn script(path: &str, body: &str) -> Vec<ScriptSource> {
+        vec![ScriptSource {
+            path: path.into(),
+            body: ScriptBody::Read(body.into()),
+        }]
+    }
+
+    /// The script that was refused, as near as its own words can be reconstructed: a `contains`
+    /// helper handed a denylist entry. The file is checked, never run - and it reads nothing.
+    const FIRE_CODEC: &str = "\
+#!/bin/sh\nset -eu\ncontains() {\n  for want in \"$@\"; do\n    case \"$1\" in *.netrc) return 0 ;; esac\n  done\n  return 1\n}\nDENY='.netrc .ssh id_rsa'\nfor f in \"$@\"; do\n  contains \"$DENY\" .netrc && echo \"$f: a credential file\" && exit 1\ndone\n";
+
+    #[test]
+    fn the_commands_that_were_misread_name_no_store() {
+        for cmd in [
+            "shfmt -l bin/firecode tests/run-tests.sh",
+            "bash -n bin/firecode tests/run-tests.sh",
+            "shellcheck bin/firecode tests/run-tests.sh",
+            "shfmt -l bin/firecode tests/run-tests.sh; bash -n bin/firecode; shellcheck bin/firecode",
+        ] {
+            let x = Baseline::of_command_with(cmd, &env(), &script("bin/firecode", FIRE_CODEC));
+            assert_eq!(flow_rule(&x), None, "`{cmd}`: {:?}", x.findings);
+            assert!(
+                !x.regions.iter().any(Region::is_secret),
+                "`{cmd}` names a store it never touches: {:?}",
+                x.regions
+            );
+        }
+    }
+
+    /// The same read, with the tokens the classifier was actually handed: a script body read as
+    /// the program `bash` runs. The bare word is an operand of `contains`, in the file's own
+    /// directory, and `~/.netrc` is not that place.
+    #[test]
+    fn a_bare_word_in_a_checks_own_body_is_not_the_home_store() {
+        let x = Baseline::of_command_with(
+            "bash -n bin/firecode",
+            &env(),
+            &script("bin/firecode", FIRE_CODEC),
+        );
+        // The body's own `contains` call is in there and is read...
+        assert!(
+            x.programs.iter().any(|p| p == "contains"),
+            "the body was not read as the program it is: {:?}",
+            x.programs
+        );
+        // ...and it names no store, because `.netrc` is a relative name, not `~/.netrc`.
+        assert_eq!(flow_rule(&x), None, "{:?}", x.flows);
+    }
+
+    #[test]
+    fn a_relative_name_is_not_the_home_store_but_an_anchored_one_is() {
+        for cmd in [
+            "grep .netrc -r .",
+            "grep -rn '.netrc' tests",
+            "cat .netrc",
+            "cat tests/.netrc",
+            "shfmt -l bin/firecode tests/run-tests.sh",
+        ] {
+            let x = b(cmd);
+            assert_eq!(flow_rule(&x), None, "`{cmd}`: {:?}", x.flows);
+        }
+        for cmd in [
+            "cat ~/.netrc",
+            "cat /home/dead/.netrc",
+            "cd ~ && cat .netrc",
+            "cat ~/.ssh/id_ed25519",
+        ] {
+            let x = b(cmd);
+            assert_eq!(
+                flow_rule(&x),
+                Some("secret_to_transcript"),
+                "`{cmd}` reads a store and the flow rule did not say so: {:?}",
+                x.findings
+            );
+        }
+        // A store-shaped directory anywhere is still a store: the segment rule stands on its own.
+        assert_eq!(
+            flow_rule(&b("cat /srv/backup/.ssh/id_rsa")),
+            Some("secret_to_transcript")
+        );
+    }
+
+    /// The one body that puts the question, without the command around it.
+    #[test]
+    fn the_public_question_agrees_with_the_classifier() {
+        let home = Some("/home/dead");
+        for (path, want) in [
+            ("~/.ssh/id_rsa", Some(".ssh")),
+            ("/home/dead/.netrc", Some(".netrc")),
+            ("/home/dead/x/.netrc", Some(".netrc")),
+            (".netrc", None),
+            ("tests/.netrc", None),
+            ("bin/firecode", None),
+            ("*.netrc", None),
+        ] {
+            assert_eq!(
+                Surroundings::secret_store_of(path, home).as_deref(),
+                want,
+                "{path}"
+            );
+        }
+    }
+}
+
+/// A session whose tools run in a firecode VM: that filesystem is the guest's.
+///
+/// This box's stores were never copied into it, so the store table says nothing about a path there
+/// - and the same path here is still a store, which is the pair that shows the seat decided it.
+#[cfg(test)]
+mod a_guest_seat {
+    use super::*;
+
+    fn here() -> Surroundings {
+        let mut env = Surroundings::from_env("/w");
+        env.home = Some("/home/dead".into());
+        env.shell = ShellTrust::Pinned {
+            how: "test fixture".into(),
+        };
+        env
+    }
+
+    #[test]
+    fn a_guest_places_no_host_store() {
+        let guest = Surroundings::in_a_guest("/w");
+        for p in [
+            "~/.ssh/id_ed25519",
+            "/home/dead/.ssh/id_rsa",
+            "/home/firecode/.netrc",
+            "/etc/shadow",
+        ] {
+            assert!(
+                !matches!(guest.region_of(p), Region::Secret(_)),
+                "{p} was placed in a store of this box's"
+            );
+        }
+        for p in ["/home/dead/.ssh/id_rsa", "/home/dead/.netrc", "/etc/shadow"] {
+            assert!(
+                matches!(here().region_of(p), Region::Secret(_)),
+                "{p} is not a store on this box any more"
+            );
+        }
+    }
+
+    #[test]
+    fn the_flow_rule_refuses_the_read_here_and_not_in_the_guest() {
+        let cmd = "cat ~/.ssh/id_ed25519";
+        let guest = Baseline::of_command(cmd, &Surroundings::in_a_guest("/w"));
+        assert!(
+            !matches!(guest.tier, Tier::Blocked { .. }),
+            "a guest's own key was read as this box's: {:?}",
+            guest.flows
+        );
+        let host = Baseline::of_command(cmd, &here());
+        assert!(
+            matches!(
+                host.tier,
+                Tier::Blocked {
+                    rule: FlowRule::SecretToTranscript,
+                    ..
+                }
+            ),
+            "this box's own key is not protected any more: {:?}",
+            host.findings
+        );
     }
 }

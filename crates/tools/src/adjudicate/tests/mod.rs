@@ -134,6 +134,7 @@ fn pinned() -> crate::intent::Surroundings {
         programs: Default::default(),
         shell_path: None,
         granted: Vec::new(),
+        guest: false,
     }
 }
 
@@ -183,6 +184,7 @@ mod config;
 mod floor;
 mod gate;
 mod grants;
+mod guest;
 mod history;
 mod internals;
 mod memory;

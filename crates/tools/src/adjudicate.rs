@@ -3091,7 +3091,7 @@ impl AdjudicatedGate {
                 "admit"
             }
             ViewGrant::Refused(_) => {
-                self.breaker.refused(&direction);
+                self.breaker.refused(&direction, &d.by);
                 "refuse"
             }
             _ => "refuse",
@@ -3388,7 +3388,7 @@ impl Gate for AdjudicatedGate {
                 "admit"
             }
             MemoryGrant::Refused(_) => {
-                self.breaker.refused(&direction);
+                self.breaker.refused(&direction, &d.by);
                 "refuse"
             }
             MemoryGrant::NotAsked => "refuse",
@@ -3499,7 +3499,7 @@ impl Gate for AdjudicatedGate {
                 "admit"
             }
             PerimeterGrant::Refused(_) => {
-                self.breaker.refused(&direction);
+                self.breaker.refused(&direction, &d.by);
                 "refuse"
             }
             PerimeterGrant::NotAsked => "refuse",
@@ -3664,7 +3664,7 @@ impl Gate for AdjudicatedGate {
                 "admit"
             }
             ConfigAnswer::Refused { .. } => {
-                self.breaker.refused(&direction);
+                self.breaker.refused(&direction, &d.by);
                 "refuse"
             }
             ConfigAnswer::NotAsked(_) => "refuse",
@@ -3854,7 +3854,7 @@ impl Gate for AdjudicatedGate {
                 grant_at: None,
             };
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
-            self.breaker.refused(&direction);
+            self.breaker.refused(&direction, &d.by);
             let why = why.clone();
             // Asked, and it answers `unavailable` without reaching the oracle, so the row says
             // an unresolved action produced no verdict rather than saying nothing.
@@ -3880,7 +3880,7 @@ impl Gate for AdjudicatedGate {
                 grant_at: None,
             };
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
-            self.breaker.refused(&direction);
+            self.breaker.refused(&direction, &d.by);
             let id = req.id.clone();
             self.advise_on_a_settled_call(
                 &req,
@@ -3895,7 +3895,9 @@ impl Gate for AdjudicatedGate {
         // `never_hit` asks it of the spelling and [`ssh_resolution_hit`] of the resolved path.
         // A point that admits everything has no list: the operator confirmed this box and its own
         // ssh material is theirs to use. `Tier::Blocked` above still holds - that is a flow rule.
-        let lists_hold = !self.mode.admits_everything();
+        // And a call whose tools run in a GUEST has no list either: every one of these rows is a
+        // path on THIS box, and a guest's filesystem has none of them - see `Surroundings::guest`.
+        let lists_hold = !self.mode.admits_everything() && !self.surroundings.guest;
         let refused = (lists_hold && matches!(access, Access::Write | Access::Exec))
             .then(|| {
                 never_hit(call.args).or_else(|| {
@@ -3936,7 +3938,7 @@ impl Gate for AdjudicatedGate {
             };
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             let id = req.id.clone();
-            self.breaker.refused(&direction);
+            self.breaker.refused(&direction, &d.by);
             // Asked here too: an oracle that wants to admit a call touching the operator's ssh
             // material is a calibration fact, invisible unless this path records a verdict. It
             // changes nothing, and the note is the decision's own basis, so no two stories.
@@ -3995,7 +3997,7 @@ impl Gate for AdjudicatedGate {
                         ),
                     );
                     let tell = self.surface(&req, &d, "denied", breaker_state.clone());
-                    self.breaker.refused(&direction);
+                    self.breaker.refused(&direction, &d.by);
                     let id = req.id.clone();
                     self.advise_on_a_settled_call(
                         &req,
@@ -4461,7 +4463,7 @@ impl Gate for AdjudicatedGate {
                                  the row, and revoking it lifts the refusal.",
                             );
                         }
-                        self.breaker.refused(&direction);
+                        self.breaker.refused(&direction, &decision.by);
                         self.record(req, decision, "refuse", direction.key());
                         GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell)
                     }
@@ -4474,7 +4476,7 @@ impl Gate for AdjudicatedGate {
                              not offer; nothing was executed"
                         );
                         let tell = self.surface(&req, &decision, "not_run", breaker_state.clone());
-                        self.breaker.refused(&direction);
+                        self.breaker.refused(&direction, &decision.by);
                         self.record(req, decision, "refuse", direction.key());
                         GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell)
                     }
@@ -4490,7 +4492,7 @@ impl Gate for AdjudicatedGate {
                     decision.by
                 );
                 let tell = self.surface(&req, &decision, "not_run", breaker_state.clone());
-                self.breaker.refused(&direction);
+                self.breaker.refused(&direction, &decision.by);
                 self.record(req, decision, "refuse", direction.key());
                 GateDecision::refuse_and_tell(ToolOutcome::NotRun { why: msg }, tell)
             }
@@ -4519,7 +4521,7 @@ impl Gate for AdjudicatedGate {
                     },
                 };
                 let tell = self.surface(&req, &decision, "not_run", breaker_state.clone());
-                self.breaker.refused(&direction);
+                self.breaker.refused(&direction, &decision.by);
                 self.record(req, decision, "refuse", direction.key());
                 GateDecision::refuse_and_tell(outcome, tell)
             }

@@ -524,6 +524,7 @@ mod shape_cache_tests {
             // A replayed row was judged against the view its session had, which this does not
             // have: an empty list judges every path by the workspace alone.
             granted: Vec::new(),
+            guest: false,
         }
     }
 

@@ -15,6 +15,7 @@ fn env() -> Surroundings {
         programs: Default::default(),
         shell_path: None,
         granted: Vec::new(),
+        guest: false,
     }
 }
 
@@ -1224,6 +1225,7 @@ fn a_bare_name_is_unresolved_unless_the_shell_was_declared_fixed() {
         programs: Default::default(),
         shell_path: None,
         granted: Vec::new(),
+        guest: false,
     };
     match Baseline::of_command("ls -la", &unknown).verdict {
         BaselineVerdict::NotRun { why } => {
