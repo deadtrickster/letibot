@@ -2735,8 +2735,9 @@ impl Harness {
 
     /// The round's calls, each as its appended row. Adjacent reads run in a pool and every other call alone;
     /// rows keep call order, because GLM's template sorts results by it and any other order rewrites cached bytes.
-    /// Answers the rows and whether one gave the floor back to the operator.
-    fn run_the_rounds_calls(
+    /// Answers the rows and whether one gave the floor back to the operator. `pub(crate)` because the pooling
+    /// is a property of this loop and its tests are elsewhere in the crate.
+    pub(crate) fn run_the_rounds_calls(
         &mut self,
         calls: &[ToolCall],
         turn_id: &str,

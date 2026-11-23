@@ -67,6 +67,7 @@ mod notice_door;
 mod offer_row;
 mod operator_ask;
 mod package_shadow;
+mod parallel_reads;
 mod parentage;
 mod prefix_on_open;
 mod prompt_lanes;
