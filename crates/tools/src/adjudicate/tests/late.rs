@@ -43,9 +43,10 @@ fn timed_out_gate(
     (gate, asked)
 }
 
-/// The work the operator was watching: a message kept in `/var/tmp` and then committed. Nobody
-/// answered the card, so the call did not run - and the model's own retry of it is what the
-/// grant has to let through.
+/// The work the operator was watching: a message kept OUTSIDE the session's own tree and then
+/// committed. Nobody answered the card, so the call did not run - and the model's own retry of it
+/// is what the grant has to let through. The place is deliberately not `/var/tmp`: automode owns
+/// the temp directories, so a card about one never exists to be answered late.
 fn kept_outside<'a>(args: &'a Value) -> GateCall<'a> {
     GateCall {
         name: "bash",
@@ -64,7 +65,7 @@ fn kept_outside<'a>(args: &'a Value) -> GateCall<'a> {
 fn a_call_that_timed_out_is_let_through_once_when_the_operator_grants_it_late() {
     use std::sync::atomic::Ordering;
     let (mut g, asked) = timed_out_gate("s-late-gate-1");
-    let args = json!({"command": "cat > /var/tmp/msg-tmuxsock.txt <<'EOF'\nhi\nEOF"});
+    let args = json!({"command": "cat > /home/dead/msg-tmuxsock.txt <<'EOF'\nhi\nEOF"});
 
     // The premise: a card, and nobody to answer it, so nothing ran.
     match g.admit(&kept_outside(&args)) {
@@ -116,8 +117,8 @@ fn a_call_that_timed_out_is_let_through_once_when_the_operator_grants_it_late() 
 fn a_late_grant_is_one_call_and_never_a_standing_answer() {
     use std::sync::atomic::Ordering;
     let (mut g, asked) = timed_out_gate("s-late-gate-2");
-    let granted = json!({"command": "sh scripts/one.sh"});
-    let other = json!({"command": "sh scripts/two.sh"});
+    let granted = json!({"command": "sh /home/dead/one.sh"});
+    let other = json!({"command": "sh /home/dead/two.sh"});
     assert!(matches!(
         g.admit(&kept_outside(&granted)),
         GateDecision::Refuse { .. }

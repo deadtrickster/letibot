@@ -938,6 +938,9 @@ fn exec_call<'a>(args: &'a serde_json::Value) -> crate::runtime::GateCall<'a> {
 #[test]
 fn the_whole_seam_admits_what_the_operator_asked_for_and_records_the_row() {
     let sink = Arc::new(RecordingDenialSink::default());
+    // `always-ask`, not automode: the subject is the oracle seam. Automode's ownership screen
+    // admits a delete inside the session's own worktree without asking anybody, so no oracle
+    // would be reached and no row would carry a brief.
     let mut g = wired_gate(
         |b: &mut ModelBrief| {
             let idx = b
@@ -962,7 +965,8 @@ fn the_whole_seam_admits_what_the_operator_asked_for_and_records_the_row() {
             7,
         ),
         sink.clone(),
-    );
+    )
+    .with_mode(crate::mode::Mode::ALWAYS_ASK);
     let args = serde_json::json!({"command": "/bin/rm -rf /w/target/debug"});
     assert_eq!(
         g.admit(&exec_call(&args)),
@@ -1081,13 +1085,16 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
 #[test]
 fn an_override_is_recorded_beside_the_verdict_and_lifts_the_breaker() {
     let sink = Arc::new(RecordingDenialSink::default());
+    // `always-ask` for the same reason: an owned delete is admitted in automode, so the three
+    // refusals this breaker counts would never happen.
     let mut g = wired_gate(
         |_: &mut ModelBrief| OracleAnswer::NotAuthorised {
             why: "nothing in the trail mentions this".into(),
         },
         AuthorisationTrail::from_messages(vec![Utterance::operator("hello", 0)], 1),
         sink.clone(),
-    );
+    )
+    .with_mode(crate::mode::Mode::ALWAYS_ASK);
     let args = serde_json::json!({"command": "/bin/rm -rf /w/target"});
     for _ in 0..3 {
         assert!(matches!(

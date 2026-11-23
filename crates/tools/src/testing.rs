@@ -259,7 +259,9 @@ pub fn allow_all() -> Box<dyn crate::runtime::Gate> {
 }
 
 /// The gate that refuses every gated call, with a workspace in its surroundings, so a refusal's
-/// payload can be asserted on: the test reads what the model would read.
+/// payload can be asserted on: the test reads what the model would read. It stands at
+/// `always-ask`, so that "every gated call" includes the ones automode would admit as the
+/// session's own work - an owned write is gated at this point and refused.
 pub fn deny_all() -> Box<dyn crate::runtime::Gate> {
     use crate::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};
     let surroundings = crate::intent::Surroundings::from_env("/home/dead/Projects/letibot");
@@ -275,6 +277,7 @@ pub fn deny_all() -> Box<dyn crate::runtime::Gate> {
                 ))
             },
         )))
+        .with_mode(crate::mode::Mode::ALWAYS_ASK)
         .with_surroundings(surroundings),
     )
 }

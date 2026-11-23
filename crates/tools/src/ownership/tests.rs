@@ -9,8 +9,10 @@ use crate::intent::{Baseline, ShellTrust, Surroundings};
 use crate::schema::Access;
 use serde_json::json;
 
+/// A path nobody's box holds: the screen compares spellings, so a fixture that named this box's
+/// own checkout would measure the box rather than the rule.
 fn workspace() -> PathBuf {
-    PathBuf::from("/home/dead/Projects/letibot/wt-automode")
+    PathBuf::from("/w")
 }
 
 fn env() -> Surroundings {
@@ -219,10 +221,7 @@ fn only_the_sessions_branches_are_owned() {
 #[test]
 fn the_roots_are_named_for_the_card() {
     let said = owned().describe();
-    assert!(
-        said.contains("worktree /home/dead/Projects/letibot/wt-automode"),
-        "{said}"
-    );
+    assert!(said.contains("worktree /w"), "{said}");
     assert!(said.contains("temp /tmp"), "{said}");
 }
 

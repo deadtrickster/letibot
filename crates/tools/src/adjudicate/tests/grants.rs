@@ -344,8 +344,9 @@ fn a_seeded_shape_does_not_admit_a_different_class() {
     )))
     .with_surroundings(pinned());
 
-    // Exec: a read is clause 4 and would be admitted whatever the seeded class said.
-    let cmd = "sed -n 1p /w/b.rs";
+    // Exec: a read of something that is not the session's is never clause 4, and automode's
+    // ownership screen refuses it, so the shape cache is the only thing that could settle it.
+    let cmd = "sed -n 1p /home/dead/b.rs";
     let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(cmd, &pinned()))
         .expect("a command has a shape");
 

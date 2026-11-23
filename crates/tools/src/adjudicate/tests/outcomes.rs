@@ -34,8 +34,10 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
     });
 
     // The class, and the headline a person reads: exec asks at every point, so calling this
-    // `exec` would put the edit path out of reach.
-    let (mut g, asked) = gate(crate::mode::Mode::AUTO_EDITS);
+    // `exec` would put the edit path out of reach. The point is `writes allowed`, not automode:
+    // in automode the ownership screen admits an edit inside the session's own worktree before the
+    // mode's write rule is read, and THAT rule is what this half is about.
+    let (mut g, asked) = gate(crate::mode::Mode::WRITES_ALLOWED);
     let row = g.request_for(&bash(&write));
     assert_eq!(row.class.access, Access::Write, "{}", row.summary);
     assert!(
@@ -43,7 +45,7 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
         "the headline says: {}",
         row.summary
     );
-    // In allow-edits that is the mode's own allowed set, so nobody is consulted.
+    // In `writes allowed` that is the mode's own allowed set, so nobody is consulted.
     assert_eq!(g.admit(&bash(&write)), GateDecision::Admit);
     assert_eq!(
         asked.load(Ordering::Relaxed),
@@ -94,7 +96,9 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
             "a shell doing the write itself",
         ),
     ] {
-        let (mut g, asked) = gate(crate::mode::Mode::AUTO_EDITS);
+        // `writes allowed` for the same reason as above: with a human deciding, whether a call
+        // asked is a fact about the classification and not about what the session owns.
+        let (mut g, asked) = gate(crate::mode::Mode::WRITES_ALLOWED);
         let args = json!({"command": cmd});
         let row = g.request_for(&bash(&args));
         assert_eq!(

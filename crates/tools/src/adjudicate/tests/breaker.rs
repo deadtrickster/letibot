@@ -16,7 +16,9 @@ fn every_denial_reaches_the_operator_with_the_grant_path_attached() {
     let mut g = AdjudicatedGate::closed()
         .with_surroundings(pinned())
         .with_denial_sink(Box::new(Shared(sink.clone())));
-    let args = json!({"command": "/bin/rm /w/x.rs"});
+    // Outside `/w` on purpose: this session's own worktree is admitted by automode's ownership
+    // screen without a card, and the subject here is what a REFUSAL reaches.
+    let args = json!({"command": "/bin/rm /home/dead/x.rs"});
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
     assert_eq!(sink.len(), 1);
     let n = sink.last().unwrap();
@@ -40,7 +42,7 @@ fn a_refusal_claims_the_operator_was_told_only_when_a_head_was_reached() {
             }
         }
     }
-    let args = json!({"command": "/bin/rm /w/x.rs"});
+    let args = json!({"command": "/bin/rm /home/dead/x.rs"});
 
     // Nothing attached: the decision is in the record and on nobody's screen.
     let mut unwatched = AdjudicatedGate::closed()
@@ -93,9 +95,9 @@ fn three_refusals_in_one_direction_open_the_breaker_and_stop_asking() {
     // re-spelling. They have to be exec: `sed -n` reads and still asks, where `cat` would be
     // clause 4 and no breaker could ever reach it (see `Baseline::reads_only`).
     for cmd in [
-        "/bin/sed -n 1p /w/secret-ish.txt",
-        "/usr/bin/sed -n 2p /w/other.txt",
-        "/usr/bin/sed -n 3p /w/third.txt",
+        "/bin/sed -n 1p /home/dead/secret-ish.txt",
+        "/usr/bin/sed -n 2p /home/dead/other.txt",
+        "/usr/bin/sed -n 3p /home/dead/third.txt",
     ] {
         let args = json!({"command": cmd});
         assert!(
@@ -107,7 +109,7 @@ fn three_refusals_in_one_direction_open_the_breaker_and_stop_asking() {
 
     // The fourth is not adjudicated at all, and it is exec for the same reason the three above
     // are.
-    let args = json!({"command": "/usr/bin/sed -n 4p /w/fourth.txt"});
+    let args = json!({"command": "/usr/bin/sed -n 4p /home/dead/fourth.txt"});
     match g.admit(&bash(&args)) {
         GateDecision::Refuse {
             outcome: ToolOutcome::NotRun { why },
@@ -141,13 +143,14 @@ fn an_admission_clears_the_direction_so_the_breaker_is_not_a_permanent_ban() {
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
     // The fourth call is a different program and the same direction: an identical call would be
-    // settled by the approved shape an `allow_once` records, and never reach the breaker.
-    let args = json!({"command": "/bin/sed -n 1p /w/a.txt"});
+    // settled by the approved shape an `allow_once` records, and never reach the breaker. The
+    // path is outside `/w`, which automode's ownership screen would otherwise admit.
+    let args = json!({"command": "/bin/sed -n 1p /home/dead/a.txt"});
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     // The loop closed, so the count is gone and the next refusal starts over.
-    let args = json!({"command": "/usr/bin/awk {print} /w/a.txt"});
+    let args = json!({"command": "/usr/bin/awk {print} /home/dead/a.txt"});
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
     assert!(g.breaker.open_directions().is_empty());
 }
@@ -155,7 +158,7 @@ fn an_admission_clears_the_direction_so_the_breaker_is_not_a_permanent_ban() {
 #[test]
 fn a_second_attempt_at_the_same_thing_is_named_as_one_rather_than_read_as_fresh() {
     let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
-    let args = json!({"command": "/bin/rm /w/x.rs"});
+    let args = json!({"command": "/bin/rm /home/dead/x.rs"});
     let _ = g.admit(&bash(&args));
     match g.admit(&bash(&args)) {
         GateDecision::Refuse { tell, .. } => {

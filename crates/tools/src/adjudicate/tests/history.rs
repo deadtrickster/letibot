@@ -21,8 +21,9 @@ fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age
     )))
     .with_surroundings(pinned());
     // `sed -n` reads and still asks, so it reaches a person; `ls` would be clause 4 and no
-    // human would answer (see `Baseline::reads_only`).
-    let args = json!({"command": "/bin/sed -n 1p /w"});
+    // human would answer (see `Baseline::reads_only`). The path is outside `/w`, which automode's
+    // ownership screen admits without asking anybody.
+    let args = json!({"command": "/bin/sed -n 1p /home/dead/notes.txt"});
 
     let req1 = human.request_for(&bash_at(&args, "s#3"));
     assert!(
@@ -33,7 +34,10 @@ fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age
     let _ = human.admit(&bash_at(&args, "s#3"));
 
     // A re-spelling of the same direction, three turns later.
-    let req2 = human.request_for(&bash_at(&json!({"command": "/bin/sed -n 2p /w"}), "s#6"));
+    let req2 = human.request_for(&bash_at(
+        &json!({"command": "/bin/sed -n 2p /home/dead/notes.txt"}),
+        "s#6",
+    ));
     assert_eq!(req2.prior.len(), 1, "{:?}", req2.prior);
     let p = &req2.prior[0];
     assert_eq!(p.effect, "admit");
@@ -86,7 +90,8 @@ fn a_denial_is_history_too_and_sits_beside_the_approvals() {
         }
     });
     let mut g = AdjudicatedGate::new(Box::new(adj)).with_surroundings(pinned());
-    let args = json!({"command": "/bin/sed -n 1p /w"});
+    // Outside `/w`: automode's ownership screen admits the session's own tree with no row.
+    let args = json!({"command": "/bin/sed -n 1p /home/dead/notes.txt"});
     let _ = g.admit(&bash_at(&args, "s#2"));
     let _ = g.admit(&bash_at(&args, "s#4"));
 
