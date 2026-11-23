@@ -455,6 +455,88 @@ fn at_a_path_completes_files_and_a_handle_stays_a_handle() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A fixture workspace: two source files whose names share a prefix, so the completion's ranking
+/// has something to choose between.
+fn at_workspace() -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "letibot-at-chip-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    for p in ["src/main.rs", "src/main_tests.rs"] {
+        std::fs::write(d.join(p), "fn main() {}\n").unwrap();
+    }
+    d
+}
+
+/// Choosing a FILE with Enter attaches it: the chip a paste makes, and the typed `@…` gone. A path
+/// sent as prose is a path the model has to open; an attachment is the file itself.
+#[test]
+fn an_at_file_chosen_with_enter_becomes_a_chip() {
+    let d = at_workspace();
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    a.wiring.workspace = d.to_string_lossy().to_string();
+    a.set_composer("look at @src/ma");
+    // Enter chooses rather than sends: no message, and the chip is in the line where the word was.
+    let line = a.input().to_string();
+    assert_eq!(a.submit(line), None, "choosing a file sent the line");
+    assert_eq!(a.chips.len(), 1, "no chip: {:?}", a.chips);
+    let line = a.input().to_string();
+    assert!(
+        !line.contains("@src/ma"),
+        "the typed fragment is still in the line: {line:?}"
+    );
+    assert!(
+        line.contains("main.rs"),
+        "the chip names the file: {line:?}"
+    );
+    assert!(
+        line.starts_with("look at "),
+        "the rest of the line is untouched: {line:?}"
+    );
+    assert_eq!(
+        a.chips[0].attachment.path,
+        d.join("src/main.rs").display().to_string(),
+        "the chip is the file the completion offered first"
+    );
+
+    // The next Enter sends it. A room `say` carries no attachment, so what goes out is the path the
+    // room can act on - not the chip's words, which nobody there can resolve.
+    let text = a.input().to_string();
+    let (sent, _blobs) = a.rooms_outgoing(&text);
+    assert!(
+        sent.contains(&d.join("src/main.rs").display().to_string()),
+        "the room is told which file: {sent:?}"
+    );
+    assert!(
+        !sent.contains("[file") && !sent.contains("[image"),
+        "a chip's words went out as text: {sent:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A handle is not a file: `@cc` still completes as the handle it is, and Enter still sends the
+/// line as text.
+#[test]
+fn at_handle_still_completes_and_sends_as_a_handle() {
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    a.set_composer("@cc");
+    assert!(a.rooms_complete(), "tab completes the alias");
+    assert_eq!(a.input(), "@cc");
+    assert!(a.chips.is_empty(), "a handle is not an attachment");
+    let line = a.input().to_string();
+    assert!(
+        a.submit(line).is_some(),
+        "a line of names is still a message"
+    );
+}
+
 // ─────────────────────────── the completion row ───────────────────────────
 
 /// An implementation of `Complete` that is not the room's: the row draws what it answers, so any

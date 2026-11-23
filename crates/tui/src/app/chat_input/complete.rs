@@ -238,7 +238,7 @@ impl RoomComplete {
 }
 
 /// A fragment that names a path rather than a handle, by the shell completion's own test.
-fn pathish(frag: &str) -> bool {
+pub(crate) fn pathish(frag: &str) -> bool {
     frag.starts_with(['.', '~']) || frag.contains('/')
 }
 
@@ -313,7 +313,7 @@ fn verb_fragment(text: &str, cursor: usize) -> Option<(usize, &str)> {
 
 /// The `@` word being typed: the last word before the caret, when it starts with `@`. The span
 /// starts at the `@`, so accepting a candidate replaces the fragment and not the `@` with it.
-fn at_fragment(text: &str, cursor: usize) -> Option<(usize, &str)> {
+pub(crate) fn at_fragment(text: &str, cursor: usize) -> Option<(usize, &str)> {
     let head = text.get(..cursor)?;
     let start = match head.rfind(char::is_whitespace) {
         Some(i) => i + head[i..].chars().next().map_or(1, char::len_utf8),

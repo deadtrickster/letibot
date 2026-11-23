@@ -99,6 +99,12 @@ impl App {
         // In the rooms view a line is a message to the selected channel - or, when a chat layer
         // owns the input surface, whatever that layer answers `command_chat` with.
         if self.focused_surface() == Some(Surface::Rooms) {
+            // An `@` word that names a FILE is an attachment, not prose: the completion offered it,
+            // and a path sent as text is a path the model has to open. This Enter is spent choosing
+            // it - the chip is in the line and the next Enter sends.
+            if self.rooms_attach_at_word() {
+                return None;
+            }
             if self.chat_owns_input() {
                 return self.chat_command(&text);
             }

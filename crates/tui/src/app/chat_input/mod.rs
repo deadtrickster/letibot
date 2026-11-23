@@ -158,6 +158,54 @@ impl App {
         self.compose.reply.take().is_some()
     }
 
+    /// Enter on an `@…` word that names a FILE: the completion's own first file candidate becomes
+    /// the chip a paste makes, and the typed `@…` leaves the line. `true` means this Enter was
+    /// spent choosing, so nothing is sent - the chip is in the line and the next Enter sends it.
+    ///
+    /// A handle is not this: `@cc` is a name in the room, and a line of names is text. The test is
+    /// the completion's own - [`complete::pathish`], the same one that decided to offer files.
+    pub(crate) fn rooms_attach_at_word(&mut self) -> bool {
+        if self.focused_surface() != Some(Surface::Rooms) {
+            return false;
+        }
+        let text = self.editor.text().to_string();
+        let cursor = self.editor.cursor();
+        let Some((_, frag)) = complete::at_fragment(&text, cursor) else {
+            return false;
+        };
+        if frag.is_empty() || !complete::pathish(frag) {
+            return false;
+        }
+        let answer = self.room_completer().complete(&text, cursor);
+        let Some(chosen) = answer.candidates.iter().find(|c| c.insert.starts_with('@')) else {
+            return false;
+        };
+        let rel = chosen.insert.trim_start_matches('@').to_string();
+        let path = match rel.strip_prefix("~/") {
+            Some(rest) => {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest)
+            }
+            None => std::path::PathBuf::from(&self.wiring.workspace).join(&rel),
+        };
+        if !path.is_file() {
+            return false;
+        }
+        let attachment = match crate::app::attachments::attachment_of(&path) {
+            Ok(a) => a,
+            Err(why) => {
+                // Refused by the same door a paste goes through (bytes, media type, size): a
+                // completion that offered it cannot attach it, and the sentence says which.
+                self.say(&format!("{rel} was not attached — {why}"));
+                return true;
+            }
+        };
+        // The typed fragment goes first, so the chip lands where the word was rather than after it.
+        self.write_candidate(answer.from, answer.to, "");
+        self.compose.open = None;
+        self.chip_in(attachment);
+        true
+    }
+
     /// Up or down on an input that is empty or already walking this key's lines. `false` is not
     /// ours: Up on a typed line moves through a wrapped one, and that is the editor's.
     pub(crate) fn rooms_history(&mut self, up: bool) -> bool {
@@ -196,6 +244,14 @@ impl App {
             }
             out = out.replace(&chip.text, &format!("![{}](blob:{blob})", chip.name));
             blobs.push(blob.clone());
+        }
+        // A FILE chip (`@path` chosen with Enter) is the harness's attachment, not a room blob: a
+        // room `say` carries no attachment, so the words go out as the path the room can act on
+        // rather than as a chip nobody on the other side can see.
+        for chip in &self.chips {
+            if out.contains(&chip.text) {
+                out = out.replace(&chip.text, &chip.attachment.path);
+            }
         }
         self.compose.chips.retain(|c| c.blob.is_none());
         let key = self.rooms_input_key();
