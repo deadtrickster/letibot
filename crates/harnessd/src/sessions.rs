@@ -2652,6 +2652,13 @@ impl<'a> Sessions<'a> {
                 "session {session_id} is not open, so nothing could be run in it"
             ))));
         };
+        // A turn is a USE of the session, and a session another process archived (`letibot gc`, a
+        // second daemon's verb) is brought back by it: the open that would have cleared the row is
+        // behind us. Said where the head reads it, or a session works out of sight unseen.
+        let store = self.base.store_at().and_then(|at| at.open_existing().ok());
+        if let Some(said) = crate::harness::open::unarchive_on_turn(store.as_ref(), session_id) {
+            self.warn(session_id, "unarchived", said);
+        }
         // A child this worker holds - a parked child a parent's message reopened - runs its
         // later turns here, and its record moves for the turn's length exactly as it does on a
         // thread (`harness::later_turn`).

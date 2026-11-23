@@ -546,6 +546,65 @@ fn an_auto_archived_reviewer_is_opened_again_by_id() {
     assert!(notes[0].contains("verdict delivered"), "{notes:?}");
 }
 
+/// A turn given to a session this daemon already holds never opens it, so the row is cleared there
+/// too: a session another process archived works in sight rather than out of it. No harness and no
+/// GGUF - the seam is the store write the turn makes.
+#[test]
+fn a_turn_given_to_an_archived_session_takes_it_back_into_the_list() {
+    let dir = Scratch::new("unarchive-on-turn");
+    let store = Store::open(&dir.0.join("one.db")).expect("a store");
+    store
+        .put_session(&SessionRecord {
+            id: "s-away".into(),
+            title: Some("the one put away".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            approvers: Vec::new(),
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("a session row");
+    // A session in the list is not written to by a turn: nothing is said and nothing moves.
+    assert_eq!(
+        crate::harness::open::unarchive_on_turn(Some(&store), "s-away"),
+        None
+    );
+    assert_eq!(store.list_sessions().expect("the list").len(), 1);
+
+    store
+        .set_archived("s-away", true, Some("verdict delivered"))
+        .expect("the archive");
+    assert!(store.list_sessions().expect("the list").is_empty());
+    let said = crate::harness::open::unarchive_on_turn(Some(&store), "s-away")
+        .expect("a turn in an archived session is said");
+    assert!(
+        said.contains("verdict delivered"),
+        "the note carries the archiver's reason: {said}"
+    );
+    assert!(
+        said.contains("a turn is being run in it"),
+        "and says what brought it back: {said}"
+    );
+    assert_eq!(
+        store.list_sessions().expect("the list").len(),
+        1,
+        "the turn put it back in the list"
+    );
+
+    // A session the store has never seen is no archive to clear, and a daemon with no store has
+    // nothing to ask: neither invents a sentence.
+    assert_eq!(
+        crate::harness::open::unarchive_on_turn(Some(&store), "s-unknown"),
+        None
+    );
+    assert_eq!(
+        crate::harness::open::unarchive_on_turn(None, "s-away"),
+        None
+    );
+}
+
 /// A head's two halves of the list are one store read each: what a daemon is not holding is in
 /// `list`, and what it has put out of sight is in `list_archived` - the group a head draws - and a
 /// row is in exactly one of them.

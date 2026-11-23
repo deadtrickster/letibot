@@ -162,7 +162,7 @@ Older backlog:
 | R309 | The edge says `1 stuck` and the queue pane it opens is empty | Code work | built (e9c9eafc5); left: conflict evidence reads git's stderr, `CONFLICT` lines are on stdout |
 | R287 | A re-paged row loses its duration and approval, facts match by position, and the hover lights another unit than the click | Code work | built (651a41063); left: a subagent's own row carries no decision — its card settles on the hub that has the head, so the child's `stamp_decision` finds nothing |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built (d8c99cfb7); left: live check |
-| R276 | Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list | Code work | built (eb60eceb5); left: the reviewer kill race, an archived session given a turn stays archived, `claude -p` reviewers uncovered |
+| R276 | Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list | Code work | built (eb60eceb5); left: nothing this row names — a turn takes an archived session back into the list, the reviewer kill is a stop with a queue-level test, and a `claude -p` reviewer has no session row to archive |
 | R290 | A prompt typed mid-turn can only steer: no lane that waits for the turn to end | Code work | built (6f538d24a); left: only the TUI sends `queue`; bridge, ACP and rano always steer |
 | R271 | `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL | Code work | built (3a0393fac); left: the checks in its "not checked" footer |
 | R282 | No MCP client: `mcp.rs` is a seam and a mounting rule (plan 2.11) | Code work | built (ac775763c); left: OAuth, an `Exec` class for stdio tools, `${VAR}` in `.mcp.json`, server requests and the GET stream on HTTP |
@@ -4141,7 +4141,7 @@ On 2026-11-07 four packages on lubuntu1, each with subagents running cargo at fu
 
 ## R276 - Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list
 
-**Status:** built, 2026-11-15. Audit package H9 (`/build/oss-harnesses/STATUS-fable-5.2-2026-11-15.md`), the remainder of plan 1.6 (`/build/oss-harnesses/PLAN-fable-5.2.md`), after H1 (R266).
+**Status:** built, 2026-11-15; the three Left items closed 2026-11-23. Audit package H9 (`/build/oss-harnesses/STATUS-fable-5.2-2026-11-15.md`), the remainder of plan 1.6 (`/build/oss-harnesses/PLAN-fable-5.2.md`), after H1 (R266).
 
 A session whose work is over stays in every listing: 160 review queue reviewers under `s-gatekeeper-*` (4 archived), 20 one-shots (none), every collected subagent. The operator's rule is never lose a conversation, so the answer is the archive flag (R184), not a delete.
 
@@ -4168,10 +4168,10 @@ Fixed: `serve::halts_reviews` - a target halts its review queue while red AND wh
 
 **Tests.** `crates/tools/src/lifecycle/tests_autoarchive.rs`: each rule with its reason in one split store; a head, a turn, a job in another project file and a live writer each keep a session; the operator's own settled session is not archived; an archived row stays, is listed under archived and comes back; the dry run lists exactly the rule set and writes nothing; the orphan grace; the daemon window. `harness/tests/store_writes.rs::an_auto_archived_reviewer_is_opened_again_by_id`. `tests/session_lifecycle.rs::a_settled_package_is_archived_by_the_daemon_once_its_head_goes` (a real daemon with no model: kept while a head is attached, archived once it goes, rows unchanged). `crates/letibot/tests/gc.rs::archive_settled_lists_first_and_archives_only_with_now`.
 
-**Left.**
-1. The reviewer kill race, filed here and not fixed: `mergequeue::review::serve` starts a reviewer, then fails the `reviewer … started` move because the row was held in between, and calls `runner.kill`; if I read `Children::kill` right, the child's hub is not registered yet, so it answers "already settled" and the error is dropped (`let _ =`). The child then runs its whole review. The fix is a kill that marks a slot with no hub yet so its first turn never starts; it touches the spawn path, so it is its own change. The halt above removes the window that hit it on 2026-11-15.
-2. A session archived while idle and then given a turn without a reopen (a send to a collected child that is not parked yet) stays archived while it works; the next open by id clears it.
-3. A reviewer started by `claude -p` (`claude_review`) has no session row and is not covered.
+**Left, all closed 2026-11-23.**
+1. The reviewer kill race was fixed before this seat (`b87ad17a`, "harness: a kill of a child still opening stops it before its first turn", with `f8909f43`'s `Registry::opening`): `Children::kill` on a handle whose hub does not exist yet but whose spawn is announced records the stop on the slot, and the spawn reads it before its first turn (`STOPPED_BEFORE_ITS_TURN`). What was missing was the queue's own half, and it has a test now: `a_reviewer_whose_row_moved_under_its_start_is_killed` moves the row during the reviewer's `start`, so the `reviewer … started` move fails, and asserts the child is killed, nothing is counted as started, and the person's move stands.
+2. A turn given to a session this daemon already holds is a door that never OPENS it, so the row is cleared there: `harness::open::unarchive_on_turn` runs at the top of `Sessions::turn` (which every door of the daemon goes through - an operator prompt, a message from a session, a wake) and says on the session's log what brought it back and why it was away. Test: `a_turn_given_to_an_archived_session_takes_it_back_into_the_list`.
+3. A `claude -p` reviewer is not covered and cannot be by this rule set: it is a PROCESS (`mergequeue::review::claude`), with no `session` row at all, and these rules read the session list. There is nothing in the list to archive, and its run ends with the row's own stop. Said at `is_reviewer` in `crates/tools/src/lifecycle/autoarchive.rs`.
 ## R279 - grep and glob ignore `.gitignore`; `@` in the composer completes handles only
 
 **Status:** built, 2026-11-15, branch `j10-ignore` (audit J10, plan 1.4 then 2.9). left: the attachment chip on choosing a file, `.git/info/exclude` and the global excludes file.

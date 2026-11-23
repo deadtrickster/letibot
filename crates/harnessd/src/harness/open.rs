@@ -4967,6 +4967,45 @@ pub(crate) fn unarchive_on_open(
     }
 }
 
+/// A turn given to a session this daemon already holds is a door that never OPENS it, so the row is
+/// cleared here: an archive written by another process (`letibot gc`, another daemon's verb) would
+/// otherwise have the session working out of sight for as long as it keeps turning. The same rule
+/// [`unarchive_on_open`] keeps, off the store alone, so a session the CLI opens and one a head
+/// prompts agree about what being used means. Answers the note a head reads, if any.
+pub(crate) fn unarchive_on_turn(store: Option<&Store>, id: &str) -> Option<String> {
+    let store = store?;
+    let row = match store.session(id) {
+        Ok(Some(row)) => row,
+        // No row is no archive to clear: a session the store has not seen is being created by this
+        // very turn, and there is nothing out of sight about it.
+        Ok(None) => return None,
+        // A row that cannot be read is not a row that says archived - and one this build cannot
+        // check is one the next listing would put away unseen, so it is said.
+        Err(e) => {
+            return Some(format!(
+                "this session could not be read from the store ({e}), so whether it was archived \
+                 is unknown; it stays as the listing has it"
+            ));
+        }
+    };
+    let reason = row.archived_ms.is_some().then(|| {
+        row.archived_reason
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default()
+    })?;
+    match store.set_archived(id, false, None) {
+        Ok(()) => Some(format!(
+            "this session was archived{reason} — a turn is being run in it, so it is back in the list"
+        )),
+        Err(e) => Some(format!(
+            "this session was archived{reason}, and the row could not be cleared ({e}) — it works \
+             out of sight until an unarchive reaches it"
+        )),
+    }
+}
+
 /// Did this session inherit a whole-host standing from an ancestor? The store records only the SEAT, which is not
 /// the same fact for these sessions, so it is read back up the parent chain the row carries. A row the walk cannot
 /// read is not an answer and not an error: an unproven standing is the confined one.

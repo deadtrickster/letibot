@@ -140,7 +140,10 @@ fn rule_for(s: &SessionStub, f: &Facts, now_ms: i64) -> Option<(Settled, i64)> {
     None
 }
 
-/// A child of the review queue's session.
+/// A child of the review queue's session. A `claude -p` reviewer (the daemon's
+/// `mergequeue::review::claude`) is a PROCESS and has no session row at all, so there is nothing
+/// here to archive: the rules are about the session list, and a run that never enters it cannot be
+/// in it.
 fn is_reviewer(s: &SessionStub) -> bool {
     s.parent_id
         .as_deref()

@@ -1598,6 +1598,149 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
     );
 }
 
+/// A runner whose start does what the race needs: the row MOVES between the spawn and the queue's
+/// own `reviewer … started` move, so that move fails and the pass has to end the child it just
+/// started. The child is a handle here and nothing more - what a killed reviewer does with its life
+/// is `opening_kill_tests::a_kill_between_spawn_and_registration_ends_the_child_with_no_turn`'s,
+/// which is the half that makes this kill a stop rather than a dropped error.
+struct MovedUnderStart {
+    db: PathBuf,
+    killed: Arc<Mutex<Vec<String>>>,
+}
+
+impl TaskRunner for MovedUnderStart {
+    fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+        let handle = "s-gatekeeper-sub-raced".to_string();
+        // A person put the row back in line while the reviewer was being started.
+        let store = Store::open(&self.db).expect("the store reopens");
+        assert!(
+            store
+                .move_review(
+                    "the-review",
+                    ReviewState::Reviewing,
+                    ReviewState::Waiting,
+                    &Move::new("dead", "a person put it back in line")
+                        .set("owner", "")
+                        .clear("reviewer"),
+                    3,
+                )
+                .expect("the move"),
+            "the fixture must really have moved the row"
+        );
+        Ok(handle)
+    }
+    fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+        TaskStatus::Unknown
+    }
+    fn kill(&self, handle: &str) -> Result<String, String> {
+        self.killed.lock().unwrap().push(handle.to_string());
+        Ok(format!("`{handle}` stopped"))
+    }
+}
+
+/// A reviewer whose row moved before the queue recorded it as started is ENDED, not left running:
+/// otherwise the child that started just before the move runs a whole review nobody will read, and
+/// its verdict is refused at the desk.
+#[test]
+fn a_reviewer_whose_row_moved_under_its_start_is_killed() {
+    use crate::mergequeue::serve::tests::{branch, repo};
+
+    let dir = TempDir::new("review-race");
+    let repo = repo(&dir.0);
+    let (_wt, base, head) = branch(&repo, "the-work", "b.txt");
+
+    let db = dir.0.join("sessions.db");
+    let store = Store::open(&db).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "the-review".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: CHILD.into(),
+                branch: "agent/the-work".into(),
+                worktree: None,
+                base_sha: base.clone(),
+                head_sha: head.clone(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                "the-review",
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new(ME, "claimed").set("owner", ME),
+                2,
+            )
+            .unwrap(),
+        "the fixture must really have claimed the row"
+    );
+
+    let killed = Arc::new(Mutex::new(Vec::new()));
+    let runner = MovedUnderStart {
+        db: db.clone(),
+        killed: killed.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        live: &|_: &str| false,
+        settings: &settings,
+        clones: dir.0.join(CLONES_DIR),
+        reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
+        slots: &Vec::new,
+        claude: None,
+        layers: None,
+    };
+    let served = serve(&pool).expect("a pass");
+
+    assert_eq!(
+        *killed.lock().unwrap(),
+        vec!["s-gatekeeper-sub-raced".to_string()],
+        "the reviewer started just before the row moved was left running"
+    );
+    assert!(
+        served.started == 0,
+        "nothing was recorded as started: {served:?}"
+    );
+    let row = store
+        .review_row("the-review")
+        .expect("a read")
+        .expect("the row");
+    assert_eq!(
+        row.state,
+        ReviewState::Waiting,
+        "the person's move must stand: {row:?}"
+    );
+    assert!(
+        row.reviewer.is_none(),
+        "a killed reviewer is not the row's reviewer: {row:?}"
+    );
+}
+
 /// A project that asks for VMs still gets one: the isolated arm, which no test of its own
 /// was left guarding when the host became the default. Nothing is booted.
 #[test]
