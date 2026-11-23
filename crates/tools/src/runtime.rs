@@ -2292,8 +2292,63 @@ impl ToolRuntime {
         r
     }
 
-    /// The body of both, with the gate the one thing that varies.
+    /// The body of both, with the gate the one thing that varies. A panic anywhere in the call —
+    /// the gate, the tool, a plugin layer — is answered as this call's failure: unwinding out of
+    /// here would end the thread the turn is waiting on, and the turn would then wait for a
+    /// `ToolResult` that never comes. The one place a call becomes a result, so the one place
+    /// this has to be caught.
     fn run(
+        &self,
+        turn_id: &str,
+        call: &ToolCall,
+        sink: &mut dyn ToolEventSink,
+        gated: bool,
+    ) -> ToolResult {
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_inner(turn_id, call, sink, gated)
+        }));
+        match answered {
+            Ok(r) => r,
+            Err(p) => self.panicked(turn_id, call, sink, p),
+        }
+    }
+
+    /// That failure, said in the tool's own name. The panic's location went to stderr with the
+    /// panic hook; what a log holds is which tool did it, and what the model reads is that this
+    /// call has no result and the next one does.
+    fn panicked(
+        &self,
+        turn_id: &str,
+        call: &ToolCall,
+        sink: &mut dyn ToolEventSink,
+        p: Box<dyn std::any::Any + Send>,
+    ) -> ToolResult {
+        let said = p
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a panic with no message".to_string());
+        eprintln!("  the tool `{}` panicked: {said}", call.name);
+        let r = ToolResult::new(
+            call.id.clone(),
+            call.name.clone(),
+            ToolOutcome::Failed {
+                reason: format!("`{}` panicked", call.name),
+            },
+        )
+        .with_payload(format!(
+            "the tool `{}` panicked while it was running this call, so this call has no result\n\
+             and nothing it was about to answer can be trusted: {said}\n\n\
+             The session is still up: this call failed, and the next one runs as usual. Retry with \
+             arguments that avoid the path that broke it, or report it as a bug in `{}`.",
+            call.name, call.name
+        ));
+        sink.emit(finished_event(turn_id, &r));
+        r
+    }
+
+    /// The call itself, run under the catch above.
+    fn run_inner(
         &self,
         turn_id: &str,
         call: &ToolCall,

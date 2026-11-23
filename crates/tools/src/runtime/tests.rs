@@ -1654,3 +1654,123 @@ fn the_gate_is_handed_the_diff_an_edit_or_a_write_would_apply() {
         seen[1]
     );
 }
+
+/// A tool that panics on its first call and answers on every call after it, holding a mutex of its
+/// own across the panic so the poison is real rather than imagined.
+struct Panicky {
+    first: std::sync::atomic::AtomicBool,
+    held: std::sync::Mutex<String>,
+}
+
+impl Tool for Panicky {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "panicky",
+            "Panic on the first call, answer on the next.",
+            serde_json::json!({"type": "object", "properties": {}}),
+            Access::Read,
+        )
+    }
+    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, _args: &Value) -> Invocation {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            panic!("the panicky tool was asked to fail");
+        }
+        held.push_str("answered");
+        Invocation::ok(format!("second call: {held}"))
+    }
+}
+
+/// A tool's panic is that call's failure, not the session's. It used to unwind out of the runtime
+/// and end the thread the turn waits on, so the turn waited for a `ToolResult` nobody would send;
+/// the call before it and the call after it have to work on the same runtime, on the same thread.
+#[test]
+fn a_panicking_tool_is_that_calls_failure_and_the_next_call_runs() {
+    let mut reg = Registry::new();
+    reg.register(Box::new(Panicky {
+        first: std::sync::atomic::AtomicBool::new(true),
+        held: std::sync::Mutex::new(String::new()),
+    }))
+    .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let rt = std::sync::Arc::new(
+        ToolRuntime::new(
+            reg,
+            Box::new(crate::backend::HostBackend::new(d.path()).unwrap()),
+        )
+        .with_gate(Box::new(AdmitGate)),
+    );
+
+    // The turn's tool thread, which is the thread the panic used to kill.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = {
+        let rt = std::sync::Arc::clone(&rt);
+        std::thread::spawn(move || {
+            let mut sink = RecordingToolSink::default();
+            let first = rt.invoke("t1", &call("panicky", "{}"), &mut sink);
+            let second = rt.invoke("t1", &call("panicky", "{}"), &mut sink);
+            let _ = tx.send((first, second, sink.kinds()));
+        })
+    };
+    let (first, second, kinds) = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the tool thread died with the panic instead of answering the call");
+    worker.join().expect("the tool thread did not survive it");
+
+    let said = format!("{:?}", first.outcome);
+    assert!(
+        said.contains("panicky"),
+        "the failure names the tool: {said}"
+    );
+    let body = first.render();
+    assert!(
+        body.contains("the panicky tool was asked to fail") && body.contains("still up"),
+        "the failure carries the panic and says the session goes on: {body}"
+    );
+    assert!(
+        second.render().contains("second call: answered"),
+        "the call after the panic did not run: {}",
+        second.render()
+    );
+    // A head that drew the call is told it finished, or it holds a row open for ever.
+    assert_eq!(
+        kinds,
+        vec!["ToolStarted", "ToolFinished", "ToolStarted", "ToolFinished"],
+        "every call answers an opening with a close"
+    );
+}
+
+/// The gate is consulted with its lock held, so a gate that panics poisons the mutex every later
+/// call needs: the recovery has to take the lock back, not leave the session gated shut.
+#[test]
+fn a_gate_that_panicked_once_is_still_asked_on_the_next_call() {
+    struct OnceGate(std::sync::atomic::AtomicBool);
+    impl Gate for OnceGate {
+        fn admit(&mut self, _call: &GateCall<'_>) -> GateDecision {
+            if self.0.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                panic!("the gate was asked to fail once");
+            }
+            GateDecision::Admit
+        }
+    }
+    let d = crate::backend::tempdir::TempDir::new();
+    let mut reg = Registry::new();
+    reg.register(Box::new(Probe {
+        access: Access::Exec,
+    }))
+    .unwrap();
+    let rt = ToolRuntime::new(
+        reg,
+        Box::new(crate::backend::HostBackend::new(d.path()).unwrap()),
+    )
+    .with_gate(Box::new(OnceGate(std::sync::atomic::AtomicBool::new(true))));
+    let mut sink = RecordingToolSink::default();
+    let first = rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
+    assert!(!first.is_grounded(), "{}", first.render());
+    let second = rt.invoke("t1", &call("probe", "{\"path\":\"#\"}"), &mut sink);
+    assert!(
+        second.render().contains("probed"),
+        "the poisoned gate shut the session: {}",
+        second.render()
+    );
+}
