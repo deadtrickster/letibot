@@ -602,6 +602,11 @@ pub struct ShadowLines {
     /// The stages the permission job may answer for the operator, by name. `answer_reads = true`
     /// is this list holding `reads` alone, and writing both is one setting twice.
     pub answers: Option<Vec<String>>,
+    /// Whether the turn_end job also reads the turn for what it did beyond the ask. `None` is
+    /// the default, which is on: an operator who turned the turn_end job on is watching turns.
+    pub turn_monitor: Option<bool>,
+    /// How much of the turn's digest that check is shown, in bytes. `None` is the built-in cap.
+    pub turn_monitor_max_chars: Option<usize>,
 }
 
 /// The stages `[shadow] answers` takes, in the order they are promoted. A closed set: a stage
@@ -699,6 +704,30 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                         )));
                     }
                 });
+            } else if k == "turn_monitor" {
+                out.turn_monitor = Some(match v.trim() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(fault(format!(
+                            "[shadow] turn_monitor = {v} is not true or false"
+                        )));
+                    }
+                });
+            } else if k == "turn_monitor_max_chars" {
+                let n = v.trim().parse::<usize>().map_err(|_| {
+                    fault(format!(
+                        "[shadow] turn_monitor_max_chars = {v} is not a count; write \
+                         `turn_monitor_max_chars = 6000`"
+                    ))
+                })?;
+                if n < 200 {
+                    return Err(fault(format!(
+                        "[shadow] turn_monitor_max_chars = {n} leaves the check nothing to read; \
+                         the least is 200"
+                    )));
+                }
+                out.turn_monitor_max_chars = Some(n);
             } else if known(k) {
                 let model = v.trim();
                 if model.is_empty() {
@@ -711,7 +740,8 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
             } else {
                 return Err(fault(format!(
                     "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every`, \
-                     `answer_reads`, `answers` and the jobs, {}",
+                     `answer_reads`, `answers`, `turn_monitor`, `turn_monitor_max_chars` and the \
+                     jobs, {}",
                     SHADOW_JOBS.join(", ")
                 )));
             }
@@ -1528,6 +1558,23 @@ mod tests {
         assert_eq!(shadow(Some(&f)).unwrap().answer_reads, Some(false));
     }
 
+    /// The turn monitor is a switch and a cap, and both read from `[shadow]` alone.
+    #[test]
+    fn the_turn_monitor_reads_its_switch_and_its_cap() {
+        let absent = tmp_providers("monitor_absent", "[shadow]\nenabled = [\"turn_end\"]\n");
+        let t = shadow(Some(&absent)).unwrap();
+        assert_eq!(t.turn_monitor, None, "absent is the built-in default");
+        assert_eq!(t.turn_monitor_max_chars, None);
+        let f = tmp_providers(
+            "monitor_lines",
+            "[shadow]\nenabled = [\"turn_end\"]\nturn_monitor = false\n\
+             turn_monitor_max_chars = 2500\n",
+        );
+        let t = shadow(Some(&f)).unwrap();
+        assert_eq!(t.turn_monitor, Some(false));
+        assert_eq!(t.turn_monitor_max_chars, Some(2500));
+    }
+
     #[test]
     fn a_shadow_line_that_means_nothing_is_a_fault() {
         for (name, text, says) in [
@@ -1555,6 +1602,21 @@ mod tests {
                 "fault_shadow_reads_bad",
                 "[shadow]\nanswer_reads = \"yes\"\n",
                 "not true or false",
+            ),
+            (
+                "fault_monitor_bad",
+                "[shadow]\nturn_monitor = \"on\"\n",
+                "not true or false",
+            ),
+            (
+                "fault_monitor_cap",
+                "[shadow]\nturn_monitor_max_chars = \"lots\"\n",
+                "not a count",
+            ),
+            (
+                "fault_monitor_small",
+                "[shadow]\nturn_monitor_max_chars = 20\n",
+                "the least is 200",
             ),
             (
                 "fault_shadow_list",

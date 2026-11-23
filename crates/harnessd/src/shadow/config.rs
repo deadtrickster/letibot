@@ -31,8 +31,9 @@ impl Stage {
     }
 }
 
-/// The shadow's configuration. The default is every job off, and no stage.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The shadow's configuration. The default is every job off, and no stage - except the turn
+/// monitor, which is on for a turn_end job that is on until a file says otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShadowConfig {
     enabled: BTreeSet<Job>,
     /// Per job, watched-model key to the model the job runs on.
@@ -48,6 +49,27 @@ pub struct ShadowConfig {
     /// The stages the permission job answers for. Empty is observe-only, which is the default:
     /// promoting a stage is the operator's act, never a side effect of `enabled`.
     stages: BTreeSet<Stage>,
+    /// Whether the turn_end job also reads the turn for what it did beyond the ask.
+    turn_monitor: bool,
+    /// How much of the turn's digest that check is shown, in bytes.
+    turn_monitor_max_chars: usize,
+}
+
+impl Default for ShadowConfig {
+    /// Written out rather than derived: the turn monitor is on, and a derived `false` would turn
+    /// the one check that costs no card into one nobody has.
+    fn default() -> ShadowConfig {
+        ShadowConfig {
+            enabled: BTreeSet::new(),
+            models: BTreeMap::new(),
+            default: String::new(),
+            stateless: false,
+            fresh_every: 0,
+            stages: BTreeSet::new(),
+            turn_monitor: true,
+            turn_monitor_max_chars: super::overreach::DEFAULT_MAX_CHARS,
+        }
+    }
 }
 
 /// How often a persistent question is checked against a fresh call when the file does not say.
@@ -79,6 +101,10 @@ impl ShadowConfig {
             stateless: lines.mode.as_deref() == Some("stateless"),
             fresh_every: lines.fresh_every.unwrap_or(FRESH_EVERY),
             stages: stages_of(&lines)?,
+            turn_monitor: lines.turn_monitor.unwrap_or(true),
+            turn_monitor_max_chars: lines
+                .turn_monitor_max_chars
+                .unwrap_or(super::overreach::DEFAULT_MAX_CHARS),
             ..ShadowConfig::default()
         };
         if let Some(m) = lines.mode.as_deref()
@@ -150,6 +176,19 @@ impl ShadowConfig {
 
     pub fn fresh_every(&self) -> u32 {
         self.fresh_every
+    }
+
+    /// What the turn-end job is shown of what the turn did, in bytes: `None` is the monitor off,
+    /// which is a `turn_monitor = false` or a turn_end job that is not on.
+    pub fn turn_monitor(&self) -> Option<usize> {
+        (self.turn_monitor && self.is_on(Job::TurnEnd)).then_some(self.turn_monitor_max_chars)
+    }
+
+    /// For a test or a caller that switches the monitor in code.
+    pub fn with_turn_monitor(mut self, on: bool, max_chars: usize) -> ShadowConfig {
+        self.turn_monitor = on;
+        self.turn_monitor_max_chars = max_chars;
+        self
     }
 
     /// For a test or a caller that picks the mode in code.
