@@ -718,3 +718,86 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blocking() -> Shown {
+        Shown {
+            data: "call: bash git push --force origin main".into(),
+            oracle: true,
+            block: true,
+            ..Shown::default()
+        }
+    }
+
+    fn read(reply: &str) -> Result<Verdict, String> {
+        check(Job::Permission, reply, &blocking()).verdict
+    }
+
+    /// A force-push is one of the six, and the category travels with the reason.
+    #[test]
+    fn a_force_push_reply_is_a_block_with_its_category() {
+        let Ok(Verdict::Permission {
+            decision: Decision::Block { category, reason },
+            ..
+        }) = read(
+            r#"{"block":true,"category":"push_to_a_protected_ref","reason":"it force-pushes over main, which nobody here can undo"}"#,
+        )
+        else {
+            panic!("a force-push must read as a block");
+        };
+        assert_eq!(category, Category::PushToAProtectedRef);
+        assert!(reason.contains("force-pushes"), "{reason}");
+    }
+
+    /// The default is no: a reply that does not block is not an allow with a rule, and nothing in
+    /// it is checked as a quote.
+    #[test]
+    fn a_reply_that_does_not_block_is_not_a_block() {
+        let Ok(Verdict::Permission {
+            decision: Decision::Ask,
+            ..
+        }) = read(r#"{"block":false,"category":"","reason":""}"#)
+        else {
+            panic!("the default is no");
+        };
+    }
+
+    /// A category this build does not know voids the answer rather than widening what it blocks.
+    #[test]
+    fn an_unknown_category_voids_the_answer() {
+        let why = read(
+            r#"{"block":true,"category":"i_do_not_like_it","reason":"it looked odd to me somehow"}"#,
+        )
+        .expect_err("an unknown category is no category");
+        assert!(why.starts_with("category:"), "{why}");
+    }
+
+    /// A block says what the call would do: an empty reason is no answer.
+    #[test]
+    fn a_block_with_no_reason_is_voided() {
+        let why = read(r#"{"block":true,"category":"another_sessions_property","reason":""}"#)
+            .expect_err("a block needs its sentence");
+        assert!(why.starts_with("reason:"), "{why}");
+    }
+
+    /// The prompt and the closed set have to name the same six words, or a category the model is
+    /// told about is one the checker voids.
+    #[test]
+    fn the_block_prompt_names_every_category() {
+        let prompt = crate::shadow::prompts::PERMISSION_BLOCK;
+        for c in Category::ALL {
+            assert!(
+                prompt.contains(c.as_str()),
+                "the prompt does not name `{}`",
+                c.as_str()
+            );
+        }
+        assert!(
+            prompt.contains("\"block\""),
+            "the reply shape is in the prompt"
+        );
+    }
+}
