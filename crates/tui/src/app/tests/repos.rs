@@ -93,6 +93,7 @@ fn edited(a: &mut App, id: &str, path: &str) {
                 truncated: false,
                 before: "fn x() {}".into(),
                 after: "fn y() {}".into(),
+                note: String::new(),
             }],
             origin: None,
             media: None,

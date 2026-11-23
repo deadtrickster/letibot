@@ -48,6 +48,7 @@ fn change() -> letibot_sessionlog::event::ToolEdit {
         truncated: false,
         before: "line 9\nline 10\nold 11\nline 12".into(),
         after: "line 9\nline 10\nline 11\nline 12".into(),
+        note: String::new(),
     }
 }
 

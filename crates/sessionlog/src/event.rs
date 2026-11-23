@@ -2020,6 +2020,7 @@ mod tests {
                 truncated: false,
                 before: "pub fn render(old: &[&str]) -> Vec<String> {\n".into(),
                 after: "pub fn render(old: &[&str]) -> Vec<String> {\n    let d = diff_lines(old, new);\n".into(),
+                note: String::new(),
             }],
         };
         let s = serde_json::to_string(&e).unwrap();

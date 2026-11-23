@@ -39,6 +39,17 @@ impl Tool for Write {
         )
     }
 
+    /// What this `write` would put there, for the permission card: the file as it is against the
+    /// content the call carries. A call that changes nothing previews nothing, which is the same
+    /// fact the tool answers (`Unchanged`).
+    fn preview(
+        &self,
+        backend: &dyn crate::backend::ExecBackend,
+        args: &Value,
+    ) -> Option<letibot_transcript::ToolEditExcerpt> {
+        crate::edit_preview::preview("write", args, crate::edit_preview::backend_reader(backend))
+    }
+
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
         let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
             return Invocation::failed(

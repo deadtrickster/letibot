@@ -87,6 +87,17 @@ impl Tool for Edit {
         )
     }
 
+    /// What this `edit` would change, for the permission card. A step that does not resolve still
+    /// answers: its `note` is the sentence this tool would refuse with, and the excerpt carries the
+    /// text the call asked to write - the card shows why there is no diff instead of nothing.
+    fn preview(
+        &self,
+        backend: &dyn crate::backend::ExecBackend,
+        args: &Value,
+    ) -> Option<letibot_transcript::ToolEditExcerpt> {
+        crate::edit_preview::preview("edit", args, crate::edit_preview::backend_reader(backend))
+    }
+
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
         let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
             return Invocation::failed(

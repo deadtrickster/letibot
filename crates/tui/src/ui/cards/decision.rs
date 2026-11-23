@@ -241,14 +241,37 @@ fn row_body(body: &str) -> String {
     }
 }
 
+/// What a card says over an excerpt that is not a change to the file: the tool's own reason first,
+/// then what allowing the call actually does. A proposal is drawn under it when the call carried
+/// one, and the sentence has to change with it - "the lines below" over nothing is a promise the
+/// card would not keep.
+pub(crate) fn card_refusal_line(note: &str, has_proposal: bool) -> String {
+    match has_proposal {
+        true => {
+            format!("  {note} — nothing would be written; below is what this call asked to write")
+        }
+        false => format!("  {note} — so this call would write nothing"),
+    }
+}
+
 impl App {
     /// The diff the call would apply, drawn by the tool row's renderer and folded at
     /// [`CARD_DIFF_ROWS`] with a count, unless alt-d opened it on this card.
+    ///
+    /// An excerpt that is not a change to the file says so first, in the tool's own words: an `edit`
+    /// whose text is not there would write nothing, and a card that drew its proposal as though it
+    /// were the change would be asking about a file that is not on disk.
     pub(crate) fn card_diff_rows(&self, d: &OpenDecision, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let open = self.dec_diff_open == d.req_id;
         let mut out = Vec::new();
         for e in &d.edits {
+            if !e.note.is_empty() {
+                let why = card_refusal_line(&e.note, !e.after.trim().is_empty());
+                for l in rano::agent::text::wrap(&why, w) {
+                    out.push(row(&rano::agent::pane::faint(&l), p));
+                }
+            }
             let diff = edit_diff_rows(
                 e,
                 w.saturating_sub(2),

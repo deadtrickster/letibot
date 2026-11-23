@@ -1072,6 +1072,7 @@ fn a_jobs_completion_draws_the_files_it_changed() {
         truncated: false,
         before: "alpha\nbeta".into(),
         after: "alpha\nGAMMA".into(),
+        note: String::new(),
     };
     a.apply(ServerFrame::Event(env(
         1,

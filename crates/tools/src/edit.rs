@@ -452,6 +452,7 @@ impl FileEdit {
             truncated,
             before: before[b_lo..b_lo + n_before].join("\n"),
             after: after[a_lo..a_lo + n_after].join("\n"),
+            note: String::new(),
         }
     }
 }

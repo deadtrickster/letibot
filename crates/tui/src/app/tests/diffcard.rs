@@ -16,6 +16,7 @@ fn excerpt(path: &str, before: &str, after: &str, start: usize, created: bool) -
         truncated: false,
         before: before.into(),
         after: after.into(),
+        note: String::new(),
     }
 }
 
@@ -180,4 +181,88 @@ fn alt_d_with_no_diff_on_screen_says_so() {
     a.key(Key::AltD);
     let said = a.notice.clone().unwrap_or_default();
     assert!(said.contains("no card with one is up"), "{said}");
+}
+
+/// An `edit` whose text is not in the file changes nothing, so there is no diff of the file to draw -
+/// and the card says why in the tool's own words, over the text the call asked to write. Neither half
+/// is optional: a card with no diff and no reason is a card the person cannot answer.
+#[test]
+fn an_edit_that_would_not_apply_says_why_and_shows_what_it_asked_to_write() {
+    let proposed = "fn main() {\n    println!(\"new\");\n}";
+    let edit = ToolEditExcerpt {
+        note: "`old_string` occurs 3 times in `src/main.rs`".into(),
+        before: String::new(),
+        after: proposed.into(),
+        ..excerpt("src/main.rs", "", proposed, 1, false)
+    };
+    let mut a = card_with("edit", "src/main.rs", edit);
+    let screen = a.screen(120, 40).join("\n");
+    let why = screen
+        .lines()
+        .position(|l| l.contains("`old_string` occurs 3 times in `src/main.rs`"))
+        .unwrap_or_else(|| panic!("the card does not say why there is no diff:\n{screen}"));
+    assert!(
+        screen.contains("nothing would be written"),
+        "the card does not say what allowing it does:\n{screen}"
+    );
+    let shown = screen
+        .lines()
+        .position(|l| l.contains("println!"))
+        .unwrap_or_else(|| panic!("the proposal is not drawn:\n{screen}"));
+    assert!(
+        why < shown,
+        "the reason is under the text it explains:\n{screen}"
+    );
+    let ladder = screen.find("Allow once").expect("the ladder");
+    assert!(
+        screen.find("println!").unwrap() < ladder,
+        "the proposal is drawn in the answer half:\n{screen}"
+    );
+}
+
+/// And a call that would not apply and carries nothing to write either: the reason is the whole of
+/// what there is, and the card must not promise lines under it.
+#[test]
+fn an_unresolved_edit_with_no_proposal_promises_no_lines() {
+    let edit = ToolEditExcerpt {
+        note: "step 2 of 2 found no match".into(),
+        before: String::new(),
+        after: String::new(),
+        ..excerpt("a.md", "", "", 1, false)
+    };
+    let mut a = card_with("edit", "a.md", edit);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(screen.contains("step 2 of 2 found no match"), "{screen}");
+    assert!(
+        screen.contains("so this call would write nothing"),
+        "{screen}"
+    );
+    assert!(
+        !screen.contains("below is what this call asked to write"),
+        "the card promises lines it does not draw:\n{screen}"
+    );
+}
+
+/// A `notes` write is a file write like any other, and the card shows it: the note as it is against
+/// the note the call would leave. It used to get none, because the file is outside the session's
+/// tree and nothing but the `notes` tool knows where it is.
+#[test]
+fn a_notes_write_shows_the_note_it_would_change() {
+    let edit = excerpt(
+        "notes/rows-tui.md",
+        "# rows-tui\n\nthe card draws nothing for a note",
+        "# rows-tui\n\nthe card draws the note's diff",
+        1,
+        false,
+    );
+    let mut a = card_with("notes", "notes/rows-tui.md", edit);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("the card draws nothing for a note"),
+        "the note as it is is not on the card:\n{screen}"
+    );
+    assert!(
+        screen.contains("the card draws the note's diff"),
+        "the note it would leave is not on the card:\n{screen}"
+    );
 }

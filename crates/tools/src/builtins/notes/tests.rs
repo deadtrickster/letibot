@@ -1183,3 +1183,37 @@ fn the_notes_repo_is_read_and_written_directly_even_under_the_workspace() {
         "the rest of the workspace is still the backend's"
     );
 }
+
+/// The card's half of a notes write: the note as it is against the note the call would leave, worked
+/// out by the same [`note_text`] rule the write applies - and nothing at all for a call that would be
+/// refused, since that call leaves no file. This is the half the permission card used to get none of:
+/// a note is outside the session's tree, so nothing but this tool can read it.
+#[test]
+fn a_write_previews_the_note_it_would_leave() {
+    let h = writable_harness();
+    let notes = h.notes_project_dir();
+    std::fs::create_dir_all(&notes).expect("project dir");
+    std::fs::write(notes.join("rows.md"), "the card draws nothing\n").expect("fixture");
+    let tool = h.rt.registry.get("notes").expect("the notes tool");
+    let args = serde_json::json!({"action":"append","name":"rows","text":"the card draws it"});
+    let ex = tool
+        .preview(h.rt.backend.as_ref(), &args)
+        .expect("a diff of the note");
+    assert!(!ex.created, "the note exists: {ex:?}");
+    assert!(ex.before.contains("the card draws nothing"), "{ex:?}");
+    assert!(ex.after.contains("the card draws it"), "{ex:?}");
+    assert!(
+        ex.after.contains("the card draws nothing"),
+        "the appended note still holds what it held: {ex:?}"
+    );
+    assert!(ex.note.is_empty(), "a real diff needs no excuse: {ex:?}");
+    // A call the tool would refuse writes nothing, so there is no file for the card to draw: an
+    // `append` to a note that is not there, and an `add` over one that is.
+    let missing = serde_json::json!({"action":"append","name":"nope","text":"x"});
+    assert!(tool.preview(h.rt.backend.as_ref(), &missing).is_none());
+    let over = serde_json::json!({"action":"add","name":"rows","text":"x"});
+    assert!(tool.preview(h.rt.backend.as_ref(), &over).is_none());
+    // A read changes nothing and has no diff to offer.
+    let read = serde_json::json!({"action":"read","name":"rows"});
+    assert!(tool.preview(h.rt.backend.as_ref(), &read).is_none());
+}

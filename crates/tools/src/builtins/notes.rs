@@ -577,6 +577,43 @@ fn with_abstract(abstract_line: Option<&str>, body: &str) -> String {
     }
 }
 
+/// The note a write would leave, from the note as it is: the ONE rule for the bytes, shared by the
+/// write and by the permission card's preview - a card that worked the text out a second way would
+/// draw a file the write then does not produce. `None` when the action would be refused without
+/// writing anything: an `add` over a note that exists, or an `append`/`replace` of one that does not.
+fn note_text(
+    action: &str,
+    existing: Option<&str>,
+    text: &str,
+    abstract_line: Option<&str>,
+) -> Option<(String, String)> {
+    match (action, existing) {
+        ("add", None) => Some((
+            String::new(),
+            format!("{}\n", with_abstract(abstract_line, text.trim_end())),
+        )),
+        ("append", Some(old)) => {
+            // The marker is lifted out, the note grown, and the abstract - the new one or the one
+            // that was there - put back on top, so an `append` that asked for none keeps the line
+            // the index leads with.
+            let was = written_abstract(old);
+            let kept = abstract_line.or(was.as_deref());
+            let old_body = without_abstract(old);
+            let body = if old_body.is_empty() {
+                text.trim().to_string()
+            } else {
+                format!("{old_body}\n\n{}", text.trim())
+            };
+            Some((old.to_string(), format!("{}\n", with_abstract(kept, &body))))
+        }
+        ("replace", Some(old)) => Some((
+            old.to_string(),
+            format!("{}\n", with_abstract(abstract_line, text.trim_end())),
+        )),
+        _ => None,
+    }
+}
+
 /// One line, from whatever the caller passed: an abstract is the index's line,
 /// so its newlines and runs of spaces are flattened rather than refused - the
 /// note's own text is where a paragraph belongs.
@@ -635,6 +672,52 @@ fn cap(s: &str) -> String {
 }
 
 impl Tool for NotesTool {
+    /// The note a write would leave, for the permission card. A note is not in the session's tree -
+    /// it lands in the project's notes checkout, which the backend cannot be asked about - so this
+    /// tool answers for itself, through the same [`NoteFs`] and the same [`note_text`] rule its own
+    /// write uses. A call that would be refused (an `add` over an existing note, an append to a
+    /// missing one) previews nothing: there is no file it would leave.
+    fn preview(
+        &self,
+        backend: &dyn crate::backend::ExecBackend,
+        args: &Value,
+    ) -> Option<crate::edit::ToolEditExcerpt> {
+        let action = args.get("action").and_then(Value::as_str)?;
+        if !matches!(action, "add" | "append" | "replace") {
+            return None;
+        }
+        let stem = note_stem(args.get("name").and_then(Value::as_str)?).ok()?;
+        let text = args.get("text").and_then(Value::as_str)?;
+        let asked = args.get("abstract").and_then(Value::as_str).map(one_line);
+        let dir = self.scope.project_dir();
+        if dir.as_os_str().is_empty() {
+            return None;
+        }
+        let fs = NoteFs::new(backend, self.scope.as_ref());
+        let target = dir.join(format!("{stem}.md"));
+        // A note that cannot be read previews nothing: whether it exists is exactly what the
+        // preview would be guessing about, and the tool says why when it runs.
+        let existing = fs.read(&target).ok()?;
+        let (before, after) = note_text(action, existing.as_deref(), text, asked.as_deref())?;
+        if before == after {
+            return None;
+        }
+        let edit = crate::edit::FileEdit {
+            path: target
+                .strip_prefix(&fs.root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| target.display().to_string()),
+            changed: crate::edit::changed_span(&before, &after),
+            before_digest: crate::spill::content_hash(before.as_bytes()),
+            after_digest: crate::spill::content_hash(after.as_bytes()),
+            replacements: 1,
+            before,
+            after,
+            created: action == "add",
+        };
+        Some(crate::edit_preview::excerpt_of(&edit))
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "notes",
@@ -1123,11 +1206,11 @@ impl NotesTool {
                     ),
                 );
             }
-            ("add", None) => (
-                String::new(),
-                format!("{}\n", with_abstract(asked.as_deref(), text.trim_end())),
-                format!("created `{}`", target.display()),
-            ),
+            ("add", None) => {
+                let (before, after) = note_text(action, None, text, asked.as_deref())
+                    .expect("an add over a note that is not there");
+                (before, after, format!("created `{}`", target.display()))
+            }
             (_, None) => {
                 // `append` and `replace` both refuse to create: a typo'd name
                 // that silently grows a new note is a note nobody meant, and
@@ -1194,26 +1277,22 @@ impl NotesTool {
             ("append", Some(old)) => {
                 // The marker is lifted out, the note grown, and the abstract - the new one or the
                 // one that was there - put back on top, so an `append` that asked for none keeps
-                // the line the index leads with.
-                let was = written_abstract(old);
-                let kept = asked.as_deref().or(was.as_deref());
-                let old_body = without_abstract(old);
-                let body = if old_body.is_empty() {
-                    text.trim().to_string()
-                } else {
-                    format!("{old_body}\n\n{}", text.trim())
-                };
-                let grown = with_abstract(kept, &body);
+                // the line the index leads with. The bytes themselves are [`note_text`]'s, since
+                // the permission card previews the same note and must not compute it again.
+                let (before, after) = note_text(action, Some(old), text, asked.as_deref())
+                    .expect("an append to a note that exists");
                 let said = format!(
                     "appended {} to `{}`: {} → {}",
                     super::human(text.trim().len() as u64),
                     target.display(),
                     super::human(old.len() as u64),
-                    super::human(grown.len() as u64),
+                    super::human(after.trim_end_matches('\n').len() as u64),
                 );
-                (old.clone(), format!("{grown}\n"), said)
+                (before, after, said)
             }
             ("replace", Some(old)) => {
+                let (before, after) = note_text(action, Some(old), text, asked.as_deref())
+                    .expect("a replace of a note that exists");
                 let said = format!(
                     "replaced `{}` — was {}, {} line(s), first line {:?}. Nothing of the old \
                      text survives; `transcript` holds this call if it must be recovered.",
@@ -1222,11 +1301,7 @@ impl NotesTool {
                     old.lines().count(),
                     old.lines().next().unwrap_or_default(),
                 );
-                (
-                    old.clone(),
-                    format!("{}\n", with_abstract(asked.as_deref(), text.trim_end())),
-                    said,
-                )
+                (before, after, said)
             }
             _ => unreachable!("the match on action is total above"),
         };

@@ -473,6 +473,7 @@ fn item_rendered(
         truncated: false,
         before: format!("let a = 1;{EVIL}\nlet b = 2;\n"),
         after: format!("let a = 3;{EVIL}\nlet b = 2;\n"),
+        note: String::new(),
     };
     let edit = item_kind_is_edit(&item).then_some(&excerpt);
     let has_edit = edit.is_some();
@@ -1200,6 +1201,7 @@ fn edit_excerpt() -> letibot_sessionlog::event::ToolEdit {
         truncated: false,
         before: "fn a() {}\n".into(),
         after: "fn a() {\n    x();\n}\n".into(),
+        note: String::new(),
     }
 }
 

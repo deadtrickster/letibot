@@ -82,6 +82,7 @@ fn a_change() -> letibot_sessionlog::event::ToolEdit {
         created: false,
         truncated: false,
         after_lines: 3,
+        note: String::new(),
     }
 }
 

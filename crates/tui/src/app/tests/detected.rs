@@ -171,6 +171,7 @@ fn a_detected_diff_is_drawn_as_the_edit_card_draws_one() {
         truncated: false,
         before: String::new(),
         after,
+        note: String::new(),
     };
     let cfg = plain_cfg(120);
     let target = "python3 - <<'PYEOF' …";
@@ -250,6 +251,7 @@ fn two_changed_files_are_two_diffs_each_drawn_as_an_edit_card() {
         truncated: false,
         before: "one\ntwo\nthree".into(),
         after: "one\nTWO\nthree".into(),
+        note: String::new(),
     };
     let edits = [one("a.txt"), one("b.txt")];
     let cfg = plain_cfg(120);
@@ -338,6 +340,7 @@ fn excerpt(path: &str) -> letibot_transcript::ToolEditExcerpt {
         truncated: false,
         before: "one\nedited".into(),
         after: "one\ntwo".into(),
+        note: String::new(),
     }
 }
 

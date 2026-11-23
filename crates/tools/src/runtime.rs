@@ -638,6 +638,20 @@ pub trait Tool: Send + Sync {
     fn open_plan(&self) -> Option<bool> {
         None
     }
+
+    /// What this call would CHANGE, worked out before it runs so the permission card can show the
+    /// diff it is asking about. Asked of the tool rather than worked out beside it, because only
+    /// the tool knows where its file is: `notes` writes outside the session's tree, through a
+    /// directory this crate's caller never sees. `backend` is the session's own, which is what the
+    /// tool would write through. `None` for a tool that changes no file, and for a call that names
+    /// none.
+    fn preview(
+        &self,
+        _backend: &dyn ExecBackend,
+        _args: &Value,
+    ) -> Option<letibot_transcript::ToolEditExcerpt> {
+        None
+    }
 }
 
 /// One gated call, as the gate sees it. The turn and the call it belongs to travel here so
@@ -2020,19 +2034,20 @@ impl ToolRuntime {
         }
     }
 
+    /// The diff an `edit`, a `write` or a `notes` write would apply, asked of the tool that would
+    /// apply it - so the card draws the file the tool would really change, `notes`' own directory
+    /// included. Empty for every other call, and for one that changes nothing.
+    fn preview_of(&self, tool: &str, args: &Value) -> Vec<letibot_transcript::ToolEditExcerpt> {
+        self.registry
+            .get(tool)
+            .and_then(|t| t.preview(self.backend.as_ref(), args))
+            .into_iter()
+            .collect()
+    }
+
     /// The scripts a `bash` call's command will run, read for the adjudicator. Empty for a
     /// command that names no script file. A file that cannot be read is reported as unreadable
     /// rather than skipped: silence reads exactly like a command that runs no script.
-    fn preview_of(&self, tool: &str, args: &Value) -> Vec<letibot_transcript::ToolEditExcerpt> {
-        crate::edit_preview::preview(tool, args, |path| match self.backend.read(path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(crate::backend::BackendError::NotFound(_)) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        })
-        .into_iter()
-        .collect()
-    }
-
     fn scripts_of(&self, args: &Value) -> Vec<ScriptSource> {
         let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
             return Vec::new();

@@ -1653,6 +1653,20 @@ fn the_gate_is_handed_the_diff_an_edit_or_a_write_would_apply() {
         "{:?}",
         seen[1]
     );
+
+    // And a call that would NOT apply is handed over too: the card's reason, in the tool's own
+    // words, over the text the call asked to write - a card with neither is the defect this closes.
+    let args = serde_json::json!({"path": "a.txt", "old_string": "nope", "new_string": "x"});
+    rt.invoke("t1", &call("edit", &args.to_string()), &mut sink);
+    let seen = gate.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let last = seen.last().expect("the third call reached the gate");
+    assert_eq!(last.len(), 1, "{last:?}");
+    assert_eq!(last[0].note, "`old_string` is not in `a.txt`");
+    assert_eq!(last[0].after, "x", "the proposal is what the card draws");
+    assert!(
+        last[0].before.is_empty(),
+        "nothing of the file changed: {last:?}"
+    );
 }
 
 /// A tool that panics on its first call and answers on every call after it, holding a mutex of its

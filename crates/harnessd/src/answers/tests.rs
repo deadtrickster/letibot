@@ -1300,6 +1300,7 @@ fn the_card_carries_the_diff_the_gate_was_handed() {
         truncated: false,
         before: String::new(),
         after: "fn main() {}".into(),
+        note: String::new(),
     }];
     let SessionEvent::DecisionRequested { edits, .. } = pose(&req, 0, None) else {
         panic!("not a card");

@@ -335,6 +335,13 @@ pub struct ToolEditExcerpt {
     /// side has no lines in the range (a pure insertion has no `before`).
     pub before: String,
     pub after: String,
+    /// Why this is not a diff of the file, in the tool's own words, when the call it previews
+    /// would not apply: an `edit` whose text is not in the file, or matches more than one place.
+    /// `before` and `after` are then the call's PROPOSAL - what it asked to write - and not a
+    /// change to the file, which is what a card says above them. Empty for every real excerpt, and
+    /// absent from a row written before the field existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 /// A stored row's excerpts: the list this tree writes, or the ONE object a row written before the
@@ -624,6 +631,7 @@ mod tests {
                 truncated: false,
                 before: "fn a() {".into(),
                 after: "fn a() {\n    x();".into(),
+                note: String::new(),
             }],
             origin: None,
             media: None,
@@ -696,6 +704,7 @@ mod tests {
                 truncated: false,
                 before: "one\nTWO".into(),
                 after: "one\nTHREE".into(),
+                note: String::new(),
             }],
             origin: None,
             media: None,

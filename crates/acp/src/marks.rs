@@ -81,6 +81,7 @@ mod tests {
             truncated: false,
             before: "1865\n".into(),
             after: "1866\nand the gap\n".into(),
+            note: String::new(),
         }
     }
 
