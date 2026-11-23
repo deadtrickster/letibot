@@ -116,10 +116,12 @@ impl App {
         if self.pick_card_up() && self.pick == Some(Pick::Mode) {
             return self.pick_mode(text.trim());
         }
-        // An open decision owns Enter, typed line or not. A permission's selectors are the digits and the arrows, so a
-        // typed line is the marked rung's material - the reason a deny is sent with, the glob an always-allow is
-        // written with. A rung with no use for it answers nothing and says where it could go.
-        if let Some(d) = self.open.first().cloned() {
+        // An open decision owns Enter only while it holds the keyboard. A permission's selectors are the digits and the
+        // arrows, so a typed line is the marked rung's material - the reason a deny is sent with, the glob an
+        // always-allow is written with - and a rung with no use for it answers nothing and says where it could go.
+        // A card that arrived over this line answers nothing: the line is the operator's and `tab` gives the card the
+        // keys (see [`App::card_focus`]), so Enter here sends the line as the prompt it was typed as.
+        if let Some(d) = self.open.first().cloned().filter(|_| self.card_focus) {
             // A question is answered with words, and that is not a courtesy: a typed answer is first-class, and the
             // requirement names the alternative it is against.
             if d.kind == "question" {

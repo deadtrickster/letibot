@@ -53,6 +53,9 @@ fn words_the_marked_rung_cannot_use_answer_nothing_and_keep_themselves() {
     ]));
     a.open[0].on_timeout = OnTimeout::Deny;
     let pushed = a.open.len();
+    // The card arrived: the frame that carried it is what settles who has the keys, and this
+    // fixture pushes it a frame late (`App::sync_front`).
+    a.sync_front();
 
     // The top rung grants one call and takes no words, so a sentence submitted on it is refused
     // rather than spent or dropped.

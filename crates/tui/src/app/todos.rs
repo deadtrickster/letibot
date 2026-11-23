@@ -156,6 +156,9 @@ impl App {
         }
         self.sel = sel.min(ask.options.len().saturating_sub(1));
         self.sel_for = req_id.clone();
+        // The card comes back as it was put away: the composer holds ITS words (the operator's own
+        // line was just held aside), so the keys are the card's - see `App::card_focus`.
+        self.card_focus = true;
         self.open.insert(
             0,
             letibot_sessionlog::view::OpenDecision {
@@ -259,19 +262,26 @@ impl App {
         });
     }
 
-    /// Move the card on top of the open list to [`App::away`] with the composer's words and the
-    /// highlight, and empty the composer.
+    /// Move the card on top of the open list to [`App::away`] with the words typed ON it and the
+    /// highlight, and empty the composer of them. A line the operator typed before the card arrived
+    /// was never the card's field, so it is not the card's to carry away (see [`App::card_focus`]).
     fn stash_front_card(&mut self) {
         if self.open.is_empty() {
             return;
         }
         let decision = self.open.remove(0);
-        let draft = self.editor.expanded();
-        if !self.editor.text().is_empty() {
-            // ctrl-c on a non-empty composer is the editor's own "clear what I typed", and an
-            // undo away; Home + kill-to-end would clear one line of several.
-            self.editor.key(letibot_ui::editor::Key::CtrlC, self.now_ms);
-        }
+        let draft = match self.card_focus {
+            true => {
+                let draft = self.editor.expanded();
+                if !self.editor.text().is_empty() {
+                    // ctrl-c on a non-empty composer is the editor's own "clear what I typed", and an
+                    // undo away; Home + kill-to-end would clear one line of several.
+                    self.editor.key(letibot_ui::editor::Key::CtrlC, self.now_ms);
+                }
+                draft
+            }
+            false => String::new(),
+        };
         self.away.retain(|a| a.decision.req_id != decision.req_id);
         self.away.push(AwayCard {
             session_id: self.session_id.clone(),
@@ -353,9 +363,12 @@ impl App {
                 || live(&a.decision.req_id, &a.decision.summary).is_some()
         });
         if closed_front {
-            // The composer was the card's field: its words were an answer, not a prompt.
-            let typed = !self.editor.text().is_empty();
-            self.clear_composer();
+            // The composer was the card's field: its words were an answer, not a prompt. A line
+            // the operator typed before the card arrived is theirs and stays where it is.
+            let typed = self.card_focus && !self.editor.text().is_empty();
+            if typed {
+                self.clear_composer();
+            }
             self.say(if typed {
                 "that todo row no longer waits on you — its card closed, and what you typed on it \
                  was cleared (ctrl-z brings it back)"
@@ -412,6 +425,10 @@ impl App {
             self.open.insert(0, a.decision.clone());
             self.sel_for = a.decision.req_id.clone();
             self.sel = a.sel;
+            // The card comes back as it left, its words already spent: the composer has the keys
+            // again only if nothing new is in it - a line typed while the answer was away is the
+            // operator's (`App::card_focus`). `sync_front` does not ask, since the id is preset.
+            self.card_focus = self.editor.text().is_empty();
         }
         true
     }
@@ -477,31 +494,43 @@ impl App {
                 p.dirty = true;
                 self.say("a decision came up — the keyboard is back on the card; ctrl-] returns to the editor");
             }
-            // A draft card in front keeps the keys, and says what waits behind it.
+            // A card in front keeps the keys, and says what waits behind it.
             if !front.is_empty() && (self.todo_draft.is_some() || self.key_ask.is_some()) {
                 self.say("a decision is waiting behind this card — enter or esc it, then answer");
             }
-            // Any decision, not only a question: a line typed before the card is the next prompt,
-            // and only words typed after it are a comment on the card's choice.
-            if !front.is_empty() && !self.editor.text().is_empty() {
-                self.hold_line();
-                self.say(
-                    "a card came up — your line is held, and comes back when the card is \
-                     answered or put away",
-                );
+            // The line in the composer is the operator's until they hand it over. A card that
+            // arrives over a draft takes no keys and no words from it: `tab` gives the card the
+            // keyboard (and with it the composer, emptied into `held_line`, which comes back when
+            // the card is answered, put away or tabbed away from). A head with no card in front
+            // asks nothing of the flag: the question is the card's, and the next one asks again.
+            if !front.is_empty() {
+                self.card_focus = self.editor.text().is_empty();
+                if !self.card_focus {
+                    self.say(
+                        "a card came up — your line is yours; tab answers the card, esc puts it \
+                         away",
+                    );
+                }
             }
         }
-        if self.open.is_empty()
-            && !mode_up
-            && let Some(held) = self.held_line.take()
-        {
-            let now = self.editor.expanded();
-            self.clear_composer();
-            if now.trim().is_empty() {
-                self.editor.insert(&held);
-            } else {
-                self.editor.insert(&format!("{held}\n{now}"));
-            }
+        if self.open.is_empty() && !mode_up {
+            self.give_back_held_line();
+        }
+    }
+
+    /// Put the line a card put aside back into the composer, where the operator left it. A card's
+    /// field (the composer while the card held the keyboard) is emptied first: the words there were
+    /// the card's, spent on its answer or put away with it.
+    pub(crate) fn give_back_held_line(&mut self) {
+        let Some(held) = self.held_line.take() else {
+            return;
+        };
+        let now = self.editor.expanded();
+        self.clear_composer();
+        if now.trim().is_empty() {
+            self.editor.insert(&held);
+        } else {
+            self.editor.insert(&format!("{held}\n{now}"));
         }
     }
 
@@ -601,6 +630,9 @@ impl App {
             }
             self.sel = a.sel.min(decision_rows(&a.decision).saturating_sub(1));
             self.sel_for = a.decision.req_id.clone();
+            // The line is held and the card's own words - if it had any - are in the composer, so
+            // the keys are the card's, as they were when it was put away (`App::card_focus`).
+            self.card_focus = true;
             self.open.insert(0, a.decision);
             return;
         }

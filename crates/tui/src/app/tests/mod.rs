@@ -1405,6 +1405,7 @@ mod decisions;
 mod detected;
 mod diagnostics;
 mod diffcard;
+mod draft;
 mod editor;
 mod feedback;
 mod ghlinks;

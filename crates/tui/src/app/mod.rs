@@ -541,6 +541,12 @@ pub struct App {
     /// front card changes, so a card arriving behind the one on screen does not move it and the
     /// next card up does not inherit the last one's row. See [`App::sync_front`].
     pub(crate) sel_for: String,
+    /// Whether the card in front holds the keyboard. A card that arrives over a line the operator
+    /// is typing does not take it, and `tab` is how it is handed over: while the card holds it the
+    /// composer is the card's OWN field, so an answer can never carry the operator's line. A head
+    /// with no card in front keeps whatever it last was - the question is the card's, and every
+    /// card that arrives asks it again ([`App::sync_front`]).
+    pub(crate) card_focus: bool,
     /// The person's own line, held while a question card owns the composer: a question arriving
     /// over typed words would otherwise take them as its answer. They come back when no question
     /// is in front. See [`App::sync_front`].
@@ -1490,6 +1496,7 @@ impl App {
             sel: 0,
             card_arrived: 0,
             sel_for: String::new(),
+            card_focus: true,
             held_line: None,
             notes: Vec::new(),
             dec_scroll: 0,

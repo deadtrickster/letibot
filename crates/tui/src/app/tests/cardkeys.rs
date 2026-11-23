@@ -64,10 +64,11 @@ fn a_click_aimed_at_a_decision_marks_no_row_of_the_card_that_took_the_slot() {
 
 // ───────────────── a question over typed words does not take them ─────────────────
 
-/// A question that arrives while a prompt is half typed: the words are held, the card's field is
-/// empty, Enter answers the marked row, and the words come back when the card is gone.
+/// A question that arrives while a prompt is half typed leaves the words where they are: the card
+/// answers nothing until `tab` gives it the keys, Enter then answers its marked row, and the line is
+/// still in the composer afterwards.
 #[test]
-fn a_question_arriving_over_typed_words_holds_them_instead_of_taking_them() {
+fn a_question_arriving_over_typed_words_leaves_them_where_they_are() {
     let mut a = app();
     typed(&mut a, "check the logs first");
     ask(
@@ -75,15 +76,16 @@ fn a_question_arriving_over_typed_words_holds_them_instead_of_taking_them() {
         1,
         testing::asked("q1", "which branch?", &["main", "release"], ""),
     );
-    assert_eq!(a.input(), "", "the card's field starts empty");
+    assert_eq!(a.input(), "check the logs first", "the card took the line");
     assert!(
         a.notice
             .as_deref()
             .unwrap_or("")
-            .contains("your line is held"),
+            .contains("your line is yours"),
         "{:?}",
         a.notice
     );
+    assert_eq!(a.key(Key::Tab), None);
     assert_eq!(
         a.key(Key::Enter),
         Some(Action::AnswerQuestion {
@@ -94,7 +96,7 @@ fn a_question_arriving_over_typed_words_holds_them_instead_of_taking_them() {
     );
     ask(&mut a, 2, testing::answered("q1", "main"));
     assert!(a.open.is_empty());
-    assert_eq!(a.input(), "check the logs first", "the line is back");
+    assert_eq!(a.input(), "check the logs first", "the line never left");
 }
 
 /// Esc the question away, start typing, alt-a to reread it, Enter: the question is answered with
@@ -160,15 +162,22 @@ fn a_digit_on_a_permission_marks_its_numbered_row_and_enter_answers() {
     assert_eq!(b.key(Key::Enter), answer("r1", "deny"));
 }
 
-/// A line typed before a permission card is the next prompt: the card holds it aside and Enter
-/// answers with no note. Words typed after the card is up are a comment on the choice and go with
-/// the answer as its note. The held line comes back once the card is answered.
+/// A line typed before a permission card is the operator's: the card leaves it where it is and
+/// answers nothing until `tab` gives it the keys, and then it answers with no note - the line is
+/// not the card's to spend. Words typed at a card that HAS the keys are a comment on the choice and
+/// go with the answer as its note.
 #[test]
-fn a_permission_holds_an_earlier_line_and_takes_later_words_as_its_note() {
+fn a_permission_leaves_an_earlier_line_alone_and_takes_later_words_as_its_note() {
     let mut b = app();
     typed(&mut b, "the next prompt");
     ask(&mut b, 1, testing::requested("r1", "rm"));
-    assert_eq!(b.input(), "", "the card's field starts empty");
+    assert_eq!(
+        b.input(),
+        "the next prompt",
+        "the line is still the operator's"
+    );
+    assert!(!b.card_focus, "a card over a draft has no keys");
+    assert_eq!(b.key(Key::Tab), None, "tab hands the card the keyboard");
     assert_eq!(b.key(Key::Down), None, "the arrow marks a row");
     assert_eq!(
         b.key(Key::Enter),
@@ -1206,9 +1215,9 @@ fn a_session_switch_keeps_the_answer_being_typed() {
     a.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
     assert_eq!(a.open[0].req_id, "q1", "the question is still open on s");
     assert_eq!(
-        a.held_line.as_deref(),
-        Some("release-1.4"),
-        "the answer went with the card that is still open, and comes back with it"
+        a.input(),
+        "release-1.4",
+        "the line typed at the card is still the card's field, and a switch does not take it"
     );
     assert!(
         !a.notice.as_deref().unwrap_or("").contains("no longer open"),
@@ -1365,7 +1374,8 @@ fn a_panes_body_has_no_hints_and_the_help_screen_keeps_its_own() {
 }
 
 /// Words typed before a permission card do not take the arrows off it: the ladder is the question on
-/// screen, and the words are held aside, then come back when the card is answered.
+/// screen, and the words are the operator's - not held aside, not spent, and still there when the
+/// card is answered.
 #[test]
 fn the_arrows_move_a_permission_ladder_with_words_in_the_composer() {
     let mut a = app();
@@ -1377,14 +1387,14 @@ fn the_arrows_move_a_permission_ladder_with_words_in_the_composer() {
     assert_eq!(a.sel, 0);
     assert_eq!(
         a.editor.text(),
-        "",
-        "the words are held aside while the card is up"
+        "half a thought",
+        "the words stay in the composer while the card waits"
     );
     ask(&mut a, 2, testing::answered("r1", "allow_once"));
     assert_eq!(
         a.input(),
         "half a thought",
-        "and are back once it is answered"
+        "and they were never the card's to move"
     );
 }
 

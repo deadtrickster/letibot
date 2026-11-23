@@ -17,6 +17,11 @@ pub(crate) fn put_away_hint() -> &'static str {
     crate::i18n::t("card.put_away")
 }
 
+/// What a card says when it arrived over a line the operator is typing: the line is theirs, and
+/// this is the key that hands the card the keyboard without it. On the card and on the bar, one
+/// spelling, and the ladder's own keys are not promised until the card has them.
+pub(crate) const DRAFT_HINT: &str = "your line is yours · tab answers this card";
+
 /// How a ladder says its keys: a row number or the arrows marks a row, Enter answers it - on the
 /// card and on the bar, one spelling. Digits and arrows are the only selectors: nothing typed here
 /// picks a rung, it is the marked rung's material.
@@ -403,8 +408,13 @@ impl App {
 
     /// What the marked rung will do with the words in the composer, or with the silence: the rule
     /// that will be written, the sentence the model will be handed, or that this rung has no use
-    /// for them. Nothing when there is nothing typed.
+    /// for them. Nothing when there is nothing typed, and nothing while the card has no keys: those
+    /// words are the operator's line, not this card's, and saying what the rung would do with them
+    /// would promise a spend that never happens (see [`App::card_focus`]).
     fn words_preview(&self, d: &OpenDecision, w: usize) -> Option<rano::render::Line> {
+        if !self.card_focus {
+            return None;
+        }
         let typed = self.editor.text();
         let words = typed.trim();
         if words.is_empty() {
@@ -431,8 +441,13 @@ impl App {
     }
 
     /// The ladder's hint: digits and arrows mark, Enter answers, and - where the marked rung has a
-    /// use for them - what the words typed beside it become. One spelling with the bar.
+    /// use for them - what the words typed beside it become. One spelling with the bar. A card that
+    /// does not hold the keyboard says the key that gives it to them instead: every other promise
+    /// would name a key that is the composer's.
     pub(crate) fn ladder_hint(&self, d: &OpenDecision) -> String {
+        if !self.card_focus {
+            return format!("  {DRAFT_HINT}");
+        }
         if d.kind == "question" {
             return if decision_rows(d) == 0 {
                 format!("  {}", no_ladder_hint())

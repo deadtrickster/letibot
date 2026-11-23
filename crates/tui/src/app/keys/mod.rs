@@ -503,9 +503,14 @@ impl App {
     }
 
     /// The marked row is the answer: a permission's row goes as `Action::Answer`, a question's as
-    /// `Action::AnswerQuestion`. Composer words ride a rung that uses them (refusal reason,
-    /// always-allow glob); a rung with no use for them answers nothing, never dropping the words.
+    /// `Action::AnswerQuestion`. The words in the composer ride a rung that uses them (refusal
+    /// reason, always-allow glob); a rung with no use for them answers nothing, never dropping the
+    /// words. The composer is the card's field only while the card holds the keyboard, so a line
+    /// typed before it arrived is never spent here (see [`App::card_focus`]).
     pub(crate) fn answer_marked(&mut self) -> Option<Action> {
+        if !self.card_focus {
+            return None;
+        }
         // A card in its first moments does not take the Enter: it may be the keystroke that sent
         // the line the operator was typing. See `DEC_ARM_MS`.
         if self.card_arming() {

@@ -390,9 +390,34 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// An open decision owns Up/Down and a bare Enter, before the composer: while a prompt is up
-    /// those keys mean the ladder, and Up/Down move it even with a line being typed, because
-    /// emptying the composer must not be the price of choosing. Enter and digits keep the guard.
+    /// `tab` hands the card the keyboard, or gives it back. A card that arrives over a line the
+    /// operator is typing takes nothing: the line goes aside into [`App::held_line`] only when they
+    /// ask for the card, and the composer - now the card's own field, which is what it is for a card
+    /// that arrived over an empty one - comes back with the line in it when the card is answered,
+    /// put away, or `tab`bed away from.
+    pub(crate) fn focus_card(&mut self) {
+        if self.card_focus {
+            return;
+        }
+        self.card_focus = true;
+        self.hold_line();
+        self.say("the card has the keys — tab goes back to your line, which is kept");
+    }
+
+    /// `tab` on a card that has the keyboard: the operator's line comes back and the card answers
+    /// nothing until they ask for it again.
+    pub(crate) fn unfocus_card(&mut self) {
+        if !self.card_focus {
+            return;
+        }
+        self.card_focus = false;
+        self.give_back_held_line();
+    }
+
+    /// An open decision owns Up/Down and a bare Enter, before the composer - but only while it has
+    /// the keyboard: a line the operator is typing is theirs, and `tab` is how the card gets the
+    /// keys. Up/Down still walk the ladder over that line, because emptying the composer must not
+    /// be the price of choosing; Enter and the digits keep the guard, since both spend the line.
     pub(crate) fn key_decision(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         // Not while a draft card is drawn in front of it: ↑↓ and the digits moved a
         // ladder the operator could not see.
@@ -401,8 +426,18 @@ impl App {
             // A question's digits are the characters of its answer, so only a permission's rows
             // are answered by number; see the digit arm below.
             let numbered = self.open[0].kind != "question";
-            let typing = !self.editor.text().is_empty();
+            let focused = self.card_focus;
             match k {
+                // tab is the one key a card that does not hold the keyboard still answers to: it
+                // is how the operator asks for it without giving up what they were typing.
+                Key::Tab if focused => {
+                    self.unfocus_card();
+                    return ControlFlow::Break(None);
+                }
+                Key::Tab => {
+                    self.focus_card();
+                    return ControlFlow::Break(None);
+                }
                 // Esc puts a question card away and answers nothing: the words leave WITH the card
                 // and alt-a brings both back. The press is not handed to the editor, or a second Esc
                 // would interrupt a turn the operator meant only to step away from.
@@ -418,23 +453,30 @@ impl App {
                     self.sel = (self.sel + 1) % n;
                     return ControlFlow::Break(None);
                 }
-                // A permission's Enter answers its marked row even over a draft, which stays unsent;
-                // a question's typed words are its answer, so there Enter belongs to the editor.
-                Key::Enter if n > 0 && (!typing || numbered) => {
+                // A permission's Enter answers its marked row, with the words in the composer -
+                // which are the card's own while it has the keys. A question's typed words are its
+                // answer, so there Enter belongs to the field: it is the editor's, and `submit`
+                // turns it into the answer. An unfocused card's Enter is the line's.
+                Key::Enter if n > 0 && focused && (numbered || self.editor.text().is_empty()) => {
                     return ControlFlow::Break(self.answer_marked());
                 }
                 // A card with no ladder: ↑↓ have nothing to walk and must not pull
                 // history into the answer field, and an empty Enter says what it wants.
                 Key::Up | Key::Down if n == 0 => return ControlFlow::Break(None),
-                Key::Enter if n == 0 && !typing => {
+                Key::Enter if n == 0 && focused && self.editor.text().is_empty() => {
                     self.say("type your answer — enter sends it");
                     return ControlFlow::Break(None);
                 }
                 // A row number MARKS the row on a permission; Enter answers it. Answering on the
                 // digit took a `16` typed as a free answer to "how many workers?" for choice 1,
-                // and marking it ate the first character of a question's answer.
-                _ if numbered && !typing && digit_row(k, n).is_some() => {
-                    self.sel = digit_row(k, n).unwrap();
+                // and marking it ate the first character of a question's answer. So a digit marks
+                // only a card whose field is empty, exactly as before the card had a focus.
+                _ if numbered
+                    && focused
+                    && self.editor.text().is_empty()
+                    && digit_row(k, n).is_some() =>
+                {
+                    self.sel = digit_row(k, n).expect("just checked");
                     return ControlFlow::Break(None);
                 }
                 _ => {}

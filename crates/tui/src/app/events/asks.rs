@@ -31,6 +31,10 @@ impl App {
         let empty = typed.is_empty();
         if command
             || empty
+            // The composer is a card's field only while the card holds the keyboard: a line the
+            // operator typed before the card arrived is theirs, and a card closing under it is
+            // no reason to clear it (see `App::card_focus`).
+            || !self.card_focus
             || self.open.iter().any(|o| o.req_id == d.req_id)
             || self.away.iter().any(|a| a.decision.req_id == d.req_id)
             // A card this head answered is not one that closed under the operator: the words
