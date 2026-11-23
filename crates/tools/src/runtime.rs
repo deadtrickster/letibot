@@ -1767,6 +1767,18 @@ board with `todo` - `cargo test --offline <the test>` - and the operator runs it
 what it said.";
 
 impl ToolRuntime {
+    /// What a result is masked against: the backend's list now, which is the seat's plus whatever
+    /// the `bash` tool loaded from a project's `.env`, and the snapshot this runtime opened with
+    /// when the backend answers nothing. A redaction costs one lock and one clone per call, and a
+    /// call costs far more than that.
+    fn masking_secret(&self) -> crate::exec::seat::SecretEnv {
+        let now = self.backend.secret_env();
+        match now.0.is_empty() {
+            true => self.secret.clone(),
+            false => now,
+        }
+    }
+
     /// The backend is shared rather than owned: a reader that outlives the call which opened the
     /// session - the standing notes' own source, answered on another thread - must reach the same
     /// substrate the tools use, and a second connection would be a second session's view of it.
@@ -2735,8 +2747,13 @@ impl ToolRuntime {
         //
         // Masked before the spill, which writes these bytes to a file. A redaction, not a
         // boundary: the file a tool read still holds the token, and an encoding walks past it.
-        if !self.secret.0.is_empty() {
-            invocation.payload = self.secret.mask_str(&invocation.payload);
+        //
+        // The list is read off the BACKEND rather than off the snapshot taken at open: the first
+        // `bash` call of a session is what loads a project's `.env`, so a value that arrived
+        // mid-session has to mask the very result that carries it.
+        let secret = self.masking_secret();
+        if !secret.0.is_empty() {
+            invocation.payload = secret.mask_str(&invocation.payload);
         }
         let produced = invocation.payload.len();
         let (payload, spill) = self.spiller.apply(

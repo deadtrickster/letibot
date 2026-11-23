@@ -237,6 +237,19 @@ pub trait ExecBackend: Send + Sync {
         Default::default()
     }
 
+    /// The directory whose `.env` and `.env.local` every command of this session starts with, when
+    /// its files are on THIS machine and `[dotenv] load` is on. `None` by default, and `None` for a
+    /// placement whose files are on another machine: there the pairs are settled when it is placed.
+    /// The `bash` tool asks once per call ([`crate::dotenv::apply`]), so a file that changed is
+    /// picked up without a restart.
+    fn dotenv_dir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// The pairs those files gave, replacing an earlier version of them. Called by
+    /// [`crate::dotenv::apply`] alone, and only on a backend whose [`Self::dotenv_dir`] is `Some`.
+    fn set_dotenv_env(&self, _pairs: Vec<(String, String)>) {}
+
     /// The operator's home, as this backend expands a leading `~`. `None` by default, for the
     /// same reason [`Self::root_path`]'s is. The reader that pulls the script an interpreter was
     /// handed asks here rather than reading `$HOME` a second time.
@@ -363,6 +376,10 @@ pub struct HostBackend {
     /// The secrets this session's seat holds, for a backend with no process host to ask: one with
     /// a host reads them off it, so the two cannot drift.
     secrets: crate::exec::seat::SecretEnv,
+    /// `[dotenv] load`: whether a command starts with the project's `.env` and `.env.local`.
+    /// `false` from a session opened with the key off, and from a placement whose files are on
+    /// another machine (the pairs ride its own spec instead).
+    dotenv: bool,
 }
 
 impl HostBackend {
@@ -385,6 +402,7 @@ impl HostBackend {
             session_tmp: None,
             fence: None,
             secrets: Default::default(),
+            dotenv: true,
         })
     }
 
@@ -392,6 +410,13 @@ impl HostBackend {
     /// one with a host reads them off it, so the two cannot drift.
     pub fn with_secret_env(mut self, secrets: crate::exec::seat::SecretEnv) -> Self {
         self.secrets = secrets;
+        self
+    }
+
+    /// `[dotenv] load`. `false` is a session opened with the key off: its commands start with no
+    /// pair from the project's files, which is all that switch decides.
+    pub fn with_dotenv(mut self, load: bool) -> Self {
+        self.dotenv = load;
         self
     }
 
@@ -1068,6 +1093,19 @@ impl ExecBackend for HostBackend {
         match &self.processes {
             Some(p) => p.secret_env(),
             None => self.secrets.clone(),
+        }
+    }
+
+    /// The session's own workspace, when `[dotenv] load` is on: the tree whose `.env` the `bash`
+    /// tool reads. A backend with no process host still answers here (a fixture asks), and a
+    /// read-only one sets nothing, because it cannot have commands.
+    fn dotenv_dir(&self) -> Option<std::path::PathBuf> {
+        self.dotenv.then(|| self.root.clone())
+    }
+
+    fn set_dotenv_env(&self, pairs: Vec<(String, String)>) {
+        if let Some(host) = &self.processes {
+            host.set_dotenv_env(pairs);
         }
     }
 

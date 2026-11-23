@@ -1251,6 +1251,10 @@ impl Harness {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default(),
         );
+        // `[dotenv] load`: whether this session's commands start with the project's `.env` and
+        // `.env.local`. Read once, at open, so a change takes effect with the next session - the
+        // same rule every other key of this file keeps.
+        let backend = backend.with_dotenv(dotenv.load);
         // A head's Ctrl+B reaches the `bash` wait loop through the hub's promote
         // channel, so the request is honoured while the worker is blocked inside it.
         let backend = backend.with_promote_channel(hub.promote_channel());

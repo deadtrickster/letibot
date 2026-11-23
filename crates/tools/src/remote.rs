@@ -3861,8 +3861,18 @@ impl SshBackend {
         // refused here whatever wrote it, and what was dropped is said on the notes rather than
         // left as a variable a command quietly does not have.
         let (env, mut dropped) = crate::exec::boundary::env_for_a_placement(&spec.env);
+        // The project's `.env` pairs, for a host the operator named. A value a FILE gave is a
+        // secret, so it rides the descriptor a secret rides and never an argv - and it comes FIRST,
+        // so a perimeter pair of the same name still wins. A VM has no second channel (`firecode
+        // in` carries no stdin), so its commands would all be refused: a VM there gets the file
+        // itself and no pair, which `docs/config/dotenv.md` says out loud.
+        let mut secret_pairs = match spec.vm || !spec.dotenv.carries_to(&host) {
+            true => Vec::new(),
+            false => crate::dotenv::pairs(&local_repo),
+        };
+        secret_pairs.extend(spec.env_secrets.iter().cloned());
         let (env_secrets, secret_dropped) =
-            crate::exec::boundary::env_for_a_placement(&spec.env_secrets);
+            crate::exec::boundary::env_for_a_placement(&secret_pairs);
         dropped.extend(secret_dropped);
         notes.extend(dropped);
         // Every arranging step has run by now, and one that took its time says how long it took: no

@@ -780,6 +780,10 @@ impl Tool for Bash {
         let protected = host.protected();
         let verdict = crate::exec::predicate::examine(command, &protected);
         let mut notes: Vec<String> = route_notes;
+        // The project's `.env` files, read before this call starts: a foreground run and the job it
+        // is promoted to share one env, and a file whose mtime has not moved costs two `stat`s. A
+        // line that is not a `KEY=value` is said by its LINE NUMBER and never by its content.
+        notes.extend(crate::dotenv::apply(ctx.backend));
         match &verdict {
             Verdict::Refuse(h) => {
                 return Invocation::failed(

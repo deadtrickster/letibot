@@ -1105,6 +1105,10 @@ pub struct HostProcesses {
     standing_env: Mutex<Vec<(String, String)>>,
     /// The seat's toolchain pointers: also handed to the boundary, which may clear the environment.
     confined_env: Mutex<Vec<(String, String)>>,
+    /// The project's `.env` files, as `crate::dotenv` last read them. Carried by every command of
+    /// this session, and BEFORE [`Self::confined_env`]: a pair letibot set wins over the file, which
+    /// is docker compose's rule and the opposite order would let a project file rewrite `PATH`.
+    dotenv_env: Mutex<Vec<(String, String)>>,
     secret_env: Mutex<super::seat::SecretEnv>,
     /// A directory put in FRONT of the pinned `PATH`: the daemon's shims, so a
     /// `sudo` the session runs is the one that asks the head instead of a tty.
@@ -1533,6 +1537,7 @@ impl HostProcesses {
             }),
             standing_env: Mutex::new(Vec::new()),
             confined_env: Mutex::new(Vec::new()),
+            dotenv_env: Mutex::new(Vec::new()),
             secret_env: Mutex::new(Default::default()),
             path_prefix: Mutex::new(None),
             monitors: Arc::new(Monitors::new()),
@@ -1796,13 +1801,31 @@ impl HostProcesses {
         *self.secret_env.lock().unwrap_or_else(|e| e.into_inner()) = secrets;
     }
 
+    /// The project's `.env` pairs (see the field): replaced wholesale on the call that read a new
+    /// version of the files, and set on the host rather than per spawn so a background job and a
+    /// foreground call of one session are the same env.
+    pub fn set_dotenv_env(&self, pairs: Vec<(String, String)>) {
+        *self.dotenv_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
+    }
+
     /// What that environment holds, for a caller that has to mask bytes this host did not produce:
-    /// a tool's result on its way to the transcript, which the host never sees.
+    /// a tool's result on its way to the transcript, which the host never sees. Both lists, because
+    /// a `.env` value is a secret the moment it is loaded and is masked from that moment.
     pub fn secret_env(&self) -> super::seat::SecretEnv {
-        self.secret_env
+        let mut pairs = self
+            .dotenv_env
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .clone();
+        pairs.extend(
+            self.secret_env
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .0
+                .iter()
+                .cloned(),
+        );
+        super::seat::SecretEnv(pairs)
     }
 
     pub fn set_standing_env(&self, pairs: Vec<(String, String)>) {
@@ -2161,6 +2184,22 @@ impl ProcessHost for HostProcesses {
         // confinement and has none refuses here, and refusing after the `mkdir` would leave an
         // empty scope directory that a later listing reads as somebody's work.
         let confined = self.confine.read().expect("confinement");
+        // First of the four lists, and filtered against what letibot itself sets: a `.env` pair
+        // loses to anything the daemon put in the environment, so a project file cannot rename
+        // `HOME` or this session's id. The seat's pairs and the request's own come after it in
+        // `plan_env` and win by order.
+        let dotenv_env: Vec<(String, String)> = {
+            let dotenv = self
+                .dotenv_env
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let standing = self.standing_env.lock().unwrap_or_else(|e| e.into_inner());
+            dotenv
+                .into_iter()
+                .filter(|(k, _)| !standing.iter().any(|(s, _)| s == k))
+                .collect()
+        };
         let seat_env = self
             .confined_env
             .lock()
@@ -2204,6 +2243,7 @@ impl ProcessHost for HostProcesses {
         let carried: Vec<(String, String)> = Vec::new();
         let plan_env: Vec<(String, String)> = carried
             .iter()
+            .chain(dotenv_env.iter())
             .chain(seat_env.iter())
             .chain(secret_env.0.iter())
             .chain(req.env.iter())
@@ -3724,5 +3764,6 @@ pub(crate) fn join_token(id: &JobId) -> PathBuf {
 }
 
 #[cfg(test)]
-#[cfg(test)]
-mod tests;
+/// The host's own tests, and `PlainTree` - a scope tree over plain directories that the `.env`
+/// tests reach too, because a box with no cgroup v2 still runs the spawn path.
+pub(crate) mod tests;

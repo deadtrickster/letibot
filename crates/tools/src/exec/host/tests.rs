@@ -581,13 +581,14 @@ fn a_scope_a_job_left_a_process_in_is_released_by_the_next_spawn() {
 
 /// A directory per scope and a `cgroup.procs` a test writes into: what a kernel would answer,
 /// on a box with no cgroup v2 to delegate. The join script writes a real pid, so the spawn path
-/// under test is the host's own rather than a fake of it.
-struct PlainTree {
+/// under test is the host's own rather than a fake of it. The `.env` tests build one too: a
+/// command's environment is the spawn's, and this is the only way to reach a spawn on this box.
+pub(crate) struct PlainTree {
     root: PathBuf,
 }
 
 impl PlainTree {
-    fn over(root: PathBuf) -> Box<dyn ScopeTree> {
+    pub(crate) fn over(root: PathBuf) -> Box<dyn ScopeTree> {
         let _ = std::fs::create_dir_all(&root);
         Box::new(PlainTree { root })
     }
