@@ -177,6 +177,16 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "automode",
+            note: "What a session with no head does with a call the reviewer did not settle, and how many blocks the reviewer may hand back before the operator is asked.",
+            needs: "",
+            keys: &[
+                k("unattended", "word", "review", PW, "`review` (the reviewer decides), `queue` (wait for the operator) or `refuse`", "\"queue\""),
+                k("blocks_in_a_row", "count", "3", PW, "blocks in a row before the operator is asked instead", "5"),
+                k("blocks_per_session", "count", "20", PW, "blocks in one session before the operator is asked instead", "40"),
+            ],
+        },
+        Table {
             path: "dotenv",
             note: "A project's `.env` files: whether a command starts with them, and which machines a placement carries them to. `docker compose`'s precedence: a pair letibot set, or one the call named, wins over the file. A loaded value is masked in a tool's output and never reaches a transcript row.",
             needs: "",

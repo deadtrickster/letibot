@@ -739,7 +739,11 @@ fn askpass_env(forward: &AskpassForward) -> String {
     forward
         .remote_env()
         .iter()
-        .map(|(k, v)| format!("{k}={}", quote(v)))
+        // `$PATH` must expand on the far side, so only the prepended directory is quoted.
+        .map(|(k, v)| match v.strip_suffix(":$PATH") {
+            Some(dir) => format!("{k}={}:\"$PATH\"", quote(dir)),
+            None => format!("{k}={}", quote(v)),
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }

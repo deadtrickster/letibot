@@ -1062,6 +1062,10 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Action::Do("ask again: the decision is unmade"),
     ),
     ("title_not_stored", Class::Failure, Action::Nothing),
+    // The monitor's finding is in the ledger but the store refused its row; the next write carries it.
+    ("monitor_row_not_stored", Class::Failure, Action::Nothing),
+    // A helper on one seat asked for a secret in another session; refused and shown nowhere.
+    ("secret_wrong_session", Class::Failure, Action::Developer),
     // The shadow's offer or verdict rows reached the ledger and not the store.
     ("offer_rows_not_stored", Class::Failure, Action::Nothing),
     // A shadow job's model stopped answering, said once when it happened and once when it came

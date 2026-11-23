@@ -497,6 +497,7 @@ fn every_project_method_runs_on_a_split_set() {
     s.record_operator_ruling("r1", "allow", "fine").unwrap();
     s.diagnostic("r1", "reply").unwrap();
     s.corpus(false, 10).unwrap();
+    s.adjudication("r1").unwrap();
     s.corpus_counts().unwrap();
     s.approved_shapes("/w").unwrap();
     s.shapeless_human_admits().unwrap();

@@ -157,6 +157,16 @@ Amounts: a size (64M, 2G) or a fraction of free memory (0.5, 50%). Over provider
 | `default` | amount | providers.toml, else 64M | both, project wins | cap for a bash call that names none |
 | `ceiling` | amount | providers.toml, else 0.5 | both, project wins | most a call may take without asking; may only narrow |
 
+## `[automode]`
+
+What a session with no head does with a call the reviewer did not settle, and how many blocks the reviewer may hand back before the operator is asked.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `unattended` | word | review | both, project wins | `review` (the reviewer decides), `queue` (wait for the operator) or `refuse` |
+| `blocks_in_a_row` | count | 3 | both, project wins | blocks in a row before the operator is asked instead |
+| `blocks_per_session` | count | 20 | both, project wins | blocks in one session before the operator is asked instead |
+
 ## `[dotenv]`
 
 A project's `.env` files: whether a command starts with them, and which machines a placement carries them to. `docker compose`'s precedence: a pair letibot set, or one the call named, wins over the file. A loaded value is masked in a tool's output and never reaches a transcript row.
