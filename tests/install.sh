@@ -20,12 +20,33 @@ fail() {
   fails=$((fails + 1))
 }
 
-ELF=$(type -P true)
+# A compiled binary to put where the build's output goes. It has to run under ANY name, because
+# the installer copies it as `harnessd`, `letibot-tui`, `letibot-multi`: this box's `true` is
+# coreutils' own multicall and answers `coreutils: unknown program 'harnessd'`, so a candidate is
+# copied under that name and asked for its version before it is used.
+pick_elf() {
+  probe="$T/probe"
+  mkdir -p "$probe"
+  for name in true echo python3 printf; do
+    path=$(type -P "$name" 2>/dev/null) || continue
+    [ -f "$path" ] || continue
+    head -c 2 "$path" 2>/dev/null | grep -q '^#!' && continue
+    cp "$path" "$probe/harnessd" 2>/dev/null || continue
+    chmod +x "$probe/harnessd" 2>/dev/null || continue
+    if "$probe/harnessd" --version >/dev/null 2>&1; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ELF=$(pick_elf)
 # The installer's refusal, matched as text: the backticks are literal.
 # shellcheck disable=SC2016
 REFUSED='is not a script, and `letibot` must be one'
 if [ -z "$ELF" ] || head -c 2 "$ELF" | grep -q '^#!'; then
-  echo "install: no compiled \`true\` on PATH to stand in for a binary"
+  echo "install: no compiled binary on PATH that runs under another name"
   exit 1
 fi
 BUILT="harnessd letibot-tui letibot-multi letibot-mcp letibot-acp"
