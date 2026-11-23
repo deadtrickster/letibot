@@ -529,7 +529,10 @@ impl Inner {
         let (sys, u) = (system.clone(), user.clone());
         let got = self.call(Box::new(move |j| j.judge(&sys, &u).map(|r| (r, None))));
         let took = started.elapsed();
-        let (reply, checks, outcome) = self.settle(req.position, got, took, &req.shown);
+        // What was sent, so an empty reply is reported with the size that explains it.
+        let mut shown = req.shown.clone();
+        shown.prompt_bytes = self.system.len() + user.len();
+        let (reply, checks, outcome) = self.settle(req.position, got, took, &shown);
         let body = format!(
             "model: {}\nprompt: {}\nposition: #{}\ncoalesced before it: {coalesced}\n\n\
              --- system\n{}\n--- user\n{user}\n--- reply\n{reply}\n--- checks\n{}\n--- outcome\n{}\n",
@@ -575,6 +578,8 @@ impl Inner {
         let mut shown = asked.shown.clone();
         shown.shortlist = req.shown.shortlist.clone();
         shown.call = req.shown.call.clone();
+        shown.prompt_bytes =
+            system.len() + asked.messages.iter().map(|m| m.text.len()).sum::<usize>();
         let usage = match &got {
             Ok(Ok((_, u))) => *u,
             _ => None,
@@ -624,6 +629,9 @@ impl Inner {
         let started = Instant::now();
         let got = self.call(Box::new(move |j| j.judge(&system, &u).map(|r| (r, None))));
         let took = started.elapsed();
+        let mut shown = shown.clone();
+        shown.prompt_bytes = self.system.len() + user.len();
+        let shown = &shown;
         let (reply, checks, fresh) = match got {
             Ok(Ok((reply, _))) => {
                 let c = verdict::check(self.job, &reply, shown);

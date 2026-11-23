@@ -42,6 +42,9 @@ pub struct Shown {
     /// The question is automode's: should this call be BLOCKED? Then the reply carries a category
     /// and a reason rather than a citation, and nothing in it is checked as a quote.
     pub block: bool,
+    /// How many bytes the request carried, when the caller knows: the fact an empty reply is
+    /// reported with, because an empty reply is a prompt the model could not read.
+    pub prompt_bytes: usize,
 }
 
 /// One authored stretch of [`Shown::data`]: byte range, author, and transcript row.
@@ -191,6 +194,9 @@ pub enum Verdict {
         reminder: Reminder,
         /// A proposed note, quoted from the operator's own words. Propose-only: nothing writes it.
         note: Option<Quoted>,
+        /// What the turn did beyond the ask, as the model read it. Told, never acted on: each one
+        /// becomes a word in the monitor's row.
+        overreach: Vec<super::overreach::Finding>,
     },
     During {
         drift: Drift,
@@ -244,6 +250,17 @@ struct TurnEndReply {
     evidence: String,
     #[serde(default)]
     note: String,
+    #[serde(default)]
+    overreach: Vec<OverreachReply>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverreachReply {
+    what: String,
+    #[serde(default)]
+    evidence: String,
+    kind: String,
 }
 
 #[derive(Deserialize)]
@@ -406,11 +423,16 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
     // which is what a prompt past its window looks like from here. Naming it is what lets a person
     // find that cause instead of reading a void rate.
     if reply.trim().is_empty() {
+        let size = match shown.prompt_bytes {
+            0 => String::new(),
+            n => format!(" of {n} bytes"),
+        };
         return log.reject(
             "reply",
-            "the reply was empty: the prompt was very likely longer than the model's window, so \
-             nothing came back at all"
-                .into(),
+            format!(
+                "the reply was empty: the prompt{size} was very likely longer than the model's \
+                 window, so nothing came back at all"
+            ),
         );
     }
     let Some(json) = object(reply) else {
@@ -507,7 +529,60 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 }
                 other => other,
             };
-            log.done(Verdict::TurnEnd { reminder, note })
+            // What the turn did beyond the ask. Each one needs its kind word, its sentence and the
+            // line of what it was shown that backs it: a finding a reader cannot check is the
+            // over-asking this whole check exists to avoid.
+            let mut overreach = Vec::new();
+            for o in &r.overreach {
+                let Some(kind) = super::overreach::Kind::parse(&o.kind) else {
+                    return log.reject(
+                        "overreach",
+                        format!(
+                            "`{}` is not one of {}",
+                            o.kind,
+                            super::overreach::Kind::ALL
+                                .iter()
+                                .map(|k| k.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                };
+                if o.what.trim().is_empty() || o.evidence.trim().is_empty() {
+                    return log.reject(
+                        "overreach",
+                        format!("`{}` needs a sentence and the line that backs it", o.kind),
+                    );
+                }
+                overreach.push(super::overreach::Finding {
+                    what: o.what.clone(),
+                    evidence: o.evidence.clone(),
+                    kind,
+                });
+            }
+            log.pass("overreach schema");
+            if let Err(why) = verify(
+                &shown.data,
+                r.overreach
+                    .iter()
+                    .map(|o| ("overreach", o.evidence.as_str())),
+            ) {
+                return log.reject("overreach quotes", why);
+            }
+            log.pass("overreach quotes");
+            if overreach.len() > super::overreach::MAX_FINDINGS {
+                log.0.push(format!(
+                    "narrow overreach: {} findings, the most is {}",
+                    overreach.len(),
+                    super::overreach::MAX_FINDINGS
+                ));
+                overreach.truncate(super::overreach::MAX_FINDINGS);
+            }
+            log.done(Verdict::TurnEnd {
+                reminder,
+                note,
+                overreach,
+            })
         }
         Job::During => {
             let r: DuringReply = match serde_json::from_str(json) {

@@ -257,7 +257,19 @@ fn persistent_outcomes(
         let upto = &items[..=c.at];
         log.push(feed::rows_of(upto, fed));
         fed = upto.len();
-        let q = super::turn_end::question(super::turn_end::turn_start(upto), &[], &[]);
+        let from = super::turn_end::turn_start(upto);
+        let mut q = super::turn_end::question(from, &[], &[]);
+        // The same block the daemon hands the check, so a replay scores what runs: a turn whose
+        // digest is missing is one the model cannot back a finding in, and that difference would
+        // show up as voids rather than as the owed word being measured.
+        let turn = super::overreach::read(
+            upto,
+            from.unwrap_or(upto.len()),
+            std::path::Path::new(""),
+            super::overreach::DEFAULT_MAX_CHARS,
+        );
+        q.facts.push('\n');
+        q.facts.push_str(&super::overreach::facts(&turn));
         let asked = convo.ask(&log, &q);
         let now = flat(&asked.messages);
         cache.requests += 1;
@@ -296,7 +308,15 @@ pub fn score(sessions: &[Logged], judge: &dyn Judge) -> Report {
         for (c, p) in cases.into_iter().zip(persistent) {
             r.turns += 1;
             r.regex.add(c.regex_owed, c.label);
-            let shown = super::turn_end::shown(&c.words, &c.reply, &[], &[]);
+            let mut shown = super::turn_end::shown(&c.words, &c.reply, &[], &[]);
+            let from = super::turn_end::turn_start(&items[..=c.at]);
+            let turn = super::overreach::read(
+                &items[..=c.at],
+                from.unwrap_or(c.at + 1),
+                std::path::Path::new(""),
+                super::overreach::DEFAULT_MAX_CHARS,
+            );
+            super::overreach::push(&mut shown, &turn);
             let outcome = match judge.judge(
                 super::prompts::TURN_END,
                 &super::prompts::fence(&shown.data),

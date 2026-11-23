@@ -894,6 +894,7 @@ mod turn_end_acting {
                 evidence: "and report the result".into(),
             },
             note: None,
+            overreach: Vec::new(),
         })
     }
 
@@ -909,6 +910,7 @@ mod turn_end_acting {
         let none = Outcome::Verdict(Verdict::TurnEnd {
             reminder: Reminder::None,
             note: None,
+            overreach: Vec::new(),
         });
         let (act, said) = turn_end::decide(&none, Some("regex line"), false, false, id);
         assert_eq!(act, Act::Nothing);
@@ -917,6 +919,7 @@ mod turn_end_acting {
             Outcome::Verdict(Verdict::TurnEnd {
                 reminder: Reminder::Unsure,
                 note: None,
+                overreach: Vec::new(),
             }),
             Outcome::Void("quotes".into()),
             Outcome::TimedOut,
