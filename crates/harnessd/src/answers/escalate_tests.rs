@@ -875,6 +875,20 @@ fn a_session_answer_on_a_relayed_reviewer_card_covers_the_queue_until_revoked() 
 const READ_RULE: &str = "read /build/**";
 const ALLOW_READ: &str = r#"{"verdict":"allow","rule":"read /build/**","cites":[0],"evidence":""}"#;
 
+/// The same answer in automode's vocabulary. The ORACLE is asked whether to BLOCK, and this is
+/// "no": it cites nothing because there is nothing to cite - the reviewer looked for the six
+/// things automode blocks and found none. What still has to cite the operator's words is layer A's
+/// reading and a rule on the asker's own gate, and neither is this reply's business.
+///
+/// [`ALLOW_READ`] above is what the annotator beside a card is asked for, which is still the old
+/// question: two asks, two vocabularies, and a fixture has to pick one.
+const NO_BLOCK: &str = r#"{"block":false,"category":"","reason":""}"#;
+
+/// An answer the check voids - a category this build does not know - so the reviewer did not settle
+/// the call and the card stands. The new vocabulary's spelling of "it could not decide", and the
+/// shape a later No is scored against.
+const VOID_ANSWER: &str = r#"{"block":true,"category":"not_a_category","reason":"a category this build does not know"}"#;
+
 /// The reviewer's trail: one operator message, `[0]`, that asks for the review's reads.
 fn reviewer_trail() -> letibot_tools::authorise::AuthorisationTrail {
     letibot_tools::authorise::AuthorisationTrail::from_messages(
@@ -985,7 +999,7 @@ fn ask_watching(
 #[test]
 fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_no_row() {
     let (w, rows, answering) = view_world(Slow {
-        reply: ALLOW_READ,
+        reply: NO_BLOCK,
         sleep: Duration::from_millis(20),
     });
     let req = view_request(
@@ -1006,7 +1020,13 @@ fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_no_row
         "{d:?}"
     );
     assert_eq!(d.by, "shadow:deepseek", "never filed as a person's answer");
-    assert!(d.basis.contains("citing trail entry 0"), "{}", d.basis);
+    // Automode's allow cites nothing, because it is not an authorisation: the reviewer looked for
+    // the six things automode blocks and found none. What the record keeps is that, in those words.
+    assert!(
+        d.basis.contains("not blocked") && d.basis.contains("would not block it"),
+        "{}",
+        d.basis
+    );
     // The decision is kept with the stage it was taken at, because that is what a person reviewing
     // the record later needs - and it is NOT a notice: no row reaches the watched session, so
     // nothing arrives as a card at the end of the turn.
@@ -1128,7 +1148,7 @@ fn a_shadow_grant_is_kept_like_any_other_and_both_revokes_trip_the_breaker() {
     use letibot_tools::Gate as _;
     use letibot_tools::grant_ledger::Kept;
     let (w, rows, answering) = view_world(Slow {
-        reply: ALLOW_READ,
+        reply: NO_BLOCK,
         sleep: Duration::from_millis(20),
     });
     let at = grant_store("shadow-revoke");
@@ -1261,14 +1281,7 @@ impl crate::shadow::judge::Judge for Replies {
 fn a_later_no_to_a_granted_shape_counts_toward_the_breaker() {
     let w = world();
     name_reviewer(&w.set);
-    let (_, answering) = with_shadow_rules(
-        &w,
-        Replies(std::sync::Mutex::new(vec![
-            ALLOW_READ,
-            r#"{"verdict":"ask","rule":"","evidence":""}"#,
-        ])),
-        &[READ_RULE],
-    );
+    let (_, answering) = with_shadow_rules(&w, ByPath, &[READ_RULE]);
     let req = view_request(
         "adj-view-0300",
         "/build/letibot-r1/a",
@@ -1284,7 +1297,7 @@ fn a_later_no_to_a_granted_shape_counts_toward_the_breaker() {
         letibot_tools::Access::Read,
     );
     let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
-    let card = card.expect("an `ask` leaves the card to the operator");
+    let card = card.expect("a call the reviewer did not settle leaves the card to the operator");
     let line = card.shadow.unwrap_or_default();
     assert!(line.starts_with("shadow:deepseek would ask"), "{line}");
     assert!(d.by.starts_with("human:"), "{}", d.by);
@@ -1417,12 +1430,17 @@ fn relay_never_answers_a_card() {
     }
 }
 
-/// The shadow decides a may-approve read only: an always-ask reaches the operator without the
-/// shadow being asked, whatever it would say.
+/// The shadow never ADMITS an always-ask call. The reviewer looks at the always-ask list and only
+/// to BLOCK - its allow is an escalate to the person whatever it says - and a tier that is nobody's
+/// to decide (`Auto`, `Blocked`) is not asked about at all.
+///
+/// The old rule was "the shadow is not consulted"; under automode's question it is, because that is
+/// what makes a force-push refusable by category instead of by a card. What survives, and is what
+/// this asserts, is that its answer can never be an admission.
 #[test]
 fn the_shadow_oracle_never_answers_an_always_ask() {
-    let (w, rows, answering) = view_world(Slow {
-        reply: ALLOW_READ,
+    let (w, _, answering) = view_world(Slow {
+        reply: NO_BLOCK,
         sleep: Duration::from_millis(20),
     });
     let mut req = view_request(
@@ -1431,32 +1449,52 @@ fn the_shadow_oracle_never_answers_an_always_ask() {
         letibot_tools::Access::Read,
     );
     let oracle = w.set.oracle().expect("installed");
-    for tier in [
-        letibot_tools::adjudicate::Tier::AlwaysAsk {
-            rule: "credential_use",
-            why: "a test".into(),
-        },
-        letibot_tools::adjudicate::Tier::Auto,
-    ] {
-        req.tier = tier;
-        let d = oracle.decide(&req);
-        assert!(
-            matches!(d.outcome, DecisionOutcome::Escalate { .. }),
-            "{d:?}"
-        );
-        assert!(oracle.last_advice().is_none(), "nobody was consulted");
-    }
+    // The reviewer is asked, answers "do not block", and the decision is still the person's.
+    req.tier = letibot_tools::adjudicate::Tier::AlwaysAsk {
+        rule: "credential_use",
+        why: "a test".into(),
+    };
+    let d = oracle.decide(&req);
     assert!(
-        !rows
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|r| r.starts_with("permission ·")),
-        "{:?}",
-        rows.0.lock().unwrap()
+        matches!(d.outcome, DecisionOutcome::Escalate { .. }),
+        "an always-ask is never the shadow's to admit: {d:?}"
     );
+    assert!(
+        d.basis.contains("credential_use") && d.basis.contains("always-ask"),
+        "the card names the rule that made it a card: {}",
+        d.basis
+    );
+
+    // A tier that is nobody's to decide is not even asked about.
+    req.tier = letibot_tools::adjudicate::Tier::Auto;
+    let d = oracle.decide(&req);
+    assert!(
+        matches!(d.outcome, DecisionOutcome::Escalate { .. }),
+        "{d:?}"
+    );
+    assert!(oracle.last_advice().is_none(), "nobody was consulted");
     assert!(answering.take_rows().is_empty());
+}
+
+/// A reply chosen by WHICH call the brief is about, not by how many times the judge was asked: the
+/// annotator beside a card asks the same judge as the oracle, so an order-based fixture would be
+/// measuring the ask order rather than the rule under test.
+struct ByPath;
+
+impl crate::shadow::judge::Judge for ByPath {
+    fn label(&self) -> String {
+        "deepseek".into()
+    }
+    fn judge(&self, _system: &str, user: &str) -> Result<String, String> {
+        // The second call of the breaker test, and only it: a category this build does not know
+        // voids the answer, so the reviewer did not settle that call and the card stands.
+        Ok(if user.contains("/build/letibot-r1/b") {
+            VOID_ANSWER
+        } else {
+            NO_BLOCK
+        }
+        .to_string())
+    }
 }
 
 /// The grant's scope is in the answer: the shadow's names the asking session, the operator's on a
@@ -1466,7 +1504,7 @@ fn the_grant_scope_is_read_from_the_answer() {
     use letibot_tools::Gate as _;
     use letibot_tools::grant_ledger::{GrantAt, Kept, Scope};
     let (w, _, _) = view_world(Slow {
-        reply: ALLOW_READ,
+        reply: NO_BLOCK,
         sleep: Duration::from_millis(20),
     });
     let req = view_request(

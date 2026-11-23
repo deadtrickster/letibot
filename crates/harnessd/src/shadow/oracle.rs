@@ -24,7 +24,7 @@ use super::config::Stage;
 use super::guard::Call;
 use super::permission::{Answering, Cell};
 use super::runner::Outcome;
-use super::verdict::{Category, Decision, Shown, Verdict};
+use super::verdict::{Decision, Shown, Verdict};
 
 /// The scope the stages in force earn. `reads` reaches outside the project at most; exec reaches
 /// the host when the call only looks at it (see [`stage_of`]) and the workspace plus the operator's
@@ -86,9 +86,9 @@ pub fn stage_of(
     match &req.tier {
         Tier::MayApprove => {}
         // Automode's reviewer judges the always-ask list too, and only to BLOCK: its allow is not
-        // an admission (the gate's own admit arm refuses an always-ask call), so the operator's
-        // card still stands when the reviewer sees nothing wrong. That is what makes a force-push
-        // refusable by category instead of by a card.
+        // an admission ([`ShadowAdjudicator::decide`] answers an escalate instead of one), so the
+        // operator's card still stands when the reviewer sees nothing wrong. That is what makes a
+        // force-push refusable by category instead of by a card.
         Tier::AlwaysAsk { .. } => {}
         other => {
             return Err(format!(
@@ -118,6 +118,13 @@ pub fn stage_of(
     // intents decide it: `Region::Device` is a place inside the host, so `/sys`, `ip neigh` and
     // `networkctl status` land at `host_other`, while a class reaches `external` only through the
     // network intent, and such a call is refused below.
+    //
+    // An always-ask call is not screened for reach, and that is the whole reason it is here: the
+    // reviewer is asked about it only to BLOCK, and a block is a refusal whatever the call's reach
+    // or the guard's lexical screen would have said. Screening it first turned `rm -rf /usr` into
+    // "the shadow does not answer it", so the one call the categories exist for was never judged
+    // by them.
+    let always_ask = matches!(req.tier, Tier::AlwaysAsk { .. });
     let looks_only = !reading.intents.contains(&Intent::WriteFile)
         && !reading.intents.contains(&Intent::Destroy);
     let allowed = match stage {
@@ -127,7 +134,7 @@ pub fn stage_of(
         Stage::Exec if looks_only => EffectScope::HostOther,
         _ => EffectScope::HostProject,
     };
-    if req.class.scope > allowed {
+    if !always_ask && req.class.scope > allowed {
         return Err(format!(
             "it lands on `{}`, and stage `{}` reaches `{}`",
             req.class.scope.as_str(),
@@ -144,7 +151,7 @@ pub fn stage_of(
         granted: granted.to_vec(),
         temp: super::guard::temp_roots(home),
     };
-    if stage != Stage::Reads {
+    if stage != Stage::Reads && !always_ask {
         // The lexical screen a shadow allow meets anyway: privilege, a push, a write, a redirect
         // or a file-tool path outside the workspace, and the key store.
         super::guard::allow_passes(&call)?;
@@ -410,6 +417,28 @@ impl ShadowAdjudicator {
         }
     }
 
+    /// [`Self::escalate`] for a question the model DID answer: the advice stays readable, because a
+    /// person told "this is your decision" is owed what the reviewer said about it.
+    fn escalate_keeping(&self, req: &AdjudicationRequest, why: String) -> AdjudicationDecision {
+        let latency_ms = self
+            .last
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(0, |a| a.latency_ms);
+        AdjudicationDecision {
+            request_id: req.id.clone(),
+            outcome: DecisionOutcome::Escalate {
+                to: "human".into(),
+                why: why.clone(),
+            },
+            by: shadow_by(&self.cell),
+            basis: why,
+            latency_ms,
+            grant_at: None,
+        }
+    }
+
     /// What the card says about who answered: the model and the stage, because a person reading
     /// "allowed" has to know how far the shadow's authority reached for it.
     fn said(&self, d: &mut AdjudicationDecision, stage: Stage) {
@@ -457,12 +486,36 @@ impl Adjudicator for ShadowAdjudicator {
         }
         let stage = match stage_of(req, &self.home, &self.workspace, &self.granted.writable()) {
             Ok(s) => s,
-            Err(why) => return self.escalate(req, format!("the shadow does not answer it: {why}")),
+            // An always-ask call is the operator's whatever the reviewer could have made of it, so
+            // the reason names the rule: a person acting on the card needs the list it is on more
+            // than the stage arithmetic that stopped the reviewer looking.
+            Err(why) => {
+                let why = match &req.tier {
+                    Tier::AlwaysAsk { rule, .. } => format!(
+                        "`{rule}` is on the always-ask list, so this is your decision: the reviewer \
+                         did not look ({why})"
+                    ),
+                    _ => format!("the shadow does not answer it: {why}"),
+                };
+                return self.escalate(req, why);
+            }
         };
         if !self.stages.contains(&stage) {
-            return self.escalate(
-                req,
-                format!(
+            // An always-ask call's card is the operator's whatever stage it lands in - a promoted
+            // stage could not have admitted it - so the reason names the rule, which is the part a
+            // person can act on, rather than a stage list.
+            let why = match &req.tier {
+                Tier::AlwaysAsk { rule, .. } => format!(
+                    "`{rule}` is on the always-ask list, so this is your decision; the reviewer \
+                     does not answer stage `{}` ({})",
+                    stage.as_str(),
+                    self.stages
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                _ => format!(
                     "`{}` is not a stage the shadow answers (it answers {})",
                     stage.as_str(),
                     self.stages
@@ -471,13 +524,35 @@ impl Adjudicator for ShadowAdjudicator {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-            );
+            };
+            return self.escalate(req, why);
         }
         self.skipped.store(false, Ordering::SeqCst);
         let mut d = self.model.decide(req);
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = self.model.last_advice();
         self.said(&mut d, stage);
         let target = target_of(req);
+        // An always-ask call is the operator's however far the reviewer's reach goes, and this is
+        // where that is enforced rather than assumed: a reviewer that would not block it answers an
+        // escalate to the person, never an admission. The advice is kept, so the card says the
+        // reviewer looked and why. A BLOCK still stands below - that is what makes a force-push
+        // refusable by category instead of by a card.
+        if let Tier::AlwaysAsk { rule, .. } = &req.tier
+            && matches!(&d.outcome, DecisionOutcome::Selected { option_id } if option_id == "allow_once")
+        {
+            self.answering.asked(&req.id, stage, &target);
+            return self.escalate_keeping(
+                req,
+                format!(
+                    "`{rule}` is on the always-ask list, so this is your decision: the reviewer \
+                     looked and {} it",
+                    match judge_of(&self.cell) {
+                        Some(label) => format!("{label} would not block"),
+                        None => "would not block".to_string(),
+                    }
+                ),
+            );
+        }
         match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
                 // A call the reviewer allowed ends the run of blocks; the operator's next card is

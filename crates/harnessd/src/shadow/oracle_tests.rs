@@ -286,14 +286,27 @@ fn at_stage_three_a_command_inside_the_workspace_runs_and_the_card_names_the_sta
 }
 
 /// The always-ask list is the operator's whatever stages are on: the reviewer is asked whether to
-/// BLOCK it, and its allow is not an admission, so the person decides either way.
+/// BLOCK it, and its allow is not an admission, so the person decides either way. The reviewer IS
+/// consulted - that is what makes a block on this list refusable by category instead of by a card -
+/// and what it may never do is admit.
 #[test]
 fn the_always_ask_list_is_never_the_shadows_with_every_stage_on() {
     let destroy = serde_json::json!({ "command": "/usr/bin/rm -rf /usr" });
     let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
     assert!(!matches!(g.admit(&call(&destroy)), GateDecision::Admit));
     assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
-    assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the reviewer looked, and only to block"
+    );
+    let row = g.log.last().expect("the decision is a row");
+    assert!(
+        row.decision.by.starts_with("human:"),
+        "the person decided it, not the reviewer: {}",
+        row.decision.by
+    );
+    assert_eq!(row.effect, "refuse");
 }
 
 /// A shadow that does not answer inside its deadline is a card, never an allow.

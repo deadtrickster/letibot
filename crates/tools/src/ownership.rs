@@ -14,7 +14,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::adjudicate::{AdjudicationRequest, Tier};
-use crate::intent::{Baseline, Intent, UNRESOLVED_TARGET};
+use crate::intent::{Baseline, Intent, Region, UNRESOLVED_TARGET};
 
 /// The branch prefixes that are a session's work by name: the operator's rule (2026-11-23), and
 /// the two they settled on.
@@ -252,7 +252,8 @@ fn owned_cwd(
     })
 }
 
-/// Every write and destroy target, and where it lands.
+/// Every write and destroy target, and where it lands; and, for a call that names no write, what
+/// layer A could read about where it goes.
 fn effects(reading: &Baseline, workspace: &Path, owned: &Owned) -> Result<Where, String> {
     if reading.intents.contains(&Intent::Network) {
         return Err("it reaches the network, which no session owns".into());
@@ -280,13 +281,38 @@ fn effects(reading: &Baseline, workspace: &Path, owned: &Owned) -> Result<Where,
             .ok_or_else(|| format!("it writes {t}, and that is not the session's"))?;
         placed = Some(at);
     }
-    // A call with no write at all - a read, a build that only writes through a known directory -
-    // is owned when the place it runs is: the workspace is the session's.
+    // A call that names no write this build could place - a read, a build, a commit - is the
+    // session's own work only where layer A can say where it goes. Two ways it cannot, and both
+    // are the screen refusing rather than the session being trusted:
+    //
+    // * the program is one this build never heard of, so its effects are unknown and a screen
+    //   over them is a screen over nothing (`nmcli`, `ip`, `networkctl`);
+    // * it touched a place the session does not own - the host, the operator's home, another
+    //   session's tree. A read changes nothing, and it is still a read of something that is not
+    //   this session's, which is what the shadow's `reads` stage exists to judge.
     match placed {
         Some(at) => Ok(at),
-        None => owned
-            .covers(workspace)
-            .ok_or_else(|| "it runs outside the session's worktree".into()),
+        None => {
+            if reading.intents.contains(&Intent::Unknown) {
+                return Err(
+                    "layer A does not know this program, so what it does cannot be placed".into(),
+                );
+            }
+            for r in &reading.regions {
+                if !matches!(
+                    r,
+                    Region::Workspace | Region::Scratch | Region::Temp | Region::None
+                ) {
+                    return Err(format!(
+                        "it touches `{}`, which the session does not own",
+                        r.as_str()
+                    ));
+                }
+            }
+            owned
+                .covers(workspace)
+                .ok_or_else(|| "it runs outside the session's worktree".into())
+        }
     }
 }
 

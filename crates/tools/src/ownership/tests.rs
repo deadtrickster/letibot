@@ -236,3 +236,45 @@ fn a_blocked_call_is_never_owned() {
     let why = super::admits(&r, &owned(), &workspace()).expect_err("a block is not a screen");
     assert!(why.contains("nobody"), "{why}");
 }
+
+/// A read names no write and is still not owned when the thing it reads is not the session's: a
+/// read of the host is what the shadow's `reads` stage is for, and a screen that admitted it
+/// would be a screen that admits every read of anything.
+#[test]
+fn a_read_of_the_host_is_not_owned() {
+    let mut r = request("cat /etc/hostname");
+    r.tier = crate::adjudicate::Tier::MayApprove;
+    let why = super::admits(&r, &owned(), &workspace()).expect_err("the host is not the session's");
+    assert!(why.contains("system_config"), "{why}");
+
+    let mut r = request("cat /home/dead/.bashrc");
+    r.tier = crate::adjudicate::Tier::MayApprove;
+    let why = super::admits(&r, &owned(), &workspace()).expect_err("the home is not the session's");
+    assert!(why.contains("home"), "{why}");
+}
+
+/// The same read inside the worktree, and inside the temp directories the operator counts as the
+/// session's own, is its work.
+#[test]
+fn a_read_inside_the_worktree_or_temp_is_owned() {
+    for command in [
+        "cat crates/tools/src/lib.rs",
+        "head -3 /tmp/notes.txt",
+        "wc -l /var/tmp/mine/log",
+    ] {
+        let mut r = request(command);
+        r.tier = crate::adjudicate::Tier::MayApprove;
+        super::admits(&r, &owned(), &workspace())
+            .unwrap_or_else(|e| panic!("{command}: {e}"));
+    }
+}
+
+/// A program this build never heard of has effects nobody can place, so it is not the session's
+/// own work however harmless it turns out to be - the shadow's `exec` stage is where it is judged.
+#[test]
+fn an_unknown_program_is_not_owned() {
+    let mut r = request("nmcli -t dev status");
+    r.tier = crate::adjudicate::Tier::MayApprove;
+    let why = super::admits(&r, &owned(), &workspace()).expect_err("nobody can place this program");
+    assert!(why.contains("does not know this program"), "{why}");
+}
