@@ -692,8 +692,12 @@ impl Peer {
                         // A socket that cannot be read from is the same outage as one that cannot
                         // send, and only a new socket ends either.
                         let why = format!("reading it: {e}");
-                        let asked = watch.failed(peer.inner.now(), &group, &why, peer.up().len());
+                        let now = peer.inner.now();
+                        let asked = watch.failed(now, &group, &why, peer.up().len());
                         peer.inner.beacon_asked(asked, &mut *socket, &group);
+                        // A read that fails at once would spin this loop: wait out the beat.
+                        let rest = due.saturating_sub(now).clamp(50, cadence.every_ms.max(50));
+                        std::thread::sleep(std::time::Duration::from_millis(rest));
                         None
                     }
                 };
