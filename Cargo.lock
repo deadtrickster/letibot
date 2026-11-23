@@ -797,7 +797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2450,7 +2450,7 @@ dependencies = [
 [[package]]
 name = "rano"
 version = "0.11.0"
-source = "git+https://github.com/deadtrickster/rano?rev=68229951797ce2b994e9baf1059457cd5ac1e334#68229951797ce2b994e9baf1059457cd5ac1e334"
+source = "git+https://github.com/deadtrickster/rano?rev=53288a833a32379e50582ed08a7386a30c022be4#53288a833a32379e50582ed08a7386a30c022be4"
 dependencies = [
  "cc",
  "flate2",
@@ -2658,7 +2658,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3927,7 +3927,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
