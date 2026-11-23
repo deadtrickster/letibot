@@ -1566,6 +1566,10 @@ pub struct AdjudicatedGate {
     own_branch: Option<String>,
     /// What the call in flight was admitted as, taken into the row by [`Self::record`].
     owned: Option<String>,
+    /// Actions the operator DENIED, as `(shape, target, by)` read from the ledger: refused without
+    /// another card, and without telling the operator again, until the row is revoked. Read from
+    /// the ledger at each call, so a lift reaches a live session.
+    refusals: Vec<(String, String, String)>,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1661,6 +1665,7 @@ impl AdjudicatedGate {
             agent: "agent".into(),
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
+            refusals: Vec::new(),
             memory_session: None,
             approved_shapes: std::collections::HashMap::new(),
             shape_remembered: false,
@@ -1807,11 +1812,15 @@ impl AdjudicatedGate {
         let mut grants = Vec::new();
         let mut memory: Option<Option<u64>> = None;
         let mut views: Vec<(std::path::PathBuf, bool)> = Vec::new();
+        let mut refusals: Vec<(String, String, String)> = Vec::new();
         for row in rows {
             match row.kept {
                 Kept::Allow(g) => grants.push(g),
                 Kept::Memory(m) => memory = Some(widest_memory(memory, m)),
                 Kept::View { path, writable } => views.push((path, writable)),
+                // A denial the operator made, read back as what refuses the next call of that
+                // shape. Who made it travels, because the call that is refused has to say by whom.
+                Kept::Deny { shape, target } => refusals.push((shape, target, row.by.clone())),
             }
         }
         for g in self.unkept.iter() {
@@ -1826,6 +1835,7 @@ impl AdjudicatedGate {
             });
         }
         self.grants = grants;
+        self.refusals = refusals;
         self.memory_session = memory;
         if let Some(view) = &self.view {
             for (path, writable) in &self.view_loaded {
@@ -1873,6 +1883,17 @@ impl AdjudicatedGate {
         }
     }
 
+    /// The operator's row that refuses this call, when there is one: the shape this call parses to
+    /// and the target it names, both refused, both for this session's tree. Read from the ledger at
+    /// the last reload, so a lift reaches the next call.
+    fn refusal_for(&self, req: &AdjudicationRequest) -> Option<String> {
+        let shape = req.shape.clone().unwrap_or_default();
+        self.refusals
+            .iter()
+            .find(|(s, t, _)| *t == req.target && *s == shape)
+            .map(|(_, _, by)| by.clone())
+    }
+
     /// Write a grant this session was just given down in the ledger, at the scope the answer
     /// named: the queue's when it says so and this session has one, else this session's.
     fn keep_grant(
@@ -1888,9 +1909,13 @@ impl AdjudicatedGate {
         };
         let scope = match (&self.queue, at) {
             (Some(q), Some(crate::grant_ledger::GrantAt::Queue)) => Scope::Queue(q.clone()),
-            // A view grant is the tree's, not the asker's: see [`Self::with_tree_root`].
+            // A view grant is the tree's, not the asker's: see [`Self::with_tree_root`]. And so is a
+            // denial - the operator refused an action for this session and the sessions it spawns,
+            // not for the one call in front of them.
             _ => Scope::Session(match &kept {
-                Kept::View { .. } => self.tree.clone().unwrap_or_else(|| self.session_id.clone()),
+                Kept::View { .. } | Kept::Deny { .. } => {
+                    self.tree.clone().unwrap_or_else(|| self.session_id.clone())
+                }
                 _ => self.session_id.clone(),
             }),
         };
@@ -1918,6 +1943,10 @@ impl AdjudicatedGate {
                         })
                     }
                     Kept::View { .. } => {}
+                    // A denial that could not be written down holds for this process only, which is
+                    // what `unkept` is for on the widening side; there is no list to add it to here
+                    // because the gate's own refusals are read from the ledger.
+                    Kept::Deny { .. } => {}
                 }
             }
         }
@@ -4102,6 +4131,40 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
+        // 6b. An action the operator DENIED. It is refused here, before the shapes and the grants
+        //     below, because a refusal is the later word on the same action; no card is raised,
+        //     because they already answered it; and they are not told again, because `/permissions`
+        //     lists the row and the notice went out when they made it.
+        if !self.mode.admits_everything()
+            && let Some(by) = self.refusal_for(&req)
+        {
+            let id = req.id.clone();
+            let basis = format!(
+                "the operator denied this action: {by} refused `{}` for this session's tree",
+                req.target
+            );
+            let d = AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome: DecisionOutcome::Selected {
+                    option_id: "deny_and_tell".into(),
+                },
+                by: by.clone(),
+                basis: basis.clone(),
+                latency_ms: 0,
+                grant_at: None,
+            };
+            let tell = format!(
+                "{basis}, and it stays refused until they lift it.\n\nThis is FORBIDDEN rather \
+                 than failed: nothing ran and nothing on disk changed. It is not a new question - \
+                 they answered it - so a retry, and another spelling of the same action, reach this \
+                 same answer. Say what you would do instead, or ask them for it by name.\n\nIt is \
+                 the row `{id}`; `/permissions` lists the refusal and revoking it lifts the ban."
+            );
+            self.breaker.refused(&direction);
+            self.record(req, d, "refuse", direction.key());
+            return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
+        }
+
         // 7. A review-queue seat at a point that admits exec, inside the reviewer's limits.
         if self.reviewer_limits
             && !self.exec_follows_mode
@@ -4369,6 +4432,35 @@ impl Gate for AdjudicatedGate {
                             tell.push_str(
                                 "\n\nThe adjudicator's own reasoning stayed in the audit \
                                  row; the operator can read it there.",
+                            );
+                        }
+                        // A person's No is sticky: the shape and the target they refused are kept
+                        // for this session's tree, so the same action is refused without another
+                        // card until they revoke the row. Only a call the ladder put to them
+                        // (`MayApprove`), only from a person - a reviewer's refusal is about this
+                        // call - and never at a mode that admits everything, which the operator's
+                        // own rule leaves untouched.
+                        let sticky = matches!(req.tier, Tier::MayApprove)
+                            && decision.by.starts_with("human")
+                            && !self.mode.admits_everything();
+                        if sticky {
+                            let why = format!(
+                                "denied by an answer to {}: {}",
+                                req.id, decision.basis
+                            );
+                            self.keep_grant(
+                                crate::grant_ledger::Kept::Deny {
+                                    shape: req.shape.clone().unwrap_or_default(),
+                                    target: req.target.clone(),
+                                },
+                                Some(crate::grant_ledger::GrantAt::Session),
+                                &why,
+                                &decision.by,
+                            );
+                            tell.push_str(
+                                "\n\nThis is now refused for this whole session tree, not just for \
+                                 this call: the action and its target are kept, `/permissions` lists \
+                                 the row, and revoking it lifts the refusal.",
                             );
                         }
                         self.breaker.refused(&direction);

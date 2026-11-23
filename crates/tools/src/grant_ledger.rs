@@ -90,6 +90,11 @@ pub enum Kept {
     Allow(Grant),
     /// `None` is uncapped.
     Memory(Option<u64>),
+    /// An action the operator DENIED: the shape and the target they refused, refused without
+    /// another card for this session's tree until the row is revoked. Not a grant - it narrows
+    /// where the others widen - and it lives in the same row, the same scopes and under the same
+    /// revoke that lifts it.
+    Deny { shape: String, target: String },
 }
 
 impl Kept {
@@ -98,6 +103,7 @@ impl Kept {
             Kept::View { .. } => "view",
             Kept::Allow(_) => "allow",
             Kept::Memory(_) => "memory",
+            Kept::Deny { .. } => "deny",
         }
     }
 
@@ -115,6 +121,9 @@ impl Kept {
                 .collect::<Vec<_>>()
                 .join("; "),
             Kept::Memory(_) => "memory".to_string(),
+            // One denial per (shape, target): the same refusal twice is one row, so the operator
+            // is told once and lifts once.
+            Kept::Deny { shape, target } => format!("deny {shape}\u{1}{target}"),
         }
     }
 
@@ -137,6 +146,9 @@ impl Kept {
                 "why": g.why,
             }),
             Kept::Memory(bytes) => serde_json::json!({ "bytes": bytes }),
+            Kept::Deny { shape, target } => {
+                serde_json::json!({ "shape": shape, "target": target })
+            }
         };
         v.to_string()
     }
@@ -154,6 +166,10 @@ impl Kept {
                 serde_json::Value::Null => Some(Kept::Memory(None)),
                 n => Some(Kept::Memory(Some(n.as_u64()?))),
             },
+            "deny" => Some(Kept::Deny {
+                shape: v.get("shape")?.as_str()?.to_string(),
+                target: v.get("target")?.as_str()?.to_string(),
+            }),
             "allow" => {
                 let w = v.get("written")?;
                 let written = if let Some(p) = w.get("glob") {
@@ -215,6 +231,10 @@ impl Kept {
             ),
             Kept::Memory(Some(b)) => format!("memory up to {} MiB a command", b >> 20),
             Kept::Memory(None) => "memory uncapped".to_string(),
+            Kept::Deny { shape, target } => match shape.trim() {
+                "" => format!("refuse `{target}`"),
+                s => format!("refuse `{target}` (or anything shaped `{s}`)"),
+            },
         }
     }
 }

@@ -187,6 +187,7 @@ mod history;
 mod internals;
 mod memory;
 mod outcomes;
+mod refusal;
 mod supervised;
 mod unasked;
 mod view;
