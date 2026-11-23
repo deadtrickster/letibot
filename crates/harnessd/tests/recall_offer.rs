@@ -306,6 +306,100 @@ fn an_evicted_turn_is_offered_when_the_operator_refers_back() {
     assert!(quiet.tail().is_empty());
 }
 
+/// Plan 1.7's own clause, kept as a test: a session archived a month ago still answers a recall
+/// after the reap pass has aged its record streams out. The logs are that session's debug trail;
+/// what a recall reads is the store, which archiving never touches - and the room notes it never
+/// took, which are its record, are not aged out at all.
+#[test]
+fn a_session_archived_a_month_ago_is_still_recalled_after_its_logs_are_reaped() {
+    let d = Dir::new("archived-reap");
+    let workspace = d.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("the workspace");
+    let (store, session_id, live, _prefix) = store_with_a_compaction(d.path(), &workspace);
+
+    // The session's own log directory, as the daemon leaves it: two record streams and the room
+    // notes it never took.
+    let logs = d.path().join("data/logs");
+    let dir = logs.join(&session_id);
+    std::fs::create_dir_all(&dir).expect("the session's logs");
+    for (name, body) in [
+        ("delivery-log.jsonl", "{\"decided\":\"held\"}\n"),
+        ("recall-offers.jsonl", "{\"taken\":false}\n"),
+        ("room-notes.jsonl", "{\"line\":\"a note nobody took\"}\n"),
+    ] {
+        std::fs::write(dir.join(name), body).expect("a record stream");
+    }
+
+    // Archived now, and the plan read 31 days later: the clock is the archive's, so no fixture has
+    // to move a store's clock.
+    store
+        .set_archived(&session_id, true, Some("the package settled"))
+        .expect("archiving");
+    let day = 86_400_000i64;
+    let now = now_ms() + 31 * day;
+    let places = letibot_tools::lifecycle::Places {
+        gc_root: d.path().join("gc"),
+        box_id: "box".into(),
+        settings: Default::default(),
+        data_dir: d.path().join("data"),
+        rundir: d.path().join("run"),
+        daemon_logs: d.path().join("logs"),
+        firecode_runs: None,
+        firecode_cache: None,
+        proc_root: d.path().join("proc"),
+        cgroup_fs: d.path().join("cgroup"),
+        docker_engine: None,
+    };
+
+    // The plan's row is what the pass acts on: the three stream files, and neither the room notes
+    // nor a file that is not a stream.
+    let bounded = letibot_tools::lifecycle::bounded_holdings(&places, &store, now);
+    let row = bounded
+        .iter()
+        .find(|b| b.kind == "session-logs")
+        .expect("the session's logs are listed");
+    let due: Vec<String> = row
+        .reap
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(due, vec!["delivery-log.jsonl", "recall-offers.jsonl"]);
+    for p in &row.reap {
+        std::fs::remove_file(p).expect("the reap removes what it listed");
+    }
+    assert!(
+        dir.join("room-notes.jsonl").exists(),
+        "its record outlives it"
+    );
+    assert!(!dir.join("recall-offers.jsonl").exists());
+
+    // And the recall still answers from the archived session's transcript.
+    let built = recall_index::build(Some(&store), &workspace, Some(live.as_str()), "", None);
+    let texts: Vec<&String> = built.units.iter().map(|u| &u.text).collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("reference-format archives")),
+        "a 31-day-old archived session is still recalled: {texts:?}"
+    );
+    let mut offers = Offers::new().with_tools(tools().iter());
+    offers.units(built.units, built.vectors);
+    let words = "remember how we built the etcd archives?";
+    assert!(offers.compose(words, words), "and the hint is still earned");
+    let text = text_of(&offers.tail()[0]);
+    assert!(
+        text.contains(&session_id),
+        "naming the archived session: {text}"
+    );
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// The round that makes the call is the take-up, and the log says so - which is what the floor is
 /// tuned from rather than guessed.
 #[test]

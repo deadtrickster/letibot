@@ -166,7 +166,7 @@ Older backlog:
 | R290 | A prompt typed mid-turn can only steer: no lane that waits for the turn to end | Code work | built (6f538d24a); left: only the TUI sends `queue`; bridge, ACP and rano always steer |
 | R271 | `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL | Code work | built (3a0393fac); left: the checks in its "not checked" footer |
 | R282 | No MCP client: `mcp.rs` is a seam and a mounting rule (plan 2.11) | Code work | built (ac775763c); left: OAuth, an `Exec` class for stdio tools, `${VAR}` in `.mcp.json`, server requests and the GET stream on HTTP |
-| R281 | Daemon logs, job captures and store journals grow without bound | Code work | built (eb5ba6607); left: session debug logs never age out, `~/logs/harnessd.log` is not rotated |
+| R281 | Daemon logs, job captures and store journals grow without bound | Code work | built (eb5ba6607, `bounds-left`); left: nothing this row names — a session's record streams age out `[gc.logs] age_days` after its archive and `~/logs/harnessd.log` rotates; R227 and R228 are rows of their own |
 | R279 | grep and glob ignore `.gitignore`; `@` in the composer completes handles only | Code work | built (db5b2f93e); left: the attachment chip on a chosen file, `.git/info/exclude` and the global excludes file |
 | R283 | Markdown command files: `.letibot/commands/*.md` and the user's become `/name args` | Code work | built (3107cc7a6); left: no one-turn fleet model switch, non-bash patterns ignored, a new file shows after the next settings refresh |
 | R292 | One concept has several spellings: the stored-session verbs are six launcher flags | Code work | built (747b98cc1); left: drop the aliases next release, `session export`, old spellings printed by bridge, sessionlog and tui |
@@ -2399,7 +2399,7 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 
 ## R281 - Daemon logs, job captures and store journals grow without bound
 
-**Status:** built, 2026-11-15, branch `j18-logs` (plan 1.7, package J18). left: session debug logs, the shared `harnessd.log`, and the adjacent rows R227 and R228.
+**Status:** built, 2026-11-15, branch `j18-logs` (plan 1.7, package J18). left: R227 and R228, which are rows of their own; the session logs and the shared start log are built (below).
 
 `~/logs/harnessd-<key>.log` and `~/logs/room-*.log` had no rotation; rano's daemon log was over 330k lines. A job with no deadline spilled its whole output to `<owner>/tmp/spill/job-<id>.out` with no bound. `wal_checkpoint(TRUNCATE)` ran only in the split migrator (`crates/tokencore/src/migrate_split.rs`), so a 346 MB journal never shrank.
 
@@ -2414,9 +2414,14 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 **Tests.** `lifecycle::logs::tests`: rotation at size with keep 3 over four rounds, trim past a lowered keep, a descriptor over the bound reopened on a fresh file, journals and captures listed. `lifecycle::tests::logs_journals_and_captures_are_held_in_the_plan`. `lifecycle::config::tests::the_log_bounds_are_read_and_default` and the reference test for `[gc.logs]`. `exec::jobs::tests::a_capture_file_stops_at_its_bound`. `tokencore` `store::tests::a_truncating_checkpoint_shrinks_the_wal` (a 3 MB journal to 0 bytes, rows kept). All on temp dirs.
 
 **Left.**
-- Session debug logs under `<data>/logs/<session id>/`: plan 1.7 ages them out 30 days after the session is archived. Not done: that directory also holds records that must outlive a session (room notes), so it needs a per-file rule first.
-- `~/logs/harnessd.log` (`SHARED_LOG`, one line per start) is written by the launcher, not a daemon, so nothing rotates it. It grows by one line per start.
 - R227 (target dirs, gate free-space check) and R228 (remote homes, jobs ledgers, fanout dirs) are separate passes and are not in this branch.
+
+**Leftovers built (2026-11-23, `bounds-left`).**
+- A session's own record streams - the `*.jsonl` the daemon appends per event under `<logs root>/<session id>/` - now have the same `[gc.logs]` size bound and plan 1.7's age: `tools::lifecycle::logs::session_logs` / `rotate_session_logs` / `session_log_holding`, `[gc.logs] age_days` (default 30), and `lifecycle::session_ages` reading the store (an archived session's stamp, and whether its owner root is still open). `letibot gc --now` rotates a stream past `max` (the appenders open the file per line, so a rename is safe) and removes what the plan listed: every stream of a session archived `age_days` ago and not held open, plus the rotated files past `keep`. The per-file rule the row asked for is `is_record_stream`: a `*.jsonl` is a debug log, `room-notes.jsonl` (the session's record, kept at close) and `limit-hook.json` (its park state) are not. A session still in the list, one the store holds open, and a directory the store does not name are never aged.
+- `~/logs/harnessd.log` (`SHARED_LOG`, one line per start) is rotated by the daemon's own `log-rotate` thread (`logs::rotate_shared_log`), by name, because its writer is the launcher's `>>` and holds no descriptor. Two daemons racing is not an error: a rename that finds the file already moved is the rotation having happened. `spawn_stdio_rotation` became `spawn_rotation` and takes the log directory.
+- `letibot gc --now` prints what it rotated and what it removed, and its `--json` carries `logs_rotated` beside `logs_trimmed`.
+
+**Tests.** `lifecycle::logs::tests::an_archived_sessions_record_streams_age_out_and_its_kept_records_do_not` (29 days keeps them, 31 removes the three streams and neither the room notes nor the state file), `a_live_session_or_one_in_the_list_is_never_aged_out`, `a_record_stream_rotates_at_its_size_and_its_rotated_files_are_reaped`, `the_shared_start_log_rotates_by_name_and_a_race_is_not_a_failure`. `lifecycle::config::tests::the_log_bounds_are_read_and_default` reads `age_days` and its default. `harnessd/tests/recall_offer.rs::a_session_archived_a_month_ago_is_still_recalled_after_its_logs_are_reaped` is the plan's own recall clause: the store's rows, and the recall offer over them, outlive the reap.
 
 **Still open?** `ls -la ~/logs/harnessd-*.log*` on a box running this build: no live file past `[gc.logs] max` for more than a minute.
 

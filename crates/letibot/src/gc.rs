@@ -584,26 +584,44 @@ fn gc_now(owner: Option<&str>, folder: Option<&Path>, json: bool) -> Result<(), 
         }
     };
     let pass = lifecycle::pass(&store, &places, &ops, owner, now).map_err(|e| e.to_string())?;
-    // Rotated logs past the kept count belong to no owner, so the box pass trims them here.
-    let trimmed: Vec<PathBuf> = lifecycle::bounded_holdings(&places)
-        .into_iter()
-        .filter(|b| b.kind == "log")
-        .flat_map(|b| {
-            lifecycle::logs::trim_rotated(Path::new(&b.handle), places.settings.logs.keep)
-        })
+    // Rotated logs past the kept count belong to no owner, so the box pass trims them here; a
+    // session's record streams are rotated here too, because rotation is an act and the plan only
+    // reads. What the plan listed as due - a session archived past `age_days`, the rotated files
+    // past `keep` - is removed by the same branch.
+    let rotated = lifecycle::logs::rotate_session_logs(
+        &lifecycle::session_logs_dir(&places),
+        &places.settings.logs,
+        &lifecycle::session_ages(&store),
+        now,
+    );
+    let trimmed: Vec<PathBuf> = lifecycle::bounded_holdings(&places, &store, now)
+        .iter()
+        .flat_map(|b| b.reap.iter())
+        .filter(|p| std::fs::remove_file(p).is_ok())
+        .cloned()
         .collect();
     if json {
         let mut out = pass.to_json();
         out["logs_trimmed"] = serde_json::json!(trimmed);
+        out["logs_rotated"] = serde_json::json!(rotated);
         println!("{out}");
         return Ok(());
     }
     print!("{}", pass.render());
+    if !rotated.is_empty() {
+        println!(
+            "logs: rotated {} session record stream(s) past {}",
+            rotated.len(),
+            lifecycle::human_bytes(places.settings.logs.max_bytes)
+        );
+    }
     if !trimmed.is_empty() {
         println!(
-            "logs: removed {} rotated file(s) past the {} kept",
+            "logs: removed {} file(s) past their bound ({} kept, a session's logs {} days after \
+             it was archived)",
             trimmed.len(),
-            places.settings.logs.keep
+            places.settings.logs.keep,
+            places.settings.logs.age_days
         );
     }
     match reset {

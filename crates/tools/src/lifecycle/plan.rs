@@ -598,12 +598,51 @@ impl Plan {
 }
 
 /// The box's logs, journals and captures, as the plan lists them.
-pub fn bounded_holdings(places: &Places) -> Vec<super::logs::BoundedHolding> {
+pub fn bounded_holdings(
+    places: &Places,
+    store: &Store,
+    now_ms: i64,
+) -> Vec<super::logs::BoundedHolding> {
     let policy = &places.settings.logs;
     let mut out = super::logs::log_holdings(&places.daemon_logs, policy);
     out.extend(super::logs::wal_holdings(&places.data_dir));
     out.extend(super::logs::capture_holding(&places.box_dir(), policy));
+    let root = super::session_logs_dir(places);
+    out.extend(super::logs::session_log_holding(
+        &root,
+        policy,
+        &session_ages(store),
+        now_ms,
+    ));
     out
+}
+
+/// What the session-log age rule needs from the store: when each session was archived, and whether
+/// its owner root is still open - a session the store holds open is one a daemon may be writing,
+/// and its logs are never aged out under it.
+pub fn session_ages(store: &Store) -> BTreeMap<String, super::logs::SessionAge> {
+    let open: std::collections::BTreeSet<String> = store
+        .owners()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|o| o.state != OwnerState::Closed)
+        .map(|o| o.id)
+        .collect();
+    store
+        .list_sessions_archived(letibot_tokencore::store::Archived::Yes)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| {
+            let live = open.contains(&s.id);
+            (
+                s.id,
+                super::logs::SessionAge {
+                    archived_ms: s.archived_ms,
+                    live,
+                },
+            )
+        })
+        .collect()
 }
 
 /// Build the plan: every owner in `store` (or the one named), its holdings from the rows merged
@@ -625,7 +664,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
         owners: Vec::new(),
         looks_like_ours: Vec::new(),
         spills: all_spill_holdings(&places.data_dir.join(crate::spill::SPILLS_DIR)),
-        bounded: bounded_holdings(places),
+        bounded: bounded_holdings(places, store, now_ms),
         now_ms,
         systemd: None,
         systemd_why: None,

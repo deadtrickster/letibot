@@ -1,7 +1,11 @@
-//! Files that grow on their own: daemon logs, job captures and store journals.
+//! Files that grow on their own: daemon logs, a session's own record streams, job captures and
+//! store journals.
 //!
-//! A daemon rotates its own log, because only the writer can reopen its descriptor.
+//! A daemon rotates its own log, because only the writer can reopen its descriptor. A session's
+//! record streams are rotated and aged out by the reap pass, because their appenders open the file
+//! per line (`docs/lifecycle.md` G4).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::human_bytes;
@@ -9,12 +13,15 @@ use super::human_bytes;
 /// `[gc.logs]`: the bounds, with grok's 32 MiB and three kept as the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogPolicy {
-    /// A daemon log past this is rotated.
+    /// A daemon log, or one of a session's record streams, past this is rotated.
     pub max_bytes: u64,
     /// Rotated files kept beside the live one: `x.log.1` .. `x.log.<keep>`.
     pub keep: usize,
     /// A job's output file stops growing here.
     pub capture_max: u64,
+    /// A session's record streams are removed once it has been archived this long (plan 1.7's 30
+    /// days). The clock starts at the archive, so a session in the list is never touched.
+    pub age_days: u64,
 }
 
 impl Default for LogPolicy {
@@ -23,6 +30,7 @@ impl Default for LogPolicy {
             max_bytes: 32 * 1024 * 1024,
             keep: 3,
             capture_max: 1024 * 1024 * 1024,
+            age_days: 30,
         }
     }
 }
@@ -188,9 +196,9 @@ fn rotate_fds(out: i32, err: Option<i32>, policy: &LogPolicy) -> Result<Option<P
     Ok(Some(path))
 }
 
-/// A thread that checks stdout every `every` and rotates it past the bound. The first line of the
-/// fresh file says so.
-pub fn spawn_stdio_rotation(policy: LogPolicy, every: std::time::Duration) {
+/// A thread that checks stdout every `every` and rotates it past the bound, and with it the
+/// launcher's shared start log in `logs_dir`. The first line of a fresh file says so.
+pub fn spawn_rotation(policy: LogPolicy, every: std::time::Duration, logs_dir: PathBuf) {
     let _ = std::thread::Builder::new()
         .name("log-rotate".into())
         .spawn(move || {
@@ -209,8 +217,221 @@ pub fn spawn_stdio_rotation(policy: LogPolicy, every: std::time::Duration) {
                         return;
                     }
                 }
+                // The shared start log is the launcher's, written with `>>` by a process that is
+                // not this one, so it is rotated by name rather than by descriptor.
+                match rotate_shared_log(&logs_dir, &policy) {
+                    Ok(Some(p)) => eprintln!(
+                        "letibot: {} passed {}, rotated; {} older file(s) kept",
+                        p.display(),
+                        human_bytes(policy.max_bytes),
+                        policy.keep
+                    ),
+                    Ok(None) => {}
+                    Err(why) => eprintln!(
+                        "letibot: {} was not rotated: {why}",
+                        logs_dir.join(SHARED_LOG).display()
+                    ),
+                }
             }
         });
+}
+
+/// `~/logs/harnessd.log`: one line per start, written by `scripts/letibot` with `>>` and never
+/// rotated by it, so the daemon that a start wrote into rotates it by name.
+pub const SHARED_LOG: &str = "harnessd.log";
+
+/// Rotate the launcher's shared start log when it is over the bound. Every folder's daemon runs
+/// this, so two can race: the loser's rename finds the file it moved already gone, which is the
+/// rotation having happened, not a failure.
+pub fn rotate_shared_log(dir: &Path, policy: &LogPolicy) -> std::io::Result<Option<PathBuf>> {
+    let path = dir.join(SHARED_LOG);
+    match std::fs::metadata(&path) {
+        Ok(m) if m.len() > policy.max_bytes => {}
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    match rotate(&path, policy.keep) {
+        Ok(()) => Ok(Some(path)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// A file in a session's logs directory that must outlive the session: the room notes it never
+/// took are that session's record, and plan 1.7's clock is for debug logs.
+pub const KEPT_RECORDS: &[&str] = &["room-notes.jsonl"];
+
+/// `x.jsonl.2` as `x.jsonl`: the name a rotated file was rotated from.
+fn rotated_from(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((base, n)) if n.parse::<usize>().is_ok() => base,
+        _ => name,
+    }
+}
+
+/// Is this one of a session's own record streams - the debug logs plan 1.7 ages out? They are the
+/// `*.jsonl` files the daemon appends a line to per event (offers, deliveries, claims), and the
+/// rotated files of one. A state file (`limit-hook.json`) and a kept record are not.
+pub fn is_record_stream(name: &str) -> bool {
+    let base = rotated_from(name);
+    base.ends_with(".jsonl") && !KEPT_RECORDS.contains(&base)
+}
+
+/// What the store says about one session whose logs are on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionAge {
+    /// When the session was archived, unix ms. `None` for one still in the list.
+    pub archived_ms: Option<i64>,
+    /// The store still holds an owner root for it open, so a daemon may be writing these logs.
+    pub live: bool,
+}
+
+/// One session's logs directory, and what the size and age rules do with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLogs {
+    pub id: String,
+    pub dir: PathBuf,
+    /// Every record stream in it, rotated files included.
+    pub files: Vec<PathBuf>,
+    pub bytes: u64,
+    /// Archived past `age_days` and not held open: every record stream goes, kept records do not.
+    pub aged: bool,
+    /// What a reap removes: all of them when `aged`, else the rotated files past `keep`.
+    pub due: Vec<PathBuf>,
+}
+
+/// The sessions under a logs root (`<logs root>/<session id>/`), each with what the size and age
+/// rules would do. A directory whose session the store does not name is left alone: there is no
+/// archive clock to age it by, and a pass does not guess.
+pub fn session_logs(
+    root: &Path,
+    policy: &LogPolicy,
+    ages: &BTreeMap<String, SessionAge>,
+    now_ms: i64,
+) -> Vec<SessionLogs> {
+    let age_ms = (policy.age_days as i64).saturating_mul(86_400_000);
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let id = e.file_name().to_string_lossy().into_owned();
+        // `projects/` holds the box's own offer logs; only a session directory is one of these.
+        if !id.starts_with("s-") || !e.path().is_dir() {
+            continue;
+        }
+        let Ok(files_rd) = std::fs::read_dir(e.path()) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = files_rd
+            .flatten()
+            .filter(|f| is_record_stream(&f.file_name().to_string_lossy()))
+            .map(|f| f.path())
+            .collect();
+        files.sort();
+        if files.is_empty() {
+            continue;
+        }
+        let bytes = files
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        let state = ages.get(&id).copied().unwrap_or(SessionAge {
+            archived_ms: None,
+            live: true,
+        });
+        let aged = !state.live
+            && state
+                .archived_ms
+                .is_some_and(|ms| now_ms.saturating_sub(ms) >= age_ms);
+        let due: Vec<PathBuf> = files
+            .iter()
+            .filter(|p| {
+                if aged {
+                    return true;
+                }
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                let n = name
+                    .rsplit_once('.')
+                    .and_then(|(_, k)| k.parse::<usize>().ok());
+                n.is_some_and(|n| n > policy.keep)
+            })
+            .cloned()
+            .collect();
+        out.push(SessionLogs {
+            id,
+            dir: e.path(),
+            files,
+            bytes,
+            aged,
+            due,
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Rotate each live record stream past `max_bytes`: `letibot gc --now`'s session half. The
+/// daemon's appenders open the file per line, so a rename is safe and the next write makes a fresh
+/// one. A session about to be aged out is not rotated, and the rotated files a lowered `keep`
+/// leaves behind are the plan's `reap` list, removed by the same pass.
+pub fn rotate_session_logs(
+    root: &Path,
+    policy: &LogPolicy,
+    ages: &BTreeMap<String, SessionAge>,
+    now_ms: i64,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for s in session_logs(root, policy, ages, now_ms) {
+        if s.aged {
+            continue;
+        }
+        for p in &s.files {
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if rotated_from(&name) != name {
+                continue;
+            }
+            if rotate_if_over(p, policy).unwrap_or(false) {
+                out.push(p.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The sessions' own logs under `root`, as one bounded row: what plan 1.7 ages out, and what
+/// `letibot holds` and `letibot gc` print.
+pub fn session_log_holding(
+    root: &Path,
+    policy: &LogPolicy,
+    ages: &BTreeMap<String, SessionAge>,
+    now_ms: i64,
+) -> Option<BoundedHolding> {
+    let all = session_logs(root, policy, ages, now_ms);
+    let files: usize = all.iter().map(|s| s.files.len()).sum();
+    if files == 0 {
+        return None;
+    }
+    Some(BoundedHolding {
+        kind: "session-logs",
+        handle: root.display().to_string(),
+        bytes: all.iter().map(|s| s.bytes).sum(),
+        files,
+        reap: all.iter().flat_map(|s| s.due.iter().cloned()).collect(),
+        said: format!(
+            "per session, rotated past {} keeping {}; a session archived {} days ago is removed, \
+             never one the store still holds open, its kept room notes or its state file",
+            human_bytes(policy.max_bytes),
+            policy.keep,
+            policy.age_days
+        ),
+    })
 }
 
 /// What the plan says about one bounded file or family of files on this box.
@@ -414,6 +635,7 @@ mod tests {
             max_bytes: 100,
             keep: 3,
             capture_max: 0,
+            age_days: 30,
         };
         write(&log, 50);
         assert!(!rotate_if_over(&log, &policy).unwrap(), "under the bound");
@@ -442,6 +664,7 @@ mod tests {
             max_bytes: 100,
             keep: 2,
             capture_max: 0,
+            age_days: 30,
         };
         let held = log_holdings(&d.0, &policy);
         assert_eq!(held.len(), 1, "{held:?}");
@@ -472,6 +695,7 @@ mod tests {
             max_bytes: 100,
             keep: 3,
             capture_max: 0,
+            age_days: 30,
         };
         let moved = rotate_fds(f.as_raw_fd(), None, &policy).unwrap();
         if fd_path(f.as_raw_fd()).is_none() && moved.is_none() {
@@ -502,5 +726,170 @@ mod tests {
         let cap = capture_holding(&d.0.join("gc/box"), &LogPolicy::default()).unwrap();
         assert_eq!((cap.files, cap.bytes), (2, 42));
         assert!(capture_holding(&d.0.join("nothing"), &LogPolicy::default()).is_none());
+    }
+
+    const DAY: i64 = 86_400_000;
+
+    /// A session's records: two streams, a rotated one, the state file and the room notes kept with
+    /// it. The kept record and the state file are not streams, so the rules never name them.
+    fn session_dir(d: &Dir, id: &str) -> PathBuf {
+        let dir = d.0.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, bytes) in [
+            ("delivery-log.jsonl", 40),
+            ("recall-offers.jsonl", 30),
+            ("recall-offers.jsonl.1", 20),
+            ("limit-hook.json", 5),
+            ("room-notes.jsonl", 60),
+        ] {
+            write(&dir.join(name), bytes);
+        }
+        dir
+    }
+
+    fn ages(id: &str, archived_ms: Option<i64>, live: bool) -> BTreeMap<String, SessionAge> {
+        let mut m = BTreeMap::new();
+        m.insert(id.to_string(), SessionAge { archived_ms, live });
+        m
+    }
+
+    /// Plan 1.7's clock starts at the archive: a session archived past `age_days`, whose owner root
+    /// the store no longer holds open, has every record stream removed - and the room notes it
+    /// never took and its limit state stay, because those are its record and not a debug log.
+    #[test]
+    fn an_archived_sessions_record_streams_age_out_and_its_kept_records_do_not() {
+        let d = Dir::new("age");
+        let dir = session_dir(&d, "s-old");
+        let now = 1_000 * DAY;
+        let policy = LogPolicy::default();
+
+        let fresh = ages("s-old", Some(now - 29 * DAY), false);
+        let held = session_logs(&d.0, &policy, &fresh, now);
+        assert_eq!(held.len(), 1);
+        assert!(!held[0].aged, "29 days is inside the bound");
+        assert!(held[0].due.is_empty(), "{:?}", held[0].due);
+
+        let old = ages("s-old", Some(now - 31 * DAY), false);
+        let held = session_logs(&d.0, &policy, &old, now);
+        let due: Vec<&str> = held[0]
+            .due
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            due,
+            vec![
+                "delivery-log.jsonl",
+                "recall-offers.jsonl",
+                "recall-offers.jsonl.1"
+            ],
+            "the three streams, and only them"
+        );
+        let row = session_log_holding(&d.0, &policy, &old, now).unwrap();
+        assert_eq!(
+            (row.kind, row.files, row.reap.len()),
+            ("session-logs", 3, 3)
+        );
+        assert_eq!(row.bytes, 90, "{} ", row.line());
+        assert!(row.line().contains("30 days"), "{}", row.line());
+        // The reap leaves the two files that must outlive it.
+        for p in &row.reap {
+            std::fs::remove_file(p).unwrap();
+        }
+        assert!(dir.join("room-notes.jsonl").exists());
+        assert!(dir.join("limit-hook.json").exists());
+        assert!(session_log_holding(&d.0, &policy, &old, now).is_none());
+    }
+
+    /// A session the store holds open, and a session still in the list, are never aged out - the
+    /// clock is the archive's and an open owner root is what "live" means here.
+    #[test]
+    fn a_live_session_or_one_in_the_list_is_never_aged_out() {
+        let d = Dir::new("live");
+        session_dir(&d, "s-open");
+        session_dir(&d, "s-listed");
+        let now = 1_000 * DAY;
+        let policy = LogPolicy::default();
+        let mut facts = ages("s-open", Some(now - 400 * DAY), true);
+        facts.extend(ages("s-listed", None, false));
+        let held = session_logs(&d.0, &policy, &facts, now);
+        assert_eq!(held.len(), 2);
+        assert!(held.iter().all(|s| !s.aged && s.due.is_empty()), "{held:?}");
+        // And a directory the store does not name has no clock either.
+        let unnamed = ages("someone-else", Some(now - 400 * DAY), false);
+        assert!(
+            session_logs(&d.0, &policy, &unnamed, now)
+                .iter()
+                .all(|s| !s.aged)
+        );
+    }
+
+    /// A record stream past the bound is rotated where it lies, and a rotated file past `keep` is
+    /// what a reap removes - rotating and reaping are two steps, and neither is the other.
+    #[test]
+    fn a_record_stream_rotates_at_its_size_and_its_rotated_files_are_reaped() {
+        let d = Dir::new("stream-rotate");
+        let dir = d.0.join("s-run");
+        std::fs::create_dir_all(&dir).unwrap();
+        write(&dir.join("skills-offers.jsonl"), 200);
+        write(&dir.join("notes-offers.jsonl"), 5);
+        write(&dir.join("notes-offers.jsonl.4"), 5);
+        let policy = LogPolicy {
+            max_bytes: 100,
+            keep: 3,
+            capture_max: 0,
+            age_days: 30,
+        };
+        let facts = ages("s-run", None, true);
+        let rotated = rotate_session_logs(&d.0, &policy, &facts, 0);
+        assert_eq!(rotated.len(), 1, "{rotated:?}");
+        assert!(dir.join("skills-offers.jsonl.1").exists());
+        assert!(!dir.join("skills-offers.jsonl").exists());
+        assert!(
+            dir.join("notes-offers.jsonl.4").exists(),
+            "rotating is not reaping"
+        );
+        let due: Vec<String> = session_logs(&d.0, &policy, &facts, 0)[0]
+            .due
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(due, vec!["notes-offers.jsonl.4".to_string()]);
+    }
+
+    /// The launcher's shared start log is rotated by name, because its writer holds no descriptor;
+    /// and a second daemon that finds it already rotated is not an error.
+    #[test]
+    fn the_shared_start_log_rotates_by_name_and_a_race_is_not_a_failure() {
+        let d = Dir::new("shared");
+        let policy = LogPolicy {
+            max_bytes: 100,
+            keep: 2,
+            capture_max: 0,
+            age_days: 30,
+        };
+        write(&d.0.join(SHARED_LOG), 50);
+        assert_eq!(
+            rotate_shared_log(&d.0, &policy).unwrap(),
+            None,
+            "under the bound"
+        );
+        write(&d.0.join(SHARED_LOG), 200);
+        assert_eq!(
+            rotate_shared_log(&d.0, &policy).unwrap(),
+            Some(d.0.join(SHARED_LOG))
+        );
+        assert_eq!(
+            std::fs::metadata(rotated_path(&d.0.join(SHARED_LOG), 1))
+                .unwrap()
+                .len(),
+            200
+        );
+        assert_eq!(
+            rotate_shared_log(&d.0, &policy).unwrap(),
+            None,
+            "gone, not failed"
+        );
+        assert_eq!(rotated_of(&d.0.join(SHARED_LOG)).len(), 1, "kept");
     }
 }

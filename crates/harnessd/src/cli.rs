@@ -1290,14 +1290,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // another daemon owns it, and finding that out after loading a vocabulary
     // wastes the load.
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
-    // The socket is ours, so this process is the log's one writer: it rotates the log and bounds
-    // its jobs' output files (`[gc.logs]`).
+    // The socket is ours, so this process is the log's one writer: it rotates the log, the
+    // launcher's shared start log beside it, and bounds its jobs' output files (`[gc.logs]`).
     {
         let logs = letibot_tools::lifecycle::Settings::load_or_default().logs;
         letibot_tools::exec::jobs::set_capture_max(logs.capture_max);
-        letibot_tools::lifecycle::logs::spawn_stdio_rotation(
+        letibot_tools::lifecycle::logs::spawn_rotation(
             logs,
             std::time::Duration::from_secs(60),
+            letibot_tools::lifecycle::daemon_logs_dir(),
         );
     }
     // Where this daemon's tools run, said once and beside the socket (RH2). The placement

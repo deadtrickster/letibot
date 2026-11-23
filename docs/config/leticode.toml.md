@@ -406,13 +406,14 @@ One [[gc.shared]] per shared build target.
 
 ## `[gc.logs]`
 
-Daemon logs and job output files; the daemon reads it at start.
+Daemon logs, each session's own record streams and job output files; the daemon reads it at start and `letibot gc --now` applies the session half.
 
 | key | type | default | level | meaning |
 |---|---|---|---|---|
-| `max` | size (32M) | 32M | user only | a daemon or room log past this is rotated |
+| `max` | size (32M) | 32M | user only | a daemon, room or session log past this is rotated |
 | `keep` | int | 3 | user only | rotated files kept; gc --now removes the rest |
 | `capture_max` | size (1G) | 1G | user only | a job's output file stops growing here |
+| `age_days` | int | 30 | user only | a session's own logs go this long after it was archived; a session the store still holds open, its room notes and its state file stay |
 
 ## `[gc.docker]`
 

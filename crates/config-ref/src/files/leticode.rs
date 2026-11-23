@@ -483,12 +483,13 @@ pub const LETICODE: File = File {
         },
         Table {
             path: "gc.logs",
-            note: "Daemon logs and job output files; the daemon reads it at start.",
+            note: "Daemon logs, each session's own record streams and job output files; the daemon reads it at start and `letibot gc --now` applies the session half.",
             needs: "",
             keys: &[
-                k("max", "size (32M)", "32M", U, "a daemon or room log past this is rotated", "\"64M\""),
+                k("max", "size (32M)", "32M", U, "a daemon, room or session log past this is rotated", "\"64M\""),
                 k("keep", "int", "3", U, "rotated files kept; gc --now removes the rest", "5"),
                 k("capture_max", "size (1G)", "1G", U, "a job's output file stops growing here", "\"512M\""),
+                k("age_days", "int", "30", U, "a session's own logs go this long after it was archived; a session the store still holds open, its room notes and its state file stay", "7"),
             ],
         },
         Table {

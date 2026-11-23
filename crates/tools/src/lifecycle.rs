@@ -44,8 +44,8 @@ pub use archive::{Kept, fetch_bundle, keep, namespace};
 pub use config::{Settings, SharedTarget, bytes as size_bytes, config_file};
 pub use plan::{
     DETACHED_JOB, HoldingView, LANDED_GRACE_MS, OwnerView, Plan, SpillHolding, Stranger,
-    UNLANDED_GRACE_MS, Verdict, all_spill_holdings, bounded_holdings, judge, plan, spill_holdings,
-    stamp_of,
+    UNLANDED_GRACE_MS, Verdict, all_spill_holdings, bounded_holdings, judge, plan, session_ages,
+    spill_holdings, stamp_of,
 };
 pub use reap::{
     Act, Activity, BoxHands, COPY_OUT_DEADLINE_MS, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass, busy,
@@ -321,6 +321,16 @@ pub fn daemon_logs_dir() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("logs")))
         .unwrap_or_else(|| PathBuf::from("logs"))
+}
+
+/// Where each session keeps its own record streams: `<data dir>/logs/<session id>/`, the directory
+/// `Config::for_the_daemon` hands the harness. `$LETIBOT_LOGS_ROOT` moves a test's, and the age rule
+/// follows it so the two sides of a fixture read the same directory.
+pub fn session_logs_dir(places: &Places) -> PathBuf {
+    std::env::var_os("LETIBOT_LOGS_ROOT")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| places.data_dir.join("logs"))
 }
 
 /// The owner roots when nothing names them: under the cache directory, never the store, which a

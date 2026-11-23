@@ -15,6 +15,7 @@
 //! max = "32M"                      # a daemon log past this is rotated
 //! keep = 3                         # rotated files kept beside it
 //! capture_max = "1G"               # a job's output file stops growing here
+//! age_days = 30                    # a session's record streams go this long after it was archived
 //!
 //! [firecode]
 //! state = "/build/firecode/state"  # FIRECODE_STATE, handed to `firecode up`
@@ -146,6 +147,7 @@ impl Settings {
                     max_bytes: size("max", &logs.max, d.max_bytes)?,
                     keep: logs.keep.unwrap_or(d.keep),
                     capture_max: size("capture_max", &logs.capture_max, d.capture_max)?,
+                    age_days: logs.age_days.unwrap_or(d.age_days),
                 };
             }
         }
@@ -203,6 +205,8 @@ struct LogsTable {
     keep: Option<usize>,
     #[serde(default)]
     capture_max: Option<String>,
+    #[serde(default)]
+    age_days: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -350,17 +354,20 @@ runs = "/build/firecode/runs"
     fn the_log_bounds_are_read_and_default() {
         let s = Settings::parse(
             Path::new("/b/leticode.toml"),
-            "[gc.logs]\nmax = \"1M\"\nkeep = 5\n",
+            "[gc.logs]\nmax = \"1M\"\nkeep = 5\nage_days = 7\n",
         )
         .unwrap();
         assert_eq!(s.logs.max_bytes, 1024 * 1024);
         assert_eq!(s.logs.keep, 5);
+        assert_eq!(s.logs.age_days, 7);
         assert_eq!(
             s.logs.capture_max,
             super::super::logs::LogPolicy::default().capture_max
         );
+        let d = super::super::logs::LogPolicy::default();
+        assert_eq!(d.age_days, 30, "plan 1.7's 30 days");
         let none = Settings::parse(Path::new("/b/leticode.toml"), "").unwrap();
-        assert_eq!(none.logs, super::super::logs::LogPolicy::default());
+        assert_eq!(none.logs, d);
         let e = Settings::parse(Path::new("/b/leticode.toml"), "[gc.logs]\nkeeep = 2\n")
             .expect_err("a typo");
         assert!(e.contains("keeep"), "{e}");
