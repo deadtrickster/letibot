@@ -40,6 +40,8 @@ pub mod read;
 pub mod read_spill;
 pub mod recall;
 pub mod retrieval;
+/// `rg`: the one-command half of `grep`, where the machine the backend reads already has it.
+pub mod rg;
 pub mod room;
 pub mod scenario;
 pub mod screen;

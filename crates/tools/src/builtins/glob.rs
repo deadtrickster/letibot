@@ -21,8 +21,9 @@ impl Tool for Glob {
              segments, `?`, `[a-z]`, `{a,b}`. Give `pattern`; optionally `path` to \
              scope the walk. A pattern that matches nothing comes back with the \
              listing around it and with what a relaxed pattern would have matched, so \
-             a wrong guess is corrected in the same call. Files ignored by `.gitignore` \
-             are skipped unless `path` or the pattern's literal directory names them.",
+             a wrong guess is corrected in the same call. Files git ignores \
+             (`.gitignore`, `.git/info/exclude`, your global excludes) are skipped unless \
+             `path` or the pattern's literal directory names them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -70,6 +71,7 @@ impl Tool for Glob {
             &scope,
             ctx.limits.max_walk_entries,
             &[scope.as_str(), named.as_str()],
+            ctx.backend.home_path().as_deref(),
         );
         ctx.progress(format!("walked {} entries under {scope}", entries.len()));
         let files: Vec<&DirEntry> = entries.iter().filter(|e| !e.is_dir).collect();
@@ -236,8 +238,9 @@ mod tests {
         let r = h.call("glob", r#"{"pattern":"**/*.qq"}"#);
         assert!(!r.payload.contains("gen/out.qq"), "{}", r.payload);
         assert!(
-            r.payload
-                .contains("1 file(s) ignored by .gitignore were not searched (under `gen/`)"),
+            r.payload.contains(
+                "1 file(s) ignored by git's ignore rules were not searched (under `gen/`)"
+            ),
             "{}",
             r.payload
         );

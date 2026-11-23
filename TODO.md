@@ -150,7 +150,7 @@ Older backlog:
 | R245 | The review queue's sessions are not reseated after a daemon restart, and their asks reach nobody | Code work | built (eb53ddce5); left: a reviewer's `ask_user_question` has no head path, a lost reviewer counts as an attempt |
 | R252 | Foreground bash does not stop on interrupt, and its schema text describes a kill that never happens | Code work | built (be3e09ea4); left: `job_wait` ends only on promote, non-host backends never see the interrupt |
 | R255 | The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types | Code work | built (43c9c6093); left: stale `target/release/letibot` ELFs and the units installed from them (merged from R346) |
-| R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | built (867b27f31); left: the `/t` row cuts lines at the edge, grep hits on a long line cut at 400 chars |
+| R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | built (867b27f31); left: the `/t` row cuts lines at the edge, which is rano's side |
 | R261 | Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model | Code work | built (c7202e553); left: note offers for children, a replay score for the acting pick |
 | R246 | A seat's and a session's wait is untyped, so a permission ask cannot be told from a question | Code work | built (c423ca1ea); left: the bridge's fleet rows say asking and carry no kind |
 | R288 | Setup flows: secrets typed on the line, untyped slash replies, raw errors, silent cancels | Code work | built (01e577978); left: four raw Rust errors in the TUI, cancel feedback per card, `/flowy login` has no masked card |
@@ -167,7 +167,7 @@ Older backlog:
 | R271 | `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL | Code work | built (3a0393fac); left: the checks in its "not checked" footer |
 | R282 | No MCP client: `mcp.rs` is a seam and a mounting rule (plan 2.11) | Code work | built (ac775763c); left: OAuth, an `Exec` class for stdio tools, `${VAR}` in `.mcp.json`, server requests and the GET stream on HTTP |
 | R281 | Daemon logs, job captures and store journals grow without bound | Code work | built (eb5ba6607, `bounds-left`); left: nothing this row names — a session's record streams age out `[gc.logs] age_days` after its archive and `~/logs/harnessd.log` rotates; R227 and R228 are rows of their own |
-| R279 | grep and glob ignore `.gitignore`; `@` in the composer completes handles only | Code work | built (db5b2f93e); left: the attachment chip on a chosen file, `.git/info/exclude` and the global excludes file |
+| R279 | grep and glob ignore `.gitignore`; `@` in the composer completes handles only | Code work | built (db5b2f93e); left: the attachment chip on a chosen file |
 | R283 | Markdown command files: `.letibot/commands/*.md` and the user's become `/name args` | Code work | built (3107cc7a6); left: no one-turn fleet model switch, non-bash patterns ignored, a new file shows after the next settings refresh |
 | R292 | One concept has several spellings: the stored-session verbs are six launcher flags | Code work | built (747b98cc1); left: drop the aliases next release, `session export`, old spellings printed by bridge, sessionlog and tui |
 | R289 | One verb table for list panes: the same key does the same thing in every pane | Code work | built (6c94d7c47); left: no pane has a `/` filter, the hint bar's conversation half is literals |
@@ -1937,7 +1937,7 @@ Fix: the multicall ships under its own name; `install.sh`, `make-dist.sh`, the r
 **Done when:** `cargo build --release --bins` leaves no ELF named `letibot`, `sh scripts/check-dist-names.sh` exits 0 and is a gate step, and an install from an archive or a checkout puts the script at `letibot` and the multicall at its own name with `letibot-askpass` beside it.
 ## R256 - Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge
 
-**Status:** built, 2026-11-15. left: the unfolded (`/t`) row still cuts each line at the edge (the plan asks only for the window); `grep` hits on a long line are cut at 400 chars and do not mark a piece shown.
+**Status:** built, 2026-11-15. left: the unfolded (`/t`) row still cuts each line at the edge (the plan asks only for the window). `grep`'s half landed with this: a hit on a long line shows a 400-character window centred on the match, says `characters a-b of L`, names the `read` with `column_offset` that continues it, and marks that piece in the shown-lines ledger so an `edit` inside it is allowed (`FileLedger::mark_line_part`, `grep::long_line_tests::a_hit_on_a_very_long_line_shows_its_window_and_that_window_can_be_edited`).
 
 Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's remainder.
 
@@ -4192,9 +4192,9 @@ Plan 1.4. `grep` and `glob` walked a fixed skip list (`.git target node_modules 
 
 Plan 2.9. In the room composer, an `@` fragment that is path-like (starts with `.` or `~`, or holds a `/`) completes files under the session's workspace with the same `.gitignore` rules (`ignore::WalkBuilder`, `.gitignore` files only, `.git` skipped, 20,000 entries at most). A directory part that exists is walked itself, so a named ignored directory is offered. Ranking: file name prefix, path prefix, substring, letters in order; six candidates, the row's size. Any other fragment completes handles as before. Files are not appended after handles, as the plan said: the built-in chat layer answers `@` from the roster, and the parity test holds its answer equal to the native one; a path-like fragment the layer cannot answer falls through to the native completion.
 
-Left. Choosing a file inserts `@path` text, not an attachment chip: a room chip is an uploaded blob, and a file chip needs the upload path decided. Not read: `.git/info/exclude`, the global excludes file and `.ignore`, in both halves, so the tool and the composer agree.
+Left. Choosing a file inserts `@path` text, not an attachment chip: a room chip is an uploaded blob, and a file chip needs the upload path decided. Still not read: `.ignore`/`.rgignore`, in both halves - this walk applies git's rules and no other tool's - and the composer's `@` completion has not learned `.git/info/exclude` or the global excludes file, which the tools now do (`walk_ignoring`'s `home` argument and `exclude_files`; `backend::tests::the_exclude_files_are_read_and_a_named_path_still_bypasses_them`, and both readings of a search agree in `grep::pushdown_tests`).
 
-Tests: `backend::tests::walk_ignoring_applies_nested_rules_and_bypasses_named_paths`, `grep::tests::gitignored_files_are_skipped_counted_and_reachable_by_path`, `glob::tests::a_gitignored_tree_is_skipped_unless_the_pattern_names_it` in `crates/tools`; `rooms_compose::at_a_path_completes_files_and_a_handle_stays_a_handle` in `crates/tui`.
+Tests: `backend::tests::walk_ignoring_applies_nested_rules_and_bypasses_named_paths`, `backend::tests::the_exclude_files_are_read_and_a_named_path_still_bypasses_them`, `grep::tests::gitignored_files_are_skipped_counted_and_reachable_by_path`, `glob::tests::a_gitignored_tree_is_skipped_unless_the_pattern_names_it`, `grep::pushdown_tests::*` in `crates/tools`; `rooms_compose::at_a_path_completes_files_and_a_handle_stays_a_handle` in `crates/tui`.
 
 ## R286 - Live session search: the session list filters as you type
 

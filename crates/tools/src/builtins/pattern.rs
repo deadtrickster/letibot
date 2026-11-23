@@ -120,9 +120,15 @@ impl Pattern {
         // The same pattern with `^` and `$` bound to line boundaries. `line_hits` uses it to find
         // candidates in one pass, and `line` decides whether a candidate really matches, so the two
         // never disagree about the answer, only about how fast it is reached.
+        //
+        // CRLF mode, because a line here is what `str::lines` calls one: without it `foo$` cannot
+        // match a CRLF file at all (the anchor would sit after the `\r`), while every other reader
+        // of a file's text in this tree has already dropped that `\r`. It matches ripgrep's own
+        // `--crlf`, which is what a search on a host that has one is asked for.
         let multi = RegexBuilder::new(source)
             .case_insensitive(case_insensitive)
             .multi_line(true)
+            .crlf(true)
             .size_limit(SIZE_LIMIT)
             .dfa_size_limit(DFA_SIZE_LIMIT)
             .build()
@@ -184,7 +190,13 @@ impl Pattern {
                 let end = memchr_nl(bytes, line_start).unwrap_or(bytes.len());
                 line_no += 1;
                 if abs <= end {
-                    let line = &text[line_start..end];
+                    // A CRLF file's line keeps its `\r` when the buffer is cut at the `\n`, and
+                    // `str::lines` - what every other reader of a file's text in this tree uses -
+                    // drops it. Dropping it here too is what makes `foo$` match a CRLF line, and it
+                    // is the line a hit reports: a `\r` in a result is a character nobody wrote.
+                    let line = text[line_start..end]
+                        .strip_suffix('\r')
+                        .unwrap_or(&text[line_start..end]);
                     if self.re.is_match(line) {
                         on_hit(line_no, line);
                         found += 1;

@@ -1376,8 +1376,8 @@ impl Ignored {
             ),
         };
         Some(format!(
-            "{} file(s) ignored by .gitignore were not searched{eg}; name one in `path` to \
-             search it",
+            "{} file(s) ignored by git's ignore rules were not searched{eg}; name one in `path` \
+             to search it",
             self.files
         ))
     }
@@ -1409,14 +1409,19 @@ fn on_named_chain(path: &str, named: &[String]) -> bool {
         .any(|n| n == path || (n.starts_with(path) && n.as_bytes().get(path.len()) == Some(&b'/')))
 }
 
-/// [`walk`] with `.gitignore` honoured, as ripgrep honours it: hidden files are still listed, and
-/// `named` paths (and their ancestors) bypass the rules and [`default_skip`]. Every `.gitignore` is
+/// [`walk`] with git's ignore rules honoured, as ripgrep honours them: `.gitignore` files,
+/// `$GIT_DIR/info/exclude` and the global excludes file. Hidden files are still listed, and
+/// `named` paths (and their ancestors) bypass the rules and [`default_skip`]. Every rule file is
 /// read in one `read_many` after the walk, so a backend over ssh pays one round trip, not one per dir.
+///
+/// `home` is the operator's home as THIS backend spells paths ([`ExecBackend::home_path`]), where
+/// the global excludes file lives; `None` asks for none.
 pub fn walk_ignoring(
     backend: &dyn ExecBackend,
     root: &str,
     limit: usize,
     named: &[&str],
+    home: Option<&str>,
 ) -> (Vec<DirEntry>, bool, Ignored) {
     use ignore::gitignore::GitignoreBuilder;
 
@@ -1447,27 +1452,48 @@ pub fn walk_ignoring(
             .filter(|e| !e.is_dir && e.name == ".gitignore")
             .map(|e| e.path.clone()),
     );
-    if sources.is_empty() {
+    // git's two exclude files are not walk entries: they are read from the paths git derives them
+    // from. `.ignore` files are deliberately absent - this walk applies git's rules, not another
+    // tool's. Both come after every `.gitignore` in git's precedence order.
+    let excluded = exclude_files(backend, root, home);
+    if sources.is_empty() && excluded.is_empty() {
         return (entries, truncated, Ignored::default());
     }
-    let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    let mut refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    refs.extend(excluded.iter().map(|(path, _)| path.as_str()));
     let read = backend
         .read_many(&refs)
         .unwrap_or_else(|_| refs.iter().map(|p| backend.read(p)).collect());
     let mut rules: HashMap<String, ignore::gitignore::Gitignore> = HashMap::new();
-    for (path, bytes) in sources.iter().zip(read) {
+    let mut excludes: Vec<ignore::gitignore::Gitignore> = Vec::new();
+    for (path, bytes) in refs.iter().zip(read) {
         let Ok(bytes) = bytes else { continue };
-        let dir = dir_of(path);
-        let mut b = GitignoreBuilder::new(dir);
+        // A `.gitignore` speaks for its own directory; an exclude file speaks for the directory
+        // git roots it at, which is the repository's top and not its `info/` subdirectory.
+        let ignore_file = sources.iter().any(|s| s == path);
+        let base = match ignore_file {
+            true => dir_of(path),
+            false => excluded
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, base)| base.as_str())
+                .unwrap_or("."),
+        };
+        let mut b = GitignoreBuilder::new(base);
         for line in String::from_utf8_lossy(&bytes).lines() {
             // A line that does not parse is one rule lost, not the file.
             let _ = b.add_line(None, line);
         }
         if let Ok(gi) = b.build() {
-            rules.insert(dir.to_string(), gi);
+            match ignore_file {
+                true => {
+                    rules.insert(base.to_string(), gi);
+                }
+                false => excludes.push(gi),
+            }
         }
     }
-    if rules.is_empty() {
+    if rules.is_empty() && excludes.is_empty() {
         return (entries, truncated, Ignored::default());
     }
 
@@ -1482,19 +1508,30 @@ pub fn walk_ignoring(
         }
         let parent_pruned = pruned.contains(dir_of(&e.path));
         let drop = parent_pruned || {
-            let mut verdict = false;
+            let mut verdict: Option<bool> = None;
             let mut d = e.path.as_str();
             while d != "." && d != "/" {
                 d = dir_of(d);
                 if let Some(gi) = rules.get(d) {
                     let m = gi.matched(&e.path, e.is_dir);
                     if m.is_ignore() || m.is_whitelist() {
-                        verdict = m.is_ignore();
+                        verdict = Some(m.is_ignore());
                         break;
                     }
                 }
             }
-            verdict
+            // Only where no `.gitignore` spoke, and in git's own order: the repository's exclude
+            // beats the global one.
+            if verdict.is_none() {
+                for gi in &excludes {
+                    let m = gi.matched(&e.path, e.is_dir);
+                    if m.is_ignore() || m.is_whitelist() {
+                        verdict = Some(m.is_ignore());
+                        break;
+                    }
+                }
+            }
+            verdict.unwrap_or(false)
         };
         if !drop {
             kept.push(e);
@@ -1513,6 +1550,147 @@ pub fn walk_ignoring(
         }
     }
     (kept, truncated, ignored)
+}
+
+/// git's two exclude files for the tree under `root`, each with the directory its patterns are
+/// relative to: `$GIT_DIR/info/exclude`, then the global excludes file. Found by the paths git
+/// derives them from and read through the backend, so a walk over ssh needs no command to ask.
+/// A file that cannot be reached - a home outside a remote backend's root, say - is one rule set
+/// lost, which is the same stance `.gitignore` parsing takes.
+fn exclude_files(
+    backend: &dyn ExecBackend,
+    root: &str,
+    home: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(found) = repo_exclude(backend, root) {
+        out.push(found);
+    }
+    if let Some(path) = global_exclude(backend, home) {
+        // A global file applies as though it sat at the top of every repository, so its base is
+        // the walk's own root: every entry is under it, and a leading `/` means the root.
+        out.push((path, ".".to_string()));
+    }
+    out
+}
+
+/// `$GIT_DIR/info/exclude`, with the repository's top as its base. `.git` is a directory in a
+/// normal checkout and a FILE naming one in a linked worktree, which is how letibot's own seats
+/// are checked out, so both are read; a worktree's `info/exclude` lives in the COMMON dir.
+fn repo_exclude(backend: &dyn ExecBackend, root: &str) -> Option<(String, String)> {
+    let mut d = root;
+    loop {
+        let dot_git = match d {
+            "." => ".git".to_string(),
+            _ => format!("{d}/.git"),
+        };
+        if let Some(entry) = backend.stat(&dot_git) {
+            let gitdir = match entry.is_dir {
+                true => Some(dot_git),
+                false => backend
+                    .read(&dot_git)
+                    .ok()
+                    .and_then(|b| gitdir_from(&String::from_utf8_lossy(&b), d)),
+            };
+            // A `.git` this cannot read is the nearest repository, and one guess further up would
+            // be a different repository's rules.
+            let gitdir = gitdir?;
+            let common = match backend.read(&format!("{gitdir}/commondir")) {
+                Ok(bytes) => {
+                    let said = String::from_utf8_lossy(&bytes).trim().to_string();
+                    match said.is_empty() {
+                        true => gitdir,
+                        false => join_spelling(&gitdir, &said),
+                    }
+                }
+                Err(_) => gitdir,
+            };
+            let exclude = format!("{common}/info/exclude");
+            return backend.stat(&exclude).map(|_| (exclude, d.to_string()));
+        }
+        if d == "." || d == "/" {
+            return None;
+        }
+        d = dir_of(d);
+    }
+}
+
+/// The directory a `.git` FILE names, as the backend spells it: `gitdir: <path>`, whose path is
+/// absolute or relative to the directory holding the file.
+fn gitdir_from(file: &str, dir: &str) -> Option<String> {
+    let rest = file.lines().find_map(|l| l.strip_prefix("gitdir:"))?;
+    let said = rest.trim();
+    match said.is_empty() {
+        true => None,
+        false => Some(join_spelling(dir, said)),
+    }
+}
+
+/// `path` joined with a spelling git wrote, which may be relative or absolute.
+fn join_spelling(base: &str, said: &str) -> String {
+    match said.starts_with('/') {
+        true => said.to_string(),
+        false => format!("{base}/{said}"),
+    }
+}
+
+/// The operator's global excludes file: `core.excludesFile` from git's own config if it sets one,
+/// and `$XDG_CONFIG_HOME/git/ignore` (`<home>/.config/git/ignore`) otherwise. `None` when the
+/// machine has neither and when no home was named.
+fn global_exclude(backend: &dyn ExecBackend, home: Option<&str>) -> Option<String> {
+    let home = home.filter(|h| !h.is_empty())?;
+    // git reads the XDG config first and `~/.gitconfig` after it, so a later file wins.
+    let mut said: Option<String> = None;
+    for config in [
+        format!("{home}/.config/git/config"),
+        format!("{home}/.gitconfig"),
+    ] {
+        if let Ok(bytes) = backend.read(&config)
+            && let Some(v) =
+                git_config_value(&String::from_utf8_lossy(&bytes), "core", "excludesfile")
+        {
+            said = Some(v);
+        }
+    }
+    let path = match said {
+        Some(v) if v.starts_with("~/") => format!("{home}/{}", &v[2..]),
+        Some(v) => join_spelling(home, &v),
+        None => format!("{home}/.config/git/ignore"),
+    };
+    backend.stat(&path).map(|_| path)
+}
+
+/// One `key` of one `[section]` in a git config file, by name and case-insensitively, as git reads
+/// them. Enough for `core.excludesFile`: no includes, no `[section "sub"]`, no escapes.
+fn git_config_value(file: &str, section: &str, key: &str) -> Option<String> {
+    let mut inside = false;
+    for line in file.lines() {
+        let line = line.trim();
+        if let Some(head) = line.strip_prefix('[') {
+            let name = head.split(']').next().unwrap_or_default().trim();
+            inside = name.eq_ignore_ascii_case(section);
+            continue;
+        }
+        if !inside || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if !k.trim().eq_ignore_ascii_case(key) {
+            continue;
+        }
+        // A trailing comment is not part of the value; a quoted value is.
+        let v = v.trim();
+        let v = match v.strip_prefix('"') {
+            Some(rest) => rest.split('"').next().unwrap_or_default(),
+            None => v.split(['#', ';']).next().unwrap_or_default().trim(),
+        };
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 /// The default skip set: version-control and build directories, which are never
@@ -1614,7 +1792,7 @@ mod tests {
                 .collect()
         };
 
-        let r = walk_ignoring(&b, ".", 1000, &["."]);
+        let r = walk_ignoring(&b, ".", 1000, &["."], None);
         let got = files(&r);
         assert!(got.contains(&"a/x.rs".to_string()), "{got:?}");
         assert!(got.contains(&"a/keep.tmp".to_string()), "{got:?}");
@@ -1624,13 +1802,89 @@ mod tests {
         assert_eq!(r.2.files, 3, "{:?}", r.2);
 
         // Rooted at `a`, the root's `.gitignore` still drops `b.tmp`.
-        let got = files(&walk_ignoring(&b, "a", 1000, &["a"]));
+        let got = files(&walk_ignoring(&b, "a", 1000, &["a"], None));
         assert!(!got.contains(&"a/b.tmp".to_string()), "{got:?}");
 
         // Named, an ignored directory and a default-skipped one are walked.
-        let got = files(&walk_ignoring(&b, ".", 1000, &["out", "target/t.rs"]));
+        let got = files(&walk_ignoring(&b, ".", 1000, &["out", "target/t.rs"], None));
         assert!(got.contains(&"out/z.rs".to_string()), "{got:?}");
         assert!(got.contains(&"target/t.rs".to_string()), "{got:?}");
+    }
+
+    /// git's two exclude files are read as git reads them, from the paths git derives them from:
+    /// the repository's `info/exclude` and the operator's global excludes file, which is spelled
+    /// inside the tree here because that is the only place a backend rooted here can reach. A named
+    /// path still bypasses them, as it bypasses a `.gitignore`.
+    #[test]
+    fn the_exclude_files_are_read_and_a_named_path_still_bypasses_them() {
+        let d = tempdir::TempDir::new();
+        for (p, body) in [
+            // A worktree's `.git` is a DIRECTORY here; the linked-worktree shape is the same
+            // question asked of a file that names the git dir, and this tree's own checkout is one.
+            (".git/info/exclude", "*.skipme\n"),
+            (".gitignore", "*.tmp\n"),
+            // `~/.config/git/ignore` is git's default global excludes file, reached through the
+            // home the walk is told about.
+            (".home/.config/git/ignore", "*.gen\n"),
+            (
+                ".home/.gitconfig",
+                "[core]\n\texcludesFile = ~/.config/git/ignore\n",
+            ),
+            ("a.txt", ""),
+            ("nested/a.txt", ""),
+            ("a.skipme", ""),
+            ("a.tmp", ""),
+            ("a.gen", ""),
+            ("nested/b.gen", ""),
+        ] {
+            let f = d.path().join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        }
+        let b = HostBackend::new(d.path()).unwrap();
+        let names = |r: &(Vec<DirEntry>, bool, Ignored)| -> Vec<String> {
+            r.0.iter()
+                .filter(|e| !e.is_dir)
+                .map(|e| e.path.clone())
+                .collect()
+        };
+
+        let r = walk_ignoring(&b, ".", 1000, &["."], Some(".home"));
+        let got = names(&r);
+        assert!(got.contains(&"a.txt".to_string()), "{got:?}");
+        for gone in ["a.skipme", "a.tmp", "a.gen", "nested/b.gen"] {
+            assert!(
+                !got.contains(&gone.to_string()),
+                "{gone} survived in {got:?}"
+            );
+        }
+        // The count and the sentence are the tool's whole answer about what it did not search.
+        assert_eq!(r.2.files, 4, "{:?}", r.2);
+        assert!(
+            r.2.note()
+                .unwrap_or_default()
+                .contains("git's ignore rules"),
+            "{:?}",
+            r.2
+        );
+
+        // Naming a path is asking for it: the walk reaches it whatever the rules say.
+        let got = names(&walk_ignoring(
+            &b,
+            ".",
+            1000,
+            &["a.skipme", "a.gen"],
+            Some(".home"),
+        ));
+        assert!(got.contains(&"a.skipme".to_string()), "{got:?}");
+        assert!(got.contains(&"a.gen".to_string()), "{got:?}");
+        assert!(!got.contains(&"a.tmp".to_string()), "{got:?}");
+
+        // With no home named, the repository's exclude still applies and the global one is simply
+        // not read: a rule set the walk cannot reach is one rule set lost, not a changed answer.
+        let got = names(&walk_ignoring(&b, ".", 1000, &["."], None));
+        assert!(got.contains(&"a.gen".to_string()), "{got:?}");
+        assert!(!got.contains(&"a.skipme".to_string()), "{got:?}");
     }
 
     /// A backend rooted at `/` with the workspace as its cwd: a relative path is the

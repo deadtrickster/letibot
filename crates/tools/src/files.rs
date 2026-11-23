@@ -98,8 +98,14 @@ impl Seen {
         let Some(line) = lines.get(n.wrapping_sub(1)) else {
             return;
         };
+        self.mark_line_part(n, line, from, to);
+    }
+
+    /// The same, from the LINE's own text: a search holds the line and not the file, which is where
+    /// a hit on a very long line is cut to a window of it.
+    pub fn mark_line_part(&mut self, n: usize, line: &str, from: usize, to: usize) {
         let fp = fp_line(line);
-        if matches!(self.table.get(n - 1), Some(Some(was)) if *was == fp) {
+        if matches!(self.table.get(n.wrapping_sub(1)), Some(Some(was)) if *was == fp) {
             return;
         }
         let slot = self.parts.entry(n).or_insert((fp, Vec::new()));
@@ -123,7 +129,10 @@ impl Seen {
             .is_some_and(|&(x, y)| x == 0 && y >= line.len())
         {
             self.parts.remove(&n);
-            self.mark(lines, n, n);
+            if self.table.len() < n {
+                self.table.resize(n, None);
+            }
+            self.table[n - 1] = Some(fp);
         } else {
             slot.1 = merged;
         }
@@ -275,6 +284,15 @@ impl FileLedger {
         for &n in shown {
             s.mark(&lines, n, n);
         }
+    }
+
+    /// A line too long to show whole was shown as bytes `from..to` of it: the door a search uses,
+    /// since it holds the line and not the file.
+    pub fn mark_line_part(&self, path: &str, n: usize, line: &str, from: usize, to: usize) {
+        self.entry()
+            .entry(normalise(path))
+            .or_default()
+            .mark_line_part(n, line, from, to);
     }
 
     /// Part of line `n` was displayed: bytes `from..to` of it. The digest is recorded as in

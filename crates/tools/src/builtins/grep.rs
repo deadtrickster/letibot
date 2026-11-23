@@ -5,7 +5,7 @@
 use letibot_transcript::text::clip_line_counted;
 use serde_json::Value;
 
-use crate::backend::{DirEntry, Ignored, walk_ignoring};
+use crate::backend::{BackendError, DirEntry, Ignored, walk_ignoring};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -23,6 +23,10 @@ struct Hit {
     /// Captured during the scan because that is the only place the file's text is in hand;
     /// rendering re-reads nothing.
     region: Vec<(usize, String)>,
+    /// Where in `line` the match is, as byte offsets, and `None` for a reading that did not say.
+    /// It is what centres the window a very long line is shown through, and what moves `edit`'s
+    /// gate from the line's first 400 characters to the piece that was really displayed.
+    span: Option<(usize, usize)>,
 }
 
 /// A ceiling on `context`, so one match cannot return a file. Twenty lines
@@ -52,7 +56,8 @@ impl Tool for Grep {
              A search that matches nothing under `path` reports where the pattern does \
              match, and an over-anchored pattern is retried as its bare identifier — \
              both in the same call, so a miss does not need a second one. Files \
-             ignored by `.gitignore` are skipped unless `path` names them.",
+             git ignores (`.gitignore`, `.git/info/exclude`, your global excludes) are \
+             skipped unless `path` names them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -169,6 +174,9 @@ impl Tool for Grep {
         }
 
         let mut tried: Vec<String> = Vec::new();
+        // What a reading said about itself - which `rg` answered, where - said once and kept even
+        // when the rung that ran it found nothing: it is a fact about this call, not about a hit.
+        let mut notes: Vec<String> = Vec::new();
         let mut files_scanned = 0usize;
         let mut unopened: Option<String> = None;
         let mut ignored = Ignored::default();
@@ -196,6 +204,7 @@ impl Tool for Grep {
                 context,
             );
             files_scanned = files_scanned.max(scan.scanned);
+            notes.extend(scan.notes.iter().cloned());
             if walked.ignored.files > ignored.files {
                 ignored = walked.ignored.clone();
             }
@@ -207,7 +216,7 @@ impl Tool for Grep {
                 for t in &tried {
                     inv = inv.with_note(t.clone());
                 }
-                return inv;
+                return with_notes(inv, &notes);
             }
             if attempt.scope == scope {
                 unopened = unopened_note(scan.skipped_large, scan.unreached);
@@ -261,7 +270,7 @@ impl Tool for Grep {
             if let Some(n) = &unopened {
                 inv = inv.with_note(n.clone());
             }
-            return inv;
+            return with_notes(inv, &notes);
         }
 
         // Zero files searched is not a fact about the tree: `glob: "*.rs"` matches the whole relative
@@ -285,9 +294,12 @@ impl Tool for Grep {
             if let Some(n) = ignored.note() {
                 why.push_str(&format!("\n{n}."));
             }
-            return Invocation::failed(
-                format!("0 files matched the scope, so `{source}` was never searched for"),
-                why,
+            return with_notes(
+                Invocation::failed(
+                    format!("0 files matched the scope, so `{source}` was never searched for"),
+                    why,
+                ),
+                &notes,
             );
         }
 
@@ -322,8 +334,16 @@ impl Tool for Grep {
         if let Some(n) = suggestion {
             inv = inv.with_note(n);
         }
-        inv
+        with_notes(inv, &notes)
     }
+}
+
+/// The notes a call's readings left, on the result the model reads.
+fn with_notes(mut inv: Invocation, notes: &[String]) -> Invocation {
+    for n in notes {
+        inv = inv.with_note(n.clone());
+    }
+    inv
 }
 
 /// The definition keywords that make a pattern structural rather than lexical: words that name a
@@ -451,6 +471,9 @@ struct Scan {
     /// Set when the scan stopped before the tree ran out. What it found is then part of an
     /// answer and never the whole of one.
     stop: Option<Stop>,
+    /// What the reading itself said about how it ran - today, which `rg` answered and where. Empty
+    /// for the in-process scan, which has no engine of its own to name.
+    notes: Vec<String>,
 }
 
 /// The listings one call has walked, by scope. A rung that searches the same scope as the rung
@@ -468,8 +491,13 @@ impl Listings {
     /// a round trip, and the common case is a directory.
     fn of(&mut self, ctx: &InvokeCtx<'_>, scope: &str) -> &[DirEntry] {
         if self.scope.as_deref() != Some(scope) {
-            let (mut entries, _, ignored) =
-                walk_ignoring(ctx.backend, scope, ctx.limits.max_walk_entries, &[scope]);
+            let (mut entries, _, ignored) = walk_ignoring(
+                ctx.backend,
+                scope,
+                ctx.limits.max_walk_entries,
+                &[scope],
+                ctx.backend.home_path().as_deref(),
+            );
             self.ignored = ignored;
             if entries.is_empty()
                 && let Some(e) = ctx.backend.stat(scope)
@@ -500,27 +528,170 @@ fn search(
         .filter(|e| file_glob.is_none_or(|g| glob_match(g, &e.path)))
         .collect();
 
-    let mut hits = Vec::new();
-    let mut scanned = 0usize;
+    // Which candidates this rung could read at all: the size ceiling, then the byte budget, in
+    // walk order. Both readings keep the same window, so the tallies a result reports about the
+    // files it did not open do not depend on which one answered.
+    let window = window(&files);
+    let candidates = files.len();
+    let mut scan = match pushed_down(ctx, pattern, scope, &files, &window, max, context) {
+        Some(scan) => scan,
+        None => read_and_match(ctx, pattern, &window, max, context),
+    };
+    scan.candidates = candidates;
+    scan
+}
+
+/// The candidates a rung can read: everything at or under [`FILE_CEILING`], until
+/// [`BYTES_BUDGET`] is spent. The tail the budget never reached is counted, not silently dropped.
+struct Window<'a> {
+    files: Vec<&'a DirEntry>,
+    skipped_large: usize,
+    unreached: usize,
+}
+
+fn window<'a>(files: &[&'a DirEntry]) -> Window<'a> {
+    let mut kept: Vec<&'a DirEntry> = Vec::new();
     let mut skipped_large = 0usize;
     let mut unreached = 0usize;
     let mut read_bytes = 0u64;
+    for (i, e) in files.iter().enumerate() {
+        if e.bytes > FILE_CEILING {
+            skipped_large += 1;
+            continue;
+        }
+        if read_bytes >= BYTES_BUDGET {
+            unreached = files.len() - i;
+            break;
+        }
+        read_bytes += e.bytes;
+        kept.push(e);
+    }
+    Window {
+        files: kept,
+        skipped_large,
+        unreached,
+    }
+}
+
+/// The search as `rg` runs it on the machine the backend reads, when that machine has one. `None`
+/// is the in-process scan's turn: no `rg`, a backend that cannot run a command, a dialect that
+/// refuses the pattern, or a run that failed. Nothing here is ever approximated - an answer this
+/// cannot give exactly is an answer it does not give.
+fn pushed_down(
+    ctx: &mut InvokeCtx<'_>,
+    pattern: &Pattern,
+    scope: &str,
+    files: &[&DirEntry],
+    window: &Window<'_>,
+    max: usize,
+    context: usize,
+) -> Option<Scan> {
+    let tool = super::rg::arm(ctx.backend)?;
+    if matches!(tool, super::rg::Tool::Absent) || window.files.is_empty() {
+        return None;
+    }
+    let keep: std::collections::HashSet<&str> =
+        window.files.iter().map(|e| e.path.as_str()).collect();
+    // A directory the walk always skips is one rg need not open - unless a candidate sits under a
+    // segment of that name, which is what naming the missing path in `path` does. The list is
+    // `default_skip`'s; `.git` is rg's own skip as well, and is named here for the same rule.
+    const SKIP: [&str; 6] = [
+        ".git",
+        "target",
+        "node_modules",
+        ".venv",
+        "__pycache__",
+        ".cache",
+    ];
+    let skip: Vec<&str> = SKIP
+        .into_iter()
+        .filter(|name| {
+            !files
+                .iter()
+                .any(|e| e.path.split('/').any(|segment| segment == *name))
+        })
+        .collect();
+    let question = super::rg::Question {
+        scope,
+        pattern: &pattern.source,
+        case_insensitive: pattern.case_insensitive,
+        context,
+        max_matches: max,
+        skip: &skip,
+    };
+    let found = super::rg::search(ctx.backend, &question, &keep, context).ok()?;
+    // rg's per-file cap is the rung's own `max`, so a file that answered with exactly that many
+    // may have had more. Its blocks arrive one file at a time, which is what makes the count
+    // possible without asking anything else.
+    let mut capped = false;
+    let mut run = (String::new(), 0usize);
+    let mut hits: Vec<Hit> = Vec::new();
+    for f in found {
+        if f.path != run.0 {
+            run = (f.path.clone(), 0);
+        }
+        run.1 += 1;
+        capped |= run.1 >= max.max(1);
+        hits.push(Hit {
+            path: f.path,
+            line_no: f.line_no,
+            line: f.line,
+            region: f.region,
+            span: f.span,
+        });
+    }
+    let mut best = Best::new(max);
+    best.offer(hits, capped);
+    let (hits, truncated) = best.finish();
     let mut languages: Vec<&'static str> = Vec::new();
-    let candidates = files.len();
-    // The page's own bounds, and the two the substrate can spend for us: a failed page is retried
-    // one file at a time only so far, and the call's wall clock ends the scan either way.
+    for e in &window.files {
+        if let Ok(l) = letibot_code::Language::of_path(&e.path)
+            && !languages.contains(&l.name())
+        {
+            languages.push(l.name());
+        }
+    }
+    let mut notes = Vec::new();
+    if let Some(note) = super::rg::version_note(ctx.backend, &tool) {
+        notes.push(note);
+    }
+    Some(Scan {
+        hits,
+        // Every file in the window was opened by rg. A read that fails is a thing this path
+        // cannot see, and the page's own accounting is what the in-process scan would have gone
+        // through to find out.
+        scanned: window.files.len(),
+        truncated,
+        skipped_large: window.skipped_large,
+        unreached: window.unreached,
+        languages,
+        candidates: files.len(),
+        stop: None,
+        notes,
+    })
+}
+
+/// The in-process scan: the window's files, a page at a time, matched across the idle cores. The
+/// page is one backend call where the substrate can do it; the matching is this process's work and
+/// is the expensive half (`pattern`'s own notes measure it at 95% of a search).
+fn read_and_match(
+    ctx: &mut InvokeCtx<'_>,
+    pattern: &Pattern,
+    window: &Window<'_>,
+    max: usize,
+    context: usize,
+) -> Scan {
+    let files = &window.files;
+    let mut best = Best::new(max);
+    let mut scanned = 0usize;
+    let mut languages: Vec<&'static str> = Vec::new();
     let mut reader = Reader::new();
-    // A page at a time, not a file at a time. The page is chosen by the same tests the one-at-a-time
-    // loop applied (the size ceiling, then the byte budget), so the tallies and the hit list are
-    // unchanged, and a backend whose `read` is a round trip is asked once per page.
     let mut i = 0usize;
     while i < files.len() {
         let mut page: Vec<usize> = Vec::new();
         let mut page_bytes = 0u64;
         while i < files.len() && page.len() < READ_PAGE_FILES {
             let e = files[i];
-            // Tested before the progress line, so a page that breaks here does not print the
-            // same `scanned i of N` twice.
             if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
                 break;
             }
@@ -528,86 +699,34 @@ fn search(
                 // Progress is liveness: a walk over a large tree must produce it.
                 ctx.progress(format!("scanned {i} of {} files", files.len()));
             }
-            if e.bytes > FILE_CEILING {
-                skipped_large += 1;
-                i += 1;
-                continue;
-            }
-            if read_bytes >= BYTES_BUDGET {
-                unreached = files.len() - i;
-                break;
-            }
-            read_bytes += e.bytes;
             page_bytes += e.bytes;
             page.push(i);
             i += 1;
-        }
-        if page.is_empty() {
-            // The budget ran out (or the list did). `unreached` is set if it was the budget, and
-            // nothing was read.
-            break;
         }
         let paths: Vec<&str> = page.iter().map(|k| files[*k].path.as_str()).collect();
         // One call for the page where the backend can do it, and a BOUNDED retry when the page's
         // own call failed: a channel that answers nothing in ten seconds is not a slow channel.
         let got = reader.page(ctx, &paths);
-        for (slot, bytes) in page.iter().zip(got) {
-            let e = files[*slot];
-            let Ok(bytes) = bytes else {
-                continue;
-            };
-            if bytes.contains(&0) {
-                // Binary. Skipped rather than rendered as replacement characters.
+        for (k, bytes) in page.iter().zip(&got) {
+            if bytes.is_err() {
                 continue;
             }
+            // Opened, whether or not its bytes are text: a binary file is read and then left out
+            // of the match, so the denominator counts it the same way rg's run does.
             scanned += 1;
-            if let Ok(l) = letibot_code::Language::of_path(&e.path)
+            if let Ok(l) = letibot_code::Language::of_path(&files[*k].path)
                 && !languages.contains(&l.name())
             {
                 languages.push(l.name());
             }
-            let (text, _) = text_of(&bytes);
-            // One scan of the whole buffer rather than one engine call per line: `line_hits`
-            // confirms every candidate against the line-scoped program, so the semantics are the
-            // same and only the cost differs.
-            let remaining = max - hits.len();
-            let path = e.path.clone();
-            // Only when asked: collecting a file's lines is cheap but not free, and
-            // the common call passes no context at all.
-            let file_lines: Vec<&str> = if context > 0 {
-                text.lines().collect()
-            } else {
-                Vec::new()
-            };
-            let truncated = pattern.line_hits(&text, remaining, |line_no, line| {
-                let region = if context > 0 {
-                    let first = line_no.saturating_sub(context).max(1);
-                    let last = (line_no + context).min(file_lines.len());
-                    (first..=last)
-                        .map(|n| (n, file_lines[n - 1].to_string()))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                hits.push(Hit {
-                    path: path.clone(),
-                    line_no,
-                    line: line.to_string(),
-                    region,
-                });
-            });
-            if truncated {
-                return Scan {
-                    hits,
-                    scanned,
-                    truncated: true,
-                    skipped_large,
-                    unreached,
-                    languages,
-                    candidates,
-                    stop: None,
-                };
-            }
+        }
+        let (page_hits, page_capped) = match_page(files, &page, &got, pattern, context, max);
+        best.offer(page_hits, page_capped);
+        // The cap ends the rung: what lies past it is an answer the model cannot see. Stopping at a
+        // page's edge rather than inside one costs a page of reads, and keeps a search for a common
+        // word as cheap as it was instead of reading a whole tree to cut it to the same size.
+        if best.is_full() {
+            break;
         }
         if reader.stop().is_some() {
             // What was never reached is the stop's own sentence: `unreached` means the byte
@@ -615,16 +734,185 @@ fn search(
             break;
         }
     }
+    let (hits, truncated) = best.finish();
     Scan {
         hits,
         scanned,
-        truncated: false,
-        skipped_large,
-        unreached,
+        truncated,
+        skipped_large: window.skipped_large,
+        unreached: window.unreached,
         languages,
-        candidates,
+        candidates: files.len(),
         stop: reader.stop().cloned(),
+        notes: Vec::new(),
     }
+}
+
+/// How many threads a page is matched across. A cap, not a target: one `grep` should not take a
+/// whole box, and the files in a page are 64 at most.
+const MATCHERS: usize = 8;
+
+/// One page's files, matched in parallel and put back in the page's own order, so the answer is
+/// the same one whatever the cores did with it.
+fn match_page(
+    files: &[&DirEntry],
+    page: &[usize],
+    got: &[Result<Vec<u8>, BackendError>],
+    pattern: &Pattern,
+    context: usize,
+    max: usize,
+) -> (Vec<Hit>, bool) {
+    let width = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, MATCHERS);
+    let chunk = page.len().div_ceil(width).max(1);
+    if width == 1 || page.len() <= 1 {
+        return match_slice(files, page, got, pattern, context, max, 0..page.len());
+    }
+    let parts: Vec<(Vec<Hit>, bool)> = std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for k in 0..width {
+            let (a, b) = (k * chunk, ((k + 1) * chunk).min(page.len()));
+            if a >= b {
+                break;
+            }
+            handles
+                .push(s.spawn(move || match_slice(files, page, got, pattern, context, max, a..b)));
+        }
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+    let mut capped = false;
+    let mut hits = Vec::new();
+    for (part, part_capped) in parts {
+        capped |= part_capped;
+        hits.extend(part);
+    }
+    (hits, capped)
+}
+
+/// `range` of a page, matched file by file. A file's cap is the rung's own `max`: a file that had
+/// more matches than the whole answer could not contribute anything past them.
+fn match_slice(
+    files: &[&DirEntry],
+    page: &[usize],
+    got: &[Result<Vec<u8>, BackendError>],
+    pattern: &Pattern,
+    context: usize,
+    max: usize,
+    range: std::ops::Range<usize>,
+) -> (Vec<Hit>, bool) {
+    let mut hits = Vec::new();
+    let mut capped = false;
+    for k in range {
+        let e = files[page[k]];
+        let Ok(bytes) = &got[k] else {
+            continue;
+        };
+        if bytes.contains(&0) {
+            // Binary. Skipped rather than rendered as replacement characters.
+            continue;
+        }
+        let (text, _) = text_of(bytes);
+        // One scan of the whole buffer rather than one engine call per line: `line_hits`
+        // confirms every candidate against the line-scoped program, so the semantics are the
+        // same and only the cost differs.
+        let path = e.path.clone();
+        // Only when asked: collecting a file's lines is cheap but not free, and the common call
+        // passes no context at all.
+        let file_lines: Vec<&str> = if context > 0 {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
+        let truncated = pattern.line_hits(&text, max, |line_no, line| {
+            let region = if context > 0 {
+                let first = line_no.saturating_sub(context).max(1);
+                let last = (line_no + context).min(file_lines.len());
+                (first..=last)
+                    .map(|n| (n, file_lines[n - 1].to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            // Where in the line the match is, which is what centres the window a very long line is
+            // shown through; rg says the same offsets for the same line.
+            let span = pattern.find(line);
+            hits.push(Hit {
+                path: path.clone(),
+                line_no,
+                line: line.to_string(),
+                region,
+                span,
+            });
+        });
+        capped |= truncated;
+    }
+    (hits, capped)
+}
+
+/// The answer's first `max` hits by `(path, line)`. Both readings answer in this order, so the
+/// result does not depend on which files a substrate happened to read first, and a cap then cuts
+/// the same hits wherever the search ran.
+///
+/// A CAPPED answer is the one place the two can disagree about WHICH hits they keep: the in-process
+/// scan stops a page after it has enough (see `read_and_match`), so a tree of more than one page can
+/// hand it a different `max` than a host's `rg` saw. The count, and the note about the cap, are the
+/// same either way, and both are true of a tree the model asked to truncate.
+struct Best {
+    max: usize,
+    hits: Vec<Hit>,
+    seen: usize,
+    capped: bool,
+}
+
+impl Best {
+    fn new(max: usize) -> Self {
+        Best {
+            max: max.max(1),
+            hits: Vec::new(),
+            seen: 0,
+            capped: false,
+        }
+    }
+
+    /// `capped` is the reading's own word for "it stopped counting hits in this file".
+    fn offer(&mut self, hits: Vec<Hit>, capped: bool) {
+        self.capped |= capped;
+        for hit in hits {
+            self.seen += 1;
+            if self.hits.len() >= self.max && !before(&hit, &self.hits[self.max - 1]) {
+                continue;
+            }
+            let at = self
+                .hits
+                .binary_search_by(|h| order(h, &hit))
+                .unwrap_or_else(|e| e);
+            self.hits.insert(at, hit);
+            self.hits.truncate(self.max);
+        }
+    }
+
+    fn finish(self) -> (Vec<Hit>, bool) {
+        let truncated = self.capped || self.seen > self.max;
+        (self.hits, truncated)
+    }
+
+    /// Has the answer reached its cap, so that a reading may stop looking?
+    fn is_full(&self) -> bool {
+        self.seen >= self.max
+    }
+}
+
+fn order(a: &Hit, b: &Hit) -> std::cmp::Ordering {
+    (a.path.as_str(), a.line_no).cmp(&(b.path.as_str(), b.line_no))
+}
+
+fn before(a: &Hit, b: &Hit) -> bool {
+    order(a, b) == std::cmp::Ordering::Less
 }
 
 /// What a scan that stopped on its bound or a dying channel returns: every hit it did find, the
@@ -692,7 +980,7 @@ fn render_hits(hits: &[Hit], scope: &str) -> String {
                 "{}:{}: {}\n",
                 h.path,
                 h.line_no,
-                clip_line_counted(&h.line, HIT_CAP)
+                shown_line(&h.line, h.span, Some(h.line_no))
             ));
         }
         return out;
@@ -710,13 +998,15 @@ fn render_hits(hits: &[Hit], scope: &str) -> String {
                 _ => {}
             }
             // The match itself is marked, so a region does not have to be counted
-            // through to find what was asked about.
+            // through to find what was asked about - and the match line goes through the same
+            // window as a hit without context, since it is the line the search is about.
             let mark = if *n == h.line_no { ':' } else { '-' };
-            out.push_str(&format!(
-                "{}:{n}{mark} {}\n",
-                h.path,
+            let shown = if *n == h.line_no {
+                shown_line(text, h.span, Some(*n))
+            } else {
                 clip_line_counted(text, HIT_CAP)
-            ));
+            };
+            out.push_str(&format!("{}:{n}{mark} {shown}\n", h.path));
             last = Some((&h.path, *n));
         }
     }
@@ -747,6 +1037,52 @@ fn where_it_occurs(hits: &[Hit], asked_scope: &str) -> String {
 /// A hit line is shown up to this many characters; the full line is one `read` away.
 const HIT_CAP: usize = 400;
 
+/// Where a long line is shown from: characters `a..b` of it, and how many it has. `None` when the
+/// whole line fits.
+fn window_of(line: &str, span: Option<(usize, usize)>) -> Option<(usize, usize, usize)> {
+    let total = line.chars().count();
+    if total <= HIT_CAP {
+        return None;
+    }
+    // Centred on the match, half a window either side, so what was asked about is what is read and
+    // not a prefix of the line that happens to come first. A match longer than the window is cut.
+    let column = match span {
+        Some((start, _)) => line
+            .get(..crate::edit::floor_boundary(line, start))
+            .map_or(0, |pre| pre.chars().count()),
+        None => 0,
+    };
+    let a = column.saturating_sub(HIT_CAP / 2);
+    let b = (a + HIT_CAP).min(total);
+    Some((a, b, total))
+}
+
+/// Byte offset of character `at` of `line`.
+fn byte_of(line: &str, at: usize) -> usize {
+    line.char_indices().nth(at).map_or(line.len(), |(i, _)| i)
+}
+
+/// One hit line as the model reads it: whole when it fits, and otherwise the window around the
+/// match, saying which characters of how many it is and how to read the rest. `line_no` names the
+/// line for that `read`; `None` is a context line, which is shown from its start as it was before.
+fn shown_line(line: &str, span: Option<(usize, usize)>, line_no: Option<usize>) -> String {
+    let Some((a, b, total)) = window_of(line, span) else {
+        return clip_line_counted(line, HIT_CAP);
+    };
+    let from = byte_of(line, a);
+    let to = byte_of(line, b);
+    let rest = match line_no {
+        Some(n) => format!(
+            " — characters {a}-{b} of {total}; `read` offset={n} column_offset={b} for the \
+             rest, and an `edit` inside these characters is allowed"
+        ),
+        None => format!(" — characters {a}-{b} of {total}"),
+    };
+    let lead = if a > 0 { "…" } else { "" };
+    let tail = if b < total { "…" } else { "" };
+    format!("{lead}{}{tail}{rest}", &line[from..to])
+}
+
 /// Whether the output carried this line whole. A clipped line showed the model a prefix, so the
 /// shown-lines ledger must not mark it.
 fn shown_in_full(line: &str) -> bool {
@@ -759,11 +1095,20 @@ fn mark_shown(ctx: &mut InvokeCtx<'_>, hits: &[Hit]) {
     let mut by_path: std::collections::BTreeMap<&str, Vec<(usize, &str)>> =
         std::collections::BTreeMap::new();
     for h in hits {
-        if shown_in_full(&h.line) {
-            by_path
+        match window_of(&h.line, h.span) {
+            // A long line was shown as one window of it: that window, and only it, may be edited
+            // from this call.
+            Some((a, b, _)) => ctx.files.mark_line_part(
+                &h.path,
+                h.line_no,
+                &h.line,
+                byte_of(&h.line, a),
+                byte_of(&h.line, b),
+            ),
+            None => by_path
                 .entry(h.path.as_str())
                 .or_default()
-                .push((h.line_no, h.line.as_str()));
+                .push((h.line_no, h.line.as_str())),
         }
         for (n, text) in &h.region {
             if shown_in_full(text) {
@@ -799,7 +1144,7 @@ mod tests {
         assert!(!r.payload.contains("gen/out.rs:"), "{}", r.payload);
         assert!(
             r.payload
-                .contains("3 file(s) ignored by .gitignore were not searched"),
+                .contains("3 file(s) ignored by git's ignore rules were not searched"),
             "{}",
             r.payload
         );
@@ -1359,5 +1704,524 @@ mod paging_tests {
             other_gone, reference,
             "an unreadable neighbour changed the answer"
         );
+    }
+}
+
+#[cfg(test)]
+mod pushdown_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use letibot_transcript::ToolCall;
+
+    use crate::backend::{
+        BackendError, Command, DirEntry, ExecBackend, HostBackend, Output, tempdir::TempDir,
+    };
+    use crate::builtins::retrieval::Unavailable;
+    use crate::events::RecordingToolSink;
+    use crate::result::ToolResult;
+    use crate::runtime::ToolRuntime;
+
+    use super::FILE_CEILING;
+
+    /// Whether this box can run `rg`. The pushdown is about what a host that HAS it answers, so a
+    /// box that has never had one skips loudly instead of failing.
+    fn rg_here() -> bool {
+        std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    macro_rules! need_rg {
+        () => {
+            if !rg_here() {
+                eprintln!(
+                    "SKIPPED: this box has no `rg`, so the pushdown half never ran; the in-process \
+                     half is covered by the tests that do not need it"
+                );
+                return;
+            }
+        };
+    }
+
+    /// What a backend's `run` does.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Loud {
+        /// The real host command.
+        Real,
+        /// A host whose PATH has no `rg`: the probe answers 127.
+        NoRg,
+        /// A backend that cannot run a command at all, which is what THIS box's own seat backend
+        /// is: no cgroup, so no process to own a command with.
+        Refuse,
+    }
+
+    impl Loud {
+        fn label(self) -> &'static str {
+            match self {
+                Loud::Real => "real",
+                Loud::NoRg => "no-rg",
+                Loud::Refuse => "refuse",
+            }
+        }
+    }
+
+    /// A backend over a real tree that CAN run a command: a remote host or a VM, which is where the
+    /// pages this tool used to pay for were round trips. `describe` carries a serial so two of them
+    /// never share a probe: the probe cache is keyed by the backend's identity.
+    struct Run {
+        inner: HostBackend,
+        mode: Loud,
+        home: String,
+        serial: usize,
+        runs: Arc<AtomicUsize>,
+    }
+
+    static SERIAL: AtomicUsize = AtomicUsize::new(0);
+
+    impl ExecBackend for Run {
+        fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            match self.mode {
+                Loud::Refuse => Err(BackendError::Unsupported(
+                    "this session's backend cannot start processes",
+                )),
+                Loud::NoRg => Ok(Output {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    exit: 127,
+                }),
+                Loud::Real => {
+                    let root = self.inner.root_path().unwrap_or_else(|| ".".into());
+                    let out = std::process::Command::new(&cmd.argv[0])
+                        .args(&cmd.argv[1..])
+                        .current_dir(root)
+                        .envs(cmd.env.iter().cloned())
+                        .output()
+                        .map_err(|e| BackendError::Io(e.to_string()))?;
+                    Ok(Output {
+                        stdout: out.stdout,
+                        stderr: out.stderr,
+                        exit: out.status.code().unwrap_or(-1),
+                    })
+                }
+            }
+        }
+        fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
+            self.inner.read(path)
+        }
+        fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+            self.inner.write(path, bytes)
+        }
+        fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
+            self.inner.list(path)
+        }
+        fn stat(&self, path: &str) -> Option<DirEntry> {
+            self.inner.stat(path)
+        }
+        fn describe(&self) -> String {
+            format!("run/{}#{}", self.mode.label(), self.serial)
+        }
+        fn processes_arc(&self) -> Option<Arc<dyn crate::exec::ProcessHost>> {
+            None
+        }
+        fn home_path(&self) -> Option<String> {
+            Some(self.home.clone())
+        }
+        fn workspace_path(&self) -> Option<String> {
+            self.inner.workspace_path()
+        }
+        fn root_path(&self) -> Option<String> {
+            self.inner.root_path()
+        }
+    }
+
+    /// A fixture tree holding every shape the two readings have to agree about: a gitignored tree,
+    /// the repository's own exclude file, the operator's global excludes file, a hidden file, a
+    /// binary file, one over the ceiling, context lines, CRLF, Cyrillic/CJK/emoji, and a line far
+    /// longer than a hit shows.
+    struct Tree(TempDir);
+
+    impl Tree {
+        fn new() -> Tree {
+            let dir = TempDir::new();
+            let root = dir.path();
+            let put = |p: &str, body: &[u8]| {
+                let f = root.join(p);
+                std::fs::create_dir_all(f.parent().expect("a parent")).expect("fixture dir");
+                std::fs::write(f, body).expect("fixture file");
+            };
+            put(".gitignore", b"gen/\n*.log\n");
+            put(".git/info/exclude", b"*.skipme\n");
+            // The session's home is part of the tree, so the global excludes file is a path the
+            // backend can read: `<home>/.config/git/ignore`.
+            put("home/.config/git/ignore", b"*.gen\n");
+            put("gen/out.rs", b"quokka_gen\n");
+            put("run.log", b"quokka_log\n");
+            put("dropped.skipme", b"quokka_skipme\n");
+            put("dropped.gen", b"quokka_global\n");
+            put(".hidden/note.txt", b"quokka_hidden\n");
+            put("blob.bin", b"quokka_bin\0\x01\x02");
+            let big = std::fs::File::create(root.join("big.rs")).expect("sparse file");
+            big.set_len(FILE_CEILING + 1).expect("set_len");
+            put("crlf.txt", "one\r\nquokka crlf\r\nthree\r\n".as_bytes());
+            put(
+                "uni.txt",
+                "привет quokka\r\n世界 quokka\r\n🦀 quokka\r\n".as_bytes(),
+            );
+            put("ctx.txt", b"a\nb\nquokka line4\nc\nd\n");
+            let long = format!(
+                "head {} quokka_sentinel {}",
+                "x".repeat(1200),
+                "y".repeat(1200)
+            );
+            put("long.txt", format!("{long}\ntail\n").as_bytes());
+            put("src/lib.rs", b"pub fn parse_args() {}\n// quokka\n");
+            Tree(dir)
+        }
+
+        fn runtime(&self, mode: Loud) -> (ToolRuntime, Arc<AtomicUsize>) {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let backend = Run {
+                inner: HostBackend::writable(self.0.path()).expect("fixture root"),
+                mode,
+                home: "home".to_string(),
+                serial: SERIAL.fetch_add(1, Ordering::SeqCst),
+                runs: Arc::clone(&runs),
+            };
+            let registry =
+                crate::read_only_tools(Arc::new(Unavailable)).expect("built-ins register");
+            (ToolRuntime::new(registry, Box::new(backend)), runs)
+        }
+
+        fn ask(&self, mode: Loud, args: &str) -> ToolResult {
+            let (rt, _) = self.runtime(mode);
+            call(rt, args)
+        }
+
+        fn both(&self, args: &str) -> (ToolResult, ToolResult) {
+            (self.ask(Loud::NoRg, args), self.ask(Loud::Real, args))
+        }
+    }
+
+    fn call(rt: ToolRuntime, args: &str) -> ToolResult {
+        let mut sink = RecordingToolSink::new();
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "grep".into(),
+            arguments: args.to_string(),
+        };
+        rt.invoke("turn_1", &call, &mut sink)
+    }
+
+    /// The one note that names the engine: it is the evidence the pushdown ran, so it is compared
+    /// apart from the notes both readings must share.
+    fn engine_notes(r: &ToolResult) -> Vec<String> {
+        r.notes
+            .iter()
+            .filter(|n| n.contains("on that host"))
+            .cloned()
+            .collect()
+    }
+
+    fn other_notes(r: &ToolResult) -> Vec<String> {
+        r.notes
+            .iter()
+            .filter(|n| !n.contains("on that host"))
+            .cloned()
+            .collect()
+    }
+
+    /// The same call, answered by `rg` on the host and by this process, renders the same hits and
+    /// says the same things about them. A substrate may change what a search costs; it may not
+    /// change what it says.
+    #[test]
+    fn a_pushed_down_search_answers_exactly_as_the_in_process_one() {
+        need_rg!();
+        let t = Tree::new();
+        for args in [
+            r#"{"pattern":"quokka"}"#,
+            r#"{"pattern":"quokka","context":1}"#,
+            r#"{"pattern":"quokka","glob":"src/**"}"#,
+            r#"{"pattern":"QUOKKA","case_insensitive":true}"#,
+            r#"{"pattern":"quokka crlf$"}"#,
+            r#"{"pattern":"привет|世界|🦀"}"#,
+            r#"{"pattern":"quokka","max_matches":3}"#,
+            r#"{"pattern":"quokka_sentinel"}"#,
+            r#"{"pattern":"quokka_gen","path":"gen"}"#,
+            r#"{"pattern":"quokka_skipme","path":"dropped.skipme"}"#,
+            r#"{"pattern":"quokka_global","path":"dropped.gen"}"#,
+            r#"{"pattern":"quokka_nothing_at_all"}"#,
+        ] {
+            let (fallback, pushed) = t.both(args);
+            assert!(
+                engine_notes(&fallback).is_empty(),
+                "the reference ran an engine for {args}"
+            );
+            assert_eq!(
+                engine_notes(&pushed).len(),
+                1,
+                "the pushdown did not run for {args}:\n{}",
+                pushed.payload
+            );
+            assert_eq!(
+                pushed.payload, fallback.payload,
+                "the two readings answered differently for {args}"
+            );
+            assert_eq!(
+                other_notes(&pushed),
+                other_notes(&fallback),
+                "the two readings said different things about {args}"
+            );
+        }
+    }
+
+    /// Asked once per backend, not once per rung: the probe is the round trip the pushdown exists
+    /// to save. The version is said in the notes the first time a result carries it, and not again.
+    #[test]
+    fn the_probe_is_asked_once_and_the_version_is_said_once() {
+        need_rg!();
+        let t = Tree::new();
+        let (rt, runs) = t.runtime(Loud::Real);
+        let mut sink = RecordingToolSink::new();
+        let ask = |rt: &ToolRuntime, sink: &mut RecordingToolSink| {
+            let call = ToolCall {
+                id: "call_1".into(),
+                name: "grep".into(),
+                arguments: r#"{"pattern":"quokka_hidden"}"#.into(),
+            };
+            rt.invoke("turn_1", &call, sink)
+        };
+        let first = ask(&rt, &mut sink);
+        let after_first = runs.load(Ordering::SeqCst);
+        let second = ask(&rt, &mut sink);
+        assert_eq!(
+            engine_notes(&first).len(),
+            1,
+            "the first result did not name the engine:\n{}",
+            first.payload
+        );
+        assert!(
+            engine_notes(&second).is_empty(),
+            "the engine was named twice:\n{}",
+            second.payload
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst) - after_first,
+            1,
+            "the second call probed again, so the answer was not cached"
+        );
+    }
+
+    /// A host without `rg`, and a backend with no way to run anything, both answer with this
+    /// process's own scan - and the answer is the same one, with no engine named.
+    #[test]
+    fn a_host_without_rg_answers_from_this_process() {
+        let t = Tree::new();
+        for args in [
+            r#"{"pattern":"quokka"}"#,
+            r#"{"pattern":"quokka","context":1}"#,
+        ] {
+            let absent = t.ask(Loud::NoRg, args);
+            let unstartable = t.ask(Loud::Refuse, args);
+            let real = t.ask(Loud::Real, args);
+            assert!(engine_notes(&absent).is_empty(), "{args}");
+            assert!(engine_notes(&unstartable).is_empty(), "{args}");
+            assert_eq!(absent.payload, unstartable.payload, "{args}");
+            assert_eq!(
+                absent.payload, real.payload,
+                "the pushed-down answer differs from the one this process gives for {args}"
+            );
+        }
+    }
+
+    /// rg's dialect has no newline in a pattern. The tree's engine compiles one, so that rung is
+    /// answered here rather than by a guess at what rg meant.
+    #[test]
+    fn a_pattern_rg_cannot_express_is_refused_rather_than_guessed() {
+        need_rg!();
+        use std::collections::HashSet;
+
+        let t = Tree::new();
+        let backend = Run {
+            inner: HostBackend::writable(t.0.path()).expect("fixture root"),
+            mode: Loud::Real,
+            home: "home".to_string(),
+            serial: SERIAL.fetch_add(1, Ordering::SeqCst),
+            runs: Arc::new(AtomicUsize::new(0)),
+        };
+        let keep: HashSet<&str> = ["src/lib.rs"].into_iter().collect();
+        let question = super::super::rg::Question {
+            scope: ".",
+            pattern: "quokka\\n",
+            case_insensitive: false,
+            context: 0,
+            max_matches: 5,
+            skip: &[],
+        };
+        match super::super::rg::search(&backend, &question, &keep, 0) {
+            Err(super::super::rg::Refusal::Said(why)) => {
+                assert!(why.contains("rg exited 2"), "{why}");
+            }
+            Err(other) => panic!("rg did not refuse a pattern with a newline: {other:?}"),
+            Ok(found) => panic!(
+                "rg answered {} hit(s) for a pattern it cannot match",
+                found.len()
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod long_line_tests {
+    use crate::testing::writable_harness;
+
+    /// A hit on a line of 2 500 characters used to be cut at 400 characters with nothing marked as
+    /// shown, so the model could read a location and could not change it. It now shows a window
+    /// around the match, says which characters of how many it is, names the `read` that continues
+    /// it, and allows an edit inside what it showed.
+    #[test]
+    fn a_hit_on_a_very_long_line_shows_its_window_and_that_window_can_be_edited() {
+        let mut h = writable_harness();
+        let line = format!(
+            "{}quokka_sentinel{}{TAIL}",
+            "x".repeat(1200),
+            "y".repeat(1200)
+        );
+        h.write_file("long.txt", &format!("{line}\nsecond\n"));
+
+        let seen = h.call("grep", r#"{"pattern":"quokka_sentinel"}"#).payload;
+        assert!(seen.contains("quokka_sentinel"), "{seen}");
+        let total = line.chars().count();
+        assert!(
+            seen.contains(&format!(" of {total};")),
+            "the window does not say which characters of how many it is:\n{seen}"
+        );
+        assert!(
+            seen.contains("`read` offset=1 column_offset="),
+            "nothing says how to read the rest:\n{seen}"
+        );
+        let hits: Vec<&str> = seen
+            .lines()
+            .filter(|l| l.starts_with("long.txt:"))
+            .collect();
+        assert_eq!(hits.len(), 1, "{seen}");
+        assert!(
+            hits[0].chars().count() < 700,
+            "the window is not bounded:\n{}",
+            hits[0]
+        );
+        // Centred on the match: the window starts with a cut marker and the line's own opening is
+        // not in it, so what was asked about is what the model reads.
+        assert!(
+            hits[0].starts_with("long.txt:1: …"),
+            "the window does not say it is a window:\n{}",
+            hits[0]
+        );
+        assert!(
+            !hits[0].contains("zzz_tail_marker"),
+            "the window runs past the match to the end of the line:\n{}",
+            hits[0]
+        );
+
+        // The piece that was displayed may be edited; the rest of the line was never shown.
+        let ok = h.call(
+            "edit",
+            r#"{"path":"long.txt","old_string":"quokka_sentinel","new_string":"quokka_changed"}"#,
+        );
+        assert!(
+            ok.is_grounded(),
+            "an edit inside the shown window was refused:\n{}",
+            ok.render()
+        );
+    }
+
+    /// The tail of that line, far outside the window: a name unique to the part nobody was shown.
+    const TAIL: &str = " zzz_tail_marker";
+
+    /// The other half of the same rule: an edit outside the window is refused, because those
+    /// characters were never shown.
+    #[test]
+    fn an_edit_outside_the_shown_window_is_still_refused() {
+        let mut h = writable_harness();
+        let line = format!(
+            "{}quokka_sentinel{}{TAIL}",
+            "x".repeat(1200),
+            "y".repeat(1200)
+        );
+        h.write_file("long.txt", &format!("{line}\n"));
+        let _ = h.call("grep", r#"{"pattern":"quokka_sentinel"}"#);
+
+        let refused = h.call(
+            "edit",
+            r#"{"path":"long.txt","old_string":"zzz_tail_marker","new_string":"zzz"}"#,
+        );
+        assert!(
+            !refused.is_grounded(),
+            "an edit of the part that was never shown was allowed:\n{}",
+            refused.render()
+        );
+        assert!(
+            refused.render().contains("never shown") || refused.render().contains("not been shown"),
+            "the refusal does not say the part was never shown:\n{}",
+            refused.render()
+        );
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use letibot_transcript::ToolCall;
+
+    use crate::backend::HostBackend;
+    use crate::builtins::retrieval::Unavailable;
+    use crate::events::RecordingToolSink;
+    use crate::runtime::ToolRuntime;
+
+    /// One `grep` over THIS repository, timed: what a change to a search's cost is reported with.
+    /// `--ignored`, because a wall clock is not an assertion, and the fastest of three, because a
+    /// box under load says more about the box than about the tool.
+    ///
+    /// ```text
+    /// cargo test -p letibot-tools --lib a_grep_over_this_tree -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn a_grep_over_this_tree() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        for args in [
+            // A handful of hits: the whole tree is read either way, so this is the matching cost.
+            r#"{"pattern":"walk_ignoring"}"#,
+            r#"{"pattern":"walk_ignoring","context":2}"#,
+            // Past the cap: an answer that truncates, which a reading may stop early on.
+            r#"{"pattern":"the","max_matches":200}"#,
+        ] {
+            let mut best = Duration::MAX;
+            let mut said = String::new();
+            for _ in 0..3 {
+                let backend = HostBackend::new(root).expect("this repository");
+                let registry =
+                    crate::read_only_tools(Arc::new(Unavailable)).expect("built-ins register");
+                let rt = ToolRuntime::new(registry, Box::new(backend));
+                let mut sink = RecordingToolSink::new();
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: "grep".into(),
+                    arguments: args.to_string(),
+                };
+                let t = Instant::now();
+                let r = rt.invoke("turn_1", &call, &mut sink);
+                best = best.min(t.elapsed());
+                said = format!("{} line(s) of answer", r.payload.lines().count());
+            }
+            println!(
+                "TIMING {args}: {:.0} ms ({said})",
+                best.as_secs_f64() * 1000.0
+            );
+        }
     }
 }
