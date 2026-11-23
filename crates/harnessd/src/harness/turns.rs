@@ -511,6 +511,11 @@ impl Harness {
         // counted with the queue's notices since both are store facts, not settlements.
         let board_taken = std::mem::take(&mut self.board_notices);
         notices.extend(self.say_all(&Facts::Steer, board_taken.clone()));
+        // And what an operator's verb left for this session without knowing which thread serves
+        // it: `/gate grant` answering a card that had already timed out. Same door as the board's
+        // news - the harness telling the model something nobody typed at it.
+        let late = letibot_tools::late_grant::take_notices(&self.cfg.session_id);
+        notices.extend(self.say_all(&Facts::Steer, late));
         let restart_taken = self.restart_notices.clone();
         let restarts = std::mem::take(&mut self.restart_notices);
         let owed_taken = std::mem::take(&mut self.restart_owed);

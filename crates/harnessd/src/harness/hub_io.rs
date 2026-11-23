@@ -351,6 +351,16 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
+        // And a sentence an operator's verb left for this session, which is the other half of the
+        // wake a session between turns is rung with: mid-turn it is read HERE, at the boundary,
+        // because a turn of its own would answer a sentence the running one has not seen yet.
+        if let Some(text) = letibot_tools::late_grant::take_one_notice(&self.hub.session_id()) {
+            let text = self.said(&Facts::Steer, &text);
+            if let Some(t) = &self.trail {
+                t.say(Speaker::Agent, &text, Some(Instant::now()));
+            }
+            return Some(SteeringMessage::normal(text));
+        }
         // One door: the room's lines and the results together, in arrival order, so no ring arrives
         // before the line it follows. Room lines are taken at every boundary; results only at a step
         // boundary, and never into a cheap turn.

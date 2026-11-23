@@ -97,9 +97,11 @@ What reads the corpus, as the tree has it today (paths in this repo):
   sweep is involved.
 - `/gate` (`crates/harnessd/src/slash.rs`), which takes the same `StoreAt` the rest of the daemon
   does: `counts` and `recent` are whole-corpus questions and sweep; `ok|grant|revoke` still writes
-  the one file it is handed.
-- `Store::corpus(only_labelled, limit)` is `/gate recent`'s query; beyond that it is reached only
-  from `tokencore`'s own tests.
+  the one file it is handed. `grant` then reads the row back with `Store::adjudication` from that
+  same file, because the call it may allow once is named there — a row of another project's is a
+  label this daemon cannot turn into a grant, and the reply says so.
+- `Store::corpus(only_labelled, limit)` is `/gate recent`'s query, and `Store::adjudication(id)` is
+  `/gate grant`'s single-row read: one column list and one mapper for both, in `tokencore`.
 - `Store::open_reader(path)` is the sweep's door onto another folder's file: a read-only
   connection that migrates nothing and creates nothing. `Store::open` would migrate it, and
   migrating a file somebody else's daemon is writing is the one write a question may not make.

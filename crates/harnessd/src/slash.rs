@@ -1802,6 +1802,95 @@ pub fn gate(at: Option<&crate::config::StoreAt>, verb: &GateVerb) -> SlashReply 
     }
 }
 
+/// `/gate grant ID`, second half: the label is not the answer when the session is still here. The
+/// row names the call refused without an answer, so the grant goes in for THAT call - same tool,
+/// same arguments, once - and the session is told. `ruled` unchanged means the first ruling stands.
+pub fn grant_and_tell(
+    at: Option<&crate::config::StoreAt>,
+    ruled: SlashReply,
+    request_id: &str,
+    tell: impl FnOnce(&str, String) -> bool,
+) -> SlashReply {
+    if !ruled.ok {
+        return ruled;
+    }
+    let Some(at) = at else {
+        return ruled;
+    };
+    let store = match at.open_existing() {
+        Ok(s) => s,
+        Err(e) => return SlashReply::refused(vec![e.to_string()]),
+    };
+    let row = match store.adjudication(request_id) {
+        Ok(Some(row)) => row,
+        // Labelled, and this file has no row to key a call by: the row may be another project's,
+        // which is a fact about the sweep and not about the ruling.
+        Ok(None) => return ruled,
+        Err(e) => return SlashReply::refused(vec![e.to_string()]),
+    };
+    let arguments: serde_json::Value = match serde_json::from_str(&row.arguments_json) {
+        Ok(v) => v,
+        Err(e) => {
+            return SlashReply::ok(vec![format!(
+                "{request_id}: granted as a label only — the row's arguments could not be read \
+                 back ({e}), so no call can be matched to it"
+            )]);
+        }
+    };
+    // Recorded before the telling, so a session woken by the telling finds the grant when its
+    // gate is asked. A grant nothing uses closes with its own window.
+    let keep = letibot_tools::late_grant::grant(
+        &row.session_id,
+        &row.tool,
+        &arguments,
+        request_id,
+        letibot_tools::late_grant::now_ms(),
+    );
+    let text = late_grant_notice(&row, &keep);
+    match tell(&row.session_id, text) {
+        true => SlashReply::ok(vec![format!(
+            "{request_id}: granted once for {}, and it was told",
+            row.session_id
+        )]),
+        // The row keeps the label, which is the whole of what a session nobody holds can be
+        // given: `/gate recent` still shows the decision the operator disagreed with.
+        false => SlashReply::ok(vec![format!(
+            "{request_id}: labelled only — session {} is not open here, so there was nobody to \
+             tell and the label is all this reaches",
+            row.session_id
+        )]),
+    }
+}
+
+/// What the session is told when the operator grants a call late. Three facts and no more: which
+/// call, once, and that a variant is a new question - the model acts on this sentence without a
+/// person to ask again.
+pub fn late_grant_notice(
+    row: &letibot_tokencore::store::StoredAdjudication,
+    keep: &letibot_tools::late_grant::LateGrant,
+) -> String {
+    let refused = match row
+        .verdict_by
+        .as_deref()
+        .is_some_and(|b| b.contains("timeout"))
+        || row.verdict.as_deref() == Some("timeout")
+    {
+        true => "timed out",
+        false => "was refused",
+    };
+    format!(
+        "[gate] The operator granted your `{}` call, the row `{}` — the one that {refused}. That \
+         exact call, same tool and same arguments, is allowed ONCE in this session, until it is \
+         used or {} minutes pass. Run it again if you still want it; anything else is a new \
+         question.",
+        row.tool,
+        row.request_id,
+        keep.until_ms
+            .saturating_sub(letibot_tools::late_grant::now_ms())
+            / 60_000,
+    )
+}
+
 /// The sweep's other half, for this verb's answer: the project files it could not read, named.
 fn unreadable_line(files: &[String]) -> Vec<String> {
     match files.is_empty() {
@@ -2078,5 +2167,154 @@ mod the_verb_table_is_the_parser {
         assert_eq!(Slash::parse("fork 3"), Slash::Fork(Some(3)));
         assert!(matches!(Slash::parse("fork 0"), Slash::Help(_)));
         assert!(matches!(Slash::parse("fork x"), Slash::Help(_)));
+    }
+}
+
+/// `/gate grant` is the one ruling with something behind it besides the label: the row names a
+/// call whose card nobody answered, and the session that asked is owed the answer. These drive
+/// the whole of it against a real store, with the telling answered by a closure.
+#[cfg(test)]
+mod a_grant_reaches_the_session_it_was_made_for {
+    use super::*;
+    use letibot_tokencore::store::{NewAdjudication, Store};
+
+    const ID: &str = "adj-s-late-slash-1-0001";
+    /// The command the operator was watching: a message kept outside the workspace, then the
+    /// commit and the tests that hung on this one card.
+    const ARGS: &str = r#"{"command":"cat > /var/tmp/msg-tmuxsock.txt <<'EOF'\nhi\nEOF\ngit commit -am wip\ncargo test"}"#;
+
+    fn rig(tag: &str, session: &str) -> (crate::config::StoreAt, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("letibot-late-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("sessions.db");
+        let store = Store::open(&path).expect("store");
+        store
+            .record_adjudication(&NewAdjudication {
+                request_id: ID.into(),
+                session_id: session.into(),
+                turn_id: "t1".into(),
+                action: "`bash` wants write access to `/var/tmp/msg-tmuxsock.txt`".into(),
+                baseline: "a write outside the workspace".into(),
+                tier: "may_approve".into(),
+                trail_json: "{}".into(),
+                tool: "bash".into(),
+                arguments_json: ARGS.into(),
+                mode: "supervised".into(),
+                options_json: "[]".into(),
+                verdict: Some("timeout".into()),
+                verdict_by: Some("gate:timeout".into()),
+                verdict_basis: Some("nobody answered within 300s".into()),
+                effect: "refuse".into(),
+                asked: true,
+                ..Default::default()
+            })
+            .expect("a recorded decision");
+        (crate::config::StoreAt::File(path), dir)
+    }
+
+    fn ruled(at: &crate::config::StoreAt) -> SlashReply {
+        let reply = gate(
+            Some(at),
+            &GateVerb::Rule {
+                request_id: ID.into(),
+                kind: "granted",
+                note: String::new(),
+            },
+        );
+        assert!(reply.ok, "{:?}", reply.lines);
+        reply
+    }
+
+    #[test]
+    fn a_timed_out_call_gets_a_grant_keyed_to_that_exact_call_and_the_session_is_told() {
+        let (at, dir) = rig("live", "s-late-slash-1");
+        let reply = grant_and_tell(Some(&at), ruled(&at), ID, |session, text| {
+            assert_eq!(session, "s-late-slash-1");
+            assert!(text.contains("`bash`"), "which call: {text}");
+            assert!(text.contains("timed out"), "why it was refused: {text}");
+            assert!(text.contains("ONCE"), "what the grant is worth: {text}");
+            assert!(
+                text.contains("Run it again"),
+                "what the model is to do next: {text}"
+            );
+            true
+        });
+        assert!(reply.ok);
+        assert_eq!(
+            reply.lines,
+            ["adj-s-late-slash-1-0001: granted once for s-late-slash-1, and it was told"]
+        );
+
+        // The grant is keyed by the row's own call: this exact argument object, once.
+        let args: serde_json::Value = serde_json::from_str(ARGS).expect("arguments");
+        let now = letibot_tools::late_grant::now_ms();
+        assert_eq!(
+            letibot_tools::late_grant::take("s-late-slash-1", "bash", &args, now).map(|g| g.why),
+            Some(ID.to_string())
+        );
+        assert_eq!(
+            letibot_tools::late_grant::take("s-late-slash-1", "bash", &args, now),
+            None,
+            "one call's"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_variant_of_the_granted_call_is_a_new_question() {
+        let (at, dir) = rig("variant", "s-late-slash-2");
+        let _ = grant_and_tell(Some(&at), ruled(&at), ID, |_, _| true);
+        let other =
+            serde_json::json!({"command": "cat > /var/tmp/msg-tmuxsock.txt <<'EOF'\nbye\nEOF"});
+        let now = letibot_tools::late_grant::now_ms();
+        assert_eq!(
+            letibot_tools::late_grant::take("s-late-slash-2", "bash", &other, now),
+            None,
+            "a different command is not the call the person answered"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_grant_on_a_row_of_a_closed_session_is_labelled_only_and_the_operator_is_told() {
+        let (at, dir) = rig("gone", "s-late-slash-3");
+        let reply = grant_and_tell(Some(&at), ruled(&at), ID, |_, _| false);
+        assert!(reply.ok);
+        let said = reply.lines.join("\n");
+        assert!(said.contains("labelled only"), "{said}");
+        assert!(said.contains("s-late-slash-3"), "which session: {said}");
+        assert!(
+            said.contains("not open here"),
+            "why nobody was told: {said}"
+        );
+        // The label itself is on the row, which is all a session nobody holds can be given:
+        // `/gate recent` still shows the decision the operator disagreed with.
+        let store = at.open_existing().expect("store");
+        let row = store.adjudication(ID).expect("read").expect("the row");
+        assert_eq!(row.operator_kind.as_deref(), Some("granted"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_that_was_already_ruled_on_is_not_granted_a_second_time() {
+        let (at, dir) = rig("ruled", "s-late-slash-4");
+        // The first ruling stands, so the second answers with `/gate`'s own refusal and nothing
+        // is told to anybody: a session told twice would retry a call already allowed.
+        let _ = ruled(&at);
+        let again = gate(
+            Some(&at),
+            &GateVerb::Rule {
+                request_id: ID.into(),
+                kind: "granted",
+                note: String::new(),
+            },
+        );
+        assert!(!again.ok, "the first ruling stands: {:?}", again.lines);
+        let reply = grant_and_tell(Some(&at), again, ID, |_, _| {
+            panic!("a row that was already ruled on tells nobody")
+        });
+        assert!(!reply.ok);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

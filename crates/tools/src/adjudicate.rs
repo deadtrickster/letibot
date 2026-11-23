@@ -4253,6 +4253,29 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
 
+        // 10b. The operator answered this call AFTER its card timed out - `/gate grant` on the row
+        //     it was recorded as. One call, once: everything the ladder refused above still refuses
+        //     (a blocked tier, the never-write list, the mode, a `permission` deny).
+        if let Some(late) = crate::late_grant::take(
+            &self.session_id,
+            call.name,
+            call.args,
+            crate::late_grant::now_ms(),
+        ) {
+            let basis = format!(
+                "the operator granted this call late, after it had been refused without an \
+                 answer: their `/gate grant` on {} stands for this one call, once",
+                late.why
+            );
+            let d = AdjudicationDecision::selected(&req, "allow_once", "human:operator", &basis);
+            self.breaker.admitted(&direction);
+            // A settled call is still a labelled example, and the grant is the reason: the row
+            // says a person allowed it late, which is a different fact from a mode admitting it.
+            self.advise_on_a_settled_call(&req, basis);
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
+        }
+
         // 11. Ask - and when supervision is on, ask the model FIRST. A verdict formed after
         // seeing which way the operator went is not worth training on, and one they never saw is
         // advice nobody could agree with.

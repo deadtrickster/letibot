@@ -1420,8 +1420,10 @@ fn telling(notice: &DenialNotice, reached: Reach) -> String {
     // somebody to a door that answers "no store is configured".
     let recorded = if notice.recorded {
         format!(
-            "It is recorded as the row `{id}`; `/gate recent` lists it and `/gate grant {id}` \
-             rules on it."
+            "It is recorded as the row `{id}`; `/gate recent` lists it, and the operator can let \
+             this one call through ONCE with `/gate grant {id}` — same tool, same arguments, and \
+             nothing else. You are told if they do, and that exact call then passes; until then \
+             nothing has changed."
         )
     } else {
         format!(

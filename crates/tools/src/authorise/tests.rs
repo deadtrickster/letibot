@@ -792,6 +792,27 @@ fn a_refusal_nobody_was_shown_says_where_the_decision_is_recorded() {
     assert!(t.contains("Nothing is waiting for an answer"), "{t}");
 }
 
+/// What `/gate grant` actually does, said in the sentence that names it. A model told "the
+/// operator can rule on it" waits for a ruling that changes nothing; told this, it knows the
+/// exact call is allowed once AND that the answer reaches it.
+#[test]
+fn a_refusal_says_a_grant_is_one_call_and_that_the_answer_is_told_to_the_session() {
+    let t = refusal_text(&notice("not_run", BreakerState::Closed), Reach::Nobody);
+    assert!(t.contains("ONCE"), "one call, not a standing answer: {t}");
+    assert!(
+        t.contains("same tool, same arguments"),
+        "what the grant is keyed on: {t}"
+    );
+    assert!(
+        t.contains("You are told if they do"),
+        "the promise that makes a retry different from waiting: {t}"
+    );
+    assert!(
+        t.contains("until then nothing has changed"),
+        "so a variant is still a new question: {t}"
+    );
+}
+
 #[test]
 fn a_refusal_whose_ask_is_still_open_says_an_answer_given_then_is_read() {
     // The other half of the rule: no screen holds it now, but the card is open, so a head that

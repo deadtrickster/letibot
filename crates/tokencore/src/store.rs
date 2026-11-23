@@ -110,6 +110,53 @@ pub struct StoredAdjudication {
     pub corpus_version: i64,
 }
 
+/// Every column a [`StoredAdjudication`] is read from, in the order
+/// [`stored_adjudication`] maps them. One list rather than one per query: a column added to a
+/// second `SELECT` is how the corpus and the by-id read start describing different rows.
+const ADJUDICATION_COLS: &str = "request_id, session_id, turn_id, decided_ms, action, baseline,
+            tier, trail_json, shown, oracle_reply, tool, arguments_json, mode,
+            options_json,
+            agent, model_verdict, verdict, verdict_by, verdict_basis, p_allow,
+            oracle_ms, oracle_model, brief_sha, consulted, oracle_reading, effect, asked,
+            operator_kind,
+            operator_note, operator_latency_ms, corpus_version";
+
+fn stored_adjudication(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAdjudication> {
+    Ok(StoredAdjudication {
+        request_id: r.get(0)?,
+        session_id: r.get(1)?,
+        turn_id: r.get(2)?,
+        decided_ms: r.get(3)?,
+        action: r.get(4)?,
+        baseline: r.get(5)?,
+        tier: r.get(6)?,
+        trail_json: r.get(7)?,
+        shown: r.get(8)?,
+        reply: r.get(9)?,
+        tool: r.get(10)?,
+        arguments_json: r.get(11)?,
+        mode: r.get(12)?,
+        options_json: r.get(13)?,
+        agent: r.get(14)?,
+        model_verdict: r.get(15)?,
+        verdict: r.get(16)?,
+        verdict_by: r.get(17)?,
+        verdict_basis: r.get(18)?,
+        p_allow: r.get(19)?,
+        oracle_ms: r.get(20)?,
+        oracle_model: r.get(21)?,
+        brief_sha: r.get(22)?,
+        consulted: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
+        oracle_reading: r.get(24)?,
+        effect: r.get(25)?,
+        asked: r.get::<_, i64>(26)? != 0,
+        operator_kind: r.get(27)?,
+        operator_note: r.get(28)?,
+        operator_latency_ms: r.get(29)?,
+        corpus_version: r.get(30)?,
+    })
+}
+
 /// The three predicates every count of the corpus is built from, in one place: a `WHERE` clause
 /// copied into a second file is a count that drifts, and these did. A count measures what its
 /// PREDICATE says and not what its name says, so the predicate is written once, by the schema.
@@ -4438,62 +4485,34 @@ impl Store {
     /// The corpus, newest first. `only_labelled` narrows to rows the operator ruled on, because
     /// "every decision" and "every decision a human checked" are different datasets.
     pub fn corpus(&self, only_labelled: bool, limit: usize) -> Result<Vec<StoredAdjudication>> {
-        const COLS: &str = "request_id, session_id, turn_id, decided_ms, action, baseline,
-                    tier, trail_json, shown, oracle_reply, tool, arguments_json, mode,
-                    options_json,
-                    agent, model_verdict, verdict, verdict_by, verdict_basis, p_allow,
-                    oracle_ms, oracle_model, brief_sha, consulted, oracle_reading, effect, asked,
-                    operator_kind,
-                    operator_note, operator_latency_ms, corpus_version";
+        let cols = ADJUDICATION_COLS;
         let sql = if only_labelled {
             format!(
-                "SELECT {COLS} FROM adjudication WHERE operator_kind IS NOT NULL
+                "SELECT {cols} FROM adjudication WHERE operator_kind IS NOT NULL
                   ORDER BY decided_ms DESC LIMIT ?1"
             )
         } else {
-            format!("SELECT {COLS} FROM adjudication ORDER BY decided_ms DESC LIMIT ?1")
+            format!("SELECT {cols} FROM adjudication ORDER BY decided_ms DESC LIMIT ?1")
         };
         let conn = self.at("adjudication");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
-            .query_map([limit as i64], |r| {
-                Ok(StoredAdjudication {
-                    request_id: r.get(0)?,
-                    session_id: r.get(1)?,
-                    turn_id: r.get(2)?,
-                    decided_ms: r.get(3)?,
-                    action: r.get(4)?,
-                    baseline: r.get(5)?,
-                    tier: r.get(6)?,
-                    trail_json: r.get(7)?,
-                    shown: r.get(8)?,
-                    reply: r.get(9)?,
-                    tool: r.get(10)?,
-                    arguments_json: r.get(11)?,
-                    mode: r.get(12)?,
-                    options_json: r.get(13)?,
-                    agent: r.get(14)?,
-                    model_verdict: r.get(15)?,
-                    verdict: r.get(16)?,
-                    verdict_by: r.get(17)?,
-                    verdict_basis: r.get(18)?,
-                    p_allow: r.get(19)?,
-                    oracle_ms: r.get(20)?,
-                    oracle_model: r.get(21)?,
-                    brief_sha: r.get(22)?,
-                    consulted: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
-                    oracle_reading: r.get(24)?,
-                    effect: r.get(25)?,
-                    asked: r.get::<_, i64>(26)? != 0,
-                    operator_kind: r.get(27)?,
-                    operator_note: r.get(28)?,
-                    operator_latency_ms: r.get(29)?,
-                    corpus_version: r.get(30)?,
-                })
-            })?
+            .query_map([limit as i64], stored_adjudication)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(rows)
+    }
+
+    /// One decision, by the id its row carries - the read an operator's verb needs to act on what
+    /// they are looking at. `None` for an id this file has no row for; the caller's own question
+    /// is which file that is, and this answer is about this one.
+    pub fn adjudication(&self, request_id: &str) -> Result<Option<StoredAdjudication>> {
+        let sql = format!("SELECT {ADJUDICATION_COLS} FROM adjudication WHERE request_id = ?1");
+        let conn = self.at("adjudication");
+        let row = conn
+            .query_row(&sql, rusqlite::params![request_id], stored_adjudication)
+            .optional()?;
+        Ok(row)
     }
 
     /// Shapes this operator approved for the session, under this workspace: the warm start for

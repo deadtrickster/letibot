@@ -54,6 +54,7 @@ pub mod grant_ledger;
 pub mod head_run;
 pub mod heredoc;
 pub mod intent;
+pub mod late_grant;
 pub mod lease;
 pub mod lifecycle;
 pub mod media;

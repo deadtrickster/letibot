@@ -1349,7 +1349,23 @@ impl<'a> Sessions<'a> {
             },
             Slash::Gate(verb) => {
                 let at = self.base.store_at();
-                crate::slash::gate(at.as_ref(), &verb)
+                let reply = crate::slash::gate(at.as_ref(), &verb);
+                // A GRANT is the one ruling with something behind it besides the label: the row
+                // names a call nobody answered, and the session that asked is owed the answer.
+                // `ok` and `revoke` stay labels - they loosen nothing a later call could use.
+                match &verb {
+                    crate::slash::GateVerb::Rule {
+                        request_id,
+                        kind: "granted",
+                        ..
+                    } => crate::slash::grant_and_tell(
+                        at.as_ref(),
+                        reply,
+                        request_id,
+                        |session, text| self.tell(session, text),
+                    ),
+                    _ => reply,
+                }
             }
             // A fresh conversation for this session, keeping its todos and jobs.
             Slash::Clear { next } => {
@@ -3905,6 +3921,22 @@ impl<'a> Sessions<'a> {
                 ),
             ),
         }
+    }
+
+    /// Hand this session's model a sentence the daemon owes it, and answer whether there is a
+    /// session here to tell. It waits in a queue the session drains itself - the verb runs on
+    /// whichever thread served the head's line, and the row may be another session's.
+    ///
+    /// The one caller is `/gate grant`: the operator answering a card that had already timed out.
+    pub fn tell(&self, session_id: &str, text: String) -> bool {
+        if self.registry.get(session_id).is_none() {
+            return false;
+        }
+        letibot_tools::late_grant::queue_notice(session_id, text);
+        // Ringing an idle session opens the turn the sentence is said in; a session mid-turn
+        // takes it at its next boundary, and the wake this rang then finds nothing to say.
+        self.registry.bell().ring_wake(session_id);
+        true
     }
 
     /// Something fired while nothing was running. The worker's half of the wake.

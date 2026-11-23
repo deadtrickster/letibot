@@ -58,6 +58,7 @@ mod import_rows;
 mod intent;
 mod jobs;
 mod kept_jobs;
+mod late_notice;
 mod limit_child;
 mod marks;
 mod misc;
