@@ -168,7 +168,10 @@ fn automode_gate_slow(
     (g, person, answering, asked)
 }
 
-const ALLOW: &str = r#"{"verdict":"allow","cites":[0],"evidence":""}"#;
+/// The reviewer's answer when it does not block: automode's question, whose default is no. An
+/// allow here is not an authorisation and cites nothing - it only means this call is not one of
+/// the six things the prompt names.
+const ALLOW: &str = r#"{"block":false,"category":"","reason":""}"#;
 
 /// The shadow's adjudicator alone, for a test that wants its decision rather than the gate's.
 fn adjudicator(stages: &[Stage]) -> ShadowAdjudicator {
@@ -282,7 +285,8 @@ fn at_stage_three_a_command_inside_the_workspace_runs_and_the_card_names_the_sta
     );
 }
 
-/// The always-ask list is the operator's whatever stages are on, and the shadow is not asked.
+/// The always-ask list is the operator's whatever stages are on: the reviewer is asked whether to
+/// BLOCK it, and its allow is not an admission, so the person decides either way.
 #[test]
 fn the_always_ask_list_is_never_the_shadows_with_every_stage_on() {
     let destroy = serde_json::json!({ "command": "/usr/bin/rm -rf /usr" });
@@ -608,7 +612,7 @@ fn a_revoked_grant_stops_counting_at_once() {
 }
 
 /// The always-ask list is the operator's whatever was granted: a grant says where the session may
-/// work, never that privilege may be raised there, and the shadow is not asked.
+/// work, never that privilege may be raised there. The reviewer may block it; it can never admit.
 #[test]
 fn the_always_ask_list_wins_over_a_grant() {
     let sudo = serde_json::json!({ "command": "/usr/bin/sudo /usr/bin/rm -rf /data/scratch/tree" });
