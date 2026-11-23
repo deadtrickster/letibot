@@ -4162,7 +4162,7 @@ impl Gate for AdjudicatedGate {
                  same answer. Say what you would do instead, or ask them for it by name.\n\nIt is \
                  the row `{id}`; `/permissions` lists the refusal and revoking it lifts the ban."
             );
-            self.breaker.refused(&direction);
+            self.breaker.refused(&direction, &d.by);
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
@@ -4290,7 +4290,7 @@ impl Gate for AdjudicatedGate {
                 latency_ms: a.latency_ms,
                 grant_at: None,
             };
-            self.breaker.refused(&direction);
+            self.breaker.refused(&direction, &d.by);
             self.file_exchange();
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
