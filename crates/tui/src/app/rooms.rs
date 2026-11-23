@@ -852,9 +852,7 @@ impl App {
             // plus what happens next; the coordinator's own text is the detail behind it, not the
             // message. A bare Rust error there reads as the harness breaking rather than as one
             // question the room could not answer.
-            self.rooms.error = Some(format!(
-                "the room could not answer — {e} · the next poll asks again"
-            ));
+            self.rooms.error = Some(format!("{e} — the next poll asks again"));
             return;
         }
         let rows = |v: &Value| -> Value { v.get("rows").cloned().unwrap_or(Value::Null) };

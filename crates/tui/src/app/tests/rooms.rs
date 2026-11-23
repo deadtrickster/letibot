@@ -542,7 +542,7 @@ fn a_refusal_and_a_daemon_error_are_kept_for_the_view() {
     );
     assert_eq!(
         a.rooms.error.as_deref(),
-        Some("the room coordinator is not reachable")
+        Some("the room coordinator is not reachable — the next poll asks again")
     );
     reply(&mut a, rooms_reply(&[("host", 1, 0, 0)]));
     assert_eq!(a.rooms.error, None);

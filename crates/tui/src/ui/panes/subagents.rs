@@ -63,7 +63,13 @@ impl App {
             else {
                 continue;
             };
-            if let Some(mark) = line.spans.first_mut() {
+            // The running mark is the bracketed span, not the row's first: a lead span may precede it.
+            let at = line
+                .spans
+                .iter()
+                .position(|s| s.content == "[~]")
+                .unwrap_or(0);
+            if let Some(mark) = line.spans.get_mut(at) {
                 *mark = Span::role(QUEUED_MARK, role);
             }
         }

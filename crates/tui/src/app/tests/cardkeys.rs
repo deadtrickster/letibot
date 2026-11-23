@@ -500,8 +500,8 @@ fn each_setup_card_names_what_its_cancel_did_not_do() {
     // The model card: esc at the top level closes it (the query and the open provider are one step
     // each and say nothing, since the card stays up).
     let mut b = app();
-    typed(&mut b, "/models");
-    b.key(Key::Enter);
+    b.session_id = "s1".into();
+    b.command("models");
     assert_eq!(
         b.pick,
         Some(crate::app::Pick::Model),

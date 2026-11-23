@@ -456,7 +456,10 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     assert!(a.todo_draft.is_none(), "esc did not close the card");
     assert_eq!(a.input(), "", "and took the words with it");
     assert!(
-        a.notice.as_deref().unwrap_or("").contains("nothing added"),
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("no todo row was added"),
         "{:?}",
         a.notice
     );

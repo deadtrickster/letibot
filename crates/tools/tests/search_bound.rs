@@ -221,7 +221,7 @@ fn a_tree_wide_search_is_one_walk_and_one_call_per_page() {
             meter.reads(),
             meter.stats()
         ),
-        (1, pages, 0, 0),
+        (1, pages, 0, 1),
         "1500 files cost {} round trips: one walk, {pages} pages, no per-file read and one stat \
          for the whole call\n{seen}",
         meter.round_trips()

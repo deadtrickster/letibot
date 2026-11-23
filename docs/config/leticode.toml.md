@@ -307,7 +307,7 @@ Read by the head.
 |---|---|---|---|---|
 | `rooms_sidebar` | bool | false | both, project wins | Rooms, Sessions and Queues beside the transcript |
 | `rooms_sidebar_width` | columns | the head's own | both, project wins | starting width; head.toml's dragged width wins |
-| `language` | word | auto | both, project wins | the head's own language: `en`, `ru`, or `auto` for LC_ALL / LC_MESSAGES / LANG |
+| `language` | string | auto | both, project wins | the head's own language: `en`, `ru`, or `auto` for LC_ALL / LC_MESSAGES / LANG |
 
 ## `[sessions]`
 
