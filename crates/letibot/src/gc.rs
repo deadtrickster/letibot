@@ -476,27 +476,7 @@ fn print_firecode(vms: &FirecodeVms) {
     }
     println!("firecode VMs:");
     for v in &vms.rows {
-        println!(
-            "  {} {} · {} · {} · last used {} · work {}{}",
-            v.name,
-            match (&v.title, &v.owner) {
-                (Some(t), _) => format!("[{t}]"),
-                (None, Some(o)) => format!("[{o}]"),
-                (None, None) => "[no owner]".to_string(),
-            },
-            v.purpose.as_deref().unwrap_or("purpose not said"),
-            match v.size {
-                Some(n) => bytes(n),
-                None => "size not said".to_string(),
-            },
-            v.last_used.as_deref().unwrap_or("never"),
-            v.work.as_deref().unwrap_or("unknown"),
-            if v.flagged {
-                " · FLAGGED: its work was never copied out"
-            } else {
-                ""
-            },
-        );
+        println!("  {}", firecode_line(v));
     }
     if !vms.pool.is_empty() {
         println!(
@@ -516,6 +496,32 @@ fn print_firecode(vms: &FirecodeVms) {
     if let Some(note) = &vms.gc {
         println!("  {}", note.gc.sentence());
     }
+}
+
+/// One VM's line: name, whose it is (the session's TITLE when the store knows it), what it is for,
+/// what it costs, when it was last used, and whether its work is out.
+fn firecode_line(v: &FirecodeVm) -> String {
+    format!(
+        "{} {} · {} · {} · last used {} · work {}{}",
+        v.name,
+        match (&v.title, &v.owner) {
+            (Some(t), _) => format!("[{t}]"),
+            (None, Some(o)) => format!("[{o}]"),
+            (None, None) => "[no owner]".to_string(),
+        },
+        v.purpose.as_deref().unwrap_or("purpose not said"),
+        match v.size {
+            Some(n) => bytes(n),
+            None => "size not said".to_string(),
+        },
+        v.last_used.as_deref().unwrap_or("never"),
+        v.work.as_deref().unwrap_or("unknown"),
+        if v.flagged {
+            " · FLAGGED: its work was never copied out"
+        } else {
+            ""
+        },
+    )
 }
 
 fn firecode_json(vms: &FirecodeVms) -> serde_json::Value {
@@ -1294,4 +1300,90 @@ fn open() -> Result<(Store, Places), String> {
     }
     let store = Store::open_reader(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((store, Places::here()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_vm(title: Option<&str>, work: Option<&str>, flagged: bool) -> FirecodeVm {
+        FirecodeVm {
+            name: "proj-ab12cd34".into(),
+            owner: Some("s-1794".into()),
+            title: title.map(str::to_string),
+            purpose: Some("reviewer".into()),
+            size: Some(412_316_860_416),
+            last_used: Some("2026-11-23T10:00:00Z".into()),
+            work: work.map(str::to_string),
+            flagged,
+        }
+    }
+
+    /// Item 6: a VM's line names the owner's session by its TITLE when the store knows one, and
+    /// says what the VM costs and whether its work came out.
+    #[test]
+    fn a_firecode_vm_is_a_line_a_person_can_act_on() {
+        let line = firecode_line(&a_vm(Some("fc-wiring"), Some("out"), false));
+        assert!(line.starts_with("proj-ab12cd34 [fc-wiring]"), "{line}");
+        assert!(line.contains("reviewer"), "{line}");
+        assert!(line.contains("384.0 GiB") || line.contains("GiB"), "{line}");
+        assert!(line.contains("last used 2026-11-23T10:00:00Z"), "{line}");
+        assert!(line.contains("work out"), "{line}");
+        assert!(!line.contains("FLAGGED"), "{line}");
+
+        // An owner with no title is named by its id; a flagged run says what is wrong.
+        let line = firecode_line(&a_vm(None, Some("in"), true));
+        assert!(line.contains("[s-1794]"), "{line}");
+        assert!(line.contains("work in"), "{line}");
+        assert!(
+            line.contains("FLAGGED: its work was never copied out"),
+            "{line}"
+        );
+
+        // And nothing known is said as such, never as a plausible zero.
+        let mut bare = a_vm(None, None, false);
+        bare.owner = None;
+        bare.purpose = None;
+        bare.size = None;
+        bare.last_used = None;
+        let line = firecode_line(&bare);
+        assert!(line.contains("[no owner]"), "{line}");
+        assert!(line.contains("size not said"), "{line}");
+        assert!(line.contains("work unknown"), "{line}");
+    }
+
+    /// The same facts as one object, for a program: the `--json` half of item 6.
+    #[test]
+    fn a_firecode_vm_is_a_row_a_program_can_read() {
+        let vms = FirecodeVms {
+            rows: vec![a_vm(Some("fc-wiring"), Some("out"), true)],
+            pool: vec![letibot_tools::firecode::cli::PoolRow {
+                name: Some("proj-ab12cd34".into()),
+                purpose: Some("reviewer".into()),
+                state: Some("sleeping".into()),
+                project: None,
+            }],
+            gc: Some(letibot_tools::firecode::cli::GcNote {
+                at_ms: 1_700_000_000_000,
+                gc: letibot_tools::firecode::cli::Gc {
+                    freed_bytes: 2048,
+                    removed: vec!["a".into()],
+                    target_reached: Some(false),
+                    reason: Some("every remaining layer is younger than 14d".into()),
+                    kept: serde_json::Value::Null,
+                },
+            }),
+        };
+        let json = firecode_json(&vms);
+        assert_eq!(json["vms"][0]["title"], "fc-wiring");
+        assert_eq!(json["vms"][0]["work"], "out");
+        assert_eq!(json["vms"][0]["flagged"], true);
+        assert_eq!(json["pool"][0]["state"], "sleeping");
+        // A gc that stopped short is in the report, which is what item 5 asks for.
+        assert_eq!(json["gc"]["target_reached"], false);
+        assert_eq!(
+            json["gc"]["reason"],
+            "every remaining layer is younger than 14d"
+        );
+    }
 }
