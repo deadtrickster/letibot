@@ -4,7 +4,25 @@ import type { Register } from 'claude-code'
 import type { Board, Job, Pkg, Run, SeatTodo, Tail, TailEntry } from '../types'
 
 const PANE = 'letibot-packages'
-const SERVER = 'leticode'
+/** The manifest's key for the bridge; the engine names the connected server `plugin:leticode:leticode`. */
+const SERVER_KEY = 'leticode'
+let serverName: string | null = null
+
+/** One call to the bridge, by the name the engine gave its server: asked once, then kept. */
+async function call($: any, tool: string, args: Record<string, unknown>): Promise<any> {
+  if (!serverName) {
+    const got = await $.mcp.connect(SERVER_KEY)
+    if (!got?.isConnected) throw new Error(`the leticode bridge is not connected: ${got?.message ?? got?.reason ?? 'no reason given'}`)
+    serverName = got.server
+  }
+  try {
+    return await $.mcp.call(serverName, tool, args)
+  } catch (e) {
+    // A reconnect may rename it; ask again next time rather than keep a dead name.
+    serverName = null
+    throw e
+  }
+}
 const POLL_MS = 5000
 const RUNS_PANE = 'letibot-runs'
 const TAIL_PANE = 'letibot-tail'
@@ -31,7 +49,7 @@ const todos = atom({ plugin: 'leticode', key: 'todos' } as const, { rows: [], er
 /** This seat's board as the bridge stores it (the `todos` tool), the rows letibot nags about. */
 async function refreshTodos($: any): Promise<void> {
   try {
-    const got = json(await $.mcp.call(SERVER, 'todos', {}))
+    const got = json(await call($, 'todos', {}))
     const rows: SeatTodo[] = (got.rows ?? []).map((r: any) => ({
       content: String(r.content ?? r.title ?? ''),
       status: String(r.status ?? 'pending'),
@@ -123,7 +141,7 @@ function line(s: string, n: number): string {
 
 /** The bridge's sessions, with each live one's status folded in. */
 async function poll($: any): Promise<Board> {
-  const listed = json(await $.mcp.call(SERVER, 'leticode_list', {}))
+  const listed = json(await call($, 'leticode_list', {}))
   const pkgs: Pkg[] = []
   for (const s of listed.sessions ?? []) {
     const pkg: Pkg = {
@@ -144,7 +162,7 @@ async function poll($: any): Promise<Board> {
     }
     if (!pkg.closed) {
       try {
-        const st = json(await $.mcp.call(SERVER, 'leticode_status', { session: s.session }))
+        const st = json(await call($, 'leticode_status', { session: s.session }))
         const todos: { status: string }[] = st.todos ?? []
         pkg.state = st.state ?? pkg.state
         pkg.todosTotal = todos.length
@@ -191,13 +209,13 @@ async function pollTail($: any): Promise<void> {
     // answer is refused by the MCP result limit. A new follow starts near the end, not at row 0.
     let since = t.next
     if (since == null) {
-      const probe = json(await $.mcp.call(SERVER, 'leticode_transcript', { session: t.session, limit: 1 }))
+      const probe = json(await call($, 'leticode_transcript', { session: t.session, limit: 1 }))
       since = Math.max(0, (probe.rows_total ?? 0) - TAIL_START)
     }
     const args: Record<string, unknown> = { session: t.session, limit: TAIL_BATCH, since }
     let got: any
     try {
-      got = json(await $.mcp.call(SERVER, 'leticode_transcript', args))
+      got = json(await call($, 'leticode_transcript', args))
     } catch (err) {
       // A stopped session is not held any more: say so once instead of every poll.
       const why = err instanceof Error ? err.message : String(err)
