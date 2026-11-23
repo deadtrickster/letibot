@@ -228,6 +228,7 @@ fn a_key_card_over_a_draft_leaves_the_line_alone() {
     a.key_ask = Some(crate::app::asks::KeyAsk {
         choice: "deepseek/deepseek-chat".into(),
         provider: "deepseek".into(),
+        kind: crate::app::asks::KeyKind::Provider,
     });
     typed(&mut a, "sk-123");
     assert_eq!(a.key_buf, "sk-123", "the key is the card's own field");

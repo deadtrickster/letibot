@@ -401,6 +401,7 @@ fn a_turn_that_deletes_a_test(h: &mut Harness, answer: &str) {
         outcome: letibot_transcript::ToolOutcome::Ok,
         payload: String::new(),
         edits: vec![letibot_transcript::ToolEditExcerpt {
+            note: String::new(),
             path: "tests/parser.rs".into(),
             created: false,
             before_start: 1,
@@ -546,6 +547,7 @@ fn a_models_overreach_finding_is_one_row() {
         outcome: letibot_transcript::ToolOutcome::Ok,
         payload: String::new(),
         edits: vec![letibot_transcript::ToolEditExcerpt {
+            note: String::new(),
             path: "src/parser.rs".into(),
             created: false,
             before_start: 1,

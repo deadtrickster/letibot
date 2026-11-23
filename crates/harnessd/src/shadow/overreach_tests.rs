@@ -47,6 +47,7 @@ fn excerpt(path: &str, before: &str, after: &str) -> ToolEditExcerpt {
         before_lines: before.lines().count(),
         after_lines: after.lines().count(),
         truncated: false,
+        note: String::new(),
         before: before.into(),
         after: after.into(),
     }

@@ -52,6 +52,7 @@ fn place(rig: &fake_remote::Rig, repo: &Path, host: &str, dotenv: Settings) -> S
         bound: Some(Duration::from_secs(30)),
         place_bound: Some(Duration::from_secs(30)),
         egress: Egress::Denied,
+        askpass: None,
         // The fake answers for a machine this test cannot probe, so the answer is pinned: the same
         // test would otherwise take two paths on two boxes.
         confine: Some(false),

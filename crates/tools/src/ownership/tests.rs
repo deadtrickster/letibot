@@ -24,6 +24,7 @@ fn env() -> Surroundings {
         programs: Default::default(),
         shell_path: None,
         granted: Vec::new(),
+        guest: false,
     }
 }
 
