@@ -53,19 +53,32 @@ impl FileText {
 
 /// Every exact occurrence of `needle`, as byte offsets into `hay`. Non-overlapping and left to right,
 /// which is what a replacement needs: two overlapping occurrences cannot both be replaced, and counting
-/// them as two would make the ambiguity report a lie.
+/// them as two would make the ambiguity report a lie. Every offset answered is a char boundary of
+/// `hay` (a `find` answers one, and a boundary plus a matched needle's length is one), which is what
+/// the callers slicing with them rely on.
 pub fn occurrences(hay: &str, needle: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
     let mut from = 0usize;
-    while let Some(rel) = hay[from..].find(needle) {
+    // `get`, not an index: an offset that is not a boundary ends the walk instead of a panic.
+    while let Some(rel) = hay.get(from..).and_then(|tail| tail.find(needle)) {
         let at = from + rel;
         out.push(at);
         from = at + needle.len();
     }
     out
+}
+
+/// The largest char boundary of `text` at or below `b`: a byte offset computed against another
+/// string, or clipped to a column, cannot be used to slice a `str` unless it is one.
+pub fn floor_boundary(text: &str, b: usize) -> usize {
+    let mut b = b.min(text.len());
+    while b > 0 && !text.is_char_boundary(b) {
+        b -= 1;
+    }
+    b
 }
 
 /// What a relaxation relaxed: the name the model is told, so a retry can be aimed rather
@@ -158,9 +171,13 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The exact bytes the model should have sent.
+    /// The exact bytes the model should have sent. Both ends are floored to a char boundary: the
+    /// span comes off `line_starts`, and a report that panicked over its own quote would be worse
+    /// than one that quotes a byte short.
     pub fn text<'a>(&self, file: &'a FileText) -> &'a str {
-        &file.lf[self.start..self.end]
+        let start = floor_boundary(&file.lf, self.start);
+        let end = floor_boundary(&file.lf, self.end).max(start);
+        &file.lf[start..end]
     }
 }
 

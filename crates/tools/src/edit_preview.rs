@@ -96,7 +96,9 @@ fn edited(text: &str, args: &Value) -> Option<String> {
         let mut out = String::with_capacity(text.len() + new.len());
         let mut from = 0;
         for at in hits {
-            out.push_str(&text[from..at]);
+            // `get`, not an index: a byte offset that is not a char boundary answers `None` and
+            // this call previews nothing rather than panicking over a file it cannot read.
+            out.push_str(text.get(from..at)?);
             match insert {
                 None => out.push_str(new),
                 Some(true) => out.push_str(&format!("{new}{needle}")),
@@ -104,7 +106,7 @@ fn edited(text: &str, args: &Value) -> Option<String> {
             }
             from = at + needle.len();
         }
-        out.push_str(&text[from..]);
+        out.push_str(text.get(from..)?);
         text = out;
     }
     Some(text)

@@ -503,8 +503,10 @@ fn long_line_column(
     clip: usize,
 ) -> Option<usize> {
     let line = lines.get(first.wrapping_sub(1))?;
-    (first == last && line.chars().count() > clip)
-        .then(|| line[..first_col.min(line.len())].chars().count())
+    // The column is a byte offset into the same text the line came from, and a clip taken at one
+    // that is not a char boundary panics.
+    let at = crate::edit::floor_boundary(line, first_col);
+    (first == last && line.chars().count() > clip).then(|| line[..at].chars().count())
 }
 
 /// The write, and everything that has to be true at the moment it happens.
@@ -1434,6 +1436,128 @@ mod batch_tests {
             let r = h.call("edit", bad);
             assert!(!r.is_grounded(), "{bad} was accepted: {}", r.render());
             assert_eq!(h.read_file("src/lib.rs"), before, "{bad} changed the file");
+        }
+    }
+}
+
+/// The edit path in every script a file is written in: no byte offset taken for a slice, a column or
+/// a diff may land inside a character. A deterministic table rather than a proptest, because this
+/// crate has none and the cases that break a byte offset are named rather than random.
+#[cfg(test)]
+mod utf8_tests {
+    use crate::testing::writable_harness;
+    use serde_json::json;
+
+    /// A script mix per line, CRLF where a file really has it. `é` is `e` + U+0301 throughout, so a
+    /// combining mark is exercised as one and not as the precomposed character.
+    const DOCS: &[&str] = &[
+        "привет, х\nвторой\n",
+        "漢字とかな\n行二\n",
+        "emoji 👍🏽 ok\n👨‍👩‍👧 family\n",
+        "combining e\u{301}\naccent e\u{301}\n",
+        "ascii привет 漢字\n👍🏽\n",
+        "one\r\ntwo привет\r\nthree 漢字\r\n",
+        "a\r\n❤️ b 👍🏽\r\n",
+    ];
+
+    /// The replacements: one multibyte, one empty, so a deletion is walked too.
+    const NEWS: &[&str] = &["Ж漢👍🏽e\u{301}", ""];
+
+    fn boundaries(text: &str) -> Vec<usize> {
+        text.char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect()
+    }
+
+    /// Every one- and two-character span, a stride of wider ones, and the whole file: the needle is
+    /// always a real span, so the tool's own match is what locates it.
+    fn spans(text: &str) -> Vec<(usize, usize)> {
+        let b = boundaries(text);
+        let mut out = Vec::new();
+        for width in 1..=2 {
+            for i in 0..b.len().saturating_sub(width) {
+                out.push((b[i], b[i + width]));
+            }
+        }
+        for i in (0..b.len().saturating_sub(6)).step_by(4) {
+            out.push((b[i], b[i + 6]));
+        }
+        out.push((0, text.len()));
+        out
+    }
+
+    /// A file's bytes as the tool should leave them: the expected LF text in the file's own endings.
+    fn written(expected_lf: &str, crlf: bool) -> String {
+        if crlf {
+            expected_lf.replace('\n', "\r\n")
+        } else {
+            expected_lf.to_string()
+        }
+    }
+
+    #[test]
+    fn an_edit_lands_exactly_or_is_refused_and_never_panics_in_any_script() {
+        for (d, doc) in DOCS.iter().enumerate() {
+            let path = format!("f{d}.txt");
+            let crlf = doc.contains("\r\n");
+            let lf = doc.replace("\r\n", "\n");
+            let sp = spans(&lf);
+            let (a, b) = sp[1];
+            let mut h = writable_harness();
+            h.write_file(&path, doc);
+
+            // A region this session was never shown is refused, and the refusal is a report about
+            // the same offsets: it must not panic where it names the line and the column.
+            let r = h.call(
+                "edit",
+                &json!({"path": &path, "old_string": &lf[a..b], "new_string": "x"}).to_string(),
+            );
+            assert!(!r.is_grounded(), "{}", r.render());
+            assert_eq!(h.read_file(&path), *doc);
+
+            // And a miss, whose report quotes the text at the nearest relaxed match: that quote is
+            // a slice of the file too.
+            for miss in [
+                format!("  {}  ", &lf[..lf.len() - 1]),
+                lf.replace('\n', " \n"),
+                format!("nope привет {}", &lf[a..b]),
+            ] {
+                let r = h.call(
+                    "edit",
+                    &json!({"path": &path, "old_string": &miss, "new_string": "x"}).to_string(),
+                );
+                assert!(!r.is_grounded(), "{miss:?} was accepted: {}", r.render());
+                assert_eq!(h.read_file(&path), *doc, "{miss:?} changed the file");
+            }
+
+            // Every span of the file, read and then replaced: the text that lands is the text that
+            // was asked for, or the call says why and the file is untouched.
+            for (a, b) in sp {
+                let old = &lf[a..b];
+                let new = NEWS[(a + b) % NEWS.len()];
+                if old == new {
+                    continue;
+                }
+                let times = lf.matches(old).count();
+                h.write_file(&path, doc);
+                h.call("read", &json!({"path": &path}).to_string());
+                let asked = json!({
+                    "path": &path,
+                    "old_string": old,
+                    "new_string": new,
+                    "replace_all": times > 1,
+                });
+                let r = h.call("edit", &asked.to_string());
+                let case = format!("{old:?} -> {new:?} in {doc:?}");
+                assert!(r.is_grounded(), "{case}: {}", r.render());
+                let expected = if times == 1 {
+                    lf.replacen(old, new, 1)
+                } else {
+                    lf.replace(old, new)
+                };
+                assert_eq!(h.read_file(&path), written(&expected, crlf), "{case}");
+            }
         }
     }
 }

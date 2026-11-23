@@ -34,16 +34,15 @@ pub struct Seen {
 /// Where a match of `len` bytes at byte `at` of `text` lies: its first line and the byte column
 /// it starts at there, its last line and the byte column it ends at (exclusive) there.
 pub fn hit_span(text: &str, at: usize, len: usize) -> (usize, usize, usize, usize) {
-    let at = at.min(text.len());
+    // Both ends are floored to a char boundary once, here: every slice below is taken from them,
+    // and an offset a caller computed against another string can land inside a character.
+    let at = crate::edit::floor_boundary(text, at);
     let start_of = |b: usize| text[..b].rfind('\n').map_or(0, |i| i + 1);
     let first = text[..at].matches('\n').count() + 1;
     let first_col = at - start_of(at);
-    let end = (at + len).min(text.len());
+    let end = crate::edit::floor_boundary(text, (at + len).min(text.len()));
     // The start of the match's last char: one byte back can land inside a multibyte char.
-    let mut last_byte = end.saturating_sub(1).max(at);
-    while !text.is_char_boundary(last_byte) {
-        last_byte -= 1;
-    }
+    let last_byte = crate::edit::floor_boundary(text, end.saturating_sub(1)).max(at);
     let last = text[..last_byte].matches('\n').count() + 1;
     let last_start = start_of(last_byte);
     let line_len = text[last_start..]
@@ -107,7 +106,10 @@ impl Seen {
         if slot.0 != fp {
             *slot = (fp, Vec::new());
         }
-        slot.1.push((from.min(line.len()), to.min(line.len())));
+        slot.1.push((
+            crate::edit::floor_boundary(line, from),
+            crate::edit::floor_boundary(line, to),
+        ));
         slot.1.sort_unstable();
         let mut merged: Vec<(usize, usize)> = Vec::new();
         for (x, y) in slot.1.drain(..) {
@@ -449,6 +451,10 @@ mod tests {
         assert_eq!(hit_span(before, 0, 6), (1, 0, 2, 1));
         let cyr = "ab\nпривет\n";
         assert_eq!(hit_span(cyr, 3, "привет".len()), (2, 0, 2, 12));
+        // An offset that is not a char boundary is floored rather than sliced: `привет` starts
+        // at 0, so a start of 1 is the same start as 0.
+        assert_eq!(hit_span("привет", 1, 2), (1, 0, 1, 2));
+        assert_eq!(hit_span("👍🏽x", 1, 1), (1, 0, 1, 0));
 
         // A line added above moves the part down with its line.
         let after = "new\nhead\n0123456789abcdef\n";
