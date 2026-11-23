@@ -705,7 +705,7 @@ impl Gc {
     /// The line `letibot holds` and the daemon's log carry: what went, and whether the budget was
     /// reached.
     pub fn sentence(&self) -> String {
-        let freed = crate::firecode::human(self.freed_bytes.max(0));
+        let freed = crate::firecode::human(self.freed_bytes);
         match self.target_reached {
             Some(true) => format!(
                 "firecode gc freed {freed} of state ({} run(s)) and is under its budget",
