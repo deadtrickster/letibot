@@ -349,9 +349,16 @@ to the blob. So `Config::carried_scale` keeps the last measured pair, named afte
 measured it, until a round on the current model measures again - and a provider switch keeps it
 rather than clearing it.
 
+**Before a round has reported, the estimate is anchored on the last one.** A metered session's wall
+reads `Config::estimated_before_a_scale`: the provider's last report, input plus output and the
+ledger length it was taken at, plus four bytes a token for what was appended since - or four bytes a
+token of the whole prompt when nothing has reported yet. The raw ledger count is never read as
+tokens; it folded a session at 600k of a 1M window, because a ledger byte is not a token.
+
 ## Under a meter
 
-Compaction is an operator's act (`/compact`); there is no automatic threshold, and a per-provider
-prompt budget would be the knob. GLM and DeepSeek are open weights, so
+Auto-compaction is on by default and fires a headroom before the window; on a metered session the
+count it fires on is the provider's own once a round has reported, and the estimate above until one
+has. `/compact` is still the operator's own way to tidy. GLM and DeepSeek are open weights, so
 [docs/glm-and-dense-attention.md](glm-and-dense-attention.md) still describes what the cloud model
 does with the prompt; the KV is simply not ours to inspect.

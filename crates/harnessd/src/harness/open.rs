@@ -3998,6 +3998,9 @@ impl Harness {
             folded: false,
             swept_calls: Default::default(),
             wall_anchor,
+            // Nothing has reported yet. A restart recovers the pair instead - the stored row is the same
+            // provider count - so the estimate starts from bytes a token only on a session nobody kept.
+            reported: None,
             render: parts.wiring.clone(),
             supplies,
             open_notes: notes,

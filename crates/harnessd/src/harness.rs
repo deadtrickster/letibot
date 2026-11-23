@@ -49,7 +49,7 @@ use letibot_turn::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat};
+use crate::config::{AdjudicatorChoice, Config, GateWiring, ReportedUsage, Seat};
 use crate::dialect::Wiring;
 use crate::jobwatch::{BackgroundKind, JobCompletion, JobWatchSink, JobWatchers};
 // `is_writable` is a trait method; the backend's own answer is only reachable
@@ -262,6 +262,11 @@ pub struct Harness {
     /// rolled forward from, with `cfg.ledger_scale` as the pair `measure_resident` computed. `None`
     /// with a scale set is one this session did not measure, and it keeps the old ratio reading.
     wall_anchor: Option<WallAnchor>,
+    /// The last round's own report of this conversation - see [`ReportedUsage`]. What
+    /// `measure_resident` estimates from while no round has measured the ledger's ratio. The
+    /// transcript is checked where it is read, so a fork retires it rather than rolling it onto a
+    /// base it never counted.
+    reported: Option<ReportedUsage>,
     /// How this daemon RENDERS a prompt: the dialect's template and the tool-schema serialiser. One
     /// renderer, so the prefix a re-seat writes and the prefix a fresh session writes cannot drift.
     render: std::sync::Arc<Wiring>,
@@ -1486,18 +1491,11 @@ impl Harness {
     pub fn token_unit(&self) -> String {
         match (&self.provider, self.cfg.ledger_scale) {
             (Some(p), Some(_)) => format!("{} tokens", p.name()),
-            // An estimate names the model that made it: `estimated with deepseek's measured scale` is a
-            // different claim from `deepseek tokens` and from `ledger tokens (unscaled)`, and a reader not
-            // told which they have cannot tell a measurement from an inherited ratio.
+            // An estimate names what anchors it - a round taken before a switch, or four bytes a token of
+            // this ledger - because `deepseek tokens` alone is read as a measurement of deepseek's.
             (Some(p), None) => match self.cfg.carried_note() {
-                Some(model) => format!(
-                    "{} tokens (estimated with {model}'s measured scale)",
-                    p.name()
-                ),
-                None => format!(
-                    "ledger tokens (unscaled: no round on {} has measured yet)",
-                    p.name()
-                ),
+                Some(model) => format!("{} tokens (estimated from {model}'s last round)", p.name()),
+                None => format!("{} tokens (estimated, four bytes a token)", p.name()),
             },
             (None, _) => "tokens".into(),
         }

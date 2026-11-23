@@ -463,10 +463,14 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
         !super::wall_stops_this_round(0, ledger, 20_000, cfg.headroom(), window, cfg.wall_basis()),
         "an estimate may decide, and this one says the prompt fits"
     );
-    // And the pre-emptive door still stands down on it: a fold nobody measured is not
-    // a fold an inherited ratio gets to order. The refused door - the provider's own
-    // answer - is untouched by this and compacts when it is refused.
-    assert!(!cfg.pre_emptive_compact(ledger, true));
+    // And the pre-emptive door judges it by the estimate: 2,708,271 ledger bytes are 677,067
+    // tokens at four bytes each - under the wall, where the raw count was past it. The refused
+    // door - the provider's own answer - is untouched by this and compacts when it is refused.
+    assert_eq!(
+        crate::config::estimated_before_a_scale(None, ledger),
+        677_067
+    );
+    assert!(!cfg.pre_emptive_compact(ledger, true, None));
 
     // A measurement on the new model replaces the estimate, which is the whole design.
     cfg.ledger_scale = Some((ledger, shown));

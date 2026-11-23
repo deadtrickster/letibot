@@ -1890,7 +1890,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     match sessions.resume_report(&session_id) {
         Some(r) => {
             let counted = sessions.with_harness(&session_id, move |h| {
-                (h.config().shown_tokens(r.tokens as u64), h.token_unit())
+                // The wall's own unit, and a count in it: a metered session nothing has measured
+                // prints its estimate, not the ledger's bytes under an estimate's unit.
+                (h.wall_count(r.tokens as u64), h.token_unit())
             });
             eprintln!("{}", resumed_line(&r, counted));
             for note in &r.notes {

@@ -2046,13 +2046,12 @@ impl Harness {
                     .map(|p| format!("{}/{}", p.name(), p.model()))
                     .unwrap_or_default();
                 let also = if let Some(model) = self.cfg.carried_note() {
-                    // An estimate, named as one, with whose measurement it is: the ledger's bytes converted by the
-                    // ratio another model measured, and not a number anything has confirmed for this one.
+                    // An estimate, named as one: the last round's count (taken before the switch) rolled forward by
+                    // four bytes a token, and not a number anything has confirmed for the model answering now.
                     format!(
-                        " (estimated with {model}'s measured scale: no round has run on \
-                             {here} yet, so this box's own ledger count is converted by the \
-                             ratio {model} measured before the switch. One round here replaces \
-                             it)"
+                        " ({model}'s last round counted this conversation, plus four bytes a \
+                             token for what has been appended since: no round has run on {here} \
+                             yet, and one round here replaces the estimate)"
                     )
                 } else if self.cfg.tokens_are_converted() {
                     format!(
@@ -2061,12 +2060,11 @@ impl Harness {
                              because it holds the reasoning the provider is not sent)"
                     )
                 } else if self.cfg.tokens_are_unscaled() {
-                    // The switch window, named rather than presented as calibrated: no round has run on this model
-                    // yet, so these are the ledger's counts against a window measured on the model before it.
+                    // The switch window, named rather than presented as measured: no round has run on this model
+                    // yet, so the count is this box's own ledger at four bytes a token.
                     format!(
-                        " (these are this box's own ledger counts: no round has run on \
-                             {here} since it took over, so nothing has measured how its \
-                             tokens relate to the ledger's. One round sets it)"
+                        " (estimated: four bytes a token of this box's own ledger, since no \
+                             round has run on {here} yet. One round sets how it counts)"
                     )
                 } else {
                     String::new()
@@ -2410,6 +2408,14 @@ impl Harness {
                     ),
                 });
                 self.cfg.ledger_scale = Some((rendered_at, ok.metrics.prompt_tokens));
+                // The provider's own count of this conversation, input plus the output it generated, at
+                // the ledger length that held both. A switch clears the ratio; this is what the wall's
+                // estimate rolls from until the new model reports, so a switch is not a fold on bytes.
+                self.reported = Some(crate::config::ReportedUsage {
+                    transcript: self.session.transcript_id.clone(),
+                    ledger: self.session.ledger.len() as u64,
+                    tokens: ok.metrics.prompt_tokens + ok.metrics.predicted_tokens,
+                });
                 self.measure_resident();
                 // The measurement the wall controller waits for: the first round on a folded base is where did the fold
                 // make room is answered, by the provider's own count. Not the summary turn's rounds, which count the

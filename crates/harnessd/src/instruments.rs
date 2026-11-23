@@ -583,7 +583,7 @@ pub fn operator_compaction(h: &crate::harness::Harness, before: u64, started: In
         "operator",
         if ok { "ok" } else { "failed" },
         started,
-        (c.shown_tokens(before), c.shown_tokens(after)),
+        (h.wall_count(before), h.wall_count(after)),
         (before, after),
         &h.token_unit(),
     );

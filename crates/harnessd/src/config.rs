@@ -1375,7 +1375,7 @@ fn headroom_of(w: u64) -> u64 {
 
 /// The last ratio this session measured, on a model it has since switched away from. A switch
 /// clears `Config::ledger_scale`, rightly, but the cleared count then refused a turn before it left
-/// the machine. Kept as an estimate, named as one, and never a pre-emptive fold.
+/// the machine - so it converts counts as a named estimate, never as a measurement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CarriedScale {
     /// The model the pair was measured on, in `/models`' own spelling -
@@ -1384,6 +1384,37 @@ pub struct CarriedScale {
     /// `(ledger tokens, that model's prompt tokens)` for ONE prompt.
     pub ledger: u64,
     pub provider: u64,
+}
+
+/// What the provider last said about this conversation: what it counted as input plus output, and
+/// the ledger length it had when it said so. The pre-emptive door's anchor while nothing has
+/// measured this ledger - a metered ledger holds a byte per id, which is not a token count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedUsage {
+    /// The transcript it was reported on. A fork replaces the base the report counted, and a
+    /// count of the old conversation says nothing about the new one.
+    pub transcript: String,
+    /// The ledger's length when the round's rows were in, so what follows is an append.
+    pub ledger: u64,
+    /// Input plus output, in the provider's own tokens.
+    pub tokens: u64,
+}
+
+/// What a byte costs in tokens when nothing has measured it. Four is the rule of thumb for
+/// English over a model's own tokenizer; a byte-vocabulary ledger has one id per byte of the
+/// rendered prompt, so this is the whole conversion available before a round reports.
+const BYTES_A_TOKEN: u64 = 4;
+
+/// A metered session's size before any round has measured its ledger: the provider's last report
+/// plus four bytes a token for everything appended since it, or four bytes a token for the whole
+/// prompt when nothing has been reported yet. Never the raw ledger, which folded a real session.
+pub fn estimated_before_a_scale(reported: Option<&ReportedUsage>, ledger: u64) -> u64 {
+    match reported {
+        Some(r) => r
+            .tokens
+            .saturating_add(ledger.saturating_sub(r.ledger) / BYTES_A_TOKEN),
+        None => ledger / BYTES_A_TOKEN,
+    }
 }
 
 /// What a ledger count's relation to the answering model's count is known from - the provenance
@@ -1605,14 +1636,25 @@ impl Config {
         self.auto_compact && self.at_the_wall(resident_tokens)
     }
 
-    /// The pre-emptive door's question, for a session that may be metered.
-    /// [`Config::should_compact`], except that a metered session with no measured scale is never at the
-    /// wall: its count is LEDGER bytes against a provider's window, which folded a real session.
-    pub fn pre_emptive_compact(&self, resident_tokens: u64, metered: bool) -> bool {
+    /// The pre-emptive door's question, for a session that may be metered. [`Config::should_compact`],
+    /// except that a metered session with no measured scale is judged on the ESTIMATE its last report
+    /// gives: its ledger count is bytes against a provider's window, which folded a real session.
+    pub fn pre_emptive_compact(
+        &self,
+        resident: u64,
+        metered: bool,
+        reported: Option<&ReportedUsage>,
+    ) -> bool {
         if metered && self.ledger_scale.is_none() {
-            return false;
+            // No window is still no reason to act, and the estimate needs none invented for it.
+            let Some(w) = self.context_window else {
+                return false;
+            };
+            // The reserve is the window's own: the count is already in the provider's units.
+            return self.auto_compact
+                && estimated_before_a_scale(reported, resident) + headroom_of(w) >= w;
         }
-        self.should_compact(resident_tokens)
+        self.should_compact(resident)
     }
 
     /// Would a turn starting at `resident` tokens fit, with the headroom reserved? The gate the wall
@@ -3918,41 +3960,134 @@ mod compaction_trigger_tests {
         let mut cfg = Config::for_this_box(std::env::temp_dir());
         cfg.context_window = None;
         assert!(!cfg.should_compact(u64::MAX));
+        // The estimate has no window to be judged against either, and gets none invented.
+        assert!(!cfg.pre_emptive_compact(u64::MAX, true, None));
         // And the switch is honoured when the window IS known.
         cfg.context_window = Some(1000);
         cfg.auto_compact = false;
         assert!(!cfg.should_compact(999_999));
     }
 
-    /// An unscaled count never opens the pre-emptive door on a metered session - it is
-    /// ledger tokens against the provider's window. A local one has no scale to wait for, and a
-    /// measured scale opens it as `should_compact` would.
-    #[test]
-    fn an_unmeasured_metered_session_is_not_folded_before_it_is_measured() {
+    /// A metered session and a window, with nothing measured yet.
+    fn a_metered_session() -> Config {
         let mut cfg = Config::for_this_box("/tmp");
+        cfg.provider = Some(ProviderConfig {
+            name: "deepseek".into(),
+            ..Default::default()
+        });
         cfg.auto_compact = true;
         cfg.context_window = Some(1_000_000);
         cfg.ledger_scale = None;
+        cfg
+    }
+
+    /// A round that reported `tokens` when the ledger was `ledger` long.
+    fn a_report(ledger: u64, tokens: u64) -> ReportedUsage {
+        ReportedUsage {
+            transcript: "t-1".into(),
+            ledger,
+            tokens,
+        }
+    }
+
+    /// The first send: nothing has reported, so four bytes a token of the prompt is the
+    /// whole evidence there is - and a prompt that size is folded before it is refused.
+    #[test]
+    fn the_first_send_of_a_metered_session_folds_on_four_bytes_a_token() {
+        let cfg = a_metered_session();
+        // 4.2M bytes of prompt, 1.05M tokens: past the 1M window, so past its 62.5k reserve.
+        assert_eq!(estimated_before_a_scale(None, 4_200_000), 1_050_000);
+        assert!(
+            cfg.pre_emptive_compact(4_200_000, true, None),
+            "a first prompt over the window must fold, not learn from a refusal"
+        );
+        // 3.5M bytes is 875k: under the reserve line (937.5k), and not folded.
+        assert_eq!(estimated_before_a_scale(None, 3_500_000), 875_000);
+        assert!(!cfg.pre_emptive_compact(3_500_000, true, None));
+    }
+
+    /// What the provider last said, plus only what came after it: a count just under the
+    /// window folds once the appends since it pass the window, which is the report's whole use.
+    #[test]
+    fn a_reported_count_folds_once_what_followed_it_passes_the_window() {
+        let cfg = a_metered_session();
+        let reported = a_report(3_400_000, 880_000);
+        // On its own it is 880k of 1M - inside the reserve, so no fold.
+        assert_eq!(
+            estimated_before_a_scale(Some(&reported), 3_400_000),
+            880_000
+        );
+        assert!(!cfg.pre_emptive_compact(3_400_000, true, Some(&reported)));
+        // 300k bytes appended since it is 75k tokens: 955k, past the wall.
+        assert_eq!(
+            estimated_before_a_scale(Some(&reported), 3_700_000),
+            955_000,
+            "the report's count plus four bytes a token for the append"
+        );
+        assert!(cfg.pre_emptive_compact(3_700_000, true, Some(&reported)));
+    }
+
+    /// Comfortably under is not the wall, with a report or without one: the rule above is a
+    /// threshold, not a policy to fold whenever a metered session is unmeasured.
+    #[test]
+    fn a_session_comfortably_under_the_window_is_not_folded() {
+        let cfg = a_metered_session();
+        let reported = a_report(1_000_000, 400_000);
+        assert_eq!(
+            estimated_before_a_scale(Some(&reported), 2_200_000),
+            700_000
+        );
+        assert!(!cfg.pre_emptive_compact(2_200_000, true, Some(&reported)));
+        // 2.2M bytes and nothing reported is 550k, and it is not folded either.
+        assert_eq!(estimated_before_a_scale(None, 2_200_000), 550_000);
+        assert!(!cfg.pre_emptive_compact(2_200_000, true, None));
+    }
+
+    /// The session this rule was reversed for: 2,431,232 ledger BYTES against a 1M window. The
+    /// ledger used to decide it, which folded a conversation at ~600k of its window; the estimate
+    /// is that divided by four, and it says which number it uses.
+    #[test]
+    fn an_unmeasured_session_is_judged_on_the_estimate_and_not_on_its_ledger() {
+        let cfg = a_metered_session();
         let ledger = 2_431_232;
         assert!(
             cfg.should_compact(ledger),
-            "the premise: the raw count is over the window"
+            "the premise: the raw ledger is over the window"
+        );
+        assert_eq!(
+            estimated_before_a_scale(None, ledger),
+            607_808,
+            "2,431,232 bytes at four bytes a token"
         );
         assert!(
-            !cfg.pre_emptive_compact(ledger, true),
-            "a metered session with no measured scale was folded on its ledger bytes"
+            !cfg.pre_emptive_compact(ledger, true, None),
+            "the raw ledger count was read as tokens again"
         );
-        assert!(
-            cfg.pre_emptive_compact(ledger, false),
-            "a local session's count is its own"
-        );
-        // About four ledger bytes a token.
+        // And the estimate's own edge does fold: 3.75M bytes is 937.5k, the wall of a 1M window.
+        assert!(cfg.pre_emptive_compact(3_750_000, true, None));
+    }
+
+    /// A measured scale decides exactly as it did, and a report does not reach that door: with a
+    /// pair, the count is the ledger's and the window is converted to match it.
+    #[test]
+    fn a_measured_scale_decides_as_it_always_did() {
+        let mut cfg = a_metered_session();
+        // About four ledger bytes a token: a 4M window in the ledger's units.
         cfg.ledger_scale = Some((2_400_000, 600_000));
         assert!(
-            !cfg.pre_emptive_compact(ledger, true),
+            !cfg.pre_emptive_compact(2_431_232, true, None),
             "~600k of 1M is not the wall"
         );
-        assert!(cfg.pre_emptive_compact(3_990_000, true), "~997k of 1M is");
+        assert!(cfg.pre_emptive_compact(3_990_000, true, None), "~997k is");
+        // A report that says otherwise changes nothing once something measured the ledger.
+        let reported = a_report(100, 999_000);
+        assert!(!cfg.pre_emptive_compact(2_431_232, true, Some(&reported)));
+        // A local session measures nothing and needs to: its ledger is the prompt.
+        let mut local = cfg.clone();
+        local.ledger_scale = None;
+        local.provider = None;
+        assert!(local.pre_emptive_compact(2_431_232, false, None));
+        assert!(!local.pre_emptive_compact(900_000, false, None));
     }
 
     /// The wall-continuation gate measures the window, not the flag. `should_compact` folds in

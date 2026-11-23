@@ -288,20 +288,32 @@ pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
 impl Harness {
     /// How big this conversation is in the units its wall is in, and the pair every `Config` conversion reads.
     /// Called before every wall decision, since the ledger moves between rounds and a stale pair would convert
-    /// those rows by a ratio they have nothing to do with. Without a measurement it says so.
+    /// those rows by a ratio they have nothing to do with. With nothing measured, it is the estimate.
     pub fn measure_resident(&mut self) -> Resident {
         let len = self.session.ledger.len() as u64;
         if self.cfg.ledger_scale.is_none() {
             // A switch cleared the scale (`set_provider`, `set_own_server`): the anchor
             // was a measurement on the model before, and goes with it.
             self.wall_anchor = None;
-            // The carried ratio still converts: nothing here has measured THIS model, so `measured` is `None`
-            // and a line says so, but a pair measured on the model before the switch beats the ledger's bytes and
-            // stops a fresh provider ending the turn at round 0.
+            // Nothing has measured this ledger, so its bytes are not tokens: a metered session is counted
+            // as its provider's last report plus four bytes a token since, while a local session's ledger
+            // IS the prompt. A report from before a switch is an anchor here, not a measurement.
+            if self.provider.is_none() {
+                return Resident {
+                    tokens: len,
+                    measured: None,
+                    since: 0,
+                };
+            }
+            let reported = self.reported_now();
+            let tokens = crate::config::estimated_before_a_scale(reported.as_ref(), len);
+            let measured = reported
+                .as_ref()
+                .filter(|_| self.cfg.carried_note().is_none());
             return Resident {
-                tokens: self.cfg.shown_tokens(len),
-                measured: None,
-                since: 0,
+                tokens,
+                measured: measured.map(|r| r.tokens),
+                since: measured.map_or(0, |r| tokens - r.tokens),
             };
         }
         let Some(anchor) = &self.wall_anchor else {
@@ -331,6 +343,29 @@ impl Harness {
     /// both the request and the count of what that request sends.
     pub(crate) fn echoes_reasoning(&self) -> bool {
         !tool_names(&self.prefix.tools_json).is_empty()
+    }
+
+    /// The provider's last report of the conversation this session is on NOW, or nothing. The rule
+    /// `roll_resident` applies to its anchor: a fork replaced the base the report counted, so a count
+    /// of the old conversation is dropped rather than rolled onto one it never saw.
+    fn reported_now(&self) -> Option<ReportedUsage> {
+        let reported = self.reported.as_ref()?;
+        let len = self.session.ledger.len() as u64;
+        (reported.transcript == self.session.transcript_id && reported.ledger <= len)
+            .then(|| reported.clone())
+    }
+
+    /// A ledger count in the units this session's wall is judged in, for a line that only prints it:
+    /// [`Harness::measure_resident`]'s number without the roll, which writes state. A metered session
+    /// nothing has measured is the estimate, because its ledger bytes are not the provider's tokens.
+    pub fn wall_count(&self, ledger: u64) -> u64 {
+        if self.provider.is_none() {
+            return ledger;
+        }
+        if self.cfg.ledger_scale.is_none() {
+            return crate::config::estimated_before_a_scale(self.reported_now().as_ref(), ledger);
+        }
+        self.cfg.shown_tokens(ledger)
     }
 
     /// The turn after a re-seat: the model is told it happened and answers. The same seam as
@@ -427,9 +462,11 @@ impl Harness {
         // controller's: one state, changed only by measured counts.
         let refused = matches!(why, WallWhy::Refused);
         if !refused
-            && !self
-                .cfg
-                .pre_emptive_compact(resident, self.provider.is_some())
+            && !self.cfg.pre_emptive_compact(
+                resident,
+                self.provider.is_some(),
+                self.reported_now().as_ref(),
+            )
         {
             return false;
         }
