@@ -1724,7 +1724,7 @@ pub enum Region {
     SystemBinaries,
     /// `/dev`, `/sys`, `/proc`.
     Device,
-    /// `/tmp`, `/var/tmp`, `/run`.
+    /// Shared scratch space: [`TEMP_PREFIXES`].
     Temp,
     /// The filesystem root itself.
     Root,
@@ -1790,6 +1790,21 @@ impl Region {
         }
     }
 }
+
+/// The prefixes [`Surroundings::region_of`] places as [`Region::Temp`], and whether a command may
+/// WRITE there: shared scratch space in one list, so a screen that asks whether a path may be
+/// written cannot answer differently from the region table. The runtime directory is temp to read
+/// and not to write - the daemon's own socket and records are there. A Mac spells its temp space
+/// under `/private` and puts `$TMPDIR` under `/var/folders`.
+pub const TEMP_PREFIXES: [(&str, bool); 7] = [
+    ("/tmp", true),
+    ("/var/tmp", true),
+    ("/private/tmp", true),
+    ("/private/var/tmp", true),
+    ("/var/folders", true),
+    ("/private/var/folders", true),
+    ("/run", false),
+];
 
 /// Whether the shell that will run the command can make a name mean something other than itself.
 /// A resolved parse is not a resolved meaning: aliases, functions and `PATH` are not in the text,
@@ -2231,7 +2246,7 @@ impl Surroundings {
         }) {
             return Region::Workspace;
         }
-        // Before the `/tmp` row below, because the scratch IS under `/tmp` and the table
+        // Before the temp table below, because the scratch IS under `/tmp` and the table
         // would otherwise call it shared temp space. `p` is already collapsed, so
         // `scratch/../../etc` has become `/etc` and does not match here.
         if let Some(scratch) = self.scratch.as_deref().filter(|s| !s.is_empty())
@@ -2249,13 +2264,13 @@ impl Surroundings {
             ("/dev", Region::Device),
             ("/sys", Region::Device),
             ("/proc", Region::Device),
-            ("/tmp", Region::Temp),
-            ("/var/tmp", Region::Temp),
-            ("/run", Region::Temp),
         ] {
             if under(&p, prefix) {
                 return r;
             }
+        }
+        if TEMP_PREFIXES.iter().any(|(t, _)| under(&p, t)) {
+            return Region::Temp;
         }
         if let Some(home) = &self.home
             && under(&p, home)

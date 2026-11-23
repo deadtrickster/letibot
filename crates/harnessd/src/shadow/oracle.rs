@@ -142,6 +142,7 @@ pub fn stage_of(
         workspace: workspace.to_path_buf(),
         home: home.to_path_buf(),
         granted: granted.to_vec(),
+        temp: super::guard::temp_roots(home),
     };
     if stage != Stage::Reads {
         // The lexical screen a shadow allow meets anyway: privilege, a push, a write, a redirect

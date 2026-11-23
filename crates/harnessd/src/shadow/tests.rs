@@ -340,6 +340,7 @@ fn call(command: &str) -> Call {
         workspace: "/w/proj".into(),
         home: "/home/op".into(),
         granted: Vec::new(),
+        temp: Vec::new(),
     }
 }
 
@@ -1882,6 +1883,84 @@ fn read_passes_resolves_symlinks_and_refuses_agent_stores() {
         "no home, so nothing below it can be ruled out"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A write into temp space is the session's own scratch: layer A says so ([`TEMP_PREFIXES`]), and
+/// the screen may not answer differently - a commit message under `/var/tmp` is not the operator's.
+#[test]
+fn a_write_into_temp_space_is_not_outside_the_workspace() {
+    use super::guard::allow_passes;
+    for cmd in [
+        // The call that was asked, word for word: a commit message in `/var/tmp`, then the gate.
+        "cat > /var/tmp/msg-toolwrap.txt <<'EOF'\nnarrow the write check\nEOF\ngit commit \
+         --amend -F /var/tmp/msg-toolwrap.txt && cargo fmt --check && env TMPDIR=/var/tmp cargo \
+         clippy -p letibot-tools -- -D warnings && cargo test -p letibot-tools",
+        "echo x > /tmp/x",
+        "echo y | tee /var/tmp/y",
+        "mkdir -p /tmp/a/b",
+    ] {
+        assert_eq!(allow_passes(&call(cmd)), Ok(()), "{cmd}");
+    }
+    for cmd in [
+        "echo x > /etc/x",
+        "echo x > ~/x",
+        "tee /home/op/y",
+        // `..` is collapsed before the screen runs, so a temp-looking path that climbs out is not.
+        "echo x > /tmp/../etc/x",
+        "mv target/debug/x /var/tmp/../../etc/x",
+        // The runtime directory is temp to read and not to write: the daemon's socket is there.
+        "rm /run/user/1000/letibot/harnessd.sock",
+    ] {
+        assert!(allow_passes(&call(cmd)).is_err(), "{cmd}");
+    }
+}
+
+/// A symlink in temp space carries the write wherever it points, so the path is judged at its key
+/// as well: temp is the session's own scratch and never a secret store.
+#[test]
+fn a_symlink_out_of_temp_space_is_judged_where_it_points() {
+    use super::guard::allow_passes;
+    let root = std::env::temp_dir().join(format!("letibot-guard-tmp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh"), root.join("link")).unwrap();
+    let at = |cmd: String| Call {
+        args: serde_json::json!({ "command": cmd }),
+        home: home.clone(),
+        ..call("")
+    };
+    let plain = root.join("plain.txt");
+    assert_eq!(
+        allow_passes(&at(format!("echo x > {}", plain.display()))),
+        Ok(())
+    );
+    assert!(
+        allow_passes(&at(format!(
+            "echo x > {}",
+            root.join("link/id_ed25519").display()
+        )))
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A seat's `$TMPDIR` is the session's scratch wherever it lands, so the roots the call carries are
+/// part of "inside" - and the operator's home is still not one of them.
+#[test]
+fn a_sessions_own_temp_dir_counts_as_scratch() {
+    use super::guard::allow_passes;
+    let c = Call {
+        temp: vec!["/srv/seat-tmp".into()],
+        ..call("")
+    };
+    let with = |cmd: &str| Call {
+        args: serde_json::json!({ "command": cmd }),
+        ..c.clone()
+    };
+    assert_eq!(allow_passes(&with("echo x > /srv/seat-tmp/x")), Ok(()));
+    assert!(allow_passes(&with("echo x > /srv/other/x")).is_err());
+    assert!(allow_passes(&with("echo x > ~/x")).is_err());
 }
 
 #[test]

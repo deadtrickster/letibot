@@ -119,6 +119,7 @@ impl ShadowSink {
             // A relayed card names a path this record has no view to place; the boundary it
             // runs in already answered whether the path is there.
             granted: Vec::new(),
+            temp: super::guard::temp_roots(&self.home),
         };
         let q = question(request, tool, arguments, &self.rules, &call);
         // The operator's own words are the whole of "did they ask for this". The gate's trail can be
@@ -485,6 +486,7 @@ impl Relay {
             workspace,
             home: self.home.clone(),
             granted: Vec::new(),
+            temp: super::guard::temp_roots(&self.home),
         };
         let mut s = shown(
             &c.req_id,

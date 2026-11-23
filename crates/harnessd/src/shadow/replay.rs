@@ -431,6 +431,7 @@ pub fn score_permission(
             // A replay has the row's words and no view: an empty list judges it by the
             // workspace alone, which is the narrow direction.
             granted: Vec::new(),
+            temp: super::guard::temp_roots(&home),
         };
         let shown = super::permission::shown(&a.request, &a.tool, &a.arguments, rules, None, call);
         let word = match judge.judge(

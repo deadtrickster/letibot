@@ -378,6 +378,7 @@ fn a_tool_result_saying_answer_allow_or_report_none_cannot_act() {
         workspace: "/w/proj".into(),
         home: "/home/op".into(),
         granted: Vec::new(),
+        temp: Vec::new(),
     };
     let c = judged(
         Job::Permission,

@@ -1,5 +1,5 @@
-//! The hard denylist a shadow's `allow` must still pass. Lexical and conservative: anything it
-//! cannot rule out is `ask`, which is today's behaviour, so a shadow that is on is never less safe.
+//! The hard denylist a shadow's `allow` must still pass. Lexical first, and conservative: anything
+//! it cannot rule out is `ask`, which is today's behaviour, so a shadow that is on is never less safe.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -15,6 +15,9 @@ pub struct Call {
     /// folder granted writable is a workspace to this denylist too, which is what lets a delete
     /// inside one reach the stage that answers it instead of falling to the person.
     pub granted: Vec<PathBuf>,
+    /// Temp space this session's own shell has beyond the places layer A calls temp: `$TMPDIR`,
+    /// which a box or a seat may point anywhere. Read by [`temp_roots`], never by a tool's word.
+    pub temp: Vec<PathBuf>,
 }
 
 /// Commands that raise privilege.
@@ -129,8 +132,55 @@ fn resolve(p: &str, call: &Call) -> PathBuf {
     out
 }
 
+/// Whether a write may land here: the workspace, a folder the operator granted writable, or temp.
+/// Judged at the path the call spelled and at the key it really names, since a symlink in temp
+/// carries the write wherever it points.
 fn inside(p: &Path, call: &Call) -> bool {
-    p.starts_with(&call.workspace) || call.granted.iter().any(|g| p.starts_with(g))
+    let spelled: Vec<PathBuf> = std::iter::once(call.workspace.clone())
+        .chain(call.granted.iter().cloned())
+        .chain(call.temp.iter().cloned())
+        .collect();
+    let keyed: Vec<PathBuf> = spelled
+        .iter()
+        .map(|r| letibot_tools::view::key(r))
+        .collect();
+    holds(p, &spelled, &call.home) && holds(&letibot_tools::view::key(p), &keyed, &call.home)
+}
+
+/// One half of [`inside`]: under a root, or in temp space. Temp is the session's own scratch, so a
+/// secret store is never it - a symlink in `/tmp` that points into one is that store's write - and
+/// neither is the operator's home.
+fn holds(p: &Path, roots: &[PathBuf], home: &Path) -> bool {
+    if roots.iter().any(|r| p.starts_with(r)) {
+        return true;
+    }
+    if (!home.as_os_str().is_empty() && p.starts_with(home))
+        || letibot_tools::intent::Surroundings::secret_store_of(&p.to_string_lossy(), home.to_str())
+            .is_some()
+    {
+        return false;
+    }
+    letibot_tools::intent::TEMP_PREFIXES
+        .iter()
+        .any(|(t, written)| *written && p.starts_with(t))
+}
+
+/// The temp roots a session's own shell has that layer A's table does not name: `$TMPDIR`, which a
+/// box or a seat may point anywhere. A directory that is the operator's home (or holds it) or a
+/// secret store is not scratch, and is dropped rather than trusted.
+pub fn temp_roots(home: &Path) -> Vec<PathBuf> {
+    let Some(dir) = std::env::var_os("TMPDIR").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    if !dir.is_absolute() || home.starts_with(&dir) {
+        return Vec::new();
+    }
+    if letibot_tools::intent::Surroundings::secret_store_of(&dir.to_string_lossy(), home.to_str())
+        .is_some()
+    {
+        return Vec::new();
+    }
+    vec![dir]
 }
 
 /// `Ok` when the shadow may grant a read of `path`: absolute, not a secret store, credential
