@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use letibot_bridge::rooms;
@@ -34,7 +34,7 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 fn waiter(socket: &Path, folder: &Path, data: &Path, timeout: &str) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_letibot-mcp"))
+    letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-mcp"))
         .arg("room-wait")
         .arg("--attention")
         .arg("to_me")

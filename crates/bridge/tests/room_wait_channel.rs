@@ -4,7 +4,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use letibot_bridge::channel;
@@ -40,7 +40,7 @@ fn a_waiter_steps_aside_when_the_channel_is_live() {
     channel::publish(&data.join("letibot"), NAME, true);
 
     let started = Instant::now();
-    let out = Command::new(env!("CARGO_BIN_EXE_letibot-mcp"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-mcp"))
         .arg("room-wait")
         .arg("--attention")
         .arg("to_me")
@@ -72,7 +72,7 @@ fn a_waiter_steps_aside_when_the_channel_is_live() {
 
     // Without the mark the waiter IS the wake: it tries to connect and says the room is not there.
     channel::publish(&data.join("letibot"), NAME, false);
-    let out = Command::new(env!("CARGO_BIN_EXE_letibot-mcp"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-mcp"))
         .arg("room-wait")
         .arg("--timeout")
         .arg("5s")

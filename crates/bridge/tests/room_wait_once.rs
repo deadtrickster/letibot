@@ -6,7 +6,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use letibot_bridge::rooms::{self, PROTOCOL};
 use serde_json::{Value, json};
@@ -73,7 +72,7 @@ fn scratch(tag: &str) -> PathBuf {
 /// One `room-wait` behind a shell of its own: the shell is the parent, so a mark named after the
 /// process that waited would be a new one for every run.
 fn run(socket: &Path, data: &Path, timeout: &str) -> (i32, String) {
-    let out = Command::new("sh")
+    let out = letibot_testenv::command("sh")
         .arg("-c")
         .arg(format!(
             "exec \"$0\" room-wait --attention to_me --timeout {timeout}",

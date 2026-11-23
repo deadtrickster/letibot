@@ -6,7 +6,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use letibot_bridge::rooms::{self, RoomLink};
@@ -46,13 +46,14 @@ fn waiter(
     session: Option<&str>,
     timeout: &str,
 ) -> Child {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_letibot-mcp"));
+    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-mcp"));
     cmd.arg("room-wait")
         .arg("--attention")
         .arg("to_me")
         .arg("--timeout")
         .arg(timeout)
         .env("LETIBOT_ROOM_SOCKET", socket)
+        .env(rooms::NAME_ENV, NAME)
         .env("XDG_DATA_HOME", data)
         .current_dir(folder)
         .stdout(Stdio::piped())

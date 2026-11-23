@@ -6,7 +6,7 @@ use crate::shadow::{self, Job, runner};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const PROMPT: &str = "make latex beamer slides for the offsite talk";
+const PROMPT: &str = "make latex beamer slides for the offsite talk presentation";
 
 /// Two rounds that read a file, the second slow enough for the during verdict to land, then an
 /// answer. Every request's tail is kept.
@@ -51,10 +51,11 @@ impl letibot_backend::MessagesBackend for Reads {
             _ => Vec::new(),
         };
         Ok(letibot_backend::Completion {
-            text: if tool_calls.is_empty() {
-                "done".into()
-            } else {
-                String::new()
+            // Round one states the plan, as a real turn does: during checks work against a plan.
+            text: match round {
+                1 => "I will read talk.md and then make latex beamer slides for the talk.".into(),
+                _ if tool_calls.is_empty() => "done".into(),
+                _ => String::new(),
             },
             reasoning: String::new(),
             tool_calls,
