@@ -224,6 +224,7 @@ const EXERCISED: &[&str] = &[
     "record_operator_ruling",
     "diagnostic",
     "corpus",
+    "adjudication",
     "corpus_counts",
     "approved_shapes",
     "shapeless_human_admits",
