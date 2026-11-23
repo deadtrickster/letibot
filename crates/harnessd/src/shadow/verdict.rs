@@ -39,6 +39,9 @@ pub struct Shown {
     /// An oracle brief: a permission `allow` cites trail numbers instead of a rule. The stage-1
     /// gate read the call's paths before the brief was built, so there is no call here.
     pub oracle: bool,
+    /// The question is automode's: should this call be BLOCKED? Then the reply carries a category
+    /// and a reason rather than a citation, and nothing in it is checked as a quote.
+    pub block: bool,
 }
 
 /// One authored stretch of [`Shown::data`]: byte range, author, and transcript row.
@@ -135,6 +138,50 @@ pub enum Decision {
         cites: Vec<usize>,
     },
     Ask,
+    /// Automode's other answer: the call must not run. `category` is one of the operator's six
+    /// words (see [`Category`]) and `reason` says what it would have done.
+    Block {
+        category: Category,
+        reason: String,
+    },
+}
+
+/// The six things automode blocks for, and nothing else. A closed set because the corpus counts
+/// them, and because "blocked" with no word would be a judgement nobody can review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Category {
+    ExfiltratingSecretsOrData,
+    DestroyingDataOutsideTheTask,
+    PushToAProtectedRef,
+    ProductionDeployOrCloudMutation,
+    WeakeningSecurityOrPermissions,
+    AnotherSessionsProperty,
+}
+
+impl Category {
+    pub const ALL: [Category; 6] = [
+        Category::ExfiltratingSecretsOrData,
+        Category::DestroyingDataOutsideTheTask,
+        Category::PushToAProtectedRef,
+        Category::ProductionDeployOrCloudMutation,
+        Category::WeakeningSecurityOrPermissions,
+        Category::AnotherSessionsProperty,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::ExfiltratingSecretsOrData => "exfiltrating_secrets_or_data",
+            Category::DestroyingDataOutsideTheTask => "destroying_data_outside_the_task",
+            Category::PushToAProtectedRef => "push_to_a_protected_ref",
+            Category::ProductionDeployOrCloudMutation => "production_deploy_or_cloud_mutation",
+            Category::WeakeningSecurityOrPermissions => "weakening_security_or_permissions",
+            Category::AnotherSessionsProperty => "another_sessions_property",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Category> {
+        Category::ALL.into_iter().find(|c| c.as_str() == s.trim())
+    }
 }
 
 /// A verdict that passed every check.
@@ -174,6 +221,7 @@ impl Verdict {
             Verdict::Permission { decision, .. } => match decision {
                 Decision::Allow { .. } => "allow",
                 Decision::Ask => "ask",
+                Decision::Block { .. } => "block",
             },
         }
     }
@@ -227,6 +275,17 @@ struct PermissionReply {
     cites: Vec<usize>,
     #[serde(default)]
     evidence: String,
+}
+
+/// Automode's answer: block or not, with one of [`Category`]'s words when it blocks.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockReply {
+    block: bool,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    reason: String,
 }
 
 /// The JSON object in a reply: the reply itself, or the one inside a ```json fence. Anything
@@ -540,6 +599,51 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                         quote: o.quote,
                     })
                     .collect(),
+            })
+        }
+        Job::Permission if shown.block => {
+            // Automode's question. Nothing here is a quote: the reply names a category from a
+            // closed set and says in one sentence what the call would do, and a category this
+            // build does not know voids the answer rather than widening the block.
+            let r: BlockReply = match serde_json::from_str(json) {
+                Ok(r) => r,
+                Err(e) => return log.reject("schema", e.to_string()),
+            };
+            log.pass("schema");
+            if !r.block {
+                return log.done(Verdict::Permission {
+                    decision: Decision::Ask,
+                    evidence: r.reason,
+                });
+            }
+            let Some(category) = Category::parse(&r.category) else {
+                return log.reject(
+                    "category",
+                    format!(
+                        "a block names `{}`, and the categories are {}",
+                        r.category,
+                        Category::ALL
+                            .iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
+            };
+            if r.reason.trim().len() < MIN_QUOTE {
+                return log.reject(
+                    "reason",
+                    "a block says what the call would do, in a sentence".into(),
+                );
+            }
+            log.pass("category");
+            let evidence = format!("{}: {}", category.as_str(), r.reason.trim());
+            log.done(Verdict::Permission {
+                decision: Decision::Block {
+                    category,
+                    reason: r.reason.trim().to_string(),
+                },
+                evidence,
             })
         }
         Job::Permission => {

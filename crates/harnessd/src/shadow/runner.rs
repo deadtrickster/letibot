@@ -401,9 +401,16 @@ impl Inner {
     }
 
     /// The prompt this request is judged with, and where it came from. The permission job asks
-    /// two questions and the CALLER says which one this is: a `Shown` marked `oracle` is an
-    /// authorisation brief. Nothing in the data selects a prompt.
+    /// three questions and the CALLER says which one this is: a `Shown` marked `block` is
+    /// automode's, a `Shown` marked `oracle` is an authorisation brief. Nothing in the data
+    /// selects a prompt.
+    ///
+    /// The block question is the builtin and takes no project override: it is the harness's own
+    /// policy, and a project that could reword it could reword what automode blocks for.
     fn system_for(&self, shown: &Shown) -> (&str, &str) {
+        if shown.block {
+            return (crate::shadow::prompts::PERMISSION_BLOCK, "builtin");
+        }
         match &self.asking {
             Some((prompt, source)) if shown.oracle => (prompt, source),
             _ => (&self.system, &self.source),

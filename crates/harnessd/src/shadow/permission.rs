@@ -18,7 +18,7 @@ use super::config::Stage;
 use super::guard::Call;
 use super::record::Recorder;
 use super::runner::{Outcome, Shadow};
-use super::verdict::{Decision, Shown, Verdict};
+use super::verdict::{Category, Decision, Shown, Verdict};
 
 /// The shadow a gate built at open reaches once the session's shadow is opened.
 pub type Cell = Arc<Mutex<Option<(Arc<Shadow>, Arc<dyn Recorder>)>>>;
@@ -182,6 +182,11 @@ impl CorpusSink for ShadowSink {
 /// shadow granted.
 pub const BREAKER_AT: u32 = 2;
 
+/// How many blocks in a row, and in one session, before the operator is asked instead. Claude
+/// Code's numbers, which the operator named as the thing to mirror; `[automode]` may set others.
+pub const BLOCKS_IN_A_ROW: u32 = 3;
+pub const BLOCKS_A_SESSION: u32 = 20;
+
 /// How many unanswered cards' shapes a session keeps for scoring a later No, at most.
 const ASKED_MAX: usize = 1024;
 
@@ -197,6 +202,11 @@ pub struct Answering {
     configured: bool,
     at: Option<(crate::config::StoreAt, String)>,
     disagreements: AtomicU32,
+    /// Blocks in a row, and in this session. The reviewer's block is not a card, so these are what
+    /// stop a session that keeps hitting the same wall getting a sentence it never brings to anyone.
+    block_run: AtomicU32,
+    blocks: AtomicU32,
+    block_limits: Mutex<(u32, u32)>,
     granted: Mutex<BTreeSet<String>>,
     /// Cards that went to the operator, by request, with their shape.
     asked: Mutex<BTreeMap<String, String>>,
@@ -241,11 +251,48 @@ impl Answering {
             configured,
             at,
             disagreements: AtomicU32::new(disagreements),
+            block_run: AtomicU32::new(0),
+            blocks: AtomicU32::new(0),
+            block_limits: Mutex::new((BLOCKS_IN_A_ROW, BLOCKS_A_SESSION)),
             granted: Mutex::new(granted),
             asked: Mutex::default(),
             rows: Mutex::default(),
             wake: Mutex::default(),
         })
+    }
+
+    /// The limits as configured (`[automode]`), for a box that wants other numbers.
+    pub fn with_block_limits(self, run: u32, session: u32) {
+        *self.block_limits.lock().unwrap_or_else(|e| e.into_inner()) = (run.max(1), session.max(1));
+    }
+
+    /// One block, counted. `true` when the reviewer has now blocked enough that the operator is owed
+    /// the question rather than a sentence in a tool result - and a tripping block resets the run,
+    /// or every later block would trip again on a session already at its limit.
+    pub fn blocked(&self, category: Category) -> bool {
+        let (run_max, session_max) = *self.block_limits.lock().unwrap_or_else(|e| e.into_inner());
+        let run = self.block_run.fetch_add(1, Ordering::SeqCst) + 1;
+        let all = self.blocks.fetch_add(1, Ordering::SeqCst) + 1;
+        if run < run_max && all < session_max {
+            return false;
+        }
+        self.block_run.store(0, Ordering::SeqCst);
+        self.push_row(
+            format!(
+                "automode blocked {run} in a row ({all} this session); the next one is your card"
+            ),
+            format!(
+                "the last was `{}`. A reviewer that blocks this often is usually wrong about the \
+                 project rather than right about the call, so this one is going to you",
+                category.as_str()
+            ),
+        );
+        true
+    }
+
+    /// A call the reviewer allowed: the run of blocks is over.
+    pub fn cleared(&self) {
+        self.block_run.store(0, Ordering::SeqCst);
     }
 
     /// Whether the breaker is tripped, as opposed to answering never being configured.
@@ -594,8 +641,14 @@ pub fn line_of(judge: Option<&str>, outcome: &Outcome) -> Option<String> {
         }
     };
     Some(match decision {
+        Decision::Allow { rule, .. } if rule.trim().is_empty() => {
+            format!("{who}: no block{}", tail(evidence))
+        }
         Decision::Allow { rule, .. } => format!("{who}: allow - matches rule \"{rule}\""),
         Decision::Ask => format!("{who}: ask{}", tail(evidence)),
+        Decision::Block { category, reason } => {
+            format!("{who}: block ({}) - {reason}", category.as_str())
+        }
     })
 }
 

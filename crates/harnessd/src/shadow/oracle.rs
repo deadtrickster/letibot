@@ -24,7 +24,7 @@ use super::config::Stage;
 use super::guard::Call;
 use super::permission::{Answering, Cell};
 use super::runner::Outcome;
-use super::verdict::{Decision, Shown, Verdict};
+use super::verdict::{Category, Decision, Shown, Verdict};
 
 /// The scope the stages in force earn. `reads` reaches outside the project at most; exec reaches
 /// the host when the call only looks at it (see [`stage_of`]) and the workspace plus the operator's
@@ -85,11 +85,11 @@ pub fn stage_of(
 ) -> Result<Stage, String> {
     match &req.tier {
         Tier::MayApprove => {}
-        Tier::AlwaysAsk { rule, .. } => {
-            return Err(format!(
-                "`{rule}` is on the always-ask list, which is the operator's whatever stages are on"
-            ));
-        }
+        // Automode's reviewer judges the always-ask list too, and only to BLOCK: its allow is not
+        // an admission (the gate's own admit arm refuses an always-ask call), so the operator's
+        // card still stands when the reviewer sees nothing wrong. That is what makes a force-push
+        // refusable by category instead of by a card.
+        Tier::AlwaysAsk { .. } => {}
         other => {
             return Err(format!(
                 "the tier is {}, which the operator decides",
@@ -240,6 +240,10 @@ impl ShadowOracle {
 }
 
 impl AuthorisationOracle for ShadowOracle {
+    /// Automode's question, asked of the permission job: SHOULD THIS CALL BE BLOCKED? The default
+    /// is no, and nothing has to be cited - the operator's decision of 2026-11-23 is that an
+    /// allow no longer needs an utterance of theirs behind it (that rule asked on 86% of calls
+    /// and agreed with them on 10-15% of those).
     fn authorised(&self, brief: &mut ModelBrief) -> OracleAnswer {
         if !self.answering.is_on() {
             return Self::unsure(
@@ -250,11 +254,13 @@ impl AuthorisationOracle for ShadowOracle {
         let Some((shadow, _)) = self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
             return Self::unsure("the shadow is not open yet", UnsureKind::Unreadable);
         };
-        // The caller's own flag says which question this is: the data carries no marker, so no
-        // transcript line can choose the prompt. See `runner::Inner::system_for`.
+        // The question itself rides the brief's header, which is rendered here rather than by the
+        // gate: every other brief asks "did the operator ask for this" and this one does not.
+        brief.variant = letibot_tools::authorise::BriefVariant::ShouldBeBlocked;
         let shown = Shown {
             data: brief.render(),
             oracle: true,
+            block: true,
             ..Shown::default()
         };
         let label = shadow
@@ -264,16 +270,30 @@ impl AuthorisationOracle for ShadowOracle {
             Some(o) => o,
             None => return Self::unsure("the permission job is off", UnsureKind::Unreadable),
         };
-        let cites = match outcome {
+        let (category, reason) = match outcome {
             Outcome::Verdict(Verdict::Permission {
-                decision: Decision::Allow { cites, .. },
+                decision: Decision::Block { category, reason },
                 ..
-            }) => cites,
+            }) => (category, reason),
             Outcome::Verdict(Verdict::Permission { evidence, .. }) => {
-                return Self::unsure(
-                    format!("shadow ({label}) said ask: {}", evidence.trim()),
-                    UnsureKind::CouldNotDecide,
-                );
+                let Some(witness) = brief.adjudicable() else {
+                    return Self::unsure(
+                        "an allow on an action layer A did not mark adjudicable",
+                        UnsureKind::CouldNotDecide,
+                    );
+                };
+                return OracleAnswer::Authorised(Widening::new(
+                    witness,
+                    brief.request_id.clone(),
+                    Vec::new(),
+                    format!(
+                        "shadow ({label}) reviewed it and would not block it{}",
+                        match evidence.trim() {
+                            "" => String::new(),
+                            e => format!(" ({e})"),
+                        }
+                    ),
+                ));
             }
             Outcome::TimedOut => {
                 return Self::unsure(
@@ -288,29 +308,22 @@ impl AuthorisationOracle for ShadowOracle {
                 );
             }
         };
-        // The ALLOW-must-cite rule HttpOracle applies: a number must name operator words.
-        let good = brief.trail.cited_operator_words(&cites);
-        if good.is_empty() {
+        // A block is the reviewer's decision and no card is raised for it - unless this session
+        // has been blocked often enough that the pattern is the finding, which is when the
+        // operator is owed the question rather than a sentence in a tool result.
+        if self.answering.blocked(category) {
             return Self::unsure(
                 format!(
-                    "shadow ({label}) answered allow citing {cites:?}, and none of those is an \
-                     operator message in the trail"
+                    "would be blocked ({}): {reason}. This session has been blocked enough \
+                     times that you are deciding, not the reviewer",
+                    category.as_str()
                 ),
                 UnsureKind::CouldNotDecide,
             );
         }
-        let Some(witness) = brief.adjudicable() else {
-            return Self::unsure(
-                "allow on an action layer A did not mark adjudicable",
-                UnsureKind::CouldNotDecide,
-            );
-        };
-        OracleAnswer::Authorised(Widening::new(
-            witness,
-            brief.request_id.clone(),
-            good,
-            format!("shadow ({label}) read the trail as asking for this"),
-        ))
+        OracleAnswer::NotAuthorised {
+            why: format!("blocked ({}): {reason}", category.as_str()),
+        }
     }
 
     fn describe(&self) -> String {
@@ -467,6 +480,9 @@ impl Adjudicator for ShadowAdjudicator {
         let target = target_of(req);
         match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
+                // A call the reviewer allowed ends the run of blocks; the operator's next card is
+                // about a session that is working, not about one stuck on the same wall.
+                self.answering.cleared();
                 self.answering.granted(stage, &target)
             }
             _ => self.answering.asked(&req.id, stage, &target),
@@ -476,7 +492,8 @@ impl Adjudicator for ShadowAdjudicator {
 
     fn describe(&self) -> String {
         format!(
-            "{} Stages: {}. Never the always-ask list, and never a path outside them.",
+            "{} Stages: {}. It blocks only for the six things automode names, and never a path \
+             outside them.",
             self.model.describe(),
             self.stages
                 .iter()

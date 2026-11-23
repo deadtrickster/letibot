@@ -16,6 +16,9 @@ pub const PERMISSION: &str = include_str!("prompts/permission.md");
 /// The permission job's second question: did the operator ask for this call? Sent instead of
 /// [`PERMISSION`] when the caller says it is asking an authorisation brief.
 pub const PERMISSION_ASKING: &str = include_str!("prompts/permission_asking.md");
+/// Automode's question: should this call be blocked? What the daemon sends; [`PERMISSION_ASKING`]
+/// is kept for the replay's `before` arm, which measures the rule this replaced.
+pub const PERMISSION_BLOCK: &str = include_str!("prompts/permission_block.md");
 
 pub fn builtin(job: Job) -> &'static str {
     match job {
