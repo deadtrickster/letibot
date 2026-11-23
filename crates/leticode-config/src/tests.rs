@@ -2318,3 +2318,40 @@ fn only_the_user_file_trusts_a_checkout_and_trust_covers_what_is_under_it() {
     let e = LeticodeConfig::load(&bad).unwrap_err();
     assert!(e.contains("`trust` is not a key"), "{e}");
 }
+
+/// `[tools] parallel`: on unless a file says otherwise, the project's word over the user's, and a
+/// value that is not a bool named rather than quietly read as the default.
+#[test]
+fn parallel_is_off_only_when_a_file_says_so() {
+    let dir = project_dir("tools_parallel");
+    let none = LeticodeConfig::default();
+    assert!(
+        none.parallel_reads(),
+        "a box that said nothing pools its reads"
+    );
+    assert_eq!(none.tools.parallel, None, "and says it said nothing");
+    let path = write_file(&dir, "[tools]\nparallel = false\n");
+    let project = LeticodeConfig::load(&path).unwrap();
+    assert!(!project.parallel_reads());
+    // The project's word wins over the user's, and a project that said nothing does not undo it.
+    let mut user = LeticodeConfig::default();
+    user.tools.parallel = Some(false);
+    assert!(
+        !user.overridden_by(&none).parallel_reads(),
+        "the user's off stands where the project says nothing"
+    );
+    assert!(!user.overridden_by(&project).parallel_reads());
+    let back_on = write_file(&dir, "[tools]\nparallel = true\n");
+    let project_on = LeticodeConfig::load(&back_on).unwrap();
+    assert!(
+        user.overridden_by(&project_on).parallel_reads(),
+        "a project may put the pool back on over a user file that took it off"
+    );
+    // A key this version does not know refuses the file, naming the one it does.
+    let bad = write_file(&dir, "[tools]\nparalel = false\n");
+    let why = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(why.contains("[tools]") && why.contains("parallel"), "{why}");
+    let bad = write_file(&dir, "[tools]\nparallel = \"no\"\n");
+    let why = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(why.contains("[tools]"), "{why}");
+}
