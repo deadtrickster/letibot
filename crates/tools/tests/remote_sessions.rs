@@ -1169,6 +1169,104 @@ fn six_sessions_at_once_on_one_host_all_place_over_one_connection() {
     );
 }
 
+/// One repository's `git worktree add`s never overlap.
+///
+/// `git worktree add` reads the `commondir` of every worktree the repository has, so two adds at
+/// once can read a half-written one and die (`failed to read …/commondir: Success`, which a gate
+/// saw with six packages starting together). The far side's `git` here holds each add until every
+/// add that is coming has arrived, and then a moment longer, so an unserialised pair overlaps
+/// every run rather than once in a few hundred.
+#[test]
+fn worktree_adds_into_one_repository_never_overlap() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a far side with `flock`, which is what serialises the adds",
+        on_path("flock"),
+    ) else {
+        return;
+    };
+    // Six, because that is the number a gate saw fail: six packages starting on one host at once.
+    const SIX: usize = 6;
+    // An add says it has ARRIVED before it takes the lock, so the wrapper can hold it until all six
+    // have - the state in which unserialised adds are certain to run together.
+    let fake = Fake::new(
+        "adds-together",
+        "case \"$last\" in\n\
+         *' worktree add '*) mark \"add-arrived $$\";;\n\
+         esac",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let log = fake.dir.join("worktree-adds");
+    write_executable(
+        &fake.dir.join("bin").join("git"),
+        &format!(
+            "#!/bin/bash\n\
+             [ -n \"$LETIBOT_STUB_PROBE\" ] && exit 0\n\
+             case \" $* \" in *' worktree add '*) ;; *) exec {git} \"$@\";; esac\n\
+             printf 'add-start %s\\n' \"$$\" >> '{log}'\n\
+             i=0\n\
+             while [ \"$(tr ';' '\\n' < '{events}' | grep -c '^add-arrived ')\" -lt {n} ] && [ $i -lt 200 ]; do\n\
+             \x20 i=$((i+1))\n\
+             \x20 sleep 0.05\n\
+             done\n\
+             sleep 0.2\n\
+             {git} \"$@\"; rc=$?\n\
+             printf 'add-end %s\\n' \"$$\" >> '{log}'\n\
+             exit $rc",
+            git = "/usr/bin/git",
+            log = log.display(),
+            events = fake.dir.join("events").display(),
+            n = SIX
+        ),
+    );
+
+    let specs: Vec<SshSpec> = (0..SIX)
+        .map(|i| {
+            let mut spec = spec_for(&fake, &repo, &paths, Duration::from_secs(120));
+            spec.name = format!("s-{i:02}abcdef");
+            spec
+        })
+        .collect();
+    let mut placers = Vec::new();
+    for (i, spec) in specs.into_iter().enumerate() {
+        placers.push(std::thread::spawn(move || {
+            SshBackend::place(&spec).unwrap_or_else(|e| panic!("session {i} was not placed: {e}"))
+        }));
+    }
+    for (i, t) in placers.into_iter().enumerate() {
+        t.join()
+            .unwrap_or_else(|_| panic!("placement {i} panicked"));
+    }
+
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let stated: Vec<&str> = said.lines().collect();
+    // One add per placement, and no add begun while another was still inside git.
+    let mut inside: Vec<String> = Vec::new();
+    let mut overlapped: Vec<String> = Vec::new();
+    for line in &stated {
+        if let Some(pid) = line.strip_prefix("add-start ") {
+            if !inside.is_empty() {
+                overlapped.push(format!("{pid} began while {inside:?} was running"));
+            }
+            inside.push(pid.to_string());
+        } else if let Some(pid) = line.strip_prefix("add-end ") {
+            inside.retain(|p| p != pid);
+        }
+    }
+    assert_eq!(
+        stated
+            .iter()
+            .filter(|l| l.starts_with("add-start "))
+            .count(),
+        SIX,
+        "one worktree add per placement: {said}"
+    );
+    assert!(
+        overlapped.is_empty(),
+        "two worktree adds into one repository ran at once, which git answers with `failed to \
+         read worktrees/<id>/commondir`: {overlapped:?}\n{said}"
+    );
+}
+
 /// A host whose own `MaxSessions` is lower than the bound refuses the second session on a
 /// connection. The refusal must be reported by name - never as the command's exit, never as
 /// "it may be running there".

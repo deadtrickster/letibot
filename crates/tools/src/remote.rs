@@ -3666,8 +3666,13 @@ impl SshBackend {
                     st = quote(&cloned)
                 )
             } else {
+                // Two placements into one repository at once make git read the other's half-written
+                // `worktrees/<id>/commondir` and die (`failed to read …: Success`), so adds take turns:
+                // one lock in the repository's own directory, on a far side that has `flock`.
                 format!(
-                    "git -C {m} worktree add -b {br} {wt} {st} >/dev/null",
+                    "l={m}/letibot-worktree.lock; \
+                     if command -v flock >/dev/null 2>&1; then exec 9>>\"$l\"; flock 9; fi; \
+                     git -C {m} worktree add -b {br} {wt} {st} >/dev/null",
                     m = quote(&mirror),
                     br = quote(&branch),
                     wt = quote(&worktree),
