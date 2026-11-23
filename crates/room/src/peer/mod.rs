@@ -12,6 +12,7 @@
 //! does not cross is anything a box could derive: a message's `seq`, a room's ring, a nick.
 
 pub mod announce;
+pub mod beacon;
 pub mod cookie;
 pub mod frame;
 pub mod handshake;

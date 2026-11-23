@@ -198,6 +198,24 @@ impl Announcer {
     }
 }
 
+impl crate::peer::beacon::BeaconSocket for Announcer {
+    fn announce(&self, beacon: &Beacon) -> io::Result<usize> {
+        Self::announce(self, beacon)
+    }
+
+    fn hear(&self) -> io::Result<Option<(Beacon, SocketAddr)>> {
+        Self::hear(self)
+    }
+
+    /// Bound before the old socket goes: the port is shared, so both may hold it, and a bind that
+    /// fails leaves this box with the socket it already had rather than with none.
+    fn reopen(&mut self) -> io::Result<()> {
+        let fresh = Announcer::open(*self.group.ip(), self.group.port())?;
+        *self = fresh;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

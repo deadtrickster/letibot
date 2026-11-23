@@ -14,7 +14,8 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::peer::announce::{self, Announcer, Beacon};
+use crate::peer::announce::{self, Beacon};
+use crate::peer::beacon::{Asked, BeaconSocket, Cadence, Sockets, Watch};
 use crate::peer::cookie::Cookie;
 use crate::peer::frame::{MAX_LINE, PEER_PROTOCOL, PeerFrame};
 use crate::peer::handshake::{Answerer, Dialer, Outcome, nonce};
@@ -58,6 +59,10 @@ pub struct PeerConfig {
     pub group_port: u16,
     /// Say who this box is on the LAN. Off is a box that dials only the peers it was told to.
     pub announce: bool,
+    /// How the beacon loop paces itself: when it stops believing its socket, and when it says so.
+    pub beacon: Cadence,
+    /// How the beacon socket is made - [`Sockets::real`] on every box, a test's own for an outage.
+    pub sockets: Sockets,
     pub tick: Tick,
 }
 
@@ -71,6 +76,8 @@ impl PeerConfig {
             group: announce::GROUP.parse().expect("the group is a literal"),
             group_port: announce::PORT,
             announce: true,
+            beacon: Cadence::default(),
+            sockets: Sockets::real(),
             tick: Tick::default(),
         }
     }
@@ -93,6 +100,14 @@ impl PeerConfig {
 
     pub fn without_announce(mut self) -> PeerConfig {
         self.announce = false;
+        self
+    }
+
+    /// Pace the beacon loop, and make its socket, in a test's own words: the failure this survives
+    /// is a send no network carries, which cannot be arranged on a real one.
+    pub fn with_beacon(mut self, cadence: Cadence, sockets: Sockets) -> PeerConfig {
+        self.beacon = cadence;
+        self.sockets = sockets;
         self
     }
 
@@ -120,6 +135,9 @@ struct Inner {
     cookie: Cookie,
     port: u16,
     tick: Tick,
+    /// How the beacon loop paces itself, and what makes its socket - see [`Cadence`].
+    beacon: Cadence,
+    sockets: Sockets,
     mesh: Mutex<Mesh>,
     links: Mutex<BTreeMap<String, Live>>,
     next_generation: AtomicU64,
@@ -213,6 +231,28 @@ impl Inner {
             // The coordinator's reader is behind. What is lost here is a roster note; the link
             // itself and the messages on it keep working, and the next `Up` re-sends the seats.
             self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Do what one beacon round asked: the log line, a new socket, and what the room is told.
+    /// Nothing here may end the loop - a box that cannot reach the LAN is still a coordinator.
+    fn beacon_asked(&self, asked: Asked, socket: &mut dyn BeaconSocket, group: &str) {
+        for line in asked.log {
+            eprintln!("room: {line}");
+        }
+        if asked.reopen {
+            match socket.reopen() {
+                Ok(()) => eprintln!("room: the beacon socket on {group} was opened again"),
+                Err(e) => {
+                    eprintln!("room: opening the beacon socket on {group} again failed ({e})")
+                }
+            }
+        }
+        if let Some(why) = asked.cut {
+            self.announce_event(PeerEvent::BeaconCut { why });
+        }
+        if asked.back {
+            self.announce_event(PeerEvent::BeaconBack);
         }
     }
 
@@ -336,6 +376,8 @@ impl Peer {
                 cookie: cfg.cookie,
                 port,
                 tick: cfg.tick,
+                beacon: cfg.beacon,
+                sockets: cfg.sockets,
                 mesh: Mutex::new(Mesh::new(cfg.tick)),
                 links: Mutex::new(BTreeMap::new()),
                 next_generation: AtomicU64::new(1),
@@ -610,11 +652,16 @@ impl Peer {
         });
     }
 
+    /// Say this box is here, every `every_ms`, and survive a socket that cannot: a box started
+    /// before its network is up keeps a datagram socket the kernel never routes, and a coordinator
+    /// cut off in silence is worse than a noisy log. This loop never ends.
     fn spawn_announce(&self, group: Ipv4Addr, port: u16) {
         let peer = self.clone();
+        let cadence = self.inner.beacon;
+        let sockets = self.inner.sockets.clone();
         std::thread::spawn(move || {
-            let announcer = match Announcer::open(group, port) {
-                Ok(a) => a,
+            let mut socket = match sockets.open(group, port) {
+                Ok(socket) => socket,
                 Err(e) => {
                     eprintln!(
                         "room: this box cannot announce itself on {group} ({e}) - peering is up, \
@@ -623,22 +670,31 @@ impl Peer {
                     return;
                 }
             };
+            let group = group.to_string();
             let beacon = Beacon::new(peer.host(), peer.port());
-            let mut said = 0u64;
+            let mut watch = Watch::new(cadence);
+            let mut due = 0u64;
             while !peer.inner.stop.load(Ordering::SeqCst) {
                 let now = peer.inner.now();
-                if now.saturating_sub(said) >= announce::EVERY_MS {
-                    said = now;
-                    if let Err(e) = announcer.announce(&beacon) {
-                        eprintln!("room: the beacon to {group} failed ({e})");
-                    }
+                if now >= due {
+                    due = now.saturating_add(cadence.every_ms);
+                    let linked = peer.up().len();
+                    let asked = match socket.announce(&beacon) {
+                        Ok(_) => watch.sent(now, &group),
+                        Err(e) => watch.failed(now, &group, &e.to_string(), linked),
+                    };
+                    peer.inner.beacon_asked(asked, &mut *socket, &group);
                 }
-                let heard = match announcer.hear() {
+                let heard = match socket.hear() {
                     Ok(Some((beacon, from))) => Some((beacon, from)),
                     Ok(None) => None,
                     Err(e) => {
-                        eprintln!("room: listening to {group} failed ({e})");
-                        return;
+                        // A socket that cannot be read from is the same outage as one that cannot
+                        // send, and only a new socket ends either.
+                        let why = format!("reading it: {e}");
+                        let asked = watch.failed(peer.inner.now(), &group, &why, peer.up().len());
+                        peer.inner.beacon_asked(asked, &mut *socket, &group);
+                        None
                     }
                 };
                 let Some((beacon, from)) = heard else {

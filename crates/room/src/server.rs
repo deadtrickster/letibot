@@ -263,6 +263,9 @@ struct Inner {
     /// The peer seats this box's seats have already been told about: an introduction is said once,
     /// and a seat that reconnects on the same repository is not news.
     introduced: Mutex<Introductions>,
+    /// Has the operator been told that this box's beacons cannot get out? One line per outage, and
+    /// a link coming up (or a beacon sending again) is what clears it.
+    beacon_cut: AtomicBool,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -426,6 +429,7 @@ impl Server {
                 ids_of: Mutex::new(BTreeMap::new()),
                 peer: Mutex::new(None),
                 introduced: Mutex::new(Introductions::new()),
+                beacon_cut: AtomicBool::new(false),
                 // The data directory is the socket's own: `seat_host` pins this box's half of
                 // every id it hands out there, once, and reads it back after a rename.
                 seat_host: Mutex::new(crate::id::seat_host(
@@ -588,12 +592,16 @@ impl Server {
                 eprintln!(
                     "room: {host} is linked; its seats are in this box's roster while it stays"
                 );
+                // A link is the fact a beacon-cut notice asked about, so it is what clears it.
+                self.say_beacon_back(&format!("{host} linked"));
                 // And what this box was told about consents while they were apart.
                 self.ship_consents(&host);
                 // And every line it kept for that box while it was away.
                 self.ship_held(&host);
             }
             PeerEvent::Down { why, .. } => eprintln!("room: {why}"),
+            PeerEvent::BeaconCut { why } => self.say_beacon_cut(&why),
+            PeerEvent::BeaconBack => self.say_beacon_back("the beacon is getting out again"),
             PeerEvent::Profiles { host, seats } => {
                 // Kept before it is acted on: an id in this list stays an addressee after a restart.
                 self.remember_seats(&host, &seats);
@@ -602,6 +610,49 @@ impl Server {
             PeerEvent::Message(message) => self.accept_remote(*message),
             PeerEvent::Consents(rows) => self.learn_consents(rows),
         }
+    }
+
+    /// This box cannot announce itself on the LAN: the operator is told once per outage, because
+    /// nothing else in this room says that a running coordinator is unreachable. A blocker, so it
+    /// arrives on their connection and is not one more line of the host room's talk.
+    fn say_beacon_cut(&self, why: &str) {
+        if self.inner.beacon_cut.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let now = now_ms();
+        let _ = self.append_and_push(
+            &format!("beacon:cut:{now}"),
+            chat::HOST_ROOM,
+            "room",
+            Seat::System,
+            Some(chat::OPERATOR.to_string()),
+            None,
+            chat::with_say_ref(crate::SayKind::Blocker, &[]).unwrap_or_default(),
+            Vec::new(),
+            why,
+            now,
+        );
+    }
+
+    /// The other half of [`Server::say_beacon_cut`]: a beacon got out, or a box linked, so the box is
+    /// not cut off any more. Said once, and never without the notice it answers.
+    fn say_beacon_back(&self, why: &str) {
+        if !self.inner.beacon_cut.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let now = now_ms();
+        let _ = self.append_and_push(
+            &format!("beacon:back:{now}"),
+            chat::HOST_ROOM,
+            "room",
+            Seat::System,
+            Some(chat::OPERATOR.to_string()),
+            None,
+            chat::with_say_ref(crate::SayKind::Fyi, &[]).unwrap_or_default(),
+            Vec::new(),
+            &format!("this box can announce itself on the LAN again: {why}"),
+            now,
+        );
     }
 
     /// Keep what a linked box said its seats are, in the room's own store: the mesh that holds them
@@ -7214,6 +7265,66 @@ mod tests {
         // A picture is what the list is for, and it goes through.
         let png = upload(&server, &me, "up4", b"\x89PNG\r\n\x1a\n", 1_001);
         assert_eq!(png.mime, "image/png");
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sleep until the room's millisecond clock has moved, so a second `now` is a second `now`.
+    /// Not a pause: the longest this can wait is the next tick of a clock that is always running.
+    fn next_millisecond() {
+        let at = now_ms();
+        while now_ms() == at {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Everything the box's own room holds, oldest first - what the operator was told.
+    fn host_room(server: &Server) -> Vec<chat::Message> {
+        server
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .read(chat::HOST_ROOM, 0, None, None, None, |_| true)
+            .rows
+    }
+
+    #[test]
+    fn a_beacon_notice_is_raised_once_and_a_link_clears_it_once() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-beacon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = Server::serve(&dir.join("room.sock"), Room::new()).expect("a socket");
+        let cut = |why: &str| PeerEvent::BeaconCut {
+            why: why.to_string(),
+        };
+        // A peer's loop says this once per outage, and the room holds the same rule: the line is
+        // the operator's, and a second one says nothing new.
+        server.on_peer_event(cut("no route to host"));
+        next_millisecond();
+        server.on_peer_event(cut("no route to host"));
+        let said = host_room(&server);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].kind, Seat::System);
+        assert_eq!(said[0].say_kind(), crate::SayKind::Blocker);
+        assert_eq!(said[0].to.as_deref(), Some(chat::OPERATOR));
+        assert!(said[0].text.contains("no route to host"), "{:?}", said[0]);
+        // A box that links is the fact the notice asked about, so it is what clears it.
+        server.on_peer_event(PeerEvent::Up {
+            host: "mac1".into(),
+        });
+        let said = host_room(&server);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(
+            said[1].text.contains("announce itself on the LAN again"),
+            "{:?}",
+            said[1]
+        );
+        assert!(said[1].text.contains("mac1 linked"), "{:?}", said[1]);
+        // And a second link, with no notice standing, says nothing.
+        server.on_peer_event(PeerEvent::Up {
+            host: "lab2x1".into(),
+        });
+        assert_eq!(host_room(&server).len(), 2);
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }

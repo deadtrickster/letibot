@@ -69,6 +69,21 @@ seat is addressed on the wire by its id, which is what lead 70 says an address i
 Two boxes with the same cookie refuse nothing else, so the LAN is the trust boundary. If that is not
 enough for a network, do not put the cookie on it.
 
+## When the beacon cannot get out
+
+A datagram socket opened before its network is up is not recovered by the kernel, and a Mac whose
+Local Network privacy was never granted for the binary gets exactly that on every start: each send
+fails with `No route to host`, so a coordinator started by launchd can run for hours with no link and
+nothing said. The loop therefore says the first failure at once and then one summary every five
+minutes (how many, and the last error), opens a new socket after six failures in a row and again on a
+backoff that doubles to five minutes, and - after two minutes of a socket that cannot send, with no
+link to any box - tells the operator once in the box's room. That line is a blocker naming the error
+and the two fixes: on macOS allow Local Network for the binary (System Settings > Privacy & Security
+> Local Network) or restart the coordinator; elsewhere check the route for `224.0.0.0/4`. A link
+coming up, or a beacon that gets out again, clears it with one line. The loop never exits.
+
+Those numbers are `crates/room/src/peer/beacon.rs`'s `Cadence`, which a test shrinks to milliseconds.
+
 ## Introductions
 
 When a link comes up and the other box says what its seats are on, a seat whose repository identity
@@ -170,11 +185,15 @@ repository must not be able to decide what the box that reads it does on the LAN
 
 ## Where it is built
 
-- `crates/room/src/peer/` - the cookie, the handshake, the beacon, the mesh and the tick.
+- `crates/room/src/peer/` - the cookie, the handshake, the beacon (and what it does when it cannot
+  send), the mesh and the tick.
 - `crates/room/src/server.rs` - `with_peer`, and the one place a message is shipped (`ship_remote`,
   called from `append_and_push`) and taken in (`accept_remote`).
 - `crates/harnessd/src/room/peering.rs` - the cookie path, the `[peering]` table, and reading a
   project's repository identity from git.
+- `crates/room/tests/beacon.rs` - a coordinator whose beacon socket cannot send, through a real
+  `Server`: the operator told once, one new socket per outage, the recovery said once, and a loop
+  that outlives a read error.
 - `crates/room/tests/peering.rs` - two coordinators in one process on loopback: wrong cookie
   refused, a cookie at the wrong mode refused, a silent link marked away, a cross-box dm delivered,
   one introduction per seat, two repositories not introduced, an opted-out project, a box that

@@ -50,6 +50,11 @@ pub enum PeerEvent {
     Up { host: String },
     /// A link is down, for this reason: its seats are away, and nothing is shipped to it.
     Down { host: String, why: String },
+    /// The beacon socket has not worked for long enough that a box with no link says so: the room
+    /// raises it with the operator once, because nothing else says a coordinator is unreachable.
+    BeaconCut { why: String },
+    /// The beacon is getting out again, after a `BeaconCut` was said.
+    BeaconBack,
     /// What a peer's seats are on now.
     Profiles {
         host: String,
