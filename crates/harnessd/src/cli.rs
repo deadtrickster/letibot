@@ -2779,17 +2779,19 @@ fn run_query(
             Ok(0)
         }
         Query::ShadowArm { model } => {
-            drop(store);
             println!(
                 "replaying the same operator-answered calls through the shadow's permission \
-                 ask, twice: the prompt and the brief it had, and the ones it has.\n"
+                 ask, twice: the old question in one prompt, and automode's block question.\n"
             );
             // One snapshot, both arms: the store is live, and two arms that read it separately
-            // would not be describing the same calls.
-            let rows = crate::calibrate::rows_to_replay(path, limit)?;
+            // would not be describing the same calls. It is the store AS THE DAEMON OPENS IT - a
+            // `--store` directory with a `--project` key is the split set - because a row's
+            // session is in `shared.db` and its adjudications are in `projects/<key>.db`, and a
+            // single-file open found no session for any row.
+            let rows = crate::calibrate::rows_from(&store, limit)?;
             println!("  {} answered call(s) in the sample\n", rows.len());
             for arm in crate::calibrate::shadow::ARMS {
-                let r = crate::calibrate::shadow::replay(cfg, path, rows.clone(), &model, *arm)?;
+                let r = crate::calibrate::shadow::replay(cfg, &store, rows.clone(), &model, *arm)?;
                 print!("{}", r.render());
                 println!();
             }
@@ -2798,6 +2800,7 @@ fn run_query(
                  agreement does not fall: a prompt a model skims is a prompt it answers with \
                  an empty string, and that is a void, not an ask."
             );
+            drop(store);
             Ok(0)
         }
         Query::Etalon(file) => {

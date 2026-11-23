@@ -221,6 +221,13 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
 /// one a different row set.
 pub fn rows_to_replay(store: &Path, limit: usize) -> Result<Vec<StoredAdjudication>, String> {
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
+    rows_from(&db, limit)
+}
+
+/// [`rows_to_replay`] over a store that is already open AS THE DAEMON OPENS IT - the split set
+/// included - which is what `--shadow-arm` needs: the adjudications are in the project file and the
+/// sessions they name are in the shared one.
+pub fn rows_from(db: &Store, limit: usize) -> Result<Vec<StoredAdjudication>, String> {
     let rows = db
         .corpus(false, 100_000)
         .map_err(|e| format!("reading the corpus: {e}"))?;
