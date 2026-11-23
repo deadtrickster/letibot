@@ -1723,6 +1723,10 @@ pub struct ToolRuntime {
     /// The values this session holds as secrets, masked out of every result it stores. Empty in a
     /// runtime nobody told, and then a result is exactly what the tool produced.
     pub secret: crate::exec::seat::SecretEnv,
+    /// Whether a round's adjacent read-class calls run at once, from `[tools] parallel`. Off is
+    /// every call of the round alone, in the order the model proposed it, and nothing else changes:
+    /// [`ToolRuntime::batches`] answers one call per batch.
+    pub parallel_reads: bool,
 }
 
 /// A call the model proposed and this layer reproposed as a different tool. One shape produces
@@ -1778,7 +1782,16 @@ impl ToolRuntime {
             recall: None,
             perimeter: None,
             job_sweeps: None,
+            parallel_reads: true,
         }
+    }
+
+    /// Whether a round's adjacent read-class calls run at once: `[tools] parallel`, on unless a
+    /// `leticode.toml` turned it off. The daemon installs it at open from the level it read, so
+    /// turning it off is a config change rather than a rebuild.
+    pub fn with_parallel_reads(mut self, yes: bool) -> Self {
+        self.parallel_reads = yes;
+        self
     }
 
     /// Wire what this session's own commands may see. The daemon installs this at open, so a spawn
@@ -2182,11 +2195,14 @@ impl ToolRuntime {
 
     /// Whether a call may run beside its neighbours in the round. Declared `Read` only: a
     /// narrowed class is read off salvaged arguments, and a guess before salvage could let a
-    /// write run concurrently.
+    /// write run concurrently. And never when `[tools] parallel` is off, which is the whole of
+    /// that switch: every batch is then one call.
     pub fn runs_pooled(&self, call: &ToolCall) -> bool {
-        self.registry
-            .get(&call.name)
-            .is_some_and(|t| t.schema().access == Access::Read)
+        self.parallel_reads
+            && self
+                .registry
+                .get(&call.name)
+                .is_some_and(|t| t.schema().access == Access::Read)
     }
 
     /// A round split into batches, in call order: each run of pooled calls is one batch, and
@@ -2213,6 +2229,11 @@ impl ToolRuntime {
     /// Runs calls concurrently, at most [`POOL_WIDTH`] at once, and answers in call order with
     /// each call's start. Events reach `sink` on this thread as they happen, keyed by call id,
     /// so a head sees every call live while the rows still commit in model order.
+    ///
+    /// A stop that arrives mid-group takes the calls the pool has not started yet: they are
+    /// answered as not run rather than started by a turn that has been told to end. The calls
+    /// already running are joined, not abandoned - no read tool polls the backend's interrupt - so
+    /// the group cannot outlive this call and every call the model made still has its row.
     pub fn invoke_pooled(
         &self,
         turn_id: &str,
@@ -2252,7 +2273,13 @@ impl ToolRuntime {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(call) = calls.get(i) else { break };
                         let started = std::time::Instant::now();
-                        let r = self.invoke(turn_id, call, &mut fwd);
+                        let r = if self.backend.interrupt_requested() {
+                            let r = stopped_call(call);
+                            fwd.emit(finished_event(turn_id, &r));
+                            r
+                        } else {
+                            self.invoke(turn_id, call, &mut fwd)
+                        };
                         let _ = tx.send(Msg::Done(i, r, started));
                     }
                 });
@@ -2767,6 +2794,24 @@ impl ToolRuntime {
 /// and not a property of whatever file the model chose. One bound, two carriers.
 fn bounded_edits(r: &ToolResult) -> Vec<crate::edit::ToolEditExcerpt> {
     r.edits.iter().map(|e| e.excerpt(3, 400)).collect()
+}
+
+/// What a pooled call that never ran answers: the operator stopped the turn while its group was
+/// still in flight. A result rather than a silence, because the model made the call and the next
+/// round would otherwise read as one nothing answered.
+fn stopped_call(call: &ToolCall) -> ToolResult {
+    ToolResult::new(
+        call.id.clone(),
+        call.name.clone(),
+        ToolOutcome::NotRun {
+            why: "the operator stopped this turn before this call started, so nothing ran".into(),
+        },
+    )
+    .with_payload(
+        "this call did not run: the operator stopped the turn while this round's calls were in \
+         flight. Nothing it would have read or changed was touched."
+            .to_string(),
+    )
 }
 
 fn finished_event(turn_id: &str, r: &ToolResult) -> ToolEvent {

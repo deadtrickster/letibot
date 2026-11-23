@@ -63,6 +63,7 @@ fn the_top_level_is_listed() {
 #[test]
 fn serde_tables_are_listed() {
     assert_eq!(fields::<ExecTable>(), table_keys("exec"));
+    assert_eq!(fields::<ToolsTable>(), table_keys("tools"));
     assert_eq!(fields::<NotesTable>(), table_keys("notes"));
     assert_eq!(fields::<BrowserTable>(), table_keys("browser"));
     assert_eq!(fields::<GithubTable>(), table_keys("github"));

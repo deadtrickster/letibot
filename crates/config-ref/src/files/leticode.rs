@@ -129,6 +129,12 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "tools",
+            note: "A round's adjacent read-class calls (`read`, `grep`, `glob` and the rest whose schema declares read access) run at once, up to the pool's width; every other call - a write, an edit, a command, a job, a session verb, an unknown name - waits for all of them and they wait for it, so the order of effects is the order the model proposed. Results and their rows stay in that order either way.",
+            needs: "",
+            keys: &[k("parallel", "bool", "true", PW, "run a round's adjacent reads at once; false runs every call of the round one at a time", "false")],
+        },
+        Table {
             path: "output",
             note: "Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. The middle is kept on disk per project and survives a restart. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes, --spill-dir moves the store, `letibot holds` lists it there, and an older daemon's per-session spills under it are still read.",
             needs: "",

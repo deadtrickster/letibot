@@ -107,6 +107,14 @@ NAME is a seat a spawn uses, or `subagent`, the floor under every spawn. Window 
 | `disk_watch` | list of paths | ["/build", $CARGO_TARGET_DIR] | both, project wins | filesystems the floor watches besides each job's cwd; replaces the default |
 | `tasks_max` | int | 512 | both, project wins | processes one job's cgroup may hold (`pids.max`); a job that forks past it is ended; 0 = no cap |
 
+## `[tools]`
+
+A round's adjacent read-class calls (`read`, `grep`, `glob` and the rest whose schema declares read access) run at once, up to the pool's width; every other call - a write, an edit, a command, a job, a session verb, an unknown name - waits for all of them and they wait for it, so the order of effects is the order the model proposed. Results and their rows stay in that order either way.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `parallel` | bool | true | both, project wins | run a round's adjacent reads at once; false runs every call of the round one at a time |
+
 ## `[output]`
 
 Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. The middle is kept on disk per project and survives a restart. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes, --spill-dir moves the store, `letibot holds` lists it there, and an older daemon's per-session spills under it are still read.

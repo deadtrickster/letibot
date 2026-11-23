@@ -159,3 +159,153 @@ fn an_unknown_tool_is_a_barrier() {
     ];
     assert_eq!(rt.batches(&calls), vec![0..1, 1..2, 2..3]);
 }
+
+/// `[tools] parallel = false` is read off the runtime, so a round is one call per batch and the
+/// pool is never entered.
+#[test]
+fn with_parallel_off_a_round_is_one_call_per_batch() {
+    let spans = Spans::default();
+    let mut h = runtime(&spans);
+    h.rt.parallel_reads = false;
+    let rt = &h.rt;
+    let calls = vec![
+        call(1, "nap_read", ""),
+        call(2, "nap_read", ""),
+        call(3, "nap_write", ""),
+        call(4, "nap_read", ""),
+    ];
+    assert!(!rt.runs_pooled(&calls[0]));
+    assert_eq!(rt.batches(&calls), vec![0..1, 1..2, 2..3, 3..4]);
+    let ids = run_round(rt, &calls);
+    assert_eq!(ids, ["c1", "c2", "c3", "c4"]);
+    let spans = spans.lock().unwrap();
+    // Nothing of the round overlapped anything: the four calls are one after another.
+    let mut ordered: Vec<&(String, Instant, Instant)> = spans.iter().collect();
+    ordered.sort_by_key(|(_, s, _)| *s);
+    for pair in ordered.windows(2) {
+        assert!(
+            pair[0].2 <= pair[1].1,
+            "{:?} ran beside {:?}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+}
+
+/// The ten calls already in flight when a stop arrives are joined, and the two the pool had not
+/// started are answered as not run: a turn the operator ended does not begin new work, and every
+/// call the model made still gets its row.
+#[test]
+fn a_stop_mid_group_runs_only_what_had_started() {
+    let calls_n = POOL_WIDTH + 2;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ran: Arc<Mutex<Vec<String>>> = Arc::default();
+    let at = Arc::new(Meet {
+        width: POOL_WIDTH,
+        stop: stop.clone(),
+        ran: ran.clone(),
+        state: Mutex::new(0),
+        cv: std::sync::Condvar::new(),
+    });
+    let dir = std::env::temp_dir().join(format!("pool-stop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let backend = letibot_tools::backend::HostBackend::writable(&dir).expect("fixture root");
+    let backend = backend.with_interrupt_probe({
+        let stop = stop.clone();
+        move || stop.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let mut registry = letibot_tools::runtime::Registry::new();
+    registry
+        .register(Box::new(Held { at: at.clone() }))
+        .expect("registers");
+    let rt = ToolRuntime::new(registry, Box::new(backend))
+        .with_gate(letibot_tools::testing::allow_all());
+    let calls: Vec<ToolCall> = (0..calls_n)
+        .map(|i| ToolCall {
+            id: format!("c{i}"),
+            name: "held_read".into(),
+            arguments: format!(r#"{{"tag":"c{i}"}}"#),
+        })
+        .collect();
+    let mut sink = RecordingToolSink::default();
+    let ran_round = rt.invoke_pooled("t1", &calls, &mut sink);
+    let ids: Vec<String> = ran_round.iter().map(|(r, _)| r.call_id.clone()).collect();
+    let want: Vec<String> = (0..calls_n).map(|i| format!("c{i}")).collect();
+    assert_eq!(
+        ids, want,
+        "every call the model made has its answer, in its order"
+    );
+    for (i, (r, _)) in ran_round.iter().enumerate() {
+        if i < POOL_WIDTH {
+            assert!(
+                matches!(&r.outcome, letibot_transcript::ToolOutcome::Ok),
+                "c{i} had started, so it ran: {:?}",
+                r.outcome
+            );
+        } else {
+            assert!(
+                matches!(&r.outcome, letibot_transcript::ToolOutcome::NotRun { .. }),
+                "c{i} had not started, so the stop took it: {:?}",
+                r.outcome
+            );
+        }
+    }
+    let ran = ran.lock().unwrap();
+    assert_eq!(
+        ran.len(),
+        POOL_WIDTH,
+        "nothing past the stop started: {ran:?}"
+    );
+}
+
+/// The group a stop arrives in the middle of: the first `width` calls arrive, the last of them
+/// raises the stop, and no call answers before it does.
+struct Meet {
+    width: usize,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    ran: Arc<Mutex<Vec<String>>>,
+    state: Mutex<usize>,
+    cv: std::sync::Condvar,
+}
+
+struct Held {
+    at: Arc<Meet>,
+}
+
+impl Tool for Held {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "held_read",
+            "Wait for the rest of the group, raise the stop, then answer.",
+            serde_json::json!({"type": "object", "properties": {"tag": {"type": "string"}}}),
+            Access::Read,
+        )
+    }
+    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        let tag = args
+            .get("tag")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let at = &self.at;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut n = at.state.lock().unwrap();
+        *n += 1;
+        if *n == at.width {
+            // The last of the group raises the stop, so no worker can finish before it is set.
+            at.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            at.cv.notify_all();
+        } else {
+            while !at.stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    panic!("only {} of {} calls were running at once", *n, at.width);
+                }
+                n = at.cv.wait_timeout(n, left).unwrap().0;
+            }
+        }
+        drop(n);
+        at.ran.lock().unwrap().push(tag.clone());
+        Invocation::ok(tag)
+    }
+}

@@ -486,6 +486,8 @@ pub struct LeticodeConfig {
     /// The `[peering]` table: whether this box peers with the other boxes on its LAN, and whether
     /// this project is introduced to the same repository elsewhere. See [`PeeringKeys`].
     pub peering: PeeringKeys,
+    /// The `[tools]` table: how one round's calls run. See [`ToolKeys`].
+    pub tools: ToolKeys,
     /// The `[ui]` table: head layout switches. See [`UiKeys`].
     pub ui: UiKeys,
     /// The `[sessions]` table. See [`SessionKeys`].
@@ -1054,6 +1056,42 @@ fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
         io_pressure_full: t.io_pressure_full,
         disk_watch: t.disk_watch,
         tasks_max: t.tasks_max,
+    })
+}
+
+/// The `[tools]` table: how one round's calls run. One key, and it is a switch rather than a
+/// number because the pool's width is the pool's own fact (`letibot_tools::runtime::POOL_WIDTH`).
+///
+/// ```toml
+/// [tools]
+/// parallel = false # a round's calls run one at a time, in the order the model proposed them
+/// ```
+///
+/// `true` is a round of adjacent read-class calls running at once, up to the pool's width; every
+/// other call - a write, a command, a session verb, an unknown name - is a barrier whether this is
+/// on or off. Off is the escape hatch for a box where concurrent reads misbehave, and it costs the
+/// turn wall clock rather than correctness. The project's file wins over the user's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolKeys {
+    pub parallel: Option<bool>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolsTable {
+    #[serde(default)]
+    parallel: Option<bool>,
+}
+
+fn tools_keys(value: &toml::Value) -> Result<ToolKeys, String> {
+    let t: ToolsTable = value.clone().try_into().map_err(|e: toml::de::Error| {
+        format!(
+            "[tools]: {e}; the key is `parallel` (bool), which runs a round's adjacent \
+                 reads at once, and `false` runs every call one at a time"
+        )
+    })?;
+    Ok(ToolKeys {
+        parallel: t.parallel,
     })
 }
 
@@ -3108,6 +3146,10 @@ impl LeticodeConfig {
                 Some(v) => exec_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => ExecKeys::default(),
             },
+            tools: match &file.tools {
+                Some(v) => tools_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => ToolKeys::default(),
+            },
             output: match &file.output {
                 Some(v) => output_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => OutputKeys::default(),
@@ -3313,6 +3355,9 @@ impl LeticodeConfig {
                 inline_lines: other.output.inline_lines.or(self.output.inline_lines),
                 spill_budget: other.output.spill_budget.or(self.output.spill_budget),
             },
+            tools: ToolKeys {
+                parallel: other.tools.parallel.or(self.tools.parallel),
+            },
             exec: ExecKeys {
                 auto_background: other.exec.auto_background.or(self.exec.auto_background),
                 foreground_seconds: other
@@ -3489,6 +3534,12 @@ impl LeticodeConfig {
     /// on by default.
     pub fn auto_reseat(&self) -> bool {
         self.sessions.auto_reseat.unwrap_or(true)
+    }
+
+    /// Whether a round's adjacent read-class calls run at once: `[tools] parallel`, on by default,
+    /// and `false` is when every call runs alone in the order the model proposed it.
+    pub fn parallel_reads(&self) -> bool {
+        self.tools.parallel.unwrap_or(true)
     }
 
     /// The running-children limits: `[subagents]` over the built-in 8 per tree, 32 per daemon, queue.
@@ -3785,6 +3836,9 @@ struct LeticodeConfigFile {
     /// The `[exec]` table, see [`ExecKeys`].
     #[serde(default)]
     exec: Option<toml::Value>,
+    /// The `[tools]` table, see [`ToolKeys`].
+    #[serde(default)]
+    tools: Option<toml::Value>,
     /// The `[output]` table, see [`OutputKeys`].
     #[serde(default)]
     output: Option<toml::Value>,

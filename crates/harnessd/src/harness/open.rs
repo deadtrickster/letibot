@@ -3621,6 +3621,9 @@ impl Harness {
             .with_spiller(spiller)
             .with_recall(recall.clone())
             .with_gate(gate)
+            // `[tools] parallel`: a round's adjacent reads run at once unless a `leticode.toml`
+            // turned it off. Read here, at open, so the switch is a file rather than a build.
+            .with_parallel_reads(cfg.leticode.parallel_reads())
             // What this session's own commands may see, so a spawn starts from it and the operator
             // can be asked for anything beyond: `task`'s `widen` is one card, and no mode decides it.
             .with_perimeter(std::sync::Arc::new(
