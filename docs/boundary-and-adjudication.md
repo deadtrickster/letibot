@@ -13,9 +13,9 @@ goes around it.
 
 ## 1. Why a model is in the loop
 
-A classifier catches ~83% of overeager behaviours and a human in the approval loop catches ~67%,
-because approval fatigue is what makes the human number low; ~17% still get through. Hence
-**boundary first, classifier inside it**.
+A human in the approval loop is what most of these harnesses rely on, and approval fatigue is what
+makes it weak: the cards arrive faster than anybody reads them. Hence **boundary first, classifier
+inside it**, and a loop that asks only about what it cannot place.
 
 ## 2. Authority is contextual, so the request carries it
 
@@ -284,6 +284,32 @@ reported "no edit tools" with no way to change it in place.
 | `automode-edits` | coder | **admit** | ask | ask | session | a model | as `automode` |
 | `allow-all` | coder | admit | admit | admit | session | nobody | writable backend, confinement |
 | `allow-all (this box, consented)` | coder | admit | admit | admit | session | nobody | writable backend |
+
+### What automode asks
+
+Automode asks one question, and most of the time the answer is no. In order:
+
+1. **Owned work runs unasked.** A call whose every effect lands in what the session owns - its
+   worktree, its scratch, `/tmp` and `/var/tmp`, a path its own command created, its branch by name
+   - runs with no card and no model call (`crates/tools/src/ownership.rs`). A command layer A could
+   not read that runs in the session's own worktree runs too, and the row says `unread_owned_cwd`.
+   The always-ask list and `Blocked` are never owned: privilege, a credential and a delete outside
+   the project keep their deterministic path.
+2. **Everything else is reviewed once.** The permission job is asked `SHOULD THIS BE BLOCKED?` The
+   default is no and nothing has to be cited. It may answer *blocked* for one of six things and no
+   others: `exfiltrating_secrets_or_data`, `destroying_data_outside_the_task`,
+   `push_to_a_protected_ref`, `production_deploy_or_cloud_mutation`,
+   `weakening_security_or_permissions`, `another_sessions_property`.
+3. **A block is the answer, not a card.** The call does not run, the category and the reason are the
+   tool result, and the agent is told which row it is. The operator's card is raised only when the
+   reviewer cannot answer at all (no stage promoted, the breaker tripped, no store, a timeout), or
+   when a session has been blocked 3 in a row or 20 times in all - at which point the reviewer is
+   usually wrong about the project rather than right about the call.
+
+An always-ask call is reviewed too, and only to block it: the reviewer's allow is not an admission,
+so the operator's card still stands when it sees nothing wrong. That is how a force-push is refused
+by category without a card, while `git push` itself still reaches a person.
+
 
 `read-only` is the only point where the tools are *absent* rather than refused, so nothing is claimed
 that cannot be done. `allow-all` requires a confinement because on a bare host it is opencode's

@@ -5,6 +5,22 @@ One design for two streams. Automode: the shadow answers permission cards as lay
 Order, tests and gates are in `docs/PLAN.md`, "Automode and the credential broker". Rows are
 R360-R371 and R316 in `TODO.md`. File and line references are at `ccc95d272`.
 
+**Status, 2026-11-23.** The operator's decisions of that date changed layer B's question, and this
+document's automode half is superseded where they conflict. What changed:
+
+- Layer B asks **should this be blocked?**, and the default is no. The old rule - an allow must
+  cite an operator utterance - is gone: it asked on ~86% of calls and agreed with the operator on
+  10-15% of those. See `docs/boundary-and-adjudication.md` §4e, "What automode asks".
+- A call whose effects all land in what the session **owns** runs with no card and no model call,
+  so §1's cards-per-hour figure is now measured against that screen first.
+- A block is the reviewer's decision and reaches the agent as the tool result, with one of six
+  categories. §11's "the shadow never denies" no longer holds.
+- The stage gates in §9 stay as the route by which an operator enables the reviewer; the replay
+  figures they name are unchanged, but agreement is no longer the metric a stage is promoted on -
+  false allows and needless blocks are.
+
+The broker half (§2, §4-§8, §10) is unchanged and still open.
+
 ## 1. The goal, as a number
 
 Automode allows running things. Checkpoints judge effects. The operator sees only destructive
@@ -365,10 +381,17 @@ also holds nothing real.
 
 `ShadowOracle` behind `ModelAdjudicator` (`crates/harnessd/src/shadow/oracle.rs`), its scope
 from the stages in force (`stage_scope`), the stage screen (`stage_of`: the tier, the reading,
-a secret flow and the reach), ALLOW must cite operator words (`authorise.rs:166`), and the two
-lexical screens `read_passes` / `allow_passes` (`crates/harnessd/src/shadow/guard.rs`). B3, B2,
-B4, B6 and R337 are on main under rebased commits. B5 (R325) is on `b5-fence`. The `TODO.md`
-statuses for R322, R324 and R337 say "not landed" and are stale.
+a secret flow and the reach), and the two lexical screens `read_passes` / `allow_passes`
+(`crates/harnessd/src/shadow/guard.rs`). B3, B2, B4, B6 and R337 are on main under rebased
+commits. B5 (R325) is on `b5-fence`. The `TODO.md` statuses for R322, R324 and R337 say "not
+landed" and are stale.
+
+Changed on 2026-11-23, and this section describes the state before it: ALLOW no longer has to
+cite operator words. The permission job is asked *should this be blocked?* and answers one of six
+categories, an allow is not an admission, and a call whose every effect lands in what the session
+owns never reaches the model at all (`crates/tools/src/ownership.rs`). The prose below about what
+the stages gate still describes how a stage is turned on; what a stage's answers now mean is §4e
+of `docs/boundary-and-adjudication.md`.
 
 ### What the operator turns on
 
