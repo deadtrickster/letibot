@@ -183,6 +183,8 @@ fn an_identity(root: &str) -> String {
 struct FakeBox {
     reader: std::io::BufReader<std::net::TcpStream>,
     writer: std::net::TcpStream,
+    /// Bytes read but not yet a whole line: a read's own deadline can land mid-frame.
+    buffered: String,
 }
 
 impl FakeBox {
@@ -217,7 +219,11 @@ impl FakeBox {
                 writer.flush().expect("a flush");
             }
             if step.is_up() {
-                return FakeBox { reader, writer };
+                return FakeBox {
+                    reader,
+                    writer,
+                    buffered: String::new(),
+                };
             }
             assert!(step.why().is_none(), "the handshake was refused: {step:?}");
         }
@@ -244,6 +250,32 @@ impl FakeBox {
                 && frame.word() == want
             {
                 return;
+            }
+        }
+    }
+
+    /// The next `message` frame this box is sent within `ms`, other frames skipped: `None` when the
+    /// far side said no line in that time, which is how *nothing more arrived* is checked without a
+    /// sleep. A line cut off by the read's own deadline stays in the buffer for the next call.
+    fn next_message(&mut self, ms: u64) -> Option<letibot_room::Message> {
+        use letibot_room::peer::PeerFrame;
+        use std::io::BufRead;
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        loop {
+            if let Some(at) = self.buffered.find('\n') {
+                let line: String = self.buffered.drain(..=at).collect();
+                if let Some(PeerFrame::Message { message }) = PeerFrame::of(line.trim_end()) {
+                    return Some(message);
+                }
+                continue;
+            }
+            let left = deadline.checked_duration_since(Instant::now())?;
+            self.reader.get_ref().set_read_timeout(Some(left)).ok();
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => return None,
+                Ok(_) => self.buffered.push_str(&line),
+                Err(_) => self.buffered.push_str(&line),
             }
         }
     }
@@ -827,4 +859,159 @@ fn a_consent_given_on_one_box_is_honoured_by_the_other() {
             other => panic!("lab2 answered a dm with something else: {other:?}"),
         }
     });
+}
+
+/// A's box with a far box `lab2` that linked, announced one seat, and then went away: the seat is
+/// still in this box's mesh and its box is not answering. This is what a killed coordinator on the
+/// other side of the LAN leaves behind, and the case a dm to that seat used to be refused for.
+fn a_box_with_an_away_peer(tag: &str) -> Box {
+    let identity = an_identity("aaaa1111bbbb");
+    let a = Box::open(&format!("{tag}-a"), "lab1", A);
+    a.project_identity(&identity, true);
+    a.publishes(SeatProfile::new(
+        "lab1/s-a1",
+        &RepoIdentity::named(&identity),
+        "main",
+        "landing stacks",
+    ));
+    let mut far = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the far box to link", || a.peer.alive("lab2"));
+    far.say(&letibot_room::peer::PeerFrame::Profiles {
+        seats: vec![SeatProfile::new(
+            "lab2/s-b1",
+            &RepoIdentity::named(&identity),
+            "main",
+            "provider fixes",
+        )],
+    });
+    wait_until("the far box's seat to arrive", || a.peer.holds("lab2/s-b1"));
+    // The box goes: its link closes, and its seat stays in the mesh while its box is away.
+    drop(far);
+    wait_until("the far box to go away", || !a.peer.alive("lab2"));
+    assert_eq!(a.server.mesh(), vec![("lab2".to_string(), false)]);
+    a
+}
+
+/// The bug: a dm to a seat on an AWAY box was refused at the sender and lost. An away box keeps its
+/// seats, so the line is taken and kept for it.
+#[test]
+fn a_dm_to_a_seat_on_an_away_box_is_taken_and_kept_for_it() {
+    let a = a_box_with_an_away_peer("away-take");
+    let sender = a.seat("s-a1");
+    let said = sender.dm("away-1", "lab2/s-b1", "the stack is green, land it");
+    match &said {
+        Response::Said { message, .. } => {
+            assert_eq!(message.to.as_deref(), Some("lab2/s-b1"));
+        }
+        other => panic!("a dm to an away box's seat was refused: {other:?}"),
+    }
+    assert_eq!(
+        a.server.held_away(),
+        vec![("lab2".to_string(), 1)],
+        "the line is kept for the box that is away"
+    );
+}
+
+/// An away box is not nobody: a seat it never announced, and a box this one has never heard of, are
+/// still refused - a held line must not become a queue for any spelling at all.
+#[test]
+fn a_seat_no_box_announced_is_refused_while_its_box_is_away() {
+    let a = a_box_with_an_away_peer("away-stranger");
+    let sender = a.seat("s-a1");
+    for id in ["lab2/s-b9", "lab3/s-b1"] {
+        match sender.dm(&format!("no-{id}"), id, "for somebody who is not there") {
+            Response::Refused {
+                why: Refused::UnknownAddressee { name, .. },
+                ..
+            } => assert_eq!(name, id),
+            other => panic!("{id} was answered with {other:?}"),
+        }
+    }
+    assert!(
+        a.server.held_away().is_empty(),
+        "a refused line was queued anyway: {:?}",
+        a.server.held_away()
+    );
+}
+
+/// And when the box comes back, what was kept for it goes in the order it was said - once, and
+/// then nothing more.
+#[test]
+fn a_box_that_comes_back_is_sent_the_lines_kept_for_it_in_order() {
+    let a = a_box_with_an_away_peer("away-ship");
+    let sender = a.seat("s-a1");
+    let said = [
+        "first: the queue is clear",
+        "second: the gate is running",
+        "third: it is green",
+    ];
+    for (n, text) in said.iter().enumerate() {
+        match sender.dm(&format!("ship-{n}"), "lab2/s-b1", text) {
+            Response::Said { .. } => {}
+            other => panic!("line {n} was refused: {other:?}"),
+        }
+    }
+    assert_eq!(a.server.held_away(), vec![("lab2".to_string(), 3)]);
+
+    // The box dials in again: the link comes up and what was kept goes over it.
+    let mut back = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the box that came back to link", || a.peer.alive("lab2"));
+    let mut got: Vec<letibot_room::Message> = Vec::new();
+    while got.len() < said.len() {
+        let line = back
+            .next_message(10_000)
+            .unwrap_or_else(|| panic!("the queue stopped after {}: {got:?}", got.len()));
+        got.push(line);
+    }
+    let texts: Vec<&str> = got.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(texts, said, "the queue crosses in the order it was said");
+    for line in &got {
+        assert_eq!(line.to.as_deref(), Some("lab2/s-b1"));
+        assert_eq!(
+            line.author, "lab1/s-a1",
+            "the author is the id it was sent from"
+        );
+    }
+    assert!(
+        back.next_message(300).is_none(),
+        "a line kept for the box was sent twice"
+    );
+    assert!(
+        a.server.held_away().is_empty(),
+        "what went over the link is still queued: {:?}",
+        a.server.held_away()
+    );
+}
+
+/// The queue is bounded: past the bound the OLDEST goes, stated on the log, so a box that is away
+/// for a week does not grow this one's heap without end.
+#[test]
+fn an_away_boxs_queue_drops_the_oldest_past_its_bound() {
+    let a = a_box_with_an_away_peer("away-bound");
+    a.server.with_held(2);
+    let sender = a.seat("s-a1");
+    for n in 0..4 {
+        match sender.dm(&format!("bound-{n}"), "lab2/s-b1", &format!("line {n}")) {
+            Response::Said { .. } => {}
+            other => panic!("line {n} was refused: {other:?}"),
+        }
+    }
+    assert_eq!(
+        a.server.held_away(),
+        vec![("lab2".to_string(), 2)],
+        "the queue is the bound and no wider"
+    );
+    // What is left is the newest two, which is what a box that comes back is sent.
+    let mut back = FakeBox::up(a.peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the box that came back to link", || a.peer.alive("lab2"));
+    let first = back.next_message(10_000).expect("the first held line");
+    let second = back.next_message(10_000).expect("the second held line");
+    assert_eq!(
+        (first.text.as_str(), second.text.as_str()),
+        ("line 2", "line 3")
+    );
+    assert!(
+        back.next_message(300).is_none(),
+        "an overflowed line was sent too"
+    );
 }

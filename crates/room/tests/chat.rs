@@ -2022,3 +2022,54 @@ fn a_search_reads_the_log_past_the_ring_and_only_the_rooms_the_seat_may_see() {
     ));
     server.stop();
 }
+
+/// What this box keeps for a box that is away is room state, not a field of a coordinator: a
+/// restart still owes the same lines, and what crossed the link is not owed again.
+#[test]
+fn the_lines_kept_for_an_away_box_outlive_a_restart() {
+    use letibot_room::chat::{Chat, MAX_HELD};
+    let dir = Scratch::new();
+    let path = dir.0.join("room.chat");
+    let mut chat = Chat::open(&path);
+    let mut seqs = Vec::new();
+    for n in 0..2 {
+        let line = chat
+            .append(
+                1,
+                &format!("r-{n}"),
+                HOST_ROOM,
+                "s-a1",
+                Seat::Session,
+                Some("lab2/s-b1".to_string()),
+                None,
+                Vec::new(),
+                Vec::new(),
+                &format!("line {n}"),
+            )
+            .expect("a line");
+        seqs.push(line.seq);
+        chat.hold_for("lab2", line, MAX_HELD);
+    }
+    assert_eq!(chat.held(), vec![("lab2".to_string(), 2)]);
+    drop(chat);
+
+    let mut again = Chat::open(&path);
+    assert_eq!(
+        again.held(),
+        vec![("lab2".to_string(), 2)],
+        "the queue is the store's, not a field a new process starts empty"
+    );
+    let kept: Vec<u64> = again.held_for("lab2").iter().map(|m| m.seq).collect();
+    assert_eq!(kept, seqs, "in the order they were said");
+
+    // What crossed is not owed again: the mark is the seq the sending reached.
+    again.shipped_to("lab2", seqs[0]);
+    drop(again);
+    let last = Chat::open(&path);
+    assert_eq!(
+        last.held(),
+        vec![("lab2".to_string(), 1)],
+        "the rest is still owed"
+    );
+    assert_eq!(last.held_for("lab2")[0].seq, seqs[1]);
+}

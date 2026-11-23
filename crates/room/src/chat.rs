@@ -25,6 +25,9 @@ pub const ROOM_BYTES: usize = 256 * 1024;
 pub const MAX_TEXT: usize = 4_000;
 /// The most rows one read returns.
 pub const MAX_READ: usize = 200;
+/// How many lines one away box's queue keeps, per host. Past it the oldest goes and the drop is
+/// said: the room's log still holds the line, so what an overflow costs is the crossing.
+pub const MAX_HELD: usize = 64;
 /// Request ids remembered so a repeated `say` is answered, not appended twice.
 const REPLAY: usize = 256;
 /// The size a log segment grows to before the next append starts a new one. A segment is never
@@ -1368,6 +1371,18 @@ enum Record {
         session: bool,
         on: bool,
     },
+    /// A line waiting for a box that is away, in the form it will be shipped in. Replayed in file
+    /// order, which is the order they were said.
+    Held {
+        host: String,
+        message: Message,
+    },
+    /// Everything up to and including `up_to` went over a link that is back. A row said later
+    /// keeps its place, which is why the mark is a seq and not a count.
+    Shipped {
+        host: String,
+        up_to: u64,
+    },
 }
 
 /// The log chat is kept in. The file the caller named is its first segment; the state sits beside
@@ -1447,6 +1462,9 @@ pub struct Chat {
     /// check that reads it. Room state, so it outlives the coordinator, and a pair learned from a
     /// linked box is kept here the same way.
     consents: BTreeMap<(String, String), bool>,
+    /// Lines this box keeps for a box that is away, by that box's host, in the order they were
+    /// said: the promise `pending` makes for a principal with no connection, kept for a whole box.
+    held: BTreeMap<String, VecDeque<Message>>,
 }
 
 /// The key a stored cursor or seen mark is filed under. A session id (`s-...`) is its seat's, so a
@@ -1572,6 +1590,18 @@ impl Chat {
                     Some(ms) => self.archived.insert(room, ms),
                     None => self.archived.remove(&room),
                 };
+            }
+            Record::Held { host, message } => {
+                self.queue_held(&host, message, MAX_HELD);
+            }
+            Record::Shipped { host, up_to } => {
+                let emptied = self.held.get_mut(&host).map(|q| {
+                    q.retain(|m| m.seq > up_to);
+                    q.is_empty()
+                });
+                if emptied == Some(true) {
+                    self.held.remove(&host);
+                }
             }
         }
     }
@@ -1816,6 +1846,14 @@ impl Chat {
                 session: *session,
                 on: true,
             });
+        }
+        for (host, queue) in &self.held {
+            for message in queue {
+                records.push(Record::Held {
+                    host: host.clone(),
+                    message: message.clone(),
+                });
+            }
         }
         let mut buf = String::new();
         for r in &records {
@@ -2714,6 +2752,63 @@ impl Chat {
             self.revoke(from, to);
         }
         gone
+    }
+
+    /// Keep a line for `host` until that box is back. Bounded by `bound` (a test's door; the room
+    /// passes [`MAX_HELD`]): past it the OLDEST goes, and the caller is handed it to say so. In the
+    /// chat store, so a restart still owes it - and in memory only when the chat has no store.
+    pub fn hold_for(&mut self, host: &str, message: Message, bound: usize) -> Option<Message> {
+        let dropped = self.queue_held(host, message.clone(), bound);
+        self.write(&[Record::Held {
+            host: host.to_string(),
+            message,
+        }]);
+        dropped
+    }
+
+    /// The queue itself: push, and drop the oldest past `bound`. No store write, because a replay
+    /// of the state file uses this and a start must not append what it has just read.
+    fn queue_held(&mut self, host: &str, message: Message, bound: usize) -> Option<Message> {
+        let bound = bound.max(1);
+        let queue = self.held.entry(host.to_string()).or_default();
+        queue.push_back(message);
+        let mut dropped = None;
+        while queue.len() > bound {
+            dropped = queue.pop_front();
+        }
+        dropped
+    }
+
+    /// What this box is keeping for `host`, oldest first: the lines a relink ships.
+    pub fn held_for(&self, host: &str) -> Vec<Message> {
+        self.held
+            .get(host)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Every line up to and including `up_to` went over `host`'s link; the rest keep their place.
+    /// A mark rather than a count, because a line held while the queue was being sent stays.
+    pub fn shipped_to(&mut self, host: &str, up_to: u64) {
+        let Some(queue) = self.held.get_mut(host) else {
+            return;
+        };
+        queue.retain(|m| m.seq > up_to);
+        if queue.is_empty() {
+            self.held.remove(host);
+        }
+        self.write(&[Record::Shipped {
+            host: host.to_string(),
+            up_to,
+        }]);
+    }
+
+    /// One row per box this one owes lines to, with how many: what a banner or a test reads.
+    pub fn held(&self) -> Vec<(String, usize)> {
+        self.held
+            .iter()
+            .map(|(host, q)| (host.clone(), q.len()))
+            .collect()
     }
 
     fn apply_consent(&mut self, from: &str, to: &str, session: bool, on: bool) -> bool {

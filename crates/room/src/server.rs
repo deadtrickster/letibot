@@ -210,6 +210,8 @@ struct Inner {
     pending: Mutex<BTreeMap<String, Pending>>,
     /// The bound on both per-principal maps: [`MAX_PRINCIPALS`], or what a test set.
     principals: AtomicUsize,
+    /// How many lines one away box's queue keeps: [`chat::MAX_HELD`], or what a test set.
+    held_bound: AtomicUsize,
     /// The token a connection must present to be the operator, minted at [`Server::with_options`]
     /// and written beside the socket in mode 0600. The seat is a file, not a word in a frame.
     operator_token: String,
@@ -405,6 +407,7 @@ impl Server {
                 armed: Mutex::new(BTreeSet::new()),
                 pending: Mutex::new(BTreeMap::new()),
                 principals: AtomicUsize::new(MAX_PRINCIPALS),
+                held_bound: AtomicUsize::new(chat::MAX_HELD),
                 operator_token,
                 gone_since: Mutex::new(BTreeMap::new()),
                 seats: Mutex::new(BTreeMap::new()),
@@ -554,10 +557,14 @@ impl Server {
         }
     }
 
-    /// Does a box this one is linked to hold `id`? A seat on an away box is not here: a message to
-    /// it is kept (the room always keeps what it said) and nothing is sent.
+    /// Is `id` a seat of a box this one KNOWS of - linked now, or away with its seats still in the
+    /// mesh? An away box keeps its seats, so a line for one is accepted and held rather than
+    /// refused; a box this one has never heard of, and a seat such a box never announced, are both
+    /// still nobody.
     fn peer_holds(&self, id: &crate::SeatId) -> bool {
-        self.peer().is_some_and(|p| p.holds(&id.to_string()))
+        let seat = id.to_string();
+        self.peer()
+            .is_some_and(|p| p.seats_with_state().iter().any(|(s, _)| s.id == seat))
     }
 
     /// What the mesh learned, done to the room. A refusal is said on the log rather than to the far
@@ -570,6 +577,8 @@ impl Server {
                 );
                 // And what this box was told about consents while they were apart.
                 self.ship_consents(&host);
+                // And every line it kept for that box while it was away.
+                self.ship_held(&host);
             }
             PeerEvent::Down { why, .. } => eprintln!("room: {why}"),
             PeerEvent::Profiles { seats, .. } => self.introduce(&seats),
@@ -708,12 +717,34 @@ impl Server {
         if !author.is_empty() {
             shipped.author = author;
         }
-        if !peer.ship(id.host(), PeerFrame::Message { message: shipped }) {
+        let host = id.host().to_string();
+        if !peer.ship(
+            &host,
+            PeerFrame::Message {
+                message: shipped.clone(),
+            },
+        ) {
+            // A box that is away is one this box still owes the line to: kept, in order, and
+            // shipped when the link comes back - the promise `pending` makes for a principal.
+            let bound = self.inner.held_bound.load(Ordering::SeqCst);
+            let dropped = self
+                .inner
+                .chat
+                .lock()
+                .expect("the chat lock")
+                .hold_for(&host, shipped, bound);
             eprintln!(
-                "room: {id} is on {} and its link is down - the line is in this room and that \
-                 box's seat is away",
-                id.host()
+                "room: {id} is on {host} and its link is down - the line is kept for it and \
+                 goes over when the box is back"
             );
+            if let Some(gone) = dropped {
+                eprintln!(
+                    "room: {host}'s queue holds {bound} already, so the oldest went unshipped: \
+                     #{} {}",
+                    gone.seq,
+                    gone.text.lines().next().unwrap_or_default()
+                );
+            }
         }
     }
 
@@ -927,6 +958,19 @@ impl Server {
 
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+
+    /// Shrink the bound on what one away box's queue keeps - a test's door onto
+    /// [`chat::MAX_HELD`], which is sixty-four because a box holds a handful of seats.
+    pub fn with_held(&self, held: usize) -> &Self {
+        self.inner.held_bound.store(held.max(1), Ordering::SeqCst);
+        self
+    }
+
+    /// What this box still owes a box that is away: one row per host, with how many lines, in the
+    /// order they will go. It survives a restart, because the queue is in the chat store.
+    pub fn held_away(&self) -> Vec<(String, usize)> {
+        self.inner.chat.lock().expect("the chat lock").held()
     }
 
     /// The token the operator's seat is granted by, as this server minted it - what a test (and a
@@ -2725,8 +2769,9 @@ impl Server {
         }
     }
 
-    /// Does anybody on this host answer to `name`? A session the room has merely seen before is NOT
-    /// here - that would accept a message to nobody - and [`Server::remember_for_absent`] is what
+    /// Does anybody answer to `name` - a seat of this box, or an id a box this one knows of
+    /// announced, whose line is then shipped or kept? A session the room has merely seen before is
+    /// NOT here - that would accept a message to nobody - and [`Server::remember_for_absent`] is what
     /// keeps such a session's chat for it.
     fn is_known(&self, name: &str) -> bool {
         if name == chat::OPERATOR
@@ -2743,7 +2788,8 @@ impl Server {
         {
             return true;
         }
-        // A seat a linked box holds answers to its id, and a message to it goes over that link.
+        // A seat a linked box holds answers to its id, and a message to it goes over that link; an
+        // away box's seat answers too, and its line waits in this box's queue for the link.
         if crate::SeatId::parse(name).is_some_and(|id| self.peer_holds(&id)) {
             return true;
         }
@@ -3961,6 +4007,45 @@ impl Server {
             })
             .collect();
         peer.ship(host, crate::peer::PeerFrame::Consents { rows });
+    }
+
+    /// Every line this box kept for a box that was away, in the order it was said. A ship that
+    /// fails leaves the rest queued: the far side's own `peer:<author>:<seq>` request id is what
+    /// stops a line that did cross before the link died from being filed twice.
+    fn ship_held(&self, host: &str) {
+        let Some(peer) = self.peer() else {
+            return;
+        };
+        let rows = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .held_for(host);
+        let mut went = 0;
+        let mut short = 0;
+        for message in &rows {
+            if !peer.ship(
+                host,
+                crate::peer::PeerFrame::Message {
+                    message: message.clone(),
+                },
+            ) {
+                short = rows.len() - went;
+                break;
+            }
+            went += 1;
+        }
+        if let Some(last) = rows.get(went.saturating_sub(1)).filter(|_| went > 0) {
+            self.inner
+                .chat
+                .lock()
+                .expect("the chat lock")
+                .shipped_to(host, last.seq);
+        }
+        if short > 0 {
+            eprintln!("room: {host} went away again with {short} line(s) still kept for it");
+        }
     }
 
     /// A peer's table, or the row that changed: kept, so this box honours the pair after the link
