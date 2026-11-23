@@ -44,6 +44,21 @@ a `shadow-<first words>` name, with a `Source:` line naming the author, the quot
 session and row, and the shadow session. `/note decline N` writes nothing. Without N both act on
 the newest proposal. The model's seat need not hold `notes`: the accept is the operator's.
 
+A proposal that only says again what the turn's last answer said is not offered at all: 17 of the
+proposals this job made were the answer restated, which is a card the operator has just read. The
+shadow's own record says when one was dropped.
+
+## The turn monitor
+
+The same `turn_end` call also reads the turn for what it did beyond the ask - a test emptied or
+skipped, a file written outside the worktree, a force push, a branch deleted, a different task
+than the one asked for, or an answer that claims work the turn did not do. A finding is ONE row in
+the watched session, `[monitor] beyond the ask: …`, which the operator sees in the head and the
+model meets in its context. It never blocks, pauses or asks: the session is told, not stopped.
+Nothing is said when nothing was found, which is the normal case. The rule half needs no model, so
+a finding stands even when the reply fails; `[shadow] turn_monitor` and `turn_monitor_max_chars`
+switch it and cap the digest the check is shown (`docs/config/providers.toml.md`).
+
 ## Moving in-tree notes
 
 `scripts/migrate-notes.sh PROJECT [--repo DIR] [--remote URL] [--push]` copies

@@ -535,6 +535,9 @@ pub struct Harness {
     shadow: crate::shadow::Slot,
     /// The regex nudge a turn end held back for the shadow's turn_end verdict.
     shadow_held: Option<String>,
+    /// The turns whose monitor has not answered: what each check was told, so its verdict's findings
+    /// and a proposed note can be read against the answer they are about.
+    turn_monitors: crate::shadow::overreach::Pending,
     /// How far the shadow's position count has read: the index reached and the rows counted.
     shadow_counted: (usize, u64),
     /// How far a persistent shadow has been fed the rows: the next index to feed.

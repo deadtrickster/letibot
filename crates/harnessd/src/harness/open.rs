@@ -4135,6 +4135,7 @@ impl Harness {
             question_slot: question_head.clone(),
             shadow: Default::default(),
             shadow_held: None,
+            turn_monitors: Default::default(),
             shadow_counted: (0, 0),
             shadow_fed: 0,
             shadow_cell,

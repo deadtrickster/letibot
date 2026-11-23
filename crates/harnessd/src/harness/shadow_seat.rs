@@ -404,10 +404,49 @@ impl Harness {
                 s.row = at;
             }
         }
-        let q = turn_end::question(turn_end::turn_start(&self.session.items), &todos, &blocked);
+        let from = turn_end::turn_start(&self.session.items);
+        let mut q = turn_end::question(from, &todos, &blocked);
+        // What the turn did, read once and handed to both halves: the request's own facts for a
+        // persistent conversation, the shown data for a stateless call. The findings a rule proves
+        // are kept either way, because they stand whether or not the model answers at all.
+        let reached = self.session.items.len();
+        let turn = self.cfg.shadow.turn_monitor().map(|cap| {
+            crate::shadow::overreach::read(
+                &self.session.items,
+                from.unwrap_or(reached),
+                &self.cfg.workspace,
+                cap,
+            )
+        });
+        if let Some(t) = &turn {
+            crate::shadow::overreach::push(&mut shown, t);
+            q.facts.push('\n');
+            q.facts.push_str(&crate::shadow::overreach::facts(t));
+        }
+        let position = self.shadow.get().map_or(0, |s| s.position());
+        self.turn_monitors.push(crate::shadow::overreach::Monitor {
+            position,
+            reply: reply.to_string(),
+            found: turn.map(|t| t.found).unwrap_or_default(),
+        });
         if let Some(s) = self.shadow.get() {
             s.submit_asking(Job::TurnEnd, shown, q);
         }
+    }
+
+    /// Append one row the harness found, with no turn: the monitor's finding is told, never put to
+    /// anybody, so it lands in the transcript and the store and the model meets it in its context.
+    fn append_notice_row(&mut self, text: &str) -> Result<(), HarnessError> {
+        let item = TranscriptItem::Notice {
+            kind: letibot_transcript::NoticeKind::Monitor,
+            text: text.to_string(),
+            facts: None,
+        };
+        let mut sink = CapturingSink::new(self.hub.clone());
+        self.session
+            .append_items(&self.engine, std::slice::from_ref(&item), &mut sink)?;
+        self.reconcile(&mut sink, std::slice::from_ref(&item));
+        self.persist()
     }
 
     /// The verdicts that arrived since the last wake, acted on: the notices a wake says, and the
@@ -432,6 +471,7 @@ impl Harness {
         };
         for e in events {
             let held = self.shadow_held.take();
+            let monitor = self.turn_monitors.take_at(e.position);
             let reminded = turn_end::reminded_since_operator(&self.session.items);
             let moved = now > e.position;
             let (act, said) =
@@ -443,19 +483,60 @@ impl Harness {
                 turn_end::Act::Remind(t) | turn_end::Act::Regex(t) => notices.push(t),
                 turn_end::Act::Nothing => {}
             }
+            // What the turn did beyond the ask: the rule's findings, which stand whatever the model
+            // answered, and then the model's. One row, and no turn: a finding is told, not put to
+            // anybody - the operator reads it in the head and the model meets it in its context.
+            let beyond = self.cfg.shadow.turn_monitor().and_then(|_| {
+                let mut found = monitor
+                    .as_ref()
+                    .map(|m| m.found.clone())
+                    .unwrap_or_default();
+                if let crate::shadow::runner::Outcome::Verdict(
+                    crate::shadow::verdict::Verdict::TurnEnd { overreach, .. },
+                ) = &e.outcome
+                {
+                    found.extend(overreach.iter().cloned());
+                }
+                crate::shadow::overreach::row(&found)
+            });
+            if let Some(TranscriptItem::Notice { text, .. }) = &beyond {
+                recorder.row("turn_end · monitor · a finding", text);
+                if let Err(e) = self.append_notice_row(text) {
+                    self.warn(
+                        "monitor_row_not_stored",
+                        format!(
+                            "the monitor's finding was found but the store refused the row: {e}. \
+                             It stays in the session's ledger; the next store write carries it."
+                        ),
+                    );
+                }
+            }
             if let crate::shadow::runner::Outcome::Verdict(
                 crate::shadow::verdict::Verdict::TurnEnd {
                     note: Some(quote), ..
                 },
             ) = &e.outcome
             {
-                let at = quote.row.and_then(|r| self.row_clock(r));
-                let mut row = turn_end::note_row(quote, at.as_deref(), &shadow_id);
-                if let TranscriptItem::Offer { body, .. } = &mut row {
-                    let n = self.session.items.len() + rows.len();
-                    body.push_str(&format!("\n\n{}", crate::note_accept::hint(n)));
+                // A note that only says again what the answer said is a card the operator has
+                // already read: dropped, and said so in the shadow's own record.
+                if monitor
+                    .as_ref()
+                    .is_some_and(|m| crate::shadow::overreach::restates(&quote.text, &m.reply))
+                {
+                    recorder.row(
+                        "turn_end · note dropped",
+                        "the proposed note restates the assistant's last answer, so nothing is \
+                         offered: a card for words the operator has just read is noise.",
+                    );
+                } else {
+                    let at = quote.row.and_then(|r| self.row_clock(r));
+                    let mut row = turn_end::note_row(quote, at.as_deref(), &shadow_id);
+                    if let TranscriptItem::Offer { body, .. } = &mut row {
+                        let n = self.session.items.len() + rows.len();
+                        body.push_str(&format!("\n\n{}", crate::note_accept::hint(n)));
+                    }
+                    rows.push(row);
                 }
-                rows.push(row);
             }
         }
         if !rows.is_empty()

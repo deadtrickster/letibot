@@ -66,11 +66,25 @@ impl shadow::judge::Judge for Judges {
 }
 
 #[derive(Default)]
-struct Rows(Mutex<Vec<String>>);
+struct Rows {
+    titles: Mutex<Vec<String>>,
+    bodies: Mutex<Vec<String>>,
+}
+
+impl Rows {
+    fn titles(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        self.titles.lock().unwrap()
+    }
+    /// Every row's body, joined: what the exchange was told, its reply and its checks.
+    fn said(&self) -> String {
+        self.bodies.lock().unwrap().join("\n")
+    }
+}
 
 impl shadow::record::Recorder for Rows {
-    fn row(&self, title: &str, _body: &str) {
-        self.0.lock().unwrap().push(title.to_string());
+    fn row(&self, title: &str, body: &str) {
+        self.titles.lock().unwrap().push(title.to_string());
+        self.bodies.lock().unwrap().push(body.to_string());
     }
 }
 
@@ -179,7 +193,7 @@ fn an_owed_verdict_reminds_with_the_template_and_the_quote() {
         "{:?}",
         h.session.items
     );
-    let titles = rows.0.lock().unwrap();
+    let titles = rows.titles();
     assert!(
         titles
             .iter()
@@ -201,7 +215,7 @@ fn a_none_verdict_replaces_the_regex_nudge_with_silence() {
         .expect("the verdict rings the wake");
     assert!(h.wake().expect("the wake runs").is_none(), "nothing to say");
     assert_eq!(h.session.items.len(), before, "no nudge row and no turn");
-    let titles = rows.0.lock().unwrap();
+    let titles = rows.titles();
     assert!(
         titles
             .iter()
@@ -221,7 +235,7 @@ fn an_unsure_verdict_falls_back_to_the_held_regex_nudge() {
         "the held nudge goes out as a turn"
     );
     assert!(!said(&h, "[shadow] You said"));
-    let titles = rows.0.lock().unwrap();
+    let titles = rows.titles();
     assert!(
         titles
             .iter()
@@ -295,7 +309,7 @@ fn an_announcement_in_progress_is_reminded_by_the_shadow() {
         "{:?}",
         h.session.items
     );
-    let titles = rows.0.lock().unwrap();
+    let titles = rows.titles();
     assert!(
         titles.iter().any(|t| t.starts_with("turn_end · owed")),
         "{titles:?}"
@@ -358,4 +372,266 @@ fn an_allow_the_shadow_took_owes_the_turn_end_no_row() {
         h.session.items
     );
     assert!(h.shadow_answering.take_rows().is_empty(), "nothing owed");
+}
+
+// ---- the turn monitor -------------------------------------------------------------------------
+
+/// One turn's rows, written straight into the transcript: the operator's ask, a `write` that
+/// emptied `tests/parser.rs`, and the answer. No model turn and no tool run - the monitor reads
+/// rows, and a fixture that had to compile a parser to have one would test the toolchain.
+fn a_turn_that_deletes_a_test(h: &mut Harness, answer: &str) {
+    h.session.items.push(TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![letibot_transcript::UserPart::Text {
+            text: "fix the off-by-one in the parser".into(),
+        }],
+    });
+    h.session.items.push(TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![letibot_transcript::ToolCall {
+            id: "call-w".into(),
+            name: "write".into(),
+            arguments: r#"{"path":"tests/parser.rs","content":""}"#.into(),
+        }],
+        truncated: false,
+    });
+    h.session.items.push(TranscriptItem::ToolResult {
+        call_id: "call-w".into(),
+        name: "write".into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: String::new(),
+        edits: vec![letibot_transcript::ToolEditExcerpt {
+            path: "tests/parser.rs".into(),
+            created: false,
+            before_start: 1,
+            after_start: 1,
+            before_lines: 2,
+            after_lines: 0,
+            truncated: false,
+            before: "assert_eq!(parse(\"a\"), 1);\nassert_eq!(parse(\"b\"), 2);\n".into(),
+            after: String::new(),
+        }],
+        origin: None,
+        media: None,
+        ran_ms: None,
+        decision: None,
+    });
+    h.session.items.push(TranscriptItem::Assistant {
+        text: answer.into(),
+        tool_calls: Vec::new(),
+        truncated: false,
+    });
+}
+
+/// The monitor's row: a `Notice` the head draws, which `reaches_model` - one record for the
+/// operator and the model, and no turn of its own.
+fn monitor_rows(h: &Harness) -> Vec<String> {
+    h.session
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::Notice {
+                kind: letibot_transcript::NoticeKind::Monitor,
+                text,
+                ..
+            } if text.starts_with("[monitor]") => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A turn that emptied a test file is a finding with NO model at all: the rule proves it, and an
+/// empty reply from the model - the void this job sees most - does not take it away.
+#[test]
+fn a_turn_that_deletes_a_test_is_told_with_no_model() {
+    let (mut h, rang, _rows) = a_session_saying("monitor-rule", ANNOUNCED, Some(""));
+    a_turn_that_deletes_a_test(&mut h, "The parser is fixed.");
+    h.submit_turn_end("The parser is fixed.");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    // Nothing to say as a turn: a finding is told, never put to anybody.
+    assert!(
+        h.wake().expect("the wake runs").is_none(),
+        "a finding opens no turn"
+    );
+    assert_eq!(
+        monitor_rows(&h),
+        vec![
+            "[monitor] beyond the ask: emptied the test file tests/parser.rs (-2 lines)"
+                .to_string()
+        ]
+    );
+    let row = h
+        .session
+        .items
+        .iter()
+        .find(|i| matches!(i, TranscriptItem::Notice { .. }))
+        .expect("a row");
+    assert!(row.reaches_model(), "the model reads it in its context");
+}
+
+/// `[shadow] turn_monitor = false` is the whole check off: the same turn is told nothing.
+#[test]
+fn a_turn_monitor_that_is_off_tells_nothing() {
+    let (mut h, rang, _rows) = a_session_saying("monitor-off", ANNOUNCED, Some(""));
+    h.cfg.shadow = h
+        .cfg
+        .shadow
+        .clone()
+        .with_turn_monitor(false, crate::shadow::overreach::DEFAULT_MAX_CHARS);
+    assert_eq!(h.cfg.shadow.turn_monitor(), None);
+    a_turn_that_deletes_a_test(&mut h, "The parser is fixed.");
+    let before = h.session.items.len();
+    h.submit_turn_end("The parser is fixed.");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    let _ = h.wake().expect("the wake runs");
+    assert_eq!(h.session.items.len(), before, "{:?}", h.session.items);
+    assert!(monitor_rows(&h).is_empty());
+}
+
+/// A turn that did exactly what was asked is the normal case: no row.
+#[test]
+fn a_turn_that_did_what_was_asked_is_told_nothing() {
+    let (mut h, rang, _rows) = a_session_saying(
+        "monitor-quiet",
+        "The parser is fixed.",
+        Some(r#"{"verdict":"none","evidence":"The parser is fixed."}"#),
+    );
+    h.session.items.push(TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![letibot_transcript::UserPart::Text {
+            text: "fix the off-by-one in the parser".into(),
+        }],
+    });
+    h.session.items.push(TranscriptItem::Assistant {
+        text: "The parser is fixed.".into(),
+        tool_calls: Vec::new(),
+        truncated: false,
+    });
+    let before = h.session.items.len();
+    h.submit_turn_end("The parser is fixed.");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    assert!(h.wake().expect("the wake runs").is_none());
+    assert_eq!(
+        h.session.items.len(),
+        before,
+        "no row: {:?}",
+        h.session.items
+    );
+    assert!(monitor_rows(&h).is_empty());
+}
+
+/// The model's own finding, verified against the digest and rendered as the one row - a turn the
+/// rule has nothing to say about, so the row is the model's alone.
+#[test]
+fn a_models_overreach_finding_is_one_row() {
+    let (mut h, rang, rows) = a_session_saying(
+        "monitor-model",
+        "The parser is fixed.",
+        Some(
+            r#"{"verdict":"none","evidence":"The parser is fixed.","overreach":[{"what":"rewrote the parser's API instead of fixing one line","evidence":"src/parser.rs","kind":"scope"}]}"#,
+        ),
+    );
+    h.session.items.push(TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![letibot_transcript::UserPart::Text {
+            text: "fix the off-by-one in the parser".into(),
+        }],
+    });
+    h.session.items.push(TranscriptItem::ToolResult {
+        call_id: "call-e".into(),
+        name: "edit".into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: String::new(),
+        edits: vec![letibot_transcript::ToolEditExcerpt {
+            path: "src/parser.rs".into(),
+            created: false,
+            before_start: 1,
+            after_start: 1,
+            before_lines: 900,
+            after_lines: 1200,
+            truncated: false,
+            before: "    let at = i - 1;\n".into(),
+            after: "    let at = i;\n".into(),
+        }],
+        origin: None,
+        media: None,
+        ran_ms: None,
+        decision: None,
+    });
+    h.session.items.push(TranscriptItem::Assistant {
+        text: "The parser is fixed.".into(),
+        tool_calls: Vec::new(),
+        truncated: false,
+    });
+    h.submit_turn_end("The parser is fixed.");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    assert!(h.wake().expect("the wake runs").is_none());
+    assert_eq!(
+        monitor_rows(&h),
+        vec![
+            "[monitor] beyond the ask: rewrote the parser's API instead of fixing one line"
+                .to_string()
+        ],
+        "{:?}",
+        rows.said()
+    );
+}
+
+/// An empty reply is the prompt-too-long case, and the record names the size that explains it
+/// instead of voiding it silently.
+#[test]
+fn an_empty_reply_is_reported_with_its_prompt_size() {
+    let (mut h, rang, rows) = a_session_saying("monitor-void", ANNOUNCED, Some(""));
+    h.submit_operator("fix the parser").expect("a turn runs");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    let _ = h.wake().expect("the wake runs");
+    let said = rows.said();
+    let at = said
+        .find("the reply was empty: the prompt of ")
+        .unwrap_or_else(|| panic!("no size in the record: {said}"));
+    let digits: String = said[at..]
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(6)
+        .collect();
+    assert!(
+        digits.parse::<usize>().is_ok_and(|n| n > 100),
+        "the prompt's size is named: {said}"
+    );
+    assert!(said[at..].contains(" bytes"), "{said}");
+}
+
+/// A note that only says again what the answer said is not offered; one that carries something the
+/// answer does not is.
+#[test]
+fn a_note_that_restates_the_answer_is_not_offered() {
+    let (mut h, rang, rows) = a_session_saying(
+        "monitor-note",
+        "The parser off-by-one was the comparison in the span loop, and the suite now passes.",
+        Some(
+            r#"{"verdict":"none","evidence":"the suite now passes","note":"the parser off-by-one was the comparison in the span loop"}"#,
+        ),
+    );
+    h.submit_operator("fix the parser").expect("a turn runs");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    let _ = h.wake().expect("the wake runs");
+    assert!(
+        !h.session
+            .items
+            .iter()
+            .any(|i| matches!(i, TranscriptItem::Offer { .. })),
+        "a restating note is no card: {:?}",
+        h.session.items
+    );
+    assert!(
+        rows.titles().iter().any(|t| t.contains("note dropped")),
+        "{:?}",
+        rows.titles()
+    );
 }
