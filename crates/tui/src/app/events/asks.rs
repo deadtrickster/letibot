@@ -224,17 +224,34 @@ impl App {
                 prompt,
                 command,
                 deadline,
+                for_what,
+                key,
+                keep_ms,
+                host,
+                waiting,
             } => {
                 if command.is_empty() {
                     self.key_secrets.push(req_id.clone());
+                }
+                // A second ask for the same key joins the card that is already up: the same
+                // req_id, so the person's typing survives, and one more on the count so they
+                // know one answer covers both.
+                let mut typing = self.secret_buf.clone();
+                if self.secret.as_ref().is_some_and(|s| s.req_id != req_id) {
+                    typing.clear();
                 }
                 self.secret = Some(SecretAsk {
                     req_id,
                     prompt,
                     command,
                     deadline,
+                    for_what,
+                    key,
+                    keep_ms,
+                    host,
+                    waiting: waiting.max(1),
                 });
-                self.secret_buf.clear();
+                self.secret_buf = typing;
                 Disposition::Rendered
             }
             SessionEvent::SecretSettled { req_id, given, by } => {

@@ -402,6 +402,11 @@ fn a_card_that_owns_the_keyboard_has_its_own_bar() {
             prompt: "password".into(),
             command: "sudo ls".into(),
             deadline: 0,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     );
     let bar = b.hint_bar(200);
@@ -460,6 +465,11 @@ fn esc_puts_a_card_away_and_the_explicit_key_refuses() {
             prompt: "[sudo] password for dead: ".into(),
             command: "sudo ls".into(),
             deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     );
     assert_eq!(b.key(Key::Esc), None, "esc refused the ask");
@@ -473,6 +483,7 @@ fn esc_puts_a_card_away_and_the_explicit_key_refuses() {
         Some(Action::Secret {
             req_id: "secret-s".into(),
             secret: None,
+            keep_ms: None,
         })
     );
 }

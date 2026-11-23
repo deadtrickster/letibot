@@ -57,6 +57,11 @@ fn the_key_ask_is_the_secret_card_worded_for_a_key() {
                 .into(),
             command: String::new(),
             deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     let card = a.screen(100, 20).join("\n");
@@ -83,6 +88,7 @@ fn the_key_ask_is_the_secret_card_worded_for_a_key() {
         Some(Action::Secret {
             req_id: "secret-s-1".into(),
             secret: Some("sk-abc".into()),
+            keep_ms: None,
         })
     );
     // A second ask: Esc puts the card away and sends nothing, ctrl-c is the refusal, and
@@ -94,6 +100,11 @@ fn the_key_ask_is_the_secret_card_worded_for_a_key() {
             prompt: "deepseek needs an API key.".into(),
             command: String::new(),
             deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     assert_eq!(a.key(Key::Esc), None, "esc refused the ask");
@@ -104,6 +115,7 @@ fn the_key_ask_is_the_secret_card_worded_for_a_key() {
         Some(Action::Secret {
             req_id: "secret-s-2".into(),
             secret: None,
+            keep_ms: None,
         })
     );
     a.apply(ServerFrame::Event(env(
@@ -130,6 +142,11 @@ fn the_password_card_is_a_card_and_says_it_once() {
             prompt: "[sudo] password for dead: ".into(),
             command: "sudo apt install x".into(),
             deadline: 1_788_984_047_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     let screen = a.screen(80, 24).join("\n");
@@ -183,6 +200,11 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
             prompt: "[sudo] password for dead: ".into(),
             command: "sudo apt install x".into(),
             deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     let card = a.screen(100, 20).join("\n");
@@ -209,6 +231,7 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
         Some(Action::Secret {
             req_id: "secret-s-1".into(),
             secret: Some("hunter2".into()),
+            keep_ms: None,
         })
     );
     assert!(a.input().is_empty());
@@ -223,6 +246,11 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
             prompt: "[sudo] password: ".into(),
             command: "sudo true".into(),
             deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     assert_eq!(
@@ -230,6 +258,7 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
         Some(Action::Secret {
             req_id: "secret-s-2".into(),
             secret: None,
+            keep_ms: None,
         })
     );
 }
@@ -465,6 +494,11 @@ fn the_password_cards_countdown_is_seconds_and_not_a_second_epoch() {
             prompt: "[sudo] password for dead: ".into(),
             command: "sudo true".into(),
             deadline: NOW + 120_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     // A wide frame on purpose: the countdown is the last field on that line and the card trims to
@@ -602,4 +636,106 @@ fn a_flowy_token_is_typed_into_the_masked_card_and_sent_as_the_login_verb() {
         Some("cancelled — no flowy token was sent")
     );
     assert!(!leaked(&mut a));
+}
+
+/// The generic card: the first line says what will use the value, the host and the count of
+/// commands waiting on it are drawn, `alt-k` is the second answer, and an ask with no key offers
+/// no window at all.
+#[test]
+fn the_generic_card_names_what_uses_and_offers_keeping_only_when_a_key_was_given() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::SecretRequested {
+            req_id: "secret-s-1".into(),
+            prompt: "[letibot] secret:".into(),
+            command: "letibot-secret ask --for 'sudo on lubuntu1-3'".into(),
+            deadline: 1_000_000,
+            for_what: "sudo on lubuntu1-3".into(),
+            key: Some("fleet-sudo".into()),
+            keep_ms: Some(15 * 60 * 1000),
+            host: "lubuntu1-3".into(),
+            waiting: 2,
+        },
+    )));
+    let card = a.screen(140, 30).join("\n");
+    assert!(card.contains("for: sudo on lubuntu1-3"), "{card}");
+    assert!(card.contains("on: lubuntu1-3"), "{card}");
+    assert!(card.contains("2 commands are waiting"), "{card}");
+    assert!(card.contains("alt-k keeps it 15 min"), "{card}");
+    assert!(
+        card.contains("fleet-sudo"),
+        "the name it is filed under: {card}"
+    );
+
+    // alt-k answers with the window, which is the whole difference from Enter.
+    for c in "hunter2".chars() {
+        a.key(Key::Char(c));
+    }
+    match a.key(Key::AltK) {
+        Some(Action::Secret {
+            secret, keep_ms, ..
+        }) => {
+            assert_eq!(secret.as_deref(), Some("hunter2"));
+            assert_eq!(keep_ms, Some(15 * 60 * 1000));
+        }
+        other => panic!("alt-k must answer with the window, not {other:?}"),
+    }
+
+    // An ask with no key cannot be kept, and neither the card nor the key pretends otherwise.
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::SecretRequested {
+            req_id: "secret-s-2".into(),
+            prompt: "[sudo] password for dead: ".into(),
+            command: "sudo true".into(),
+            deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
+        },
+    )));
+    let card = a.screen(140, 30).join("\n");
+    assert!(!card.contains("alt-k"), "no key, no window: {card}");
+    for c in "hunter2".chars() {
+        a.key(Key::Char(c));
+    }
+    assert_eq!(
+        a.key(Key::AltK),
+        None,
+        "alt-k on a keyless ask answers nothing"
+    );
+    assert!(a.secret.is_some(), "and the card is still up");
+}
+
+/// A second ask for the same key re-says the card with a higher count, and does not eat what the
+/// person has already typed into it.
+#[test]
+fn a_joined_ask_keeps_the_typing_that_is_already_there() {
+    let mut a = app();
+    let card = |waiting: u32| SessionEvent::SecretRequested {
+        req_id: "secret-s-1".into(),
+        prompt: "[letibot] secret:".into(),
+        command: "letibot-secret ask".into(),
+        deadline: 1_000_000,
+        for_what: "sudo on lubuntu1-3".into(),
+        key: Some("fleet-sudo".into()),
+        keep_ms: Some(15 * 60 * 1000),
+        host: "lubuntu1-3".into(),
+        waiting,
+    };
+    a.apply(ServerFrame::Event(env(1, card(1))));
+    for c in "hun".chars() {
+        a.key(Key::Char(c));
+    }
+    a.apply(ServerFrame::Event(env(2, card(2))));
+    assert_eq!(a.secret_buf, "hun", "the person's typing survived");
+    assert!(
+        a.screen(140, 30)
+            .join("\n")
+            .contains("2 commands are waiting"),
+        "and the count is the new one"
+    );
 }

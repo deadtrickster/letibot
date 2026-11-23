@@ -353,10 +353,13 @@ pub enum Action {
         prefix: String,
         client_request_id: String,
     },
-    /// A password for `sudo`, or a refusal. Never logged by anything on the way.
+    /// A secret for a program that asked for one, or a refusal. Never logged by anything on the
+    /// way. `keep_ms` is the person's choice of how long the daemon may remember the value:
+    /// `None` is this command only, and `Some` is possible only for an ask that named a key.
     Secret {
         req_id: String,
         secret: Option<String>,
+        keep_ms: Option<u64>,
     },
     /// The operator's answer to a command of their own that asked them something, raised when the
     /// run is blocked reading the device the daemon holds for it. Not `Action::Secret` and not a

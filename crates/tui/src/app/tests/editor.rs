@@ -1955,6 +1955,11 @@ fn a_secret_ask_takes_the_keyboard_back_from_the_editor() {
             prompt: "[sudo] password for dead:".into(),
             command: "sudo true".into(),
             deadline: 1_000_000,
+            for_what: String::new(),
+            key: None,
+            keep_ms: None,
+            host: String::new(),
+            waiting: 1,
         },
     )));
     a.screen(100, 40);
@@ -1976,6 +1981,7 @@ fn a_secret_ask_takes_the_keyboard_back_from_the_editor() {
         Some(Action::Secret {
             req_id: "secret-s-9".into(),
             secret: Some("hunter2".into()),
+            keep_ms: None,
         })
     );
 }

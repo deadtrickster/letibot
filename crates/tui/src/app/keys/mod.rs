@@ -802,6 +802,9 @@ pub enum Key {
     AltM,
     /// alt-d: the permission card's diff whole, or folded again (`ui/cards/decision.rs`).
     AltD,
+    /// alt-k: answer a secret card and KEEP the value for the window it offers - the second
+    /// choice on a card that has a name to file it under (`app/keys/cards.rs`).
+    AltK,
     /// alt-< and alt->: the border on the screen narrower and wider - the editor's when it is a
     /// column, the rooms sidebar's otherwise.
     AltNarrow,
@@ -974,6 +977,7 @@ impl Key {
             | Key::AltI
             | Key::AltM
             | Key::AltD
+            | Key::AltK
             | Key::AltNarrow
             | Key::AltWiden
             | Key::AltUp

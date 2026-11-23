@@ -25,13 +25,25 @@ pub(crate) enum KeyKind {
     Flowy { rest: String },
 }
 
-/// An open password request, as the head shows it.
+/// An open secret request, as the head shows it.
 #[derive(Debug, Clone)]
 pub(crate) struct SecretAsk {
     pub(crate) req_id: String,
     pub(crate) prompt: String,
     pub(crate) command: String,
     pub(crate) deadline: u64,
+    /// What will use it, in the asker's words (`letibot-secret --for`). Empty for a program's
+    /// own prompt, which already says what it is for.
+    pub(crate) for_what: String,
+    /// The name the value may be filed under, when the ask has one.
+    pub(crate) key: Option<String>,
+    /// How long the person may choose to keep it, in ms. `None` means "this command only" is the
+    /// only answer.
+    pub(crate) keep_ms: Option<u64>,
+    /// The machine(s) it is going to.
+    pub(crate) host: String,
+    /// How many asks this one card settles: more than one when two helpers wanted the same key.
+    pub(crate) waiting: u32,
 }
 
 /// A command of the operator's own waiting for an answer, drawn in the open on purpose.

@@ -54,16 +54,48 @@ impl App {
         row_strings(&card.lines(w), self.cfg.palette())
     }
 
-    /// The password card: what is asking, for which command, and its keys. rano's own hint
-    /// row names Esc as the refuser, so the key sentence is this head's: Esc puts the card
-    /// away and sends nothing, and ctrl-c is the refusal.
+    /// The secret card: what will use the value, what it came from, where it is going, and its
+    /// keys. rano's own `SecretAsk` is the masked field and the countdown; the facts above it and
+    /// the sentence about the two answers are this head's, because rano's card has no field for
+    /// them.
+    ///
+    /// Esc puts the card away and sends nothing; ctrl-c is the refusal. `alt-k` is the second
+    /// answer - keep the value - and appears only when the asker allowed a window.
     pub(crate) fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
+        use rano::agent::text::{one, trim_to, wrapped};
+        use rano::style::Role;
         let card = asks::SecretAsk {
             prompt: ask.prompt.clone(),
             command: ask.command.clone(),
             remaining_ms: ask.deadline.saturating_sub(self.now_ms),
         };
-        let mut lines = card.lines(w);
+        let mut lines = Vec::new();
+        // A key ask (a provider key on its way to a file) has no command and no `--for`: its
+        // prompt is the whole sentence, and rano's card already draws it.
+        if !ask.for_what.is_empty() {
+            lines.extend(wrapped(
+                &format!("  for: {}", ask.for_what.replace(['\n', '\r'], " ")),
+                w,
+                Role::Faint,
+            ));
+        }
+        if !ask.host.is_empty() {
+            lines.extend(wrapped(
+                &format!("  on: {}", ask.host.replace(['\n', '\r'], " ")),
+                w,
+                Role::Faint,
+            ));
+        }
+        if ask.waiting > 1 {
+            lines.push(one(
+                trim_to(
+                    &format!("  {} commands are waiting on this one answer", ask.waiting),
+                    w,
+                ),
+                Role::Pending,
+            ));
+        }
+        lines.extend(card.lines(w));
         for l in lines.iter_mut() {
             let plain = l.plain();
             if let Some(rest) = plain.trim_start().strip_prefix("enter sends it") {
@@ -71,8 +103,15 @@ impl App {
                 *l = rano::agent::pane::faint(rano::agent::text::trim_to(&said, w));
             }
         }
+        let keep = match ask.keep_ms {
+            Some(ms) => match &ask.key {
+                Some(key) => format!(" · alt-k keeps it {} min as `{key}`", (ms / 60_000).max(1)),
+                None => format!(" · alt-k keeps it {} min", (ms / 60_000).max(1)),
+            },
+            None => String::new(),
+        };
         lines.push(rano::agent::pane::faint(rano::agent::text::trim_to(
-            "  ctrl-c refuses · esc puts it away — alt-a brings it back",
+            &format!("  ctrl-c refuses · esc puts it away — alt-a brings it back{keep}"),
             w,
         )));
         row_strings(&lines, self.cfg.palette())

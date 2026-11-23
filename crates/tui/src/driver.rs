@@ -918,8 +918,12 @@ impl Link {
                         self.client
                             .suggest_shell(app.seq, &client_request_id, &prefix)?;
                     }
-                    Action::Secret { req_id, secret } => {
-                        self.client.secret(&req_id, secret)?;
+                    Action::Secret {
+                        req_id,
+                        secret,
+                        keep_ms,
+                    } => {
+                        self.client.secret_keeping(&req_id, secret, keep_ms)?;
                     }
                     // The person's answer to a command that asked them something: off the queue and on this
                     // socket, since the worker is blocked inside the very command that is asking. Nothing to wait

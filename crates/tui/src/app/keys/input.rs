@@ -55,6 +55,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::Char('i') if m == Mods::ALT => Key::AltI,
         KeyCode::Char('m') if m == Mods::ALT => Key::AltM,
         KeyCode::Char('d') if m == Mods::ALT => Key::AltD,
+        // alt-k: answer a secret card and keep the value, when the card offers a window.
+        KeyCode::Char('k') if m == Mods::ALT => Key::AltK,
         KeyCode::Char('<') if m == Mods::ALT => Key::AltNarrow,
         KeyCode::Char('>') if m == Mods::ALT => Key::AltWiden,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,

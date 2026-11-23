@@ -195,6 +195,7 @@ impl App {
             && !self.secret_away
         {
             let req_id = ask.req_id.clone();
+            let keep = ask.keep_ms;
             match k {
                 Key::Char(c) => self.secret_buf.push(*c),
                 Key::Paste(s) => self.secret_buf.push_str(s.trim_end_matches(['\n', '\r'])),
@@ -202,12 +203,27 @@ impl App {
                     self.secret_buf.pop();
                 }
                 Key::KillToStart | Key::KillToEnd => self.secret_buf.clear(),
-                Key::Enter => {
+                Key::Enter | Key::AltK => {
+                    // Two answers, and the card prints both when it offers a window: Enter is
+                    // "this command only", which is the default because it is the one that
+                    // leaves nothing behind. alt-k keeps the value for the window the asker
+                    // allowed, and only an ask with a key can offer one at all.
+                    let keeping = match k {
+                        Key::AltK => keep,
+                        _ => None,
+                    };
+                    if matches!(k, Key::AltK) && keeping.is_none() {
+                        // No name to file it under: the card says so rather than swallowing the
+                        // key and looking broken.
+                        self.say("this ask cannot be kept — enter sends it for this command only");
+                        return ControlFlow::Break(None);
+                    }
                     let secret = std::mem::take(&mut self.secret_buf);
                     self.secret = None;
                     return ControlFlow::Break(Some(Action::Secret {
                         req_id,
                         secret: Some(secret),
+                        keep_ms: keeping,
                     }));
                 }
                 Key::Esc => {
@@ -227,6 +243,7 @@ impl App {
                     return ControlFlow::Break(Some(Action::Secret {
                         req_id,
                         secret: None,
+                        keep_ms: None,
                     }));
                 }
                 _ => {}
