@@ -2160,6 +2160,11 @@ pub(crate) fn child_mode_source(why: Option<&str>) -> String {
 pub(crate) const QUEUED_NOTE: &str = "queued: the `[subagents]` running cap is full; it starts \
      when a running child finishes";
 
+/// The state word a child waiting for a `[subagents]` place is published with, and the one every head
+/// draws it by. Its own word and not `running` with a note beside it: the pane draws a state, and a
+/// child the cap has parked has not started.
+pub(crate) const QUEUED_STATE: &str = "queued";
+
 /// A queued child that was stopped before it got a place.
 pub(crate) const QUEUED_STOP: &str =
     "stopped while queued for a `[subagents]` place; it never started";
@@ -2555,6 +2560,23 @@ impl HarnessTaskRunner {
             .lock()
             .expect("task slots")
             .push((sub_id.clone(), slot.clone()));
+        // A child the cap has parked is drawn as QUEUED by every head, from this fact alone: the
+        // slot's own note is the daemon's, and a head that had to translate `running` plus a note
+        // into "not started yet" would be guessing. The event makes the row and says what it is.
+        if wait.is_some()
+            && let Some(hub) = self.registry.get(&self.base.session_id)
+        {
+            hub.publish(SessionEvent::Subagent {
+                subagent_id: sub_id.clone(),
+                state: QUEUED_STATE.to_string(),
+                prompt: QUEUED_NOTE.to_string(),
+                role: String::new(),
+                task: prompt.to_string(),
+                model: spec.model.clone().unwrap_or_default(),
+                answer: None,
+                slug: slot.slug.clone().unwrap_or_default(),
+            });
+        }
 
         let me = self.clone();
         let prompt = prompt.to_string();

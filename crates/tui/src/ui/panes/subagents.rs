@@ -25,6 +25,12 @@ fn held_line(said: &str) -> Line {
     )])
 }
 
+/// The mark a child waiting for a `[subagents]` place is drawn by: the pane's pending register and not
+/// a colour of this head's own - a parked child is work in progress that has not started, which is
+/// what [`crate::ui::severity`] answers for `Pending`. Rano's row table knows `opening`, `running`,
+/// `done` and `failed`, and every other word draws `[?]`, the mark for a daemon that said nothing.
+pub(crate) const QUEUED_MARK: &str = "[ ]";
+
 impl App {
     /// The subagent tree: the children this session spawned, drawn from [`App::subagent_stops`] -
     /// the list the arrows, Enter and `p` read - so the drawn mark and the key that acts cannot
@@ -33,21 +39,52 @@ impl App {
         let pane = self.subagents_view();
         let stops = pane.stops();
         let content = pane.content(w);
+        let content = self.with_queued_marks(content, &stops);
         let content = self.with_held_rows(content, &stops);
         self.subagents_stop_rows = content.stop_rows;
         row_strings(&content.lines, self.cfg.palette())
     }
 
-    /// The pane's rows with one more under every child that answered and is held for its jobs. The
-    /// state word rano draws is `waiting`, which names the state and not the work, so the hold's
-    /// own sentence - which the daemon published and which names each job - is drawn under it.
+    /// A queued child's row, drawn with this head's own mark. The state word rano is handed for a
+    /// parked child is `running` - the only word its table keeps out of the `finished` group - so the
+    /// mark rano draws is the running one, and the child has not started. Its sentence under the row
+    /// says what it waits for, and the mark says which of the two it is.
+    fn with_queued_marks(&self, mut content: PaneLines, stops: &[SubStop]) -> PaneLines {
+        let role = crate::ui::severity::role(Some(letibot_sessionlog::pane::Role::Pending));
+        for (k, stop) in stops.iter().enumerate() {
+            let SubStop::Agent(i) = stop else { continue };
+            if !self.subagents.get(*i).is_some_and(SubagentState::is_queued) {
+                continue;
+            }
+            let Some(line) = content
+                .stop_rows
+                .get(k)
+                .and_then(|r| content.lines.get_mut(*r))
+            else {
+                continue;
+            };
+            if let Some(mark) = line.spans.first_mut() {
+                *mark = Span::role(QUEUED_MARK, role);
+            }
+        }
+        content
+    }
+
+    /// The pane's rows with one more under every child that has something of its own to say: a child
+    /// held for its jobs, and a child waiting for a place. The state word rano draws is `waiting`,
+    /// which names the state and not the work, so the daemon's own sentence - which names each job,
+    /// or the cap that parked it - is drawn under it.
     fn with_held_rows(&self, content: PaneLines, stops: &[SubStop]) -> PaneLines {
-        // Where each held child's sentence goes: rano draws a child on one row and one detail line
-        // under it, and the clamp is for a pane that drew fewer rows than its stops claim.
+        // Where each child's sentence goes: rano draws a child on one row and one detail line under
+        // it, and the clamp is for a pane that drew fewer rows than its stops claim.
         let mut at: Vec<(usize, String)> = Vec::new();
         for (k, stop) in stops.iter().enumerate() {
             let SubStop::Agent(i) = stop else { continue };
-            let Some(said) = self.subagents.get(*i).and_then(SubagentState::held_for) else {
+            let Some(said) = self
+                .subagents
+                .get(*i)
+                .and_then(|s| s.held_for().or_else(|| s.queued_for()))
+            else {
                 continue;
             };
             if let Some(row) = content.stop_rows.get(k) {
@@ -92,8 +129,11 @@ impl App {
                 .map(|s| SubagentRow {
                     // A held child is drawn by rano as `running` with no turn generating - its
                     // `waiting` - because a state word rano does not know is drawn as unknown and
-                    // grouped with the finished. What it is held FOR is the line under the row.
-                    state: if s.held_for().is_some() {
+                    // grouped with the finished. What it is held FOR is the line under the row. A
+                    // child waiting for a `[subagents]` place is the same case one step earlier: the
+                    // cap has parked it, it has not started, and this head draws its own mark
+                    // ([`QUEUED_MARK`]) plus the daemon's sentence under the row.
+                    state: if s.held_for().is_some() || s.is_queued() {
                         "running".to_string()
                     } else {
                         s.state.clone()

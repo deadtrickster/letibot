@@ -281,10 +281,14 @@ impl SubagentState {
     }
 
     /// Whether this child is done: the one thing the pane's two groups are made of, and the count above the composer
-    /// too. Anything that is not `running`, `opening` or `held` is finished, a rebuilt row included - and a HELD child
-    /// has answered but is still this session's work, so it is not one of the finished.
+    /// too. Anything that is not `queued`, `running`, `opening` or `held` is finished, a rebuilt row included - and a
+    /// QUEUED child has not started yet, and a HELD one has answered but is still this session's work, so neither is
+    /// one of the finished.
     pub(crate) fn is_finished(&self) -> bool {
-        !matches!(self.state.as_str(), "running" | "opening" | "held")
+        !matches!(
+            self.state.as_str(),
+            QUEUED_STATE | "running" | "opening" | "held"
+        )
     }
 
     /// What this child answered and is being held for - its own jobs, which the daemon names on a
@@ -292,7 +296,25 @@ impl SubagentState {
     pub(crate) fn held_for(&self) -> Option<&str> {
         (self.state == "held" && !self.prompt.trim().is_empty()).then_some(self.prompt.as_str())
     }
+
+    /// Whether this child is waiting for a `[subagents]` place: it exists, its thread is parked on the
+    /// cap, and it has not opened a session. The daemon publishes the word at the spawn.
+    pub(crate) fn is_queued(&self) -> bool {
+        self.state == QUEUED_STATE
+    }
+
+    /// What the daemon said when it parked this child: its sentence about the cap, which is the only
+    /// place the reason is spelled. `None` for a child that has a place.
+    pub(crate) fn queued_for(&self) -> Option<&str> {
+        self.is_queued()
+            .then(|| self.prompt.trim())
+            .filter(|s| !s.is_empty())
+    }
 }
+
+/// A child's state word while it waits for a `[subagents]` place. The daemon's own word
+/// (`harness::children::QUEUED_STATE`), and the one this head reads a parked child by.
+pub(crate) const QUEUED_STATE: &str = "queued";
 
 /// A child as a person reads it: `slug · …tail`, or the short id alone when nobody named it.
 /// One function, because the pane, its output view, the todos' `waits on …`, the attention line

@@ -1815,3 +1815,79 @@ fn a_held_childs_row_names_the_job_it_is_held_for_and_stays_live() {
         "the finished group's row moved and the click did not: {rows:#?}"
     );
 }
+
+/// A child the `[subagents]` cap PARKED: it has a handle and no session yet, and the pane used to draw
+/// it as running. Its row says queued now - the mark of a queued thing, in the severity table's
+/// pending register, and the daemon's own sentence about the cap under it - and it is still live work
+/// rather than one of the finished.
+#[test]
+fn a_queued_child_is_drawn_as_queued_and_not_as_running() {
+    let mut a = app();
+    // The list measures no turn generating in the child: it never opened a session.
+    let mut list = a_family();
+    list[1].status.running = false;
+    a.apply(hello("s", list, Hub::new("s").snapshot()));
+    let said = "queued: the `[subagents]` running cap is full; it starts when a running child \
+                finishes";
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "queued".into(),
+            prompt: said.into(),
+            role: "coder".into(),
+            task: "port the widgets".into(),
+            model: String::new(),
+            answer: None,
+            slug: String::new(),
+        },
+    )));
+
+    // Live work: not finished, and counted as such.
+    let i = a
+        .subagents
+        .iter()
+        .position(|s| s.session_id == "s-sub-1")
+        .expect("the queued child's row");
+    assert!(a.subagents[i].is_queued(), "{:?}", a.subagents[i]);
+    assert!(!a.subagents[i].is_finished(), "{:?}", a.subagents[i]);
+    let row = count_row(&mut a);
+    assert!(
+        row.contains("1 subagent running"),
+        "a queued child is this session's work: {row}"
+    );
+
+    // The mark is the pending register's, and it is the queued mark rather than the running one. The
+    // palette is on here, because a mark's colour is half of what it says.
+    a.cfg.color = true;
+    let p = a.cfg.palette();
+    let role = crate::ui::severity::role(Some(letibot_sessionlog::pane::Role::Pending));
+    let rows = a.subagents_lines(120);
+    let at = a.subagents_stop_rows.clone();
+    let drawn = at
+        .iter()
+        .filter_map(|r| rows.get(*r))
+        .find(|r| r.contains("port the widgets"))
+        .unwrap_or_else(|| panic!("no row for the queued child: {rows:#?}"));
+    assert!(
+        drawn.contains(&p.paint(role, crate::ui::panes::subagents::QUEUED_MARK)),
+        "the queued mark is not drawn in the pending register: {drawn:?}"
+    );
+    assert!(
+        !drawn.contains(&p.paint(role, "[~]")),
+        "the queued child still wears the running mark: {drawn:?}"
+    );
+
+    // And on the screen: the daemon's sentence under the row, above the finished group, so the pane
+    // says what the child waits for instead of leaving `waiting` as the whole story.
+    a.key(Key::CtrlG);
+    let screen = a.screen(120, 24).join("\n");
+    assert!(
+        screen.contains("the `[subagents]` running cap is full"),
+        "the row does not say what the child waits for:\n{screen}"
+    );
+    assert!(
+        screen.find("port the widgets") < screen.find("finished (1)"),
+        "a queued child is drawn with the live ones, above the finished group:\n{screen}"
+    );
+}
