@@ -107,6 +107,73 @@ fn sweep(
     if let Some(registry) = registry {
         said.extend(auto_archive(store, registry, now));
     }
+    // Item 5: firecode's own half. It is last, so a VM whose session this pass just closed is
+    // reaped in the same pass rather than the next one.
+    said.extend(firecode_half(store, now));
+    said
+}
+
+/// The owner ids the store still calls live, in the spelling firecode's `state reap --owners -`
+/// reads: a run whose stamp names one of these is somebody's, and every other run is a leak.
+fn live_owner_ids(store: &Store) -> Vec<String> {
+    use letibot_tokencore::store::OwnerState;
+    store
+        .owners()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|o| o.state == OwnerState::Live)
+        .map(|o| o.id)
+        .collect()
+}
+
+/// Item 5: `state reap --owners -` and `pool sleep --idle 300` every pass, `gc --state` hourly on
+/// `[firecode] budget`/`max_age_days`. A box with no firecode says nothing at all, and a firecode
+/// that refuses is said once and not retried in a loop.
+fn firecode_half(store: &Store, now_ms: i64) -> Vec<String> {
+    use letibot_tools::firecode::cli;
+    let Some(bin) = cli::installed() else {
+        return Vec::new();
+    };
+    let spec = letibot_tools::firecode::FirecodeSpec::new("", "");
+    let live = live_owner_ids(store);
+    let pass = cli::reap_pass(&bin, &live, &spec.cache);
+    let mut said = pass.lines;
+    said.extend(pass.refusals);
+    let settings = lifecycle::Settings::load_or_default();
+    let policy = settings.firecode_policy();
+    // The hourly quota, on the disk turn's own discipline: a lock file beside the store holds when
+    // the box's last `gc --state` began, so one daemon per box runs it and a restart keeps the hour.
+    let dir = lifecycle::data_dir();
+    let mut turn = DiskTurn::new(dir.join("firecode-gc.lock"), cli::GC_EVERY);
+    let hourly = turn.due(now_ms);
+    if hourly {
+        turn.ran(now_ms);
+        match cli::gc_state(&bin, &policy.budget, &policy.max_age()) {
+            Ok(gc) => {
+                said.push(gc.sentence());
+                cli::save_gc_note(
+                    &dir,
+                    &cli::GcNote {
+                        at_ms: now_ms as u64,
+                        gc,
+                    },
+                );
+            }
+            Err(e) => said.push(e.sentence()),
+        }
+        // `pool_per_project` is this box's answer, and firecode's own limit is what it enforces: a
+        // disagreement is said once an hour rather than silently doing nothing.
+        if let Ok(status) = cli::pool_status(&bin)
+            && let Some(n) = status.limits.get("per_project").and_then(|v| v.as_u64())
+            && n != u64::from(policy.pool_per_project)
+        {
+            said.push(format!(
+                "firecode's own pool keeps {n} VM(s) per project; `[firecode] pool_per_project` \
+                 says {} - firecode's limit is the one it enforces",
+                policy.pool_per_project
+            ));
+        }
+    }
     said
 }
 

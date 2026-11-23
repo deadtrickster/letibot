@@ -1383,9 +1383,17 @@ impl Harness {
                 spec.dotenv_carry_vm = dotenv.carry_to_vm;
                 spec.up_args = cfg.vm_args.clone();
                 spec.verify = cfg.vm_verify.clone();
-                // The owner stamp firecode's run directory carries, so a discovery pass can say
-                // whose a VM is with no store.
+                // The owner stamp item 1 asks every run to carry: the session, the project it
+                // works in, and what it is for - a queue reviewer's VM is the one the pool may
+                // hand to the next review.
                 spec.owner = Some(cfg.session_id.clone());
+                spec.purpose = if cfg.seat == Seat::Gatekeeper {
+                    letibot_tools::firecode::cli::Purpose::Reviewer
+                } else {
+                    letibot_tools::firecode::cli::Purpose::Session
+                };
+                // Item 4: a reviewer takes a pooled VM of its own purpose before booting one.
+                spec.pool_take = spec.purpose == letibot_tools::firecode::cli::Purpose::Reviewer;
                 letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
                     HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
                 })?

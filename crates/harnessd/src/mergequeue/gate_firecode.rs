@@ -65,13 +65,28 @@ pub fn launch_line(bin: &str, step: &str, dir: &str) -> String {
 pub const REMOTE_BIN: &str = "\"${FIRECODE_BIN:-firecode}\"";
 
 /// [`launch_line`] with `bin` already shell-ready.
+///
+/// The `run` arm carries item 1's stamp: the gate's own owner (`letibot:gate-<key>:<pid>`), the
+/// project the work is in, and `--purpose ephemeral` - a gate's VM has nothing to keep and is
+/// discarded the moment its verdict is in.
 pub fn launch_with(bin: &str, step: &str, dir: &str) -> String {
+    let stamp = letibot_tools::firecode::cli::Stamp {
+        session: format!(
+            "gate-{}",
+            letibot_tools::firecode::cli::project_key(Path::new(dir))
+        ),
+        pid: std::process::id(),
+        project: Some(letibot_tools::firecode::cli::project_key(Path::new(dir))),
+        purpose: letibot_tools::firecode::cli::Purpose::Ephemeral,
+        reuse: false,
+    };
     format!(
         "if [ \"$(uname -s)\" = Darwin ]; then exec {bin} sh -c {step} {dir}; \
-         else cd {dir} && exec {bin} run --project {dir} -- bash -c {step}; fi",
+         else cd {dir} && exec {bin} run {stamp} --project {dir} -- bash -c {step}; fi",
         bin = bin,
         step = sq(step),
         dir = sq(dir),
+        stamp = stamp.flags().join(" "),
     )
 }
 
