@@ -37,4 +37,5 @@ pub mod seat_jobs;
 pub mod seat_nag;
 pub mod settings;
 pub mod store;
+pub mod titles;
 pub mod tools;

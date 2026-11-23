@@ -20,24 +20,55 @@ pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 /// and a fork (a new session id, a copied transcript) a new one.
 pub const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 
-/// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>:<name>` (just
-/// `cc@<name>` when the two match). The name is the folder's nick or the repository's, and the
-/// folder is the one holding that repository, or the working folder outside one.
-pub fn base_name(env: Option<&str>, nick: Option<&str>, cwd: &std::path::Path) -> String {
-    let clean = |raw: &str| -> String {
-        let s: String = raw
-            .to_lowercase()
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '@' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        s.trim_matches(|c| c == '-' || c == '@').to_string()
-    };
+/// A name the way every name this module makes is spelled: lowercase, `a-z0-9` and `@` kept, one
+/// `-` for everything else, and no `-` or `@` at an edge.
+fn clean(raw: &str) -> String {
+    let s: String = raw
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '@' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    s.trim_matches(|c| c == '-' || c == '@').to_string()
+}
+
+/// A title as a name this module can use: cleaned, cut to the room's label length, and `None` when
+/// what is left is not one the room would take as a label. One rule for the handle and for the nick
+/// it is drawn by, so a title the room would refuse can never become a name.
+fn title_name(title: &str) -> Option<String> {
+    let name: String = clean(title)
+        .replace('@', "-")
+        .chars()
+        .take(letibot_room::chat::NICK_MAX)
+        .collect();
+    let name = name.trim_matches('-').to_string();
+    valid_nick(&name).ok().map(|()| name)
+}
+
+/// Does `title` already say which folder it is in? `stroppy-rust` and `stroppy-conformity` in
+/// `stroppy-io` do: they name the job without hiding the project, so the whole handle is
+/// `cc@<title>` and a reader has lost nothing the folder would have added.
+fn names_the_folder(title: &str, folder: &str) -> bool {
+    let word = |n: &str| n.split('-').next().unwrap_or(n).to_string();
+    title == folder || word(title) == word(folder)
+}
+
+/// The room handle for a bridge, in the order the facts decide it: `$LETIBOT_ROOM_NAME`; else the
+/// nick this Claude Code session was given; else the title its `/rename` gave it; else the folder's
+/// nick; else `cc@<folder>:<name>` (just `cc@<name>` when the two match), the name being the
+/// repository's and the folder the one holding it.
+pub fn base_name(
+    env: Option<&str>,
+    session_nick: Option<&str>,
+    title: Option<&str>,
+    folder_nick: Option<&str>,
+    cwd: &std::path::Path,
+) -> String {
     if let Some(named) = env
         .map(clean)
         .filter(|n| !n.is_empty() && !n.starts_with("s-"))
@@ -55,12 +86,23 @@ pub fn base_name(env: Option<&str>, nick: Option<&str>, cwd: &std::path::Path) -
         Some(r) => r.parent().and_then(part),
         None => own.clone(),
     };
-    let name = nick
-        .map(clean)
-        .filter(|n| !n.is_empty() && !n.contains('@'))
-        .or(own)
-        .unwrap_or_else(|| "host".to_string());
-    qualified(&folder.unwrap_or_else(|| name.clone()), &name)
+    let folder = folder.unwrap_or_else(|| own.clone().unwrap_or_else(|| "host".to_string()));
+    let named = |raw: Option<&str>| raw.map(clean).filter(|n| !n.is_empty() && !n.contains('@'));
+    // A nick somebody chose outranks what the folder and a title would derive.
+    if let Some(nick) = named(session_nick) {
+        return qualified(&folder, &nick);
+    }
+    if let Some(name) = title.and_then(title_name) {
+        return match names_the_folder(&name, &folder) {
+            true => qualified(&name, &name),
+            false => qualified(&folder, &name),
+        };
+    }
+    if let Some(nick) = named(folder_nick) {
+        return qualified(&folder, &nick);
+    }
+    let name = own.unwrap_or_else(|| "host".to_string());
+    qualified(&folder, &name)
 }
 
 /// `cc@folder:name`, or `cc@name` when they are the same, within 32 characters.
@@ -121,12 +163,19 @@ pub fn data_dir_for_marks() -> PathBuf {
 /// Where the nick for `cwd` is kept, keyed by the folder's canonical path.
 fn nick_file(dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
     let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    dir.join("nicks")
+        .join(format!("{:016x}", hash(&canon.to_string_lossy())))
+}
+
+/// The 64-bit key a folder or a session is filed under: FNV-1a, so a name reaches a file system as
+/// sixteen hex characters and two spellings of one folder meet.
+fn hash(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in canon.to_string_lossy().as_bytes() {
+    for b in text.as_bytes() {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    dir.join("nicks").join(format!("{h:016x}"))
+    h
 }
 
 fn read_nick(dir: &std::path::Path, cwd: &std::path::Path) -> Option<String> {
@@ -138,6 +187,30 @@ fn read_nick(dir: &std::path::Path, cwd: &std::path::Path) -> Option<String> {
 
 fn write_nick(dir: &std::path::Path, cwd: &std::path::Path, nick: &str) -> Result<(), String> {
     let file = nick_file(dir, cwd);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot keep the nick in {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&file, nick)
+        .map_err(|e| format!("cannot keep the nick in {}: {e}", file.display()))
+}
+
+/// Where the nick ONE Claude Code session was given is kept. A folder's nick names a folder, and two
+/// sessions in one folder are two seats: a label one of them chose must not be handed to the other.
+fn session_nick_file(dir: &std::path::Path, session: &str) -> PathBuf {
+    dir.join("nicks")
+        .join(format!("session-{:016x}", hash(session)))
+}
+
+fn read_session_nick(dir: &std::path::Path, session: &str) -> Option<String> {
+    std::fs::read_to_string(session_nick_file(dir, session))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_session_nick(dir: &std::path::Path, session: &str, nick: &str) -> Result<(), String> {
+    let file = session_nick_file(dir, session);
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot keep the nick in {}: {e}", parent.display()))?;
@@ -163,12 +236,8 @@ fn settled_file(dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
 /// folder - the plugin's monitor may run in a subdirectory of the repository its MCP server was
 /// started in - so the folder cannot be what names the seat.
 fn session_file(dir: &std::path::Path, session: &str) -> PathBuf {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in session.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    dir.join("seats").join(format!("session-{h:016x}"))
+    dir.join("seats")
+        .join(format!("session-{:016x}", hash(session)))
 }
 
 /// The handle and the room a Claude Code session's seat already speaks as, if any process of it has
@@ -311,9 +380,19 @@ fn base_cell() -> &'static Mutex<String> {
     static BASE: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
     BASE.get_or_init(|| {
         let env = std::env::var(NAME_ENV).ok();
+        let dir = data_dir();
         let cwd = std::env::current_dir().unwrap_or_default();
-        let nick = read_nick(&data_dir(), &cwd);
-        Mutex::new(base_name(env.as_deref(), nick.as_deref(), &cwd))
+        let session = session_env();
+        let mine = session.as_deref().and_then(|s| read_session_nick(&dir, s));
+        let title = session_title();
+        let nick = read_nick(&dir, &cwd);
+        Mutex::new(base_name(
+            env.as_deref(),
+            mine.as_deref(),
+            title.as_deref(),
+            nick.as_deref(),
+            &cwd,
+        ))
     })
 }
 
@@ -332,6 +411,73 @@ fn session_env() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// This session's title as a name this module can use, read from the transcript Claude Code appends
+/// a `/rename` to. `None` when it has no title, no transcript, or a title the room would not take.
+fn session_title() -> Option<String> {
+    let mut watch = title_cell().lock().unwrap_or_else(|e| e.into_inner());
+    watch.current().and_then(title_name)
+}
+
+/// The transcript this process's session writes its title into, resolved once: the one the session
+/// id names, else - when Claude Code handed us no id - the one transcript in this folder written
+/// since this process started, and only when exactly one was.
+fn title_source() -> Option<PathBuf> {
+    let config = crate::titles::config_dir()?;
+    let cwd = cwd();
+    match session_env() {
+        Some(session) => crate::titles::transcript_for(&config, &cwd, &session),
+        None => {
+            let start = crate::titles::process_start()?;
+            crate::titles::only_since(&crate::titles::project_dir(&config, &cwd), start)
+        }
+    }
+}
+
+/// The title, watched: one `stat` per ask, and only what the transcript gained is read - a session's
+/// transcript grows every turn, and a label is not worth re-reading it for.
+fn title_cell() -> &'static Mutex<crate::titles::Title> {
+    static TITLE: std::sync::OnceLock<Mutex<crate::titles::Title>> = std::sync::OnceLock::new();
+    TITLE.get_or_init(|| {
+        Mutex::new(title_source().map_or_else(
+            crate::titles::Title::default,
+            crate::titles::Title::watching,
+        ))
+    })
+}
+
+/// The label this seat asks the room to draw it by, in the order [`base_name`] names it:
+/// `$LETIBOT_ROOM_NAME` when the operator named it, else the nick this session was given, else the
+/// title `/rename` gave it, else whatever the folder holds. Display only - the seat's id is the
+/// address, so a label that moves moves nothing else.
+fn label() -> Option<String> {
+    if let Ok(named) = std::env::var(NAME_ENV)
+        && !named.trim().is_empty()
+    {
+        return title_name(&named);
+    }
+    if let Some(nick) = session_env().and_then(|s| read_session_nick(&data_dir(), &s)) {
+        return Some(nick);
+    }
+    session_title().or_else(|| read_nick(&data_dir(), &cwd()))
+}
+
+/// The label the room was last told, so a title read again is not a frame again.
+fn told_cell() -> &'static Mutex<Option<String>> {
+    static TOLD: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+    TOLD.get_or_init(|| Mutex::new(None))
+}
+
+fn told() -> Option<String> {
+    told_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn take_told(label: Option<String>) {
+    *told_cell().lock().unwrap_or_else(|e| e.into_inner()) = label;
 }
 
 fn name_cell() -> &'static Mutex<String> {
@@ -409,7 +555,9 @@ pub fn seat() -> String {
 }
 
 /// A seat of this process alone, for the second bridge of a folder whose id is already held: it is
-/// not kept, because the folder's id is the first bridge's and a twin must not take it back.
+/// not kept, because the folder's id is the first bridge's and a twin must not take it back - a
+/// bridge started without a session id that read it again would join the twin's seat and its
+/// cursor, which is two sessions sharing one address.
 fn fresh_seat() -> String {
     let dir = data_dir();
     let stamp = format!(
@@ -422,7 +570,6 @@ fn fresh_seat() -> String {
     );
     let host = letibot_room::id::seat_host(&dir);
     let id = letibot_room::SeatId::fresh_bridge(&host, &stamp);
-    let _ = letibot_room::id::write_folder(&dir, &cwd(), &id);
     id.to_string()
 }
 
@@ -1148,6 +1295,7 @@ impl RoomLink {
                 Err(_) => String::new(),
             },
         };
+        let mine = label();
         let hello = json!({
             "type": "hello",
             "protocol": PROTOCOL,
@@ -1160,11 +1308,13 @@ impl RoomLink {
             "share": true,
             "family": family(),
             "id": self.seat(),
-            // The label, when the folder has taken one: display only, and the room refuses a name
-            // a live seat already answers to rather than letting two seats be drawn alike.
-            "nick": read_nick(&data_dir(), &cwd()).unwrap_or_default(),
+            // The label this seat is drawn by: this session's own nick, else the title `/rename`
+            // gave it, else the folder's. Display only, and the room drops one a live seat already
+            // answers to rather than letting two seats be drawn alike.
+            "nick": mine.clone().unwrap_or_default(),
         });
         write_line(&mut writer, &hello)?;
+        take_told(mine);
         let mut first = String::new();
         reader
             .read_line(&mut first)
@@ -1293,8 +1443,9 @@ impl RoomLink {
     /// Take `nick` as the label this seat is drawn by. The room holds it, because it is the one
     /// place that can see every live seat on the box: it refuses a name another seat answers to,
     /// saying whose it is and which counter is free. The seat's id is its identity, so a rename
-    /// never moves it and never makes the seat somebody else; the label is kept in the working
-    /// folder so a restart asks for it again.
+    /// never moves it and never makes the seat somebody else; the label is kept for the SESSION that
+    /// asked for it (and for the folder, for a bridge started without a session id) so a restart
+    /// asks again with what was given.
     pub fn nick(&self, nick: &str) -> Result<Value, String> {
         let nick = nick.trim().to_lowercase();
         valid_nick(&nick)?;
@@ -1305,6 +1456,12 @@ impl RoomLink {
             return Err(format!("the room did not take the nick: {reply}"));
         }
         write_nick(&data_dir(), &cwd, &nick)?;
+        // The session's own record too: two sessions in one folder are two seats, and a label one
+        // of them chose is not the other's to be drawn by.
+        if let Some(session) = session_env() {
+            let _ = write_session_nick(&data_dir(), &session, &nick);
+        }
+        take_told(Some(nick.clone()));
         Ok(json!({
             "type": "nick",
             "nick": nick,
@@ -1312,6 +1469,36 @@ impl RoomLink {
             "seat": self.seat(),
             "handle": first,
         }))
+    }
+
+    /// Tell the room the label this session's own title gives it, when it changed. The supervisor's
+    /// pass calls this, so a `/rename` mid-session reaches the room within a tick without anything
+    /// polling for it; the label is display, and the seat's id - the address - does not move.
+    fn relabel(&self) -> Option<String> {
+        let now = label();
+        if now == told() {
+            return None;
+        }
+        let named = now?;
+        self.take_label(&named);
+        // Nothing is kept: the transcript is where a title comes from, and reading it again is how
+        // a second rename is found. A label the room refuses (another live seat answers to it) is
+        // not retried - the name this bridge speaks as is drawn instead.
+        take_told(Some(named.clone()));
+        Some(named)
+    }
+
+    /// One `nick` frame, split from [`RoomLink::relabel`] so a test can drive the frame itself.
+    fn take_label(&self, label: &str) {
+        if let Err(e) = self.request(&json!({ "type": "nick", "nick": label })) {
+            let note = self
+                .inner
+                .note
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            note(&e);
+        }
     }
 
     /// A fresh request id, unique to this bridge process.
@@ -1718,6 +1905,9 @@ fn supervise(weak: Weak<Inner>, deliver: Deliver) {
             Ok(_) => {
                 // A gap or a first start: what the cursor still holds for this seat.
                 link.replay_the_gap(&deliver);
+                // A `/rename` since the room was last told is the label's to carry, and the pass is
+                // already here: one `stat` on the transcript, and a frame only on a change.
+                link.relabel();
             }
             Err(_) if link.off().is_some() => return,
             Err(_) => failed = true,
@@ -2888,16 +3078,109 @@ mod tests {
     #[test]
     fn the_default_name_is_cc_at_the_folder_and_the_env_overrides_it() {
         let cwd = std::path::Path::new("/home/dead/Projects/letibot");
-        assert_eq!(base_name(None, None, cwd), "cc@letibot");
+        assert_eq!(base_name(None, None, None, None, cwd), "cc@letibot");
         assert_eq!(
-            base_name(None, None, std::path::Path::new("/x/My Repo.git")),
+            base_name(
+                None,
+                None,
+                None,
+                None,
+                std::path::Path::new("/x/My Repo.git")
+            ),
             "cc@my-repo-git"
         );
-        assert_eq!(base_name(Some("Reviewer One"), None, cwd), "reviewer-one");
-        assert_eq!(base_name(Some(""), None, cwd), "cc@letibot");
-        assert!(base_name(None, None, std::path::Path::new("/")).starts_with("cc@"));
+        assert_eq!(
+            base_name(Some("Reviewer One"), None, None, None, cwd),
+            "reviewer-one"
+        );
+        assert_eq!(base_name(Some(""), None, None, None, cwd), "cc@letibot");
+        assert!(base_name(None, None, None, None, std::path::Path::new("/")).starts_with("cc@"));
         let long = std::path::Path::new("/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        assert!(a_handle(&base_name(None, None, long)));
+        assert!(a_handle(&base_name(None, None, None, None, long)));
+    }
+
+    /// The precedence, one tier at a time: the environment, then the nick this session was given,
+    /// then the title `/rename` gave it, then the folder's nick, then the folder's own name.
+    #[test]
+    fn the_name_is_env_then_nick_then_title_then_the_folder() {
+        let cwd = std::path::Path::new("/home/dead/Projects/letibot");
+        assert_eq!(
+            base_name(
+                Some("Mine"),
+                Some("nick"),
+                Some("title"),
+                Some("folder"),
+                cwd
+            ),
+            "mine"
+        );
+        assert_eq!(
+            base_name(None, Some("nick"), Some("title"), Some("folder"), cwd),
+            "cc@letibot:nick"
+        );
+        assert_eq!(
+            base_name(None, None, Some("title"), Some("folder"), cwd),
+            "cc@letibot:title"
+        );
+        assert_eq!(
+            base_name(None, None, None, Some("folder"), cwd),
+            "cc@letibot:folder"
+        );
+        assert_eq!(base_name(None, None, None, None, cwd), "cc@letibot");
+        // A title that is not a name the room would take is no title at all: the tier below it.
+        for no in ["operator", "   ", "cc-x", "s-x"] {
+            assert_eq!(
+                base_name(None, None, Some(no), Some("folder"), cwd),
+                "cc@letibot:folder",
+                "{no:?}"
+            );
+        }
+        assert_eq!(title_name("Stroppy Rust").as_deref(), Some("stroppy-rust"));
+        assert_eq!(
+            title_name(&"x".repeat(40)).as_deref(),
+            Some(&"x".repeat(letibot_room::chat::NICK_MAX)[..]),
+            "a long title is cut to the room's label length"
+        );
+    }
+
+    /// Two sessions in one folder, each with the title its person gave it: two names a reader can
+    /// tell apart, and neither of them the folder's with a suffix on the end.
+    #[test]
+    fn two_sessions_in_one_folder_are_named_by_their_titles() {
+        let multi = std::path::Path::new("/home/dead/Projects/stroppy-io");
+        let conformity = base_name(None, None, Some("stroppy-conformity"), None, multi);
+        let rust = base_name(None, None, Some("stroppy-rust"), None, multi);
+        assert_eq!(conformity, "cc@stroppy-conformity");
+        assert_eq!(rust, "cc@stroppy-rust");
+        assert_ne!(conformity, rust);
+        for name in [&conformity, &rust] {
+            assert!(a_handle(name), "{name}");
+        }
+        // A title that does not say which folder it is in keeps the folder in front of it.
+        assert_eq!(
+            base_name(None, None, Some("api"), None, multi),
+            "cc@stroppy-io:api"
+        );
+        // Two sessions of one folder whose titles DO clash are still two names.
+        let one = qualified("stroppy-io", "api");
+        assert_ne!(one, qualified("stroppy-io", "web"));
+    }
+
+    /// A nick one session chose for a folder is not handed to another session of the same folder
+    /// that has a title of its own: the label is the session's, and the folder's file cannot say
+    /// which of them chose it.
+    #[test]
+    fn a_folder_nick_is_not_handed_to_a_session_that_has_its_own_title() {
+        let multi = std::path::Path::new("/home/dead/Projects/stroppy-io");
+        assert_eq!(
+            base_name(None, None, Some("stroppy-rust"), Some("proj"), multi),
+            "cc@stroppy-rust"
+        );
+        // A session with no title of its own still gets what the folder holds, as it always did.
+        assert_eq!(
+            base_name(None, None, None, Some("proj"), multi),
+            "cc@stroppy-io:proj"
+        );
     }
 
     #[test]
@@ -2906,7 +3189,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let git = |dir: &std::path::Path, args: &[&str]| {
             let out = std::process::Command::new("git")
-                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                // Signing off: this fixture wants a commit, and a box with `commit.gpgsign` and no
+                // secret key would refuse one the test does not care about.
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
                 .args(args)
                 .current_dir(dir)
                 .output()
@@ -2926,21 +3218,48 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
 
         let want = "cc@stroppy-io:stroppy-conformity";
-        assert_eq!(base_name(None, None, &repo), want);
-        assert_eq!(base_name(None, None, &sub), want);
-        assert_eq!(base_name(None, None, &wt), want);
-        assert_eq!(base_name(None, None, &multi), "cc@stroppy-io");
-        assert_eq!(base_name(None, None, &plain), "cc@scratch");
-        assert_eq!(base_name(Some("Mine"), None, &wt), "mine");
-        assert_eq!(base_name(None, Some("proj"), &multi), "cc@stroppy-io:proj");
-        assert_eq!(base_name(None, Some("proj"), &wt), "cc@stroppy-io:proj");
-        assert_eq!(base_name(Some("Mine"), Some("proj"), &wt), "mine");
+        assert_eq!(base_name(None, None, None, None, &repo), want);
+        assert_eq!(base_name(None, None, None, None, &sub), want);
+        assert_eq!(base_name(None, None, None, None, &wt), want);
+        assert_eq!(base_name(None, None, None, None, &multi), "cc@stroppy-io");
+        assert_eq!(base_name(None, None, None, None, &plain), "cc@scratch");
+        assert_eq!(base_name(Some("Mine"), None, None, None, &wt), "mine");
+        assert_eq!(
+            base_name(None, None, None, Some("proj"), &multi),
+            "cc@stroppy-io:proj"
+        );
+        assert_eq!(
+            base_name(None, None, None, Some("proj"), &wt),
+            "cc@stroppy-io:proj"
+        );
+        assert_eq!(
+            base_name(Some("Mine"), None, None, Some("proj"), &wt),
+            "mine"
+        );
 
         let data = root.join("data");
         assert_eq!(read_nick(&data, &multi), None);
         write_nick(&data, &multi, "proj").unwrap();
         assert_eq!(read_nick(&data, &multi).as_deref(), Some("proj"));
         assert_eq!(read_nick(&data, &repo), None, "keyed by the folder");
+        // A nick kept for a SESSION is that session's: two of one folder do not share it, and the
+        // folder's own file is not where it is read from.
+        assert_eq!(read_session_nick(&data, "a-session"), None);
+        write_session_nick(&data, "a-session", "mine").unwrap();
+        assert_eq!(
+            read_session_nick(&data, "a-session").as_deref(),
+            Some("mine")
+        );
+        assert_eq!(
+            read_session_nick(&data, "another-session"),
+            None,
+            "keyed by the session"
+        );
+        assert_eq!(
+            read_nick(&data, &multi).as_deref(),
+            Some("proj"),
+            "and kept apart from the folder's"
+        );
         assert!(valid_nick("proj-2").is_ok());
         for bad in [
             "",

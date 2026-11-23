@@ -981,7 +981,8 @@ seats on the box - sessions and bridges alike - and `room_nick` takes it: a name
 answers to is refused with that seat (`held_by`) and the next counter free (`db-fuzz-fable-2`,
 never a random suffix), and a name whose holder is gone is free. A rename is said once in each room
 the seat is in. A session's default label is the slug of its title, which is also the handle it is
-addressed by; a bridge's is the handle `cc@<folder>:<name>` it speaks as.
+addressed by; a bridge's is what its session calls itself - the nick it was given, else the title
+`/rename` gave it - and when it has neither, the handle `cc@<folder>:<name>` it speaks as.
 
 **What is still a name.** A `to`, a dm and an ask are ADDRESSES and take the seat's id: a word that is
 another seat's label (a session's handle, a title, a bridge's nick) is refused with the id it would
@@ -997,10 +998,18 @@ is addressed by) to the label the roster holds now, and appends the label the po
 room recorded a label, or by a seat no roster row holds, is drawn as the name it posted under.
 
 Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
-`$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,
-for a linked worktree) or the nick the working folder was given (kept under the data dir's
-`nicks/`, keyed by the folder's canonical path). The folder is the one holding that repository, or the
-working folder itself outside a repository. A second bridge with the same handle is refused (`name_in_use`)
+`$LETIBOT_ROOM_NAME` when set (the whole handle). The name is, in this order: the nick this
+**session** was given (`room_nick`, kept under the data dir's `nicks/session-<key>` as well as for
+the folder); the title Claude Code's `/rename` gave it, read from the session's own transcript
+(`~/.claude/projects/<folder, its / as ->/<session id>.jsonl`, its last `custom-title` or
+`agent-name` row); the nick the working folder was given (kept under `nicks/`, keyed by the
+folder's canonical path); the repository's folder (the main worktree's, for a linked worktree). A
+folder's nick is not handed to another session of it that has a title of its own - two sessions in
+one folder are two seats. The folder is the one holding that repository, or the
+working folder itself outside a repository, and a title that already says which folder it is in
+(`stroppy-rust` in `stroppy-io`) is the whole name, `cc@stroppy-rust`. A `/rename` mid-session is
+read again when the transcript moves and carried to the room as a `nick` frame; the seat's id -
+the address - does not move for it. A second bridge with the same handle is refused (`name_in_use`)
 and takes a short suffix (`cc@app-3f2`), kept for its life, with a seat of its own. Its `hello` names the handle it lost as its
 `family`: mail to `cc@app` is pushed to `cc@app-3f2` too, counts in its own inbox under its own cursor,
 and still reaches it when `cc@app` is gone. A family must be the handle's own prefix before `-<suffix>`,
