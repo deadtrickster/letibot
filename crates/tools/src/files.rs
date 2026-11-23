@@ -39,7 +39,11 @@ pub fn hit_span(text: &str, at: usize, len: usize) -> (usize, usize, usize, usiz
     let first = text[..at].matches('\n').count() + 1;
     let first_col = at - start_of(at);
     let end = (at + len).min(text.len());
-    let last_byte = end.saturating_sub(1).max(at);
+    // The start of the match's last char: one byte back can land inside a multibyte char.
+    let mut last_byte = end.saturating_sub(1).max(at);
+    while !text.is_char_boundary(last_byte) {
+        last_byte -= 1;
+    }
     let last = text[..last_byte].matches('\n').count() + 1;
     let last_start = start_of(last_byte);
     let line_len = text[last_start..]
@@ -443,6 +447,8 @@ mod tests {
         assert_eq!(s.check(&lines, 2, 2), Cover::Never);
         assert_eq!(hit_span(before, 9, 4), (2, 4, 2, 8));
         assert_eq!(hit_span(before, 0, 6), (1, 0, 2, 1));
+        let cyr = "ab\nпривет\n";
+        assert_eq!(hit_span(cyr, 3, "привет".len()), (2, 0, 2, 12));
 
         // A line added above moves the part down with its line.
         let after = "new\nhead\n0123456789abcdef\n";
