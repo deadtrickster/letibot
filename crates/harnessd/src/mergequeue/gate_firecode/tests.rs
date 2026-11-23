@@ -33,7 +33,8 @@ impl Fixture {
         self.dir.join("record")
     }
 
-    /// A `firecode` that records how it was called and runs the step where a VM would.
+    /// A `firecode` that records how it was called and runs the step where a VM would. Its `run`
+    /// arm reads the flags by name, so a new stamp on the line does not move `--project` off `$3`.
     fn fake_firecode(&self) -> PathBuf {
         let p = self.dir.join("firecode");
         std::fs::write(
@@ -41,7 +42,9 @@ impl Fixture {
             format!(
                 "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$1\" in\n\
                  sh) cd \"$4\" && exec sh -c \"$3\" ;;\n\
-                 run) cd \"$3\" && exec sh -c \"$7\" ;;\n\
+                 run) dir=''; prev=''; for a in \"$@\"; do \
+                   [ \"$prev\" = \"--project\" ] && dir=\"$a\"; prev=\"$a\"; last=\"$a\"; \
+                 done; cd \"$dir\" && exec sh -c \"$last\" ;;\n\
                  *) exit 0 ;;\nesac\n",
                 self.record().display()
             ),
@@ -217,8 +220,15 @@ fn the_launch_line_mounts_on_a_mac_and_runs_elsewhere() {
         l.contains("exec '/b/firecode' sh -c 'cargo test' '/w t'"),
         "{l}"
     );
+    // The run carries item 1's stamp, and `--project` still names the tree the step is run in.
     assert!(
-        l.contains("run --project '/w t' -- bash -c 'cargo test'"),
+        l.contains(&format!(
+            "run --owner letibot:gate-{}:{} --purpose ephemeral --owner-project {} \
+             --project '/w t' -- bash -c 'cargo test'",
+            letibot_tools::firecode::cli::project_key(Path::new("/w t")),
+            std::process::id(),
+            letibot_tools::firecode::cli::project_key(Path::new("/w t")),
+        )),
         "{l}"
     );
 }
