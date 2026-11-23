@@ -184,7 +184,11 @@ fn a_job_whose_cpu_and_output_never_move_is_ended_as_dead() {
     let scope = a_scope(&tree, "j-dead", 100);
     let job = a_job(&scope);
     liveness.watch(Arc::clone(&job));
-    wait_until("the dead check to fire", || !job.state().is_running());
+    // The record is written after the state settles, so a wait on the state alone can read it a
+    // scheduling gap too early - the gap a loaded box widens.
+    wait_until("the dead check to record the kill", || {
+        !job.state().is_running() && liveness.ended().len() == 1
+    });
     match job.state() {
         JobState::Killed { by } => assert_eq!(by, DEAD_KILL),
         other => panic!("a dead job must say so: {}", other.word()),
