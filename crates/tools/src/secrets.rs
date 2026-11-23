@@ -61,7 +61,11 @@ pub const STORES: &[Store] = &[
     both(".ssh"),
     both(".gnupg"),
     both(".aws"),
-    both(".kube"),
+    // The operator's ruling (2026-11-23): a top-level session runs `kubectl` against the clusters
+    // its project's `.env` names, and a `KUBECONFIG` under `~/.kube` is the ordinary case there.
+    // A child has no cluster to spend, so the store is masked in a child's view only - the same
+    // ruling `gh` and `psql` already have.
+    tight(".kube"),
     both(".netrc"),
     tight(".config/gh"),
     both(".password-store"),
@@ -233,7 +237,6 @@ mod tests {
             ".config/git/credentials",
             ".npmrc",
             ".pypirc",
-            ".kube",
             ".config/gcloud",
             ".cargo/credentials",
         ] {
@@ -251,6 +254,8 @@ mod tests {
             ".config/sops",
             ".claude/.credentials.json",
             ".codex/auth.json",
+            // The top-level seat runs `kubectl` at the clusters a project's `.env` names.
+            ".kube",
         ] {
             let s = STORES.iter().find(|s| s.path == path);
             assert_eq!(
