@@ -835,12 +835,9 @@ impl Pass {
     }
 }
 
-/// Item 5: one firecode pass - reap the runs whose owner is gone, put idle pooled VMs to sleep,
-/// and retry the one extraction a release that refused left behind. The hourly `gc --state` is
-/// [`gc_state`], called by the caller that keeps the clock.
-///
-/// `live` is every owner id the store still considers live, in [`Stamp::owner`]'s spelling. A
-/// firecode that is not there makes this whole function a no-op with one line.
+/// Item 5: one firecode pass - reap the runs whose owner is gone, sleep the idle pool, and retry
+/// the one extraction a refused release left. `live` is every live owner id in [`Stamp::owner`]'s
+/// spelling; a box with no firecode is a no-op with one line.
 pub fn reap_pass(bin: &Path, live: &[String], cache: &Path) -> Pass {
     let mut pass = Pass::none();
     match reap(bin, live) {
