@@ -1827,7 +1827,7 @@ fn turning_the_progress_check_off_is_a_declared_state() {
 fn the_default_caps_every_tool_at_50_kib_and_2000_lines_and_says_so() {
     let dir = crate::mergequeue::serve::tests::TempDir::new("output-cap");
     let c = Config::for_this_box(&dir.0);
-    assert_eq!(c.spill, SpillPolicy::Files);
+    assert_eq!(c.spill, SpillPolicy::FILES);
     let cap = c.output_cap();
     assert_eq!(cap.bytes, Some(50 * 1024));
     assert_eq!(cap.lines, Some(2000));
@@ -1851,7 +1851,7 @@ fn the_default_caps_every_tool_at_50_kib_and_2000_lines_and_says_so() {
 fn spill_inline_zero_turns_the_cap_off_and_the_daemon_says_so() {
     let dir = crate::mergequeue::serve::tests::TempDir::new("output-cap");
     let mut c = Config::for_this_box(&dir.0);
-    c.spill = SpillPolicy::Off;
+    c.spill = SpillPolicy::OFF;
     let cap = c.output_cap();
     assert_eq!((cap.bytes, cap.lines), (None, None));
     assert!(
@@ -1874,8 +1874,28 @@ fn the_project_output_table_moves_the_cap_and_the_flag_moves_it_again() {
     c.read_project_config = true;
     let cap = c.output_cap();
     assert_eq!((cap.bytes, cap.lines), (Some(8000), None));
-    c.spill = SpillPolicy::Inline(4000);
+    // `--spill-inline 4000`: the byte cap alone moves; the line cap is still the files' (which is
+    // `0` here, so no line cap).
+    c.spill = SpillPolicy {
+        bytes: Some(4000),
+        lines: None,
+    };
     assert_eq!(c.output_cap().bytes, Some(4000));
+    assert_eq!(c.output_cap().lines, None);
+    // `--spill-lines 30`: and the line cap alone moves, over the files' 8000 bytes.
+    c.spill = SpillPolicy {
+        bytes: None,
+        lines: Some(30),
+    };
+    assert_eq!(c.output_cap().bytes, Some(8000));
+    assert_eq!(c.output_cap().lines, Some(30));
+    // `--spill-lines 0`: that cap off, and the byte cap as the files set it.
+    c.spill = SpillPolicy {
+        bytes: None,
+        lines: Some(0),
+    };
+    assert_eq!(c.output_cap().lines, None);
+    assert_eq!(c.output_cap().bytes, Some(8000));
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //!          [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]
 //!          [--vocab GGUF] [--system TEXT] [--system-file FILE]
 //!          [--effort off|low|medium|high|max]
-//!          [--spill-inline BYTES] [--spill-dir DIR]
+//!          [--spill-inline BYTES] [--spill-lines LINES] [--spill-dir DIR]
 //!          [--max-tool-rounds N|off] [--stall-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
 //!          [--slash VERB ...]         a head's slash verb, in order with --prompt:
@@ -157,6 +157,27 @@ pub(crate) fn apply_main_model(
             None
         }
     }
+}
+
+/// What `--spill-inline VALUE` and `--spill-lines VALUE` do to a `Config` - the flags' whole
+/// body, in a function so the one thing they must get right is a value a test can read. Each flag
+/// names one cap and leaves the other as the files set it; `--spill-inline 0` is the whole cap off,
+/// which is what that flag has always meant.
+fn apply_spill_flag(cfg: &mut Config, arg: &str, value: &str) -> Result<(), String> {
+    let n: usize = value.parse().map_err(|e| format!("{arg}: {e}"))?;
+    match arg {
+        "--spill-inline" => {
+            cfg.spill = match n {
+                0 => SpillPolicy::OFF,
+                n => SpillPolicy {
+                    bytes: Some(n),
+                    ..cfg.spill
+                },
+            }
+        }
+        _ => cfg.spill.lines = Some(n),
+    }
+    Ok(())
 }
 
 /// What `--reviewers WORD` does to a `Config` - the flag's whole body, in a function so
@@ -1025,11 +1046,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--stall-rounds" => {
                 cfg.stall_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
-            "--spill-inline" => {
-                cfg.spill = match next()?.parse().map_err(|e| format!("{arg}: {e}"))? {
-                    0 => SpillPolicy::Off,
-                    n => SpillPolicy::Inline(n),
-                }
+            // The inline cap, one flag per half: `--spill-inline 0` turns the whole cap off, and
+            // a flag that names one cap leaves the other as the files set it (see
+            // `Config::output_cap`).
+            "--spill-inline" | "--spill-lines" => {
+                let value = next()?;
+                apply_spill_flag(&mut cfg, arg.as_str(), &value)?;
             }
             "--spill-dir" => cfg.spill_storage = SpillStorage::Dir(PathBuf::from(next()?)),
             "--dialect" => {

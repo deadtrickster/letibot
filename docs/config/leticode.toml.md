@@ -117,7 +117,7 @@ A round's adjacent read-class calls (`read`, `grep`, `glob` and the rest whose s
 
 ## `[output]`
 
-Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. The middle is kept on disk per project and survives a restart. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes, --spill-dir moves the store, `letibot holds` lists it there, and an older daemon's per-session spills under it are still read.
+Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. The middle is kept on disk per project and survives a restart. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes and --spill-lines over inline_lines, --spill-dir moves the store, `letibot holds` lists it there, and an older daemon's per-session spills under it are still read.
 
 | key | type | default | level | meaning |
 |---|---|---|---|---|

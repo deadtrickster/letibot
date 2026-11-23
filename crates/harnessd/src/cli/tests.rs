@@ -1283,3 +1283,44 @@ fn effort_takes_the_five_words_of_the_one_scale() {
     let why = super::effort_flag("heroic").unwrap_err();
     assert!(why.contains("off, low, medium, high, max"), "{why}");
 }
+
+/// `--spill-lines LINES` sets the line cap and `--spill-inline BYTES` the byte cap, each leaving
+/// the other where it was; `--spill-inline 0` is still the whole cap off, and a value that is not a
+/// number is refused with the flag's own name in the sentence.
+#[test]
+fn spill_lines_sets_the_line_cap_and_leaves_the_byte_cap_alone() {
+    let mut cfg = Config::for_this_box("/tmp");
+    assert_eq!(cfg.spill, SpillPolicy::FILES);
+
+    super::apply_spill_flag(&mut cfg, "--spill-lines", "300").unwrap();
+    assert_eq!(cfg.spill.lines, Some(300));
+    assert_eq!(cfg.spill.bytes, None, "the byte cap is still the files'");
+    assert_eq!(cfg.output_cap().lines, Some(300));
+    assert_eq!(cfg.output_cap().bytes, Some(50 * 1024));
+
+    // Both, in either order, each cap its own.
+    super::apply_spill_flag(&mut cfg, "--spill-inline", "4096").unwrap();
+    assert_eq!(
+        (cfg.output_cap().bytes, cfg.output_cap().lines),
+        (Some(4096), Some(300))
+    );
+    super::apply_spill_flag(&mut cfg, "--spill-lines", "7").unwrap();
+    assert_eq!(
+        (cfg.output_cap().bytes, cfg.output_cap().lines),
+        (Some(4096), Some(7))
+    );
+
+    // `--spill-lines 0` is that cap off, not the whole cap; `--spill-inline 0` still is.
+    super::apply_spill_flag(&mut cfg, "--spill-lines", "0").unwrap();
+    assert_eq!(
+        (cfg.output_cap().bytes, cfg.output_cap().lines),
+        (Some(4096), None)
+    );
+    super::apply_spill_flag(&mut cfg, "--spill-inline", "0").unwrap();
+    assert_eq!(
+        (cfg.output_cap().bytes, cfg.output_cap().lines),
+        (None, None)
+    );
+    let why = super::apply_spill_flag(&mut cfg, "--spill-lines", "lots").unwrap_err();
+    assert!(why.contains("--spill-lines"), "{why}");
+}

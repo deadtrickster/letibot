@@ -154,7 +154,7 @@ Older backlog:
 | R261 | Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model | Code work | built (c7202e553); left: note offers for children, a replay score for the acting pick |
 | R246 | A seat's and a session's wait is untyped, so a permission ask cannot be told from a question | Code work | built (c423ca1ea); left: the bridge's fleet rows say asking and carry no kind |
 | R288 | Setup flows: secrets typed on the line, untyped slash replies, raw errors, silent cancels | Code work | built (01e577978); left: four raw Rust errors in the TUI, cancel feedback per card, `/flowy login` has no masked card |
-| R263 | The generic output cap is off by default and its head/tail seam is unmarked | Code work | built (2dd9f2617); left: no `--spill-lines` flag, the cap is set only in `[output]` |
+| R263 | The generic output cap is off by default and its head/tail seam is unmarked | Code work | built (2dd9f2617); left: nothing this row names — the line cap is `[output] inline_lines` or `--spill-lines` (built, `bounds-left`) |
 | R262 | Daemon-run sessions stay on a stale prompt: nobody answers their card | Code work | built (1810daa0); left: a profile cannot state its own `on_stale` |
 | R275 | A GLM coding-plan limit parked rano for 5h on a window that lifted 3 minutes later | Code work | built (358919fea); left: whether a probe re-runs the ladder or one call, a live z.ai limit check |
 | R277 | One effort scale across both CLIs and every door, and provider quirks as config keys | Code work | built (132875320); left: effort on the compatible Messages doors is unmeasured, `/effort` on the local server is refused |
@@ -2223,7 +2223,7 @@ Depth was capped at 3 and concurrency was not (`crates/harnessd/src/config.rs`, 
 
 ## R263 - The generic output cap is off by default and its head/tail seam is unmarked
 
-**Status:** built, 2026-11-15. J2 of the status audit, plan item 1.3 (`/build/oss-harnesses/PLAN-fable-5.2.md`). left (sweep 2026-11-16): no `--spill-lines` flag; the line cap is set only in `[output]` (spills are durable since R268, 2dd9f2617).
+**Status:** built, 2026-11-15. J2 of the status audit, plan item 1.3 (`/build/oss-harnesses/PLAN-fable-5.2.md`). left (sweep 2026-11-16): nothing this row names — `--spill-lines` sets the line cap (built 2026-11-23, `bounds-left`) and spills are durable since R268, 2dd9f2617.
 
 The daemon's default was `SpillPolicy::Unset`, so only a tool that capped itself was bounded and a new or plugin tool could put any amount into the context. When the Spiller did run, head and tail were joined by a bare newline and the only marker was a notice at the end.
 
@@ -2233,7 +2233,11 @@ The daemon's default was `SpillPolicy::Unset`, so only a tool that capped itself
 
 **Built.** `tools::spill::OutputCap` (default 51200 bytes / 2000 lines, `job_output` and `recall` exempt because they page themselves) is the daemon's budget unless `--spill-inline` says otherwise; `0` turns it off and the startup disclosure says `spill: OFF`. `Spiller::apply` keeps head and tail on line boundaries and puts one `letibot_transcript::seam::Seam` line between them: `[... N bytes, L lines omitted; read_spill hash=H offset=O length=N returns them ...]`. `read_spill` now pages under the same cap instead of spilling its own answer behind the same hash. `[output] inline_bytes` / `inline_lines` in `leticode.toml` (`leticode_config::output_cap`, project over user) are in `crates/config-ref` and `docs/config/leticode.toml.md`. The TUI draws the seam as `··· 148.8 KB · 3011 lines not shown · read_spill H ···` in the Info role (`tui/src/ui/transcript/tool_result.rs`).
 
-**Tests.** `tools/tests/output_cap.rs`: an uncapped tool returning 200 KiB keeps at most 50 KiB with one seam naming the hash, `read_spill` windows reassemble the middle exactly; 5000 short lines hit the line cap; `bash`'s own 30 KB cap wins. `harnessd` `config::tests`: the default, `--spill-inline 0`, and a project `[output]` table. `transcript::seam` round trip, `tui` `seam_tests`.
+**Tests.** `tools/tests/output_cap.rs`: an uncapped tool returning 200 KiB keeps at most 50 KiB with one seam naming the hash, `read_spill` windows reassemble the middle exactly; 5000 short lines hit the line cap; `bash`'s own 30 KB cap wins. `harnessd` `config::tests`: the default, the whole cap off, and a project `[output]` table with each flag over it. `transcript::seam` round trip, `tui` `seam_tests`.
+
+**Leftover built (2026-11-23, `bounds-left`).** `--spill-lines LINES` is the line cap's own flag, as `--spill-inline BYTES` is the byte cap's. `SpillPolicy` is now `{ bytes, lines }`, each `None` (no flag, the files decide) or `Some(n)` (`0` = that cap off), so a flag that names one cap leaves the other as `[output]` set it; `--spill-inline 0` is still the whole cap off, which is what it always meant and what the `spill: OFF` disclosure's sentence now names both flags for. The flag's body is `cli::apply_spill_flag`, its help row is in the table (`cli/help.rs`), and `Config::output_cap` applies each half. Config-ref and `docs/config/leticode.toml.md` name it beside `--spill-inline`.
+
+**Tests.** `harnessd` `config::tests::the_project_output_table_moves_the_cap_and_the_flag_moves_it_again` (each cap alone and both, over `inline_bytes = 8000` / `inline_lines = 0`), `cli::tests::spill_lines_sets_the_line_cap_and_leaves_the_byte_cap_alone` (the flag, both caps, `0` on either, a value that is not a number refused naming the flag).
 ## R290 - A prompt typed mid-turn can only steer: no lane that waits for the turn to end
 
 **Status:** built, 2026-11-15. J14 of the status audit, plan item 2.6 (`/build/oss-harnesses/PLAN-fable-5.2.md`). left: the prompt journal stores no lane, so a queued prompt put back after a daemon kill steers like any restored prompt (it still runs, but may join the turn the first restored prompt opens); only the TUI sends `queue`, the bridge, ACP and rano heads always steer.

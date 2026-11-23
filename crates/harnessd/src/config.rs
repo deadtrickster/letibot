@@ -18,15 +18,29 @@ pub use crate::mergequeue::settings::Reviewers;
 
 /// The inline cap, as configuration. With no flag the generic cap is on: `[output]` in
 /// `leticode.toml`, else 50 KiB / 2000 lines, so a new or plugin tool cannot flood the context.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum SpillPolicy {
+///
+/// Each cap is set by its own flag, and a cap a flag does not name is the files': `None` is "no
+/// flag said anything", `Some(0)` is that cap turned off, `Some(n)` is n.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SpillPolicy {
+    /// `--spill-inline BYTES`. `Some(0)` takes the whole cap off - both halves, as it always has.
+    pub bytes: Option<usize>,
+    /// `--spill-lines LINES`, the same way, on its own cap.
+    pub lines: Option<usize>,
+}
+
+impl SpillPolicy {
     /// No flag: the files, then the default. See [`Config::output_cap`].
-    #[default]
-    Files,
+    pub const FILES: SpillPolicy = SpillPolicy {
+        bytes: None,
+        lines: None,
+    };
+
     /// `--spill-inline 0`: every payload reaches the model whole. The daemon says so at startup.
-    Off,
-    /// `--spill-inline BYTES`: the byte cap for every tool; the line cap stays the files'.
-    Inline(usize),
+    pub const OFF: SpillPolicy = SpillPolicy {
+        bytes: Some(0),
+        lines: Some(0),
+    };
 }
 
 /// Where a spilled payload is kept.
@@ -1923,7 +1937,7 @@ impl Config {
             intent_prose: false,
             nudge: Default::default(),
             shadow: Default::default(),
-            spill: SpillPolicy::Files,
+            spill: SpillPolicy::FILES,
             spill_storage: SpillStorage::Memory,
             spill_roots: None,
             // Unbounded on purpose: `stall_rounds` is the stop that measures progress, and a round
@@ -2951,19 +2965,21 @@ impl Config {
             .unwrap_or_else(crate::harness::scratch_dir)
     }
 
-    /// The generic output cap this session spills at: `--spill-inline`, else the project's then
-    /// the user's `[output]`, else 50 KiB / 2000 lines.
+    /// The generic output cap this session spills at: `--spill-inline` and `--spill-lines`, else
+    /// the project's then the user's `[output]`, else 50 KiB / 2000 lines.
     pub fn output_cap(&self) -> letibot_tools::OutputCap {
         let mut cap = crate::leticode_config::output_cap(
             &self.leticode_user,
             &self.workspace,
             self.read_project_config,
         );
-        match self.spill {
-            SpillPolicy::Files => {}
-            SpillPolicy::Off => (cap.bytes, cap.lines) = (None, None),
-            SpillPolicy::Inline(n) => cap.bytes = Some(n),
-        }
+        let set = |cap: Option<usize>, from: Option<usize>| match from {
+            None => cap,
+            Some(0) => None,
+            Some(n) => Some(n),
+        };
+        cap.bytes = set(cap.bytes, self.spill.bytes);
+        cap.lines = set(cap.lines, self.spill.lines);
         cap
     }
 
@@ -3055,8 +3071,8 @@ impl Config {
                 "spill",
                 "OFF",
                 "no inline cap is set, so no tool result will ever spill and every payload \
-                 reaches the model whole. Drop --spill-inline 0, or set [output] inline_bytes \
-                 in leticode.toml.",
+                 reaches the model whole. Drop --spill-inline 0 and --spill-lines 0, or set \
+                 [output] inline_bytes and inline_lines in leticode.toml.",
             ));
         } else {
             out.push(Disclosure::on("spill", self.output_cap_said()));

@@ -345,6 +345,12 @@ pub(super) const FLAGS: &[Flag] = &[
         None,
     ),
     flag(
+        &["--spill-lines"],
+        Some("LINES"),
+        "inline line cap for every result, over [output]; 0 = no line cap",
+        None,
+    ),
+    flag(
         &["--spill-dir"],
         Some("DIR"),
         "spill store root, one dir per project; default <data dir>/spills",
