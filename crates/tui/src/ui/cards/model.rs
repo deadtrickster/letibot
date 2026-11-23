@@ -164,11 +164,14 @@ impl App {
     /// their room. Read off the same rows the frame draws, so a column cannot be a row behind.
     fn card_widths(&self, card: &ModelCard, lines: &[Line], takes: &[Take]) -> Widths {
         let mut w = Widths {
-            name: "model".len(),
-            label: "provider".len(),
-            window: "window".len(),
-            input: "in /M".len(),
-            output: "out /M".len(),
+            // A column is as wide as the header it draws, in COLUMNS and not bytes: a translated
+            // header is longer than its English, and a column cut short of it would push the row
+            // past the frame.
+            name: crate::i18n::t("setup.col.model").chars().count(),
+            label: crate::i18n::t("setup.col.provider").chars().count(),
+            window: crate::i18n::t("setup.col.window").chars().count(),
+            input: crate::i18n::t("setup.col.in").chars().count(),
+            output: crate::i18n::t("setup.col.out").chars().count(),
         };
         for line in lines {
             let Some(Take::Model { name, facts, at }) = line.at(takes) else {
@@ -237,10 +240,10 @@ fn column_labels(w: Widths) -> RLine {
     rano::agent::pane::faint(format!(
         "  {} {}  {}  {}  {}",
         " ".repeat(3),
-        pad_right("model", w.name),
-        pad_left("window", w.window),
-        pad_left("in /M", w.input),
-        pad_left("out /M", w.output),
+        pad_right(crate::i18n::t("setup.col.model"), w.name),
+        pad_left(crate::i18n::t("setup.col.window"), w.window),
+        pad_left(crate::i18n::t("setup.col.in"), w.input),
+        pad_left(crate::i18n::t("setup.col.out"), w.output),
     ))
 }
 
@@ -252,19 +255,15 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
         return RLine::default();
     };
     let state = if p.keyless {
-        "no key needed"
+        crate::i18n::t("setup.state.no_key_needed")
     } else if p.ready {
-        "keyed"
+        crate::i18n::t("setup.state.keyed")
     } else if !keys {
-        "cannot say"
+        crate::i18n::t("setup.state.cannot_say")
     } else {
-        "not connected"
+        crate::i18n::t("setup.state.not_connected")
     };
-    let count = format!(
-        "{} model{}",
-        p.models.len(),
-        if p.models.len() == 1 { "" } else { "s" }
-    );
+    let count = crate::i18n::count("setup.count.models", p.models.len());
     let mut row = RLine::new(vec![
         Span::raw("  "),
         marks(cursor, false),
@@ -292,12 +291,7 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
 fn shown_label(p: &Provider) -> String {
     match p.doors.len() {
         0 | 1 => p.label.clone(),
-        n => format!(
-            "{} (+{} door{})",
-            p.label,
-            n - 1,
-            if n == 2 { "" } else { "s" }
-        ),
+        n => format!("{}{}", p.label, crate::i18n::count("setup.doors", n - 1)),
     }
 }
 
@@ -307,12 +301,15 @@ fn folded_row(n: usize, cursor: bool, w: Widths) -> RLine {
         Span::raw("  "),
         marks(cursor, false),
         Span::raw(" "),
-        Span::role(pad_right("not connected", w.label), Role::Faint),
+        Span::role(
+            pad_right(crate::i18n::t("setup.state.not_connected"), w.label),
+            Role::Faint,
+        ),
         Span::raw("  "),
         Span::role(pad_right("", 13), Role::Faint),
         Span::raw("  "),
         Span::role(
-            pad_left(&format!("{n} provider{}", if n == 1 { "" } else { "s" }), 9),
+            pad_left(&crate::i18n::count("setup.count.providers", n), 9),
             Role::Faint,
         ),
     ])

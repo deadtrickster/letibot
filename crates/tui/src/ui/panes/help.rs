@@ -281,17 +281,17 @@ pub(crate) fn help_lines_with(
         at..at,
         commands.iter().map(|(name, about)| {
             let about = if about.is_empty() {
-                "a command file".to_string()
+                crate::i18n::t("help.command_file").to_string()
             } else {
-                format!("{about} (command file)")
+                crate::i18n::tf("help.command_file_named", &[("about", about)])
             };
             (format!("/{name}"), about)
         }),
     );
     let pane = HelpPane {
-        title: "keys and commands".into(),
+        title: crate::i18n::t("help.title").into(),
         rows,
-        footer: "/help or esc closes this".into(),
+        footer: crate::i18n::t("help.footer").into(),
     };
     row_strings(&pane.lines(w), cfg.palette())
 }
@@ -306,9 +306,9 @@ pub(crate) fn key_card_lines(
     rows: &[(String, String)],
 ) -> Vec<String> {
     let card = HelpPane {
-        title: format!("the {pane}'s keys"),
+        title: crate::i18n::tf("help.pane_title", &[("pane", pane)]),
         rows: rows.to_vec(),
-        footer: "esc closes this · /help lists every pane".into(),
+        footer: crate::i18n::t("help.pane_footer").into(),
     };
     row_strings(&card.lines(w), cfg.palette())
 }

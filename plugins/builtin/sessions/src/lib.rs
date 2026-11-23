@@ -64,6 +64,12 @@ struct Feed {
     /// folded group would otherwise be filtered in and still out of sight.
     #[serde(default)]
     filtered: bool,
+    /// The head's own words for this pane, by catalog id: the group headers, the legends and the
+    /// facts a row carries. A guest cannot call the head's catalog, so the head hands it over - and
+    /// an id the map does not carry is this layer's own English, which is what a head with one
+    /// language sends.
+    #[serde(default)]
+    words: HashMap<String, String>,
 }
 
 /// One package session of another daemon.
@@ -229,6 +235,8 @@ struct Tree {
 /// call's fuel is what a trap is made of.
 struct Ctx<'a> {
     sessions: &'a [Session],
+    /// The head's words by catalog id - see [`Feed::words`].
+    words: &'a HashMap<String, String>,
     fleet: &'a [Fleet],
     unlisted: Option<&'a str>,
     here: &'a str,
@@ -251,6 +259,21 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    /// A word this pane draws: the head's, by id, or this layer's own English when the head is an
+    /// older build or says nothing about that id.
+    fn w(&self, id: &str, fallback: &str) -> String {
+        self.words
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    /// [`Ctx::w`] for a line whose word carries a count: `{n}` is the number, in whichever place the
+    /// language puts it.
+    fn wn(&self, id: &str, n: usize, fallback: &str) -> String {
+        self.w(id, fallback).replace("{n}", &n.to_string())
+    }
+
     /// The context for one call. The path is the chain from `here` up, capped at [`MAX_DEPTH`], and
     /// the indexes are built here because every walk below is a lookup and no walk may scan.
     fn new(feed: &'a Feed, folded: &'a BTreeMap<String, bool>) -> Ctx<'a> {
@@ -286,6 +309,7 @@ impl<'a> Ctx<'a> {
         }
         Ctx {
             sessions: &feed.sessions,
+            words: &feed.words,
             fleet: &feed.fleet,
             unlisted: feed.unlisted.as_deref(),
             here: &feed.here,
@@ -481,10 +505,15 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
         let key = letibot_plugin::sessions::ARCHIVED_KEY;
         let open = ctx.node_open(key);
         out.push(node_row(
+            ctx,
             key.to_string(),
             0,
-            format!("archived ({})", ctx.archived.len()),
-            ARCHIVED_LEGEND,
+            ctx.wn(
+                "sessions.group.archived",
+                ctx.archived.len(),
+                "archived ({n})",
+            ),
+            &ctx.w("sessions.legend.archived", ARCHIVED_LEGEND),
             open,
             ctx.tally(&ctx.archived),
         ));
@@ -532,24 +561,32 @@ fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
     let mut number = 0;
     let mut said = false;
     let mut say = || {
-        let l = if said { "" } else { PROJECT_LEGEND };
+        let l = if said {
+            String::new()
+        } else {
+            ctx.w("sessions.legend.project", PROJECT_LEGEND)
+        };
         said = true;
         l
     };
     for p in ctx.projects("own") {
-        push_project(ctx, &mut out, &mut number, p, 0, say());
+        push_project(ctx, &mut out, &mut number, p, 0, &say());
     }
-    for (bucket, key, title, legend) in [
+    for (bucket, key, title, title_fb, legend, legend_fb) in [
         (
             "recent",
             RECENT_KEY,
-            "other projects",
+            "sessions.group.recent",
+            "other projects ({n})",
+            "sessions.legend.recent",
             "projects with a session active in the last 24 hours",
         ),
         (
             "older",
             OLDER_KEY,
-            "older",
+            "sessions.group.older",
+            "older ({n})",
+            "sessions.legend.older",
             "projects with nothing in the last 24 hours",
         ),
     ] {
@@ -564,16 +601,17 @@ fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
             .flat_map(|(p, _)| ctx.members(p).iter().copied())
             .collect();
         out.push(node_row(
+            ctx,
             key.to_string(),
             0,
-            format!("{title} ({})", group.len()),
-            legend,
+            ctx.wn(title, group.len(), title_fb),
+            &ctx.w(legend, legend_fb),
             open,
             ctx.tally(&inside),
         ));
         if open {
             for p in group {
-                push_project(ctx, &mut out, &mut number, p, 1, say());
+                push_project(ctx, &mut out, &mut number, p, 1, &say());
             }
         }
     }
@@ -582,10 +620,18 @@ fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
         // Another daemon's rows are not in this feed, so this line rolls up nothing rather than
         // counting what it cannot see.
         out.push(node_row(
+            ctx,
             PACKAGES_KEY.to_string(),
             0,
-            format!("packages in other daemons ({})", ctx.fleet.len()),
-            "package sessions of other folders' daemons - enter says how to attach",
+            ctx.wn(
+                "sessions.group.packages",
+                ctx.fleet.len(),
+                "packages in other daemons ({n})",
+            ),
+            &ctx.w(
+                "sessions.legend.packages",
+                "package sessions of other folders' daemons - enter says how to attach",
+            ),
             open,
             (0, 0),
         ));
@@ -635,7 +681,7 @@ fn archived_row(ctx: &Ctx<'_>, at: usize) -> Out {
         depth: 1,
         number: None,
         cells: vec![mark_of(ctx, s), Cell::role(name_of(s), Role::Plain)],
-        facts: facts_of(s),
+        facts: facts_of(ctx, s),
         under: vec![under_of(s, ctx.home)],
         open: None,
         // Enter opens it: the daemon takes it back into the list on the way, which is why the row
@@ -658,6 +704,7 @@ fn push_project(
     let key = project.to_string();
     let open = ctx.node_open(&key);
     out.push(node_row(
+        ctx,
         key,
         base,
         format!("{name} ({})", members.len()),
@@ -698,10 +745,14 @@ fn push_project(
     let skey = format!("{project}/system");
     let open = ctx.node_open(&skey);
     out.push(node_row(
+        ctx,
         skey,
         base + 1,
-        format!("system ({})", system.len()),
-        "the sessions the harness runs for itself",
+        ctx.wn("sessions.group.system", system.len(), "system ({n})"),
+        &ctx.w(
+            "sessions.legend.system",
+            "the sessions the harness runs for itself",
+        ),
         open,
         ctx.tally(&system),
     ));
@@ -719,11 +770,20 @@ fn push_project(
         }
         let gkey = format!("{project}/system/{group}");
         let open = ctx.node_open(&gkey);
+        // The group's name and its sentence, by id: the head supplies both, and this layer's
+        // English stands in for a head that says nothing about one of them.
+        let name = ctx.wn(
+            &format!("sessions.system.{group}"),
+            group_members.len(),
+            &format!("{group} ({{n}})"),
+        );
+        let legend = ctx.w(&format!("sessions.system.{group}.legend"), group_legend);
         out.push(node_row(
+            ctx,
             gkey,
             base + 2,
-            format!("{group} ({})", group_members.len()),
-            group_legend,
+            name,
+            &legend,
             open,
             ctx.tally(&group_members),
         ));
@@ -756,6 +816,7 @@ fn push_project(
 /// how it folds and what Enter does to it. `tally` is what is inside it - the two counts a fold
 /// would hide, which is why a folded group must still say them.
 fn node_row(
+    ctx: &Ctx<'_>,
     key: String,
     depth: usize,
     title: String,
@@ -769,7 +830,7 @@ fn node_row(
         number: None,
         // A project's line is a path, which is somebody's too - the same rule as a row's words.
         cells: vec![Cell::role(clean(&title), Role::Strong)],
-        facts: rollup(tally),
+        facts: rollup(ctx, tally),
         under: if legend.is_empty() {
             Vec::new()
         } else {
@@ -799,7 +860,7 @@ fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Opti
                 },
             ),
         ],
-        facts: facts_of(s),
+        facts: facts_of(ctx, s),
         // What tells two sessions of one title apart. The head draws it under the row the cursor
         // is on, and nowhere else (`App::tree_of`): an id and a path under every row doubled the
         // list's length for facts a person reads one row at a time.
@@ -827,14 +888,17 @@ fn mark_of(ctx: &Ctx<'_>, s: &Session) -> Cell {
 
 /// The two counts a group's line carries, in the order a reader acts on them: somebody waiting on
 /// the operator first, work in progress second, and nothing at all for a group with neither.
-fn rollup((waiting, generating): (usize, usize)) -> Vec<Cell> {
+fn rollup(ctx: &Ctx<'_>, (waiting, generating): (usize, usize)) -> Vec<Cell> {
     let mut facts = Vec::new();
     if waiting > 0 {
-        facts.push(Cell::role(format!("{waiting} waiting"), Role::Attention));
+        facts.push(Cell::role(
+            ctx.wn("sessions.rollup.waiting", waiting, "{n} waiting"),
+            Role::Attention,
+        ));
     }
     if generating > 0 {
         facts.push(Cell::role(
-            format!("{generating} generating"),
+            ctx.wn("sessions.rollup.generating", generating, "{n} generating"),
             Role::Pending,
         ));
     }
@@ -909,7 +973,7 @@ fn name_of(s: &Session) -> String {
 /// The right-hand column: how much conversation there is and how long ago it moved - the two facts
 /// a row is read for, and the last of them flush with the edge where the eye finds it. A running
 /// turn is the gutter's, and the id, the path and the model are the detail line's.
-fn facts_of(s: &Session) -> Vec<Cell> {
+fn facts_of(ctx: &Ctx<'_>, s: &Session) -> Vec<Cell> {
     // One string with ` · ` between the facts that are there, not a `Vec<String>` joined at the
     // end: a join is a second copy of the row's whole right column, once per row, and this is a
     // list of them.
@@ -917,21 +981,36 @@ fn facts_of(s: &Session) -> Vec<Cell> {
     if !s.live {
         // The whole difference between a row that costs one keystroke and a row that costs a
         // resume.
-        push_fact(&mut facts, format_args!("on disk"));
+        push_fact(
+            &mut facts,
+            format_args!("{}", ctx.w("sessions.fact.on_disk", "on disk")),
+        );
     }
     if s.nags_paused {
-        push_fact(&mut facts, format_args!("nags paused"));
+        push_fact(
+            &mut facts,
+            format_args!("{}", ctx.w("sessions.fact.nags_paused", "nags paused")),
+        );
     }
     if let Some(shadow) = s.shadow.as_deref().filter(|f| !f.is_empty()) {
         push_fact(&mut facts, format_args!("{}", clean(shadow)));
     }
     let rows = if s.stored > 0 { s.stored } else { s.items };
     if rows > 0 {
-        push_fact(&mut facts, format_args!("{rows} rows"));
+        push_fact(
+            &mut facts,
+            format_args!("{}", ctx.wn("sessions.fact.rows", rows, "{n} rows")),
+        );
     }
     // What it has been told and its model has not been shown: invisible on every other column.
     if s.held > 0 {
-        push_fact(&mut facts, format_args!("{} held", s.held));
+        push_fact(
+            &mut facts,
+            format_args!(
+                "{}",
+                ctx.wn("sessions.fact.held", s.held as usize, "{n} held")
+            ),
+        );
     }
     if let Some(role) = s.role.as_deref().filter(|r| !r.is_empty()) {
         push_fact(&mut facts, format_args!("{role}"));

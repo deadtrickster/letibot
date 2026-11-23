@@ -152,24 +152,36 @@ impl App {
             .iter()
             .map(|(_, group)| match group.as_slice() {
                 [one] => self.one_waiting(one),
-                many => format!("{} {}", many.len(), plural(many[0])),
+                many => crate::i18n::count(&format!("status.many.{}", many[0].kind()), many.len()),
             })
             .collect();
         // How long the list has held, once past a minute: a line with no time reads as now.
         let held = self
             .activity_since_ms
             .and_then(|at| crate::app::model_card::ago(at, self.now_ms, 60_000))
-            .map(|a| format!(" (for {})", a.trim_end_matches(" ago")))
+            .map(|a| crate::i18n::tf("status.for", &[("how", a.trim_end_matches(" ago"))]))
             .unwrap_or_default();
-        format!("waiting on: {}{held}", parts.join(" · "))
+        crate::i18n::tf(
+            "status.waiting_on",
+            &[("list", &format!("{}{held}", parts.join(" · ")))],
+        )
     }
 
     /// One entry of the list, named: a child by the name the subagents pane gives it, everything
-    /// else by the daemon's own label (`job j8032`, `monitor ci`, `ask adj-s1-0001`, `turn`).
+    /// else by the kind and the id - `job j8032`, `monitor ci`, `ask adj-s1-0001`, `turn` - in the
+    /// language the head draws in, never by the daemon's own label, which is data.
     fn one_waiting(&self, w: &Waiting) -> String {
         match w {
-            Waiting::Child(id) => format!("child {}", self.child_label(id)),
-            _ => w.label(),
+            Waiting::Child(id) => {
+                crate::i18n::tf("status.one.child", &[("name", &self.child_label(id))])
+            }
+            // A limit's words are the daemon's whole sentence (`paused until 21:02:27 UTC`), and a
+            // label built in front of them would say the same thing twice.
+            Waiting::Limit(_) => w.label(),
+            _ => match w.id() {
+                "" => crate::i18n::t(&format!("status.one.{}", w.kind())).to_string(),
+                id => crate::i18n::tf(&format!("status.one.{}", w.kind()), &[("id", id)]),
+            },
         }
     }
 
@@ -180,7 +192,7 @@ impl App {
         let title = p.ed.frame_title();
         let at = p.ed.position();
         let file = match self.editor_name().unwrap_or_default() {
-            name if name.is_empty() => "no file".to_string(),
+            name if name.is_empty() => crate::i18n::t("status.no_file").to_string(),
             name => name,
         };
         let line = match at.line {
@@ -193,9 +205,15 @@ impl App {
             Span::role(line, Role::Faint),
         ]);
         if title.read_only {
-            out.spans.push(Span::role(" · view only", Role::Faint));
+            out.spans.push(Span::role(
+                format!(" · {}", crate::i18n::t("status.view_only")),
+                Role::Faint,
+            ));
         } else if title.modified {
-            out.spans.push(Span::role(" · modified", Role::Pending));
+            out.spans.push(Span::role(
+                format!(" · {}", crate::i18n::t("status.modified")),
+                Role::Pending,
+            ));
         }
         Some(out)
     }
@@ -385,21 +403,5 @@ impl App {
             && self.turn_generating()
             && self.last_event_at != 0
             && self.now_ms.saturating_sub(self.last_event_at) > SLOW_AFTER_MS
-    }
-}
-
-/// A kind's plural, for the count: `3 subagents`, `2 monitors`, `2 jobs`. The singular stays the
-/// daemon's `child <name>`, while a count is a number of things out there. A `match` over the
-/// enum, so a new kind cannot arrive without a word.
-fn plural(w: &Waiting) -> &'static str {
-    match w {
-        Waiting::Turn => "turns",
-        Waiting::Calls => "calls",
-        Waiting::Delivery => "deliveries",
-        Waiting::Job(_) => "jobs",
-        Waiting::Monitor(_) => "monitors",
-        Waiting::Child(_) => "subagents",
-        Waiting::Ask(_) => "asks",
-        Waiting::Limit(_) => "limits",
     }
 }

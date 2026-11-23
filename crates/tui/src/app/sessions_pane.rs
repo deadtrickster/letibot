@@ -859,8 +859,12 @@ impl App {
         // so a page key has nowhere else to say how far down the list a reader has got.
         let stops = rows.iter().filter(|r| r.id.is_some()).count();
         let title = match stops {
-            0 => sdk::TITLE.to_string(),
-            n => sdk::counter(self.picker_sel.min(n - 1) + 1, n),
+            0 => crate::i18n::t("sessions.title").to_string(),
+            n => format!(
+                "{} ({}/{n})",
+                crate::i18n::t("sessions.title"),
+                self.picker_sel.min(n - 1) + 1
+            ),
         };
         let list = TreeList {
             title,
@@ -1121,6 +1125,9 @@ impl App {
             // plugin's rows and the daemon's cannot disagree about what `~` means.
             "home": self.home,
             "filtered": !self.picker_filter.is_empty(),
+            // The layer draws a group's header, its legend and a row's facts, and the words are
+            // this head's: a guest cannot call a catalog that is not compiled into it.
+            "words": crate::i18n::prefixed("sessions."),
         })
     }
 
@@ -1246,7 +1253,7 @@ impl App {
     /// jump when the layer's answer arrives.
     fn saying(&self, line: &str, w: usize) -> List {
         let tree = TreeList {
-            title: sdk::TITLE.to_string(),
+            title: crate::i18n::t("sessions.title").to_string(),
             rows: Vec::new(),
             selected: None,
             empty: line.to_string(),
@@ -1694,6 +1701,80 @@ mod tests {
             None,
             "every built-in installed, so there is nothing to say"
         );
+    }
+
+    /// The same list in Russian: the head hands its layer the words, and the rows the layer draws
+    /// back say them - the group headers, the legends and a row's facts - with none of the
+    /// migrated English left.
+    #[test]
+    fn the_builtin_sessions_layer_draws_the_heads_russian() {
+        let tmp = std::env::temp_dir().join(format!("letibot-ru-sessions-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("a temp dir");
+        let host = Host::build("s-none", &tmp);
+        crate::i18n::set_active(crate::i18n::Lang::Ru);
+        let words = crate::i18n::prefixed("sessions.");
+        let input = Input {
+            v: letibot_plugin::pane::V,
+            feeds: [(
+                "sessions".to_string(),
+                json!({
+                    "sessions": [
+                        {"id": "s-1", "title": "one", "live": false, "stored": 12,
+                         "held": 2, "bucket": "own", "project": "/p/one",
+                         "project_name": "one", "system": "shadows", "nags_paused": true},
+                        {"id": "s-2", "title": "two", "live": true, "bucket": "older",
+                         "project": "/p/two", "project_name": "two", "parent": null},
+                        {"id": "s-3", "title": "gone", "bucket": "archived",
+                         "project": "", "project_name": ""}
+                    ],
+                    "here": "s-1",
+                    "home": "/home/x",
+                    "words": words,
+                }),
+            )]
+            .into_iter()
+            .collect(),
+            ..Input::default()
+        };
+        let answered = host.ask(HOOK, "the session list", &input);
+        assert_eq!(host.take_problem(), None, "the built-in answered");
+        let view = answered.view.expect("the built-in answered");
+        let drawn = serde_json::to_string(&view).expect("the view is json");
+
+        for said in [
+            crate::i18n::t("sessions.legend.project"),
+            crate::i18n::t("sessions.legend.system"),
+            crate::i18n::t("sessions.legend.archived"),
+            crate::i18n::t("sessions.fact.on_disk"),
+            crate::i18n::t("sessions.fact.nags_paused"),
+        ] {
+            assert!(
+                drawn.contains(said),
+                "`{said}` is not in the list:\n{drawn}"
+            );
+        }
+        assert!(
+            drawn.contains(&crate::i18n::count("sessions.fact.rows", 12)),
+            "a row's count is not in Russian:\n{drawn}"
+        );
+        // The legend map is a different set from these: its KEYS are the words the layer draws
+        // (a gutter mark, `on disk`), so translating one without the other would break the lookup
+        // that draws it. It stays English and is listed as not migrated.
+        for gone in [
+            "a workspace root, and every session that runs in it",
+            "nags paused",
+            "12 rows",
+            "the sessions the harness runs for itself",
+            "put out of sight",
+        ] {
+            assert!(!drawn.contains(gone), "`{gone}` is still there:\n{drawn}");
+        }
+        // The pane's own title is the head's, drawn from the catalog rather than from the layer.
+        assert!(
+            crate::i18n::t("sessions.title").contains("сеансы"),
+            "the pane's title is not Russian"
+        );
+        crate::i18n::set_active(crate::i18n::Lang::En);
     }
 
     /// The built-in `todo` layer is installed and answers the head's command, which is the one a

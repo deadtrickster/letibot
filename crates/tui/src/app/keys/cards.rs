@@ -323,12 +323,12 @@ impl App {
                     // An empty enter is a cancelled ask, not a stored empty key - the
                     // daemon would refuse it and the row was not taken.
                     if key.is_empty() {
-                        self.say("no key given — the row was not taken");
+                        self.say(crate::i18n::t("setup.key.no_key"));
                         return ControlFlow::Break(None);
                     }
-                    self.say(&format!(
-                        "storing the {} key and switching to {}…",
-                        ask.provider, ask.choice
+                    self.say(&crate::i18n::tf(
+                        "setup.key.storing",
+                        &[("provider", &ask.provider), ("choice", &ask.choice)],
                     ));
                     // The switch, then a re-read of the rows it changed - the same order the
                     // plain switch keeps, so the header names what answers now.
@@ -343,7 +343,7 @@ impl App {
                 Key::Esc | Key::CtrlC => {
                     self.key_buf.clear();
                     self.key_ask = None;
-                    self.say("cancelled — nothing was stored and the row was not taken");
+                    self.say(crate::i18n::t("setup.key.cancelled"));
                     return ControlFlow::Break(None);
                 }
                 _ => {}

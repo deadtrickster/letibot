@@ -587,9 +587,9 @@ fn tree_lines(
 /// The severity's word and role, for the findings list and the summary line.
 pub(crate) fn severity(s: pv::Severity) -> (&'static str, Role) {
     match s {
-        pv::Severity::Tripped => ("tripped", Role::Failure),
-        pv::Severity::Missing => ("missing", Role::Warning),
-        pv::Severity::Passed => ("passed", Role::Success),
+        pv::Severity::Tripped => (crate::i18n::t("severity.tripped"), Role::Failure),
+        pv::Severity::Missing => (crate::i18n::t("severity.missing"), Role::Warning),
+        pv::Severity::Passed => (crate::i18n::t("severity.passed"), Role::Success),
     }
 }
 
@@ -780,9 +780,9 @@ fn summary_line(view: &pv::View) -> Option<Line> {
     }
     let mut out = Line::default();
     for (n, word, r) in [
-        (tripped, "tripped", Role::Failure),
-        (missing, "missing", Role::Warning),
-        (passed, "passed", Role::Success),
+        (tripped, crate::i18n::t("severity.tripped"), Role::Failure),
+        (missing, crate::i18n::t("severity.missing"), Role::Warning),
+        (passed, crate::i18n::t("severity.passed"), Role::Success),
     ] {
         if out.width() > 0 {
             out.push(Span::role(" · ", Role::Faint));
