@@ -54,6 +54,12 @@ pub struct Settings {
     pub firecode_state: Option<PathBuf>,
     /// `FIRECODE_RUNS`: where firecode keeps a run's own directory.
     pub firecode_runs: Option<PathBuf>,
+    /// `[firecode] budget`: how much state the box's hourly `gc --state` keeps the layers under.
+    pub firecode_budget: Option<String>,
+    /// `[firecode] max_age_days`: state older than this goes whatever the budget says.
+    pub firecode_max_age_days: Option<u64>,
+    /// `[firecode] pool_per_project`: the slots firecode may pool for one project.
+    pub firecode_pool_per_project: Option<u32>,
     /// `[gc.logs]`: how big a daemon log and a job capture may grow.
     pub logs: super::logs::LogPolicy,
     /// The file this came from, so a line can say where a number was read.
@@ -157,6 +163,18 @@ impl Settings {
                 .map_err(|e| format!("{}: [firecode]: {e}", path.display()))?;
             out.firecode_state = fc.state.as_deref().map(expand);
             out.firecode_runs = fc.runs.as_deref().map(expand);
+            // The budget is handed to firecode as a person wrote it, and checked here so a typo
+            // is refused at the reading and not at three in the morning by a gc that did nothing.
+            out.firecode_budget = match &fc.budget {
+                Some(b) => {
+                    bytes(b)
+                        .map_err(|e| format!("{}: [firecode] budget {b:?}: {e}", path.display()))?;
+                    Some(b.clone())
+                }
+                None => None,
+            };
+            out.firecode_max_age_days = fc.max_age_days;
+            out.firecode_pool_per_project = fc.pool_per_project;
         }
         Ok(out)
     }
@@ -165,6 +183,19 @@ impl Settings {
 /// The user's `~/.config/letibot/leticode.toml`, the file every other box-wide key is read from.
 pub fn config_file() -> Option<PathBuf> {
     letibot_paths::config_dir().map(|d| d.join("leticode.toml"))
+}
+
+impl Settings {
+    /// The `[firecode]` policy the reaper runs with: the file's keys where it names them, and the
+    /// defaults item 5 asks for where it does not.
+    pub fn firecode_policy(&self) -> FirecodePolicy {
+        let d = FirecodePolicy::default();
+        FirecodePolicy {
+            budget: self.firecode_budget.clone().unwrap_or(d.budget),
+            max_age_days: self.firecode_max_age_days.unwrap_or(d.max_age_days),
+            pool_per_project: self.firecode_pool_per_project.unwrap_or(d.pool_per_project),
+        }
+    }
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -227,6 +258,39 @@ struct FirecodeTable {
     state: Option<String>,
     #[serde(default)]
     runs: Option<String>,
+    #[serde(default)]
+    budget: Option<String>,
+    #[serde(default)]
+    max_age_days: Option<u64>,
+    #[serde(default)]
+    pool_per_project: Option<u32>,
+}
+
+/// What the box's `[firecode]` table says about the reaper, with the tree's own answers where the
+/// file says nothing: 150 GiB of state, nothing older than two weeks, and two pooled VMs per
+/// project. Item 5 of the wiring hands each of them to firecode verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirecodePolicy {
+    pub budget: String,
+    pub max_age_days: u64,
+    pub pool_per_project: u32,
+}
+
+impl Default for FirecodePolicy {
+    fn default() -> Self {
+        FirecodePolicy {
+            budget: "150G".into(),
+            max_age_days: 14,
+            pool_per_project: 2,
+        }
+    }
+}
+
+impl FirecodePolicy {
+    /// `--max-age` as firecode spells a span.
+    pub fn max_age(&self) -> String {
+        format!("{}d", self.max_age_days)
+    }
 }
 
 /// `~` at the front is the operator's home, because a file is written by a person and a box's
@@ -323,6 +387,35 @@ runs = "/build/firecode/runs"
         let e = Settings::parse(Path::new("/b/leticode.toml"), "[firecode]\nstte = \"/x\"\n")
             .expect_err("a typo");
         assert!(e.contains("stte"), "{e}");
+    }
+
+    /// Item 5's three keys: the budget, the age and the pool's width, with the tree's own answers
+    /// where the file says nothing - and a budget that is not a size refused at the reading.
+    #[test]
+    fn a_box_says_what_its_firecode_state_may_cost() {
+        let p = Path::new("/b/leticode.toml");
+        let s = Settings::parse(
+            p,
+            "[firecode]\nbudget = \"150G\"\nmax_age_days = 14\npool_per_project = 2\n",
+        )
+        .expect("a file a person wrote");
+        let policy = s.firecode_policy();
+        assert_eq!(policy.budget, "150G");
+        assert_eq!(policy.max_age_days, 14);
+        assert_eq!(policy.max_age(), "14d");
+        assert_eq!(policy.pool_per_project, 2);
+
+        // A file that names none of them keeps the defaults item 5 asks for.
+        let d = Settings::default().firecode_policy();
+        assert_eq!(d, FirecodePolicy::default());
+        assert_eq!(
+            (d.budget.as_str(), d.max_age_days, d.pool_per_project),
+            ("150G", 14, 2)
+        );
+
+        let e =
+            Settings::parse(p, "[firecode]\nbudget = \"150 bananas\"\n").expect_err("not a size");
+        assert!(e.contains("budget"), "{e}");
     }
 
     /// The disk sweep's period is a span; a bare number or a zero is refused, not defaulted.

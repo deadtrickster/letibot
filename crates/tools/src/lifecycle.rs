@@ -41,7 +41,7 @@ mod tests_work;
 pub mod work;
 mod worktree;
 pub use archive::{Kept, fetch_bundle, keep, namespace};
-pub use config::{Settings, SharedTarget, bytes as size_bytes, config_file};
+pub use config::{FirecodePolicy, Settings, SharedTarget, bytes as size_bytes, config_file};
 pub use plan::{
     DETACHED_JOB, HoldingView, LANDED_GRACE_MS, OwnerView, Plan, SpillHolding, Stranger,
     UNLANDED_GRACE_MS, Verdict, all_spill_holdings, bounded_holdings, judge, plan, session_ages,
