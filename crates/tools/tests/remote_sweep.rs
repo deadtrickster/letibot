@@ -117,6 +117,7 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path) -> SshSpec {
         env_secrets: Vec::new(),
         grants: Vec::new(),
         dotenv: letibot_tools::dotenv::Settings::default(),
+        askpass: None,
     }
 }
 

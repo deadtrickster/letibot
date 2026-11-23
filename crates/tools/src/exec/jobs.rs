@@ -567,6 +567,25 @@ impl Capture {
         }
     }
 
+    /// The same, ADDED to what is already taken out: a value the person handed over while this
+    /// command was running must not be able to appear in what it writes from that moment on, and
+    /// a job's own environment is not the only thing that can carry one.
+    pub fn add_mask(&mut self, needles: Vec<Vec<u8>>) {
+        if needles.is_empty() {
+            return;
+        }
+        let mut all = match self.masker.take() {
+            Some(m) => m.needles,
+            None => Vec::new(),
+        };
+        for n in needles {
+            if !all.iter().any(|have| *have == n) {
+                all.push(n);
+            }
+        }
+        self.masker = Some(Masker::new(all));
+    }
+
     pub fn push(&mut self, bytes: &[u8]) {
         // The trailer is taken out first, so the report's values never pass the masker and a
         // secret the shell exported is masked only where the card shows it, by `intent::env`.
@@ -1392,6 +1411,27 @@ mod tests {
         let out = String::from_utf8_lossy(&cap.slice(0, 4096).bytes).to_string();
         assert_eq!(out.len(), token.len(), "every byte came out: {out}");
         assert!(!out.contains(token), "and masked: {out}");
+    }
+
+    /// A value the person hands over WHILE a command runs still cannot come back out of it: the
+    /// mask a secret adds is added to the one the job started with, not put in its place.
+    ///
+    /// `Capture::mask` replaces the masker, so a second call would silently stop masking the token
+    /// the job's own environment gave it - which is exactly the shape of the bug a `sudo`
+    /// password in a long build would meet.
+    #[test]
+    fn a_value_given_mid_run_is_masked_beside_the_one_the_job_started_with() {
+        let env_token = "gho_fixtureFIXTUREfixture0000000000000000";
+        let given = "hunter2hunter2hunter2";
+        let mut cap = Capture::new(4096);
+        cap.mask(vec![env_token.as_bytes().to_vec()]);
+        cap.add_mask(vec![given.as_bytes().to_vec()]);
+        cap.push(format!("{env_token} and {given}").as_bytes());
+        cap.close_spill();
+        let out = String::from_utf8_lossy(&cap.slice(0, 4096).bytes).to_string();
+        assert!(!out.contains(env_token), "the job's own token: {out}");
+        assert!(!out.contains(given), "and the value given mid-run: {out}");
+        assert_eq!(out.len(), format!("{env_token} and {given}").len());
     }
     /// A name is one line, capped, and blank words are no name at all: nothing is invented, a name
     /// is not a sentence (breaks are never doubled or dangling), and the bound is [`MAX_JOB_NAME`].

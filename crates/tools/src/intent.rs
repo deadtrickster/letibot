@@ -1658,6 +1658,43 @@ fn inline_script_arg(program: &str, argv: &[Word]) -> Option<usize> {
         .map(|i| i + 1)
 }
 
+/// The command an `ssh` stage runs on the far side, as text: every literal word after the
+/// destination, space-joined.
+///
+/// Flags before the destination are ssh's own (`-p 22`, `-i key`, `-o X=Y`), and the first word
+/// that is not one is the destination. A word that is not literal - `$TARGET`, a glob - makes the
+/// operand unreadable, and `None` is the honest answer: the caller then has only the finding
+/// that ssh reaches another machine.
+pub fn remote_command(argv: &[Word]) -> Option<String> {
+    // ssh's own flags that take a value, so the value is not read as the destination.
+    const TAKES_VALUE: &[&str] = &[
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+        "-P", "-p", "-Q", "-R", "-S", "-W", "-w",
+    ];
+    let mut i = 0;
+    while i < argv.len() {
+        let word = argv[i].text()?;
+        if word == "--" {
+            i += 1;
+            break;
+        }
+        if word.starts_with('-') {
+            i += if TAKES_VALUE.contains(&word) { 2 } else { 1 };
+            continue;
+        }
+        // The destination: everything after it is the command, and each word has to be literal
+        // for the text to be what the far side would run.
+        i += 1;
+        break;
+    }
+    let rest = argv.get(i..)?;
+    let mut words = Vec::new();
+    for w in rest {
+        words.push(w.literal()?.to_string());
+    }
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
 /// Wrappers whose real program is a later argument: `sudo -n systemctl restart X` is a
 /// `systemctl` call, and read as `sudo` it would be privilege escalation and nothing else.
 pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
@@ -3714,6 +3751,18 @@ impl Baseline {
                  about a host nothing here can see"
                     .into(),
             );
+            // And the operand is a COMMAND, so it is read as one: ssh runs the words after the
+            // destination on whatever machine answered, so `ssh host 'sudo apt-get -y upgrade'`
+            // escalates privilege and carries the package change there - neither of which the
+            // stage's own program name says.
+            if let Some(remote) = remote_command(effective_argv) {
+                let inner = Baseline::of_command(&remote, env);
+                self.fold(
+                    inner,
+                    &format!("on the machine `{effective}` reaches"),
+                    true,
+                );
+            }
         }
 
         // Credential USE, which is an ask rather than an auto, and a different thing from
@@ -5172,6 +5221,63 @@ mod destructive_flags {
             granted: Vec::new(),
             guest: false,
         }
+    }
+
+    /// The remote-sudo pipeline the cookbook teaches: a secret produced here, piped into `sudo`
+    /// on another host.
+    ///
+    /// Three facts, and the last is the one that was missing. Layer A must read the OPERAND as a
+    /// command - `ssh host 'sudo apt-get -y upgrade'` escalates privilege and carries a package
+    /// change on the machine that answered - while the secret stage itself is not a read of any
+    /// secret store and raises no `secret_to_transcript` refusal: a value the harness never holds
+    /// cannot be disclosed by it.
+    #[test]
+    fn the_remote_sudo_pipeline_escalates_on_the_far_side_and_discloses_nothing() {
+        let pipeline = Baseline::of_command(
+            "letibot-secret ask --for 'sudo on lubuntu1-3' --key fleet-sudo --keep 15m | \
+             ssh lubuntu1 'sudo -S -p \"\" apt-get -y upgrade'",
+            &sur(),
+        );
+        assert!(
+            pipeline.intents.contains(&Intent::PrivilegeEscalation),
+            "the remote `sudo` is this command's escalation: {:?}",
+            pipeline.intents
+        );
+        assert!(
+            pipeline.intents.contains(&Intent::PackageChange),
+            "and the remote `apt-get` is the package change it runs: {:?}",
+            pipeline.intents
+        );
+        assert!(
+            pipeline.flows.is_empty(),
+            "a secret asked for by name reads no store: {:?}",
+            pipeline.flows
+        );
+        // The secret stage alone is not a store read either, and it is an ask because nothing
+        // knows the program: an unknown program is never allowed on its own.
+        let stage = Baseline::of_command(
+            "letibot-secret ask --for 'a token' | ssh lubuntu1 'cat > /dev/null'",
+            &sur(),
+        );
+        assert!(stage.flows.is_empty(), "{:?}", stage.flows);
+        assert!(
+            stage.intents.contains(&Intent::Unknown),
+            "{:?}",
+            stage.intents
+        );
+    }
+
+    /// And the fold does not invent an escalation where there is none: a plain remote read is a
+    /// read on another machine, and `ssh` itself is still the credential use it always was.
+    #[test]
+    fn a_plain_remote_command_escalates_nothing() {
+        let b = Baseline::of_command("ssh lubuntu1 'uname -a'", &sur());
+        assert!(
+            !b.intents.contains(&Intent::PrivilegeEscalation),
+            "{:?}",
+            b.intents
+        );
+        assert_eq!(b.authenticating.as_deref(), Some("ssh"));
     }
 
     /// `--delete` removes files at the destination, and layer A says so. The oracle is not asked to know

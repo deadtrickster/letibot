@@ -733,6 +733,17 @@ pub fn flags(key: &Path, control: &Path, paths: &Paths) -> Vec<String> {
     v
 }
 
+/// The askpass pairs as one `env` prefix: every value quoted once, because a path with a space
+/// in it is a path that would otherwise split the far side's command into two words.
+fn askpass_env(forward: &AskpassForward) -> String {
+    forward
+        .remote_env()
+        .iter()
+        .map(|(k, v)| format!("{k}={}", quote(v)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// A host's `root` as the remote shell must spell it: `~` expanded THERE, once, and the rest quoted.
 /// `~` inside single quotes is a literal character, so a quoted root makes a directory called `~`; a
 /// root is the one path that WANTS the expansion, so it is spliced in as `"$HOME"/...`.
@@ -1350,6 +1361,160 @@ impl RemoteVm {
 /// too, so a dead link is asked once per interval rather than once per call.
 type MemoryReading = (Instant, Option<Meminfo>);
 
+/// What a session's commands on ANOTHER machine need so that a plain `sudo` there asks the
+/// person at this head.
+///
+/// Three pieces and one forward: a reverse unix-socket forward from the far side's
+/// `<dir>/ask.sock` to THIS daemon's askpass-only socket, a `sudo` shim that adds `-A` (the same
+/// one a local session gets), and a helper the three `*_ASKPASS` variables point at. A helper
+/// that cannot speak the protocol refuses rather than printing something - a password that is
+/// not a password is worse than a failed `sudo`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskpassForward {
+    /// The daemon's askpass-only socket, on this machine.
+    pub local_socket: PathBuf,
+    /// The session the far side's asks are scoped by: the daemon's session id, which is NOT the
+    /// placement mark that rides `LETIBOT_SESSION` on that machine.
+    pub session: String,
+    /// `<root>/askpass/<short>` on the far side: the shim directory and the helper.
+    pub dir: String,
+}
+
+impl AskpassForward {
+    /// A door for one session, before the far side's directory is known: the placement names it
+    /// once it has resolved its root, which is a fact about that machine's home.
+    pub fn new(local_socket: impl Into<PathBuf>, session: impl Into<String>) -> AskpassForward {
+        AskpassForward {
+            local_socket: local_socket.into(),
+            session: session.into(),
+            dir: String::new(),
+        }
+    }
+
+    /// The socket the forward LISTENS on, on the far side.
+    pub fn remote_socket(&self) -> String {
+        format!("{}/ask.sock", self.dir)
+    }
+
+    /// The ssh options that open the door, in front of the destination: a reverse forward, and
+    /// the option that lets a stale socket be replaced rather than refusing the whole command.
+    pub fn ssh_flags(&self) -> Vec<String> {
+        vec![
+            "-o".to_string(),
+            "StreamLocalBindUnlink=yes".to_string(),
+            "-R".to_string(),
+            format!("{}:{}", self.remote_socket(), self.local_socket.display()),
+        ]
+    }
+
+    /// What every command of the session carries there. `LETIBOT_ASKPASS_SOCKET` is the door;
+    /// `LETIBOT_SECRET_SESSION` is which session to ask in, kept apart from `LETIBOT_SESSION`
+    /// because that one carries this placement's process mark.
+    pub fn remote_env(&self) -> Vec<(String, String)> {
+        let helper = format!("{}/letibot-askpass", self.dir);
+        vec![
+            ("LETIBOT_ASKPASS_SOCKET".to_string(), self.remote_socket()),
+            ("LETIBOT_SECRET_SESSION".to_string(), self.session.clone()),
+            ("SUDO_ASKPASS".to_string(), helper.clone()),
+            ("SSH_ASKPASS".to_string(), helper.clone()),
+            ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
+            ("GIT_ASKPASS".to_string(), helper),
+            ("PATH".to_string(), format!("{}/shims:$PATH", self.dir)),
+        ]
+    }
+
+    /// The files to put on that machine, as `(relative path under dir, body, mode)`. Written by
+    /// the placement, once, before the session's first command.
+    pub fn files(&self) -> Vec<(String, String, u32)> {
+        vec![
+            ("shims/sudo".to_string(), SUDO_SHIM.to_string(), 0o755),
+            ("letibot-askpass".to_string(), self.helper(), 0o755),
+            ("askpass.py".to_string(), ASKPASS_PY.to_string(), 0o755),
+        ]
+    }
+
+    /// The helper the three variables point at: the real binary when the far side has one, else
+    /// the small client below, which needs only a python3.
+    fn helper(&self) -> String {
+        ASKPASS_SH.to_string()
+    }
+}
+
+/// The far side's helper: the real binary when it has one, else the python client beside it.
+const ASKPASS_SH: &str = "#!/bin/sh\n\
+     # letibot: ask the operator's head for the secret this program wants.\n\
+     # The value goes to stdout and nowhere else; a refusal is an empty stdout and a sentence on\n\
+     # stderr, which is what makes `sudo` and `ssh` fail rather than hang.\n\
+     prompt=${1:-[letibot] secret:}\n\
+     here=$(dirname \"$0\")\n\
+     if command -v letibot-secret >/dev/null 2>&1; then\n\
+     \x20 exec letibot-secret ask --for \"$prompt\" --prompt \"$prompt\"\n\
+     fi\n\
+     # Which session to ask in is the daemon's, not this machine's: `LETIBOT_SESSION` here is\n\
+     # the placement's process mark, and the daemon holds no session by that name.\n\
+     [ -n \"$LETIBOT_SECRET_SESSION\" ] || { echo \"letibot-askpass: no session to ask in\" >&2; exit 1; }\n\
+     LETIBOT_SESSION=$LETIBOT_SECRET_SESSION exec python3 \"$here/askpass.py\" \"$prompt\"\n";
+
+/// The `sudo` shim the far side gets: `-A` for everything but a probe, so `sudo -n` still
+/// answers no. The same text `crates/harnessd/src/sudo.rs` writes here, for the same reason.
+const SUDO_SHIM: &str = "#!/bin/sh\n\
+     # letibot: sudo asks the operator's head for the password (SUDO_ASKPASS), never a tty.\n\
+     for a in \"$@\"; do\n\
+     \x20 case \"$a\" in -n|--non-interactive) exec /usr/bin/sudo \"$@\" ;; esac\n\
+     done\n\
+     exec /usr/bin/sudo -A \"$@\"\n";
+
+/// The smallest client that can speak the askpass door: one frame, one answer, JSON lines over a
+/// unix socket. Written for a host with no letibot install of its own.
+const ASKPASS_PY: &str = r#"#!/usr/bin/env python3
+# letibot: one askpass frame over the forwarded socket, and the value on stdout.
+import json, os, socket, sys
+
+prompt = sys.argv[1] if len(sys.argv) > 1 else "[letibot] secret:"
+path = os.environ.get("LETIBOT_ASKPASS_SOCKET", "")
+session = os.environ.get("LETIBOT_SESSION", "")
+if not path or not session:
+    sys.stderr.write("letibot-askpass: no askpass socket or session in this environment\n")
+    sys.exit(1)
+
+frame = {
+    "Askpass": {
+        "prompt": prompt,
+        "command": os.environ.get("LETIBOT_COMMAND", ""),
+        "for_what": prompt,
+        "key": None,
+        "keep_ms": None,
+        "host": socket.gethostname(),
+        "session": session,
+    }
+}
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(path)
+    f = s.makefile("rwb")
+    f.write((json.dumps(frame) + "\n").encode())
+    f.flush()
+    line = f.readline()
+except OSError as e:
+    sys.stderr.write(f"letibot-askpass: {path}: {e}\n")
+    sys.exit(1)
+try:
+    answer = json.loads(line)
+except ValueError:
+    sys.stderr.write("letibot-askpass: the daemon's answer was not a frame\n")
+    sys.exit(1)
+if "Bye" in answer:
+    sys.stderr.write(f"letibot-askpass: {answer['Bye'].get('reason', 'refused')}\n")
+    sys.exit(1)
+secret = (answer.get("Secret") or {})
+if secret.get("secret") is None:
+    sys.stderr.write(
+        f"letibot-askpass: no secret was given — {secret.get('why') or 'nobody answered'}\n"
+    )
+    sys.exit(1)
+sys.stdout.write(secret["secret"] + "\n")
+"#;
+
 /// One host's ssh connection, opened by [`Ssh::connect`] after the two refusals that make it
 /// letibot's own: its identity file, and its host key. Everything about the command line is
 /// [`flags`]'s, and nothing here can be restated by a caller.
@@ -1395,6 +1560,9 @@ pub struct Ssh {
     /// How long that reading stands. [`MEMINFO_TTL`] in production; a test that wants to see it
     /// expire says so through [`Ssh::with_meminfo_ttl`].
     meminfo_ttl: Duration,
+    /// The askpass door this connection carries, when the session's `sudo` on that machine is to
+    /// ask the person at this head. `None` on a connection that arranges only.
+    askpass: Option<AskpassForward>,
 }
 
 /// What a slow call is reported to: `(code, detail)`, the shape of a session warning.
@@ -1436,7 +1604,21 @@ impl Ssh {
             slow: Arc::new(Mutex::new(None)),
             meminfo: Arc::new(Mutex::new(None)),
             meminfo_ttl: MEMINFO_TTL,
+            askpass: None,
         })
+    }
+
+    /// Carry a session's askpass door over this connection: the reverse forward, attached before
+    /// anything is arranged, so no step of the placement runs through a socket that is not there
+    /// yet.
+    pub fn with_askpass(mut self, forward: AskpassForward) -> Ssh {
+        self.askpass = Some(forward);
+        self
+    }
+
+    /// The askpass door this connection carries, when it carries one.
+    pub fn askpass(&self) -> Option<&AskpassForward> {
+        self.askpass.as_ref()
     }
 
     /// Tell the connection which tree the work is in, once a placement knows: the remote checkout,
@@ -1652,6 +1834,11 @@ impl Ssh {
     /// policy in one place, and the one thing a test's fake has to tolerate.
     pub fn argv(&self, command: &str) -> Vec<String> {
         let mut v = self.flags();
+        // The askpass forward rides with the other options, in front of the destination: a
+        // reverse forward is a property of the connection, not of one command.
+        if let Some(a) = &self.askpass {
+            v.extend(a.ssh_flags());
+        }
         v.push(self.destination());
         v.push(command.to_string());
         v
@@ -1675,6 +1862,10 @@ impl Ssh {
         let body = format!("bash -lc {}", quote(&self.host.with_path(script)));
         let body = match self.mise_program() {
             Some(program) => format!("{program} exec -C {} -- {body}", self.dir_arg()),
+            None => body,
+        };
+        let body = match &self.askpass {
+            Some(a) => format!("env {} {body}", askpass_env(a)),
             None => body,
         };
         match &self.mark {
@@ -3356,6 +3547,10 @@ pub struct SshSpec {
     /// `[dotenv]`: whether this placement carries the project's `.env` files, and whether a VM
     /// there does. A host must be named by the operator; a VM needs the second switch too.
     pub dotenv: crate::dotenv::Settings,
+    /// Where a plain `sudo` on that machine asks for its password: this daemon's askpass door,
+    /// forwarded over this very connection. `None` is a placement that carries no door, and a
+    /// command there then reaches a `sudo` with no askpass and fails on a tty it has not got.
+    pub askpass: Option<AskpassForward>,
 }
 
 /// What a placement's branch needs to come home: the local repository, the url the fetch reads and
@@ -3470,6 +3665,16 @@ impl SshBackend {
         let place =
             |e: BackendError| BackendError::Io(format!("placing this session on {host}: {e}"));
 
+        // The askpass door, attached BEFORE anything is arranged: every step below is an ssh
+        // command, and a forward made later would leave the arranging steps without it. A VM
+        // placement carries none: the guest is a second machine behind this one, and a socket
+        // forwarded to the host is not a socket the guest can reach.
+        if let Some(forward) = spec.askpass.clone()
+            && !spec.vm
+        {
+            ssh = ssh.with_askpass(forward);
+        }
+
         // Can this machine boot a guest, asked before anything is arranged there: a host with no
         // `firecode` or no `/dev/kvm` is a refusal the caller can act on, and it comes before a bundle
         // is sent and a worktree is made.
@@ -3530,6 +3735,28 @@ impl SshBackend {
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
         let ledger = format!("{root}/{JOBS_DIR}/{short}");
+
+        // The askpass door's three files, put there before any command of this session runs: the
+        // `sudo` shim, the helper, and the small client the helper falls back to. Base64 because
+        // the bodies are shell and python and a quoting bug in a one-line `printf` is a helper
+        // that prints the wrong thing to `sudo`.
+        if let Some(forward) = ssh.askpass().cloned() {
+            let dir = format!("{root}/askpass/{short}");
+            let mut body = format!("mkdir -p {}", quote(&format!("{dir}/shims")));
+            for (name, text, mode) in forward.files() {
+                body.push_str(&format!(
+                    " && printf %s {} | base64 -d > {} && chmod {mode:o} {}",
+                    quote(&crate::firecode::encode_base64(text.as_bytes())),
+                    quote(&format!("{dir}/{name}")),
+                    quote(&format!("{dir}/{name}")),
+                ));
+            }
+            ssh.must("installing the askpass helper on that machine", &body)
+                .map_err(place)?;
+            // The connection carries the same forward, now with its far side named: the env the
+            // commands get and the socket ssh listens on are one object.
+            ssh = ssh.with_askpass(AskpassForward { dir, ..forward });
+        }
 
         // **The owner's stamp on this machine** (`docs/lifecycle.md` d.4, d.10): the lease a
         // host-local reaper judges, the tree whose work it will bundle, and the ledger its pids are

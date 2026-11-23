@@ -366,6 +366,14 @@ pub trait ProcessHost: Send + Sync {
         Err("this backend freezes nothing, so it has nothing to resume".into())
     }
 
+    /// A value the person gave this session: nothing this host produces from now on may carry
+    /// it. Defaulted to nothing because a host that keeps no capture of its own has nothing to
+    /// mask here - the bytes of a job on another machine are masked where they are read
+    /// (`HostProcesses::add_secret`'s third arm), and a backend that does keep one overrides this.
+    fn add_secret(&self, value: &str) {
+        let _ = value;
+    }
+
     /// Block on a handle, never a pattern. `job` waits for one job to leave
     /// `Running`; `scope` waits for a cgroup to empty, and applies the
     /// presence-before-absence rule itself.
@@ -1110,6 +1118,11 @@ pub struct HostProcesses {
     /// is docker compose's rule and the opposite order would let a project file rewrite `PATH`.
     dotenv_env: Mutex<Vec<(String, String)>>,
     secret_env: Mutex<super::seat::SecretEnv>,
+    /// Values a secret the person gave may not appear as, for the rest of this session: the
+    /// vault's, pushed in the moment they are given so a running command cannot print one back
+    /// and a later one cannot either. Grows, never shrinks - a value given once is a value this
+    /// session knows.
+    given_secrets: Mutex<Vec<String>>,
     /// A directory put in FRONT of the pinned `PATH`: the daemon's shims, so a
     /// `sudo` the session runs is the one that asks the head instead of a tty.
     path_prefix: Mutex<Option<String>>,
@@ -1539,6 +1552,7 @@ impl HostProcesses {
             confined_env: Mutex::new(Vec::new()),
             dotenv_env: Mutex::new(Vec::new()),
             secret_env: Mutex::new(Default::default()),
+            given_secrets: Mutex::new(Vec::new()),
             path_prefix: Mutex::new(None),
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
@@ -1828,6 +1842,51 @@ impl HostProcesses {
         super::seat::SecretEnv(pairs)
     }
 
+    /// A value the person gave, which this session's commands must never be able to show again.
+    ///
+    /// Applied three ways because a command can already be running when the value arrives: every
+    /// job's own capture from the next byte on, every later spawn's masker, and every aggregate
+    /// slice - whose bytes were produced on another machine and never passed a capture here.
+    pub fn add_secret(&self, value: &str) {
+        // A value shorter than eight bytes matches ordinary text too often, and a mask that eats
+        // a path or a word is a reader that stops trusting the mask. Same floor as
+        // `Job::with_secret_mask`'s, so the two cannot disagree about what is worth masking.
+        if value.len() < 8 {
+            return;
+        }
+        {
+            let mut g = self.given_secrets.lock().unwrap_or_else(|e| e.into_inner());
+            if g.iter().any(|have| have == value) {
+                return;
+            }
+            g.push(value.to_string());
+        }
+        let needle = vec![value.as_bytes().to_vec()];
+        for job in self.jobs.lock().expect("jobs").iter() {
+            job.capture
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .add_mask(needle.clone());
+        }
+    }
+
+    /// The values [`HostProcesses::add_secret`] was given, as masker needles.
+    fn given_needles(&self) -> Vec<Vec<u8>> {
+        self.given_values()
+            .iter()
+            .map(|v| v.as_bytes().to_vec())
+            .collect()
+    }
+
+    /// The same values, whole: for a caller that masks bytes with [`super::seat::mask_values`]
+    /// rather than through a job's own capture.
+    fn given_values(&self) -> Vec<String> {
+        self.given_secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn set_standing_env(&self, pairs: Vec<(String, String)>) {
         *self.standing_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
     }
@@ -2104,6 +2163,13 @@ impl HostProcesses {
 }
 
 impl ProcessHost for HostProcesses {
+    fn add_secret(&self, value: &str) {
+        // The inherent method is the real one: this arm exists so a host reached through
+        // `Arc<dyn ProcessHost>` - which is how the daemon's mask table holds one - masks
+        // exactly as it does when named by its own type.
+        HostProcesses::add_secret(self, value)
+    }
+
     fn terminal_argv(
         &self,
         cwd: &std::path::Path,
@@ -2539,6 +2605,15 @@ impl ProcessHost for HostProcesses {
         .with_started(spawned_at)
         // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
         .with_secret_mask(&secret_env);
+        // And the values the person has already handed over in this session, which are masked
+        // for its whole life rather than for the window they are cached for.
+        let given = self.given_needles();
+        if !given.is_empty() {
+            job.capture
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .add_mask(given);
+        }
         let job = Arc::new(match &follow {
             Some((f, _)) => job.with_follow(Arc::clone(f)),
             None => job,
@@ -3037,11 +3112,15 @@ impl ProcessHost for HostProcesses {
         // capture - they were produced on other machines - so this is where they are masked.
         if let Some(agg) = self.aggregate(id) {
             let mut slice = agg.output(from, limit);
-            slice.bytes = self
+            let masked = self
                 .secret_env
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .mask(&slice.bytes);
+            // And the values the person has given this session, which no capture here ever saw.
+            let given = self.given_values();
+            let refs: Vec<&str> = given.iter().map(String::as_str).collect();
+            slice.bytes = super::seat::mask_values(&masked, &refs);
             return Ok(slice);
         }
         // A job's own bytes were masked as they arrived ([`Capture::mask`]), so a slice of them

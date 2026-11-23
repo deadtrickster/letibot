@@ -172,6 +172,7 @@ impl Rig {
             env_secrets: Vec::new(),
             grants: Vec::new(),
             dotenv: letibot_tools::dotenv::Settings::default(),
+            askpass: None,
         }
     }
 

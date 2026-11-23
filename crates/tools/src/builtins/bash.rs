@@ -660,7 +660,12 @@ impl Tool for Bash {
              the boundary, not about whether anything is there — asking again with a \
              different spelling will not reach it. Every command runs under a memory \
              cap and is killed alone if it reaches it; set `memory` for builds and tests \
-             (e.g. \"4G\")."
+             (e.g. \"4G\"). **A password or token never goes through this call's text or its \
+             output.** `letibot-secret ask --for \"what uses it\"` raises a masked card at the \
+             operator and prints the value on stdout, which is how a secret gets into a \
+             command: `letibot-secret ask --for 'sudo on lubuntu1-3' | ssh lubuntu1 'sudo -S -p \"\" apt-get -y upgrade'`. \
+             A local `sudo`, an `ssh` password or passphrase and a `git` credential prompt ask \
+             that way by themselves."
                 + &default_sentence(&self.memory),
             serde_json::json!({
                 "type": "object",

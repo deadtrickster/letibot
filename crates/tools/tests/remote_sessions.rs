@@ -301,6 +301,7 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         env_secrets: Vec::new(),
         grants: Vec::new(),
         dotenv: letibot_tools::dotenv::Settings::default(),
+        askpass: None,
     }
 }
 
@@ -1407,6 +1408,7 @@ fn six_packages_on_a_real_host_at_once_are_never_refused() {
             env_secrets: Vec::new(),
             grants: Vec::new(),
             dotenv: letibot_tools::dotenv::Settings::default(),
+            askpass: None,
         };
         placers.push(std::thread::spawn(move || {
             SshBackend::place(&spec)

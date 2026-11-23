@@ -172,6 +172,7 @@ impl Rig {
             env_secrets: Vec::new(),
             grants: Vec::new(),
             dotenv: letibot_tools::dotenv::Settings::default(),
+            askpass: None,
         }
     }
 
@@ -807,6 +808,7 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         env_secrets: Vec::new(),
         grants: Vec::new(),
         dotenv: letibot_tools::dotenv::Settings::default(),
+        askpass: None,
     })
     .expect_err("a folder is not a repository");
     let said = refused.to_string();
@@ -1127,6 +1129,7 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         env_secrets: Vec::new(),
         grants: Vec::new(),
         dotenv: letibot_tools::dotenv::Settings::default(),
+        askpass: None,
     }
 }
 
@@ -1889,6 +1892,7 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
         env_secrets: Vec::new(),
         grants: Vec::new(),
         dotenv: letibot_tools::dotenv::Settings::default(),
+        askpass: None,
     }
 }
 

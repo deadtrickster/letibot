@@ -1100,3 +1100,96 @@ fn a_silent_host_is_unknown() {
     );
     let _ = std::fs::remove_dir_all(&rig.dir);
 }
+
+/// Pattern B's door, unit by unit: the argv carries a reverse socket forward in front of the
+/// destination, the command carries the variables the three programs read, and the far side's
+/// helper is a script rather than a program it must already have.
+///
+/// The argv is what a fake ssh has to tolerate, so this is the whole of what a placement can
+/// prove on a box with no other machine: the forward exists, names BOTH ends, and rides every
+/// command the connection runs.
+#[test]
+fn a_placement_carries_the_askpass_forward_in_its_ssh_argv() {
+    use super::*;
+    let h = Hosts::parse(FILE).expect("it parses");
+    let host = h.get("lab2x1").expect("lab2x1").clone();
+    let (dir, paths) = paths_for("askpass", &host.name, &host.hostname);
+    let declared = paths.default_key("lab2x1");
+    let host = Host {
+        key: Some(declared),
+        ..host
+    };
+    let ssh = Ssh::connect(host, Some(PathBuf::from("/bin/false")), paths.clone())
+        .expect("the connection opens")
+        .with_askpass(AskpassForward {
+            dir: "/home/op/letibot-remote/askpass/s179".to_string(),
+            ..AskpassForward::new("/run/user/1000/letibot/harnessd-ask.sock", "s-179")
+        });
+    let argv = ssh.argv("bash -lc 'true'");
+    let line = argv.join(" ");
+    assert!(
+        line.contains(
+            "-R /home/op/letibot-remote/askpass/s179/ask.sock:/run/user/1000/letibot/harnessd-ask.sock"
+        ),
+        "the forward names both ends: {line}"
+    );
+    assert!(
+        line.contains("-o StreamLocalBindUnlink=yes"),
+        "a stale socket is replaced rather than refusing the command: {line}"
+    );
+    // In front of the destination, which is where ssh's own options belong: a forward after it
+    // would be read as part of the remote command.
+    let at = argv
+        .iter()
+        .position(|a| a == "dead@lab2x1")
+        .expect("the destination");
+    let forward = argv.iter().position(|a| a == "-R").expect("-R");
+    assert!(forward < at, "{line}");
+
+    // And the command the far side runs carries what the three programs read.
+    let command = ssh.remote_command("sudo apt-get -y upgrade");
+    for want in [
+        "SUDO_ASKPASS=/home/op/letibot-remote/askpass/s179/letibot-askpass",
+        "SSH_ASKPASS_REQUIRE=force",
+        "GIT_ASKPASS=",
+        "LETIBOT_ASKPASS_SOCKET=/home/op/letibot-remote/askpass/s179/ask.sock",
+        "LETIBOT_SECRET_SESSION=s-179",
+    ] {
+        assert!(
+            command.contains(want),
+            "`{want}` is missing from: {command}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The far side's helper is three files, and neither the shim nor the helper can print something
+/// that is not a secret or hang: a password that is not a password is worse than a failed `sudo`.
+#[test]
+fn the_far_sides_helper_refuses_rather_than_printing_something() {
+    use super::*;
+    let f = AskpassForward {
+        dir: "/home/op/letibot-remote/askpass/s179".to_string(),
+        ..AskpassForward::new("/run/user/1000/letibot/harnessd-ask.sock", "s-179")
+    };
+    let files: Vec<String> = f
+        .files()
+        .into_iter()
+        .map(|(name, body, mode)| {
+            assert!(!body.is_empty(), "{name} has no body");
+            assert_eq!(mode, 0o755, "{name} is run by a program");
+            format!("-- {name}\n{body}")
+        })
+        .collect();
+    let all = files.join("\n");
+    for want in [
+        "-- shims/sudo",
+        "-- letibot-askpass",
+        "-- askpass.py",
+        "-n|--non-interactive",
+        "LETIBOT_ASKPASS_SOCKET",
+        "no secret was given",
+    ] {
+        assert!(all.contains(want), "`{want}` is missing from:\n{all}");
+    }
+}

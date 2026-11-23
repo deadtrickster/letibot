@@ -21,23 +21,8 @@ impl std::fmt::Debug for SecretEnv {
 impl SecretEnv {
     /// `text` with every secret value masked to the same length, so offsets into it still hold.
     pub fn mask(&self, text: &[u8]) -> Vec<u8> {
-        let mut out = text.to_vec();
-        for (_, v) in &self.0 {
-            let v = v.as_bytes();
-            if v.len() < 8 {
-                continue;
-            }
-            let mut i = 0;
-            while i + v.len() <= out.len() {
-                if &out[i..i + v.len()] == v {
-                    out[i..i + v.len()].fill(b'*');
-                    i += v.len();
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        out
+        let values: Vec<&str> = self.0.iter().map(|(_, v)| v.as_str()).collect();
+        mask_values(text, &values)
     }
 
     /// [`SecretEnv::mask`] for text a caller already holds, so no caller has to decide what a
@@ -48,6 +33,31 @@ impl SecretEnv {
             Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
         }
     }
+}
+
+/// `text` with every value masked to its own length, and a value shorter than eight bytes left
+/// alone: a mask that ate a two-letter word would be a mask nobody trusts.
+///
+/// One function so the environment's masker and the one a given secret adds cannot disagree
+/// about what masking means.
+pub fn mask_values(text: &[u8], values: &[&str]) -> Vec<u8> {
+    let mut out = text.to_vec();
+    for v in values {
+        let v = v.as_bytes();
+        if v.len() < 8 {
+            continue;
+        }
+        let mut i = 0;
+        while i + v.len() <= out.len() {
+            if &out[i..i + v.len()] == v {
+                out[i..i + v.len()].fill(b'*');
+                i += v.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// `GH_TOKEN` and a git credential helper for github.com that answers with it, for a top-level
