@@ -114,7 +114,7 @@ impl Rig {
 impl Drop for Rig {
     fn drop(&mut self) {
         if let Some(server) = self.server.take() {
-            let _ = server.shutdown();
+            server.shutdown();
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }

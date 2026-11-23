@@ -300,7 +300,7 @@ mod tests {
         std::fs::write(repo.join(".env.local"), "EXTRA=1\n").expect("a local");
         std::fs::write(repo.join(".envrc"), "export EVIL=1\n").expect("an rc");
         // The source's own tree must not be asked to ignore them; only the copy is.
-        let (carried, said) = into_worktree(&[repo.clone()], &wt);
+        let (carried, said) = into_worktree(std::slice::from_ref(&repo), &wt);
         assert_eq!(carried, vec![".env".to_string(), ".env.local".to_string()]);
         assert!(said.is_empty(), "{said:?}");
         assert_eq!(
@@ -365,7 +365,7 @@ mod tests {
         ]);
         std::fs::write(repo.join(".env"), "A=1\n").expect("a .env");
         std::fs::write(repo.join(".env.local"), "B=2\n").expect("a local");
-        let (carried, said) = into_worktree(&[repo.clone()], &wt);
+        let (carried, said) = into_worktree(std::slice::from_ref(&repo), &wt);
         assert!(said.is_empty(), "{said:?}");
         assert_eq!(carried.len(), 2);
         let printed = crate::git::git(&wt, &["rev-parse", "--git-path", "info/exclude"])
@@ -394,7 +394,7 @@ mod tests {
         let secret = repo.join("real-secret");
         std::fs::write(&secret, "TOKEN=1\n").expect("a secret");
         std::os::unix::fs::symlink(&secret, repo.join(".env")).expect("a link");
-        let (carried, said) = into_worktree(&[repo.clone()], &wt);
+        let (carried, said) = into_worktree(std::slice::from_ref(&repo), &wt);
         assert!(carried.is_empty(), "{carried:?}");
         assert_eq!(said.len(), 1);
         assert!(said[0].contains(".env"), "{said:?}");

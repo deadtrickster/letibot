@@ -579,7 +579,7 @@ impl Capture {
             None => Vec::new(),
         };
         for n in needles {
-            if !all.iter().any(|have| *have == n) {
+            if !all.contains(&n) {
                 all.push(n);
             }
         }

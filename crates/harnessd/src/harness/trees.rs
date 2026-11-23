@@ -35,16 +35,18 @@ impl Tree {
 
 /// The tree a session belongs to, and what a secret given in it goes to.
 ///
-/// A value the person hands over must be invisible to every command of the tree it was given in
-/// - not just the session whose helper asked - and a session opened AFTER the card answered must
-/// not be able to print it either. So the values are kept here, beside the sessions, and
-/// replayed onto each host as it registers.
+/// A value the person hands over must be invisible to every command of the tree it was given in,
+/// not just the session whose helper asked, and a session opened after the card answered must
+/// not be able to print it either: the values are kept here and replayed onto each host.
+/// A live session's tree root and the host its commands run on.
+type TreeHost = (String, Arc<dyn letibot_tools::exec::host::ProcessHost>);
+
 #[derive(Clone, Default)]
 pub(crate) struct Secrets {
     /// By tree root: every value given, oldest first. Never read out except to mask.
     values: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// Every live session's tree and host, by session id, so a value given later reaches them.
-    hosts: Arc<Mutex<HashMap<String, (String, Arc<dyn letibot_tools::exec::host::ProcessHost>)>>>,
+    hosts: Arc<Mutex<HashMap<String, TreeHost>>>,
 }
 
 impl Secrets {
