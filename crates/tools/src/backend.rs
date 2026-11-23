@@ -589,18 +589,25 @@ impl HostBackend {
         }
         // Only the tight view: a top-level session edits its own hooks and config, and a child
         // gets every part of the repository a write could land itself with, one by one.
+        // One cover per runtime directory: a mask whose destination a socket's owner removes is a
+        // start that fails. A tight seat keeps no door and a wide one keeps only the socket `sudo
+        // -A` was given, so the heads' socket and the ssh masters are behind it either way.
         if seat.home.is_none() {
             for p in crate::exec::seat::git_dir_protected(&project) {
                 view = view.protecting(p);
             }
-            for p in crate::exec::confine::daemon_sockets() {
+            for c in crate::exec::confine::daemon_socket_covers(None) {
+                view = view.covering(c.dir, c.kept);
+            }
+            for p in crate::exec::confine::daemon_sockets_elsewhere(None) {
                 view = view.hiding(p);
             }
         } else {
-            // The wide seat reaches the daemon through the socket it was given and no other. The
-            // heads' socket is masked here too, so a command cannot lift its own mode.
             let given = std::env::var_os("LETIBOT_SOCKET").map(PathBuf::from);
-            for p in crate::exec::confine::daemon_sockets_hidden(given.as_deref()) {
+            for c in crate::exec::confine::daemon_socket_covers(given.as_deref()) {
+                view = view.covering(c.dir, c.kept);
+            }
+            for p in crate::exec::confine::daemon_sockets_elsewhere(given.as_deref()) {
                 view = view.hiding(p);
             }
         }

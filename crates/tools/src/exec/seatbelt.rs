@@ -242,6 +242,7 @@ impl Layout {
             .iter()
             .cloned()
             .chain(super::confine::room_files())
+            .chain(super::confine::covered_sockets(&view.covered))
             .flat_map(|p| both_spellings(&p))
             .collect();
         hidden.sort();

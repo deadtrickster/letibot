@@ -764,29 +764,33 @@ pub fn git_control_path(host: &str, pid: u32) -> PathBuf {
     control_path_for(host, pid, "git")
 }
 
-/// A socket name has a hard length bound, so a long host name falls back to `/tmp` itself. That
-/// directory is shared with every user of the box and is not ours to tighten: ssh makes these
-/// sockets 0600, and `daemon_sockets` looks for them here.
+/// A socket name has a hard length bound, so a long host name falls back to the temp directory —
+/// inside `letibot`'s own directory there, which a command's view covers with one `--tmpfs`: a
+/// socket masked one at a time is a socket whose owner can make the boundary fail.
 fn control_path_for(host: &str, pid: u32, role: &str) -> PathBuf {
     let short = sanitise(host);
     let preferred = rundir().join(format!("ssh-{short}-{pid}-{role}.sock"));
     if preferred.as_os_str().len() <= 100 {
         return preferred;
     }
-    PathBuf::from("/tmp").join(format!("letibot-ssh-{pid}-{short}-{role}.sock"))
+    std::env::temp_dir()
+        .join("letibot")
+        .join(format!("ssh-{pid}-{short}-{role}.sock"))
 }
 
 /// Make [`rundir`] a directory only this user can enter. The `ControlMaster` socket in it is a
 /// handle on every session's connection to that host, and `rundir` is a directory in a shared
-/// `/tmp` whenever `XDG_RUNTIME_DIR` is unset.
+/// `/tmp` whenever `XDG_RUNTIME_DIR` is unset. The temp fallback is the same directory under
+/// another name, for a socket too long for the runtime one.
 fn private_rundir() {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    let dir = rundir();
-    let _ = std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir);
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    for dir in [rundir(), std::env::temp_dir().join("letibot")] {
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir);
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
 }
 
 /// The host's `path` list as the export a remote command starts with, or `None` when the file

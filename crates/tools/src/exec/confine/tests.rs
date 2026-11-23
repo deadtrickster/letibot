@@ -492,10 +492,11 @@ fn the_wide_seats_masks_are_the_list_the_macos_seat_denies() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The daemon's own socket and the ssh masters are found by scanning; a plain file and a
-/// socket outside the letibot directories are not.
+/// A runtime directory is covered once, and only what no cover holds needs a mask of its own: the
+/// ssh master left in the temp directory's root, and a `$LETIBOT_SOCKET` outside the directories.
+/// One socket in a directory is not a socket a view masks by name.
 #[test]
-fn the_daemons_sockets_are_found_in_the_runtime_dirs() {
+fn a_runtime_directory_is_covered_and_only_the_temp_roots_socket_is_masked() {
     let dir = std::env::temp_dir().join(format!("letibot-dsock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let run = dir.join("run/letibot");
@@ -504,22 +505,33 @@ fn the_daemons_sockets_are_found_in_the_runtime_dirs() {
     std::fs::write(run.join("abc.json"), "").unwrap();
     std::fs::write(dir.join("letibot-ssh-1-x-call.sock"), "").unwrap();
     std::fs::write(dir.join("other.sock"), "").unwrap();
-    let got = daemon_sockets_in(
+    let elsewhere = daemon_sockets_elsewhere_in(
         std::slice::from_ref(&run),
         &dir,
         Some(dir.join("named.sock")),
+        None,
     );
-    let has = |p: PathBuf| got.contains(&p) || got.contains(&p.canonicalize().unwrap_or(p));
-    assert!(has(run.join("abc.sock")), "{got:?}");
-    assert!(has(dir.join("letibot-ssh-1-x-call.sock")), "{got:?}");
-    assert!(has(dir.join("named.sock")), "{got:?}");
-    assert!(!got.iter().any(|p| p.ends_with("abc.json")), "{got:?}");
-    assert!(!got.iter().any(|p| p.ends_with("other.sock")), "{got:?}");
+    let has =
+        |p: PathBuf| elsewhere.contains(&p) || elsewhere.contains(&p.canonicalize().unwrap_or(p));
+    assert!(has(dir.join("letibot-ssh-1-x-call.sock")), "{elsewhere:?}");
+    assert!(has(dir.join("named.sock")), "{elsewhere:?}");
+    assert!(
+        !elsewhere.iter().any(|p| p.starts_with(&run)),
+        "a socket in a runtime directory is behind the cover, not a mask of its own: {elsewhere:?}"
+    );
+    assert!(
+        !elsewhere.iter().any(|p| p.ends_with("other.sock")),
+        "{elsewhere:?}"
+    );
+    let covers = daemon_socket_covers_in(std::slice::from_ref(&run), None);
+    assert_eq!(covers.len(), 1, "one directory is one cover: {covers:?}");
+    assert!(covers[0].kept.is_empty(), "a tight seat keeps no door");
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The wide seat keeps the one socket it was given and masks every other daemon socket: a command
-/// cannot lift its own mode on the socket the person's head is attached to.
+/// The wide seat keeps the one socket it was given and covers the directory the rest of the
+/// daemon's sockets are in: a command cannot lift its own mode on the socket the person's head is
+/// attached to, and no bwrap argument names a socket that its owner could have removed.
 #[test]
 fn the_wide_seat_reaches_only_the_socket_it_was_given() {
     let dir = std::env::temp_dir().join(format!("letibot-dwide-{}", std::process::id()));
@@ -529,20 +541,82 @@ fn the_wide_seat_reaches_only_the_socket_it_was_given() {
     let given = run.join("abc-peer.sock");
     std::fs::write(run.join("abc.sock"), "").unwrap();
     std::fs::write(&given, "").unwrap();
-    let all = daemon_sockets_in(std::slice::from_ref(&run), &dir, Some(given.clone()));
-    let hidden = keep_hidden(all, Some(&given));
-    let names: Vec<String> = hidden
+    std::fs::write(run.join("ssh-x-1-call.sock"), "").unwrap();
+    let covers = daemon_socket_covers_in(std::slice::from_ref(&run), Some(&given));
+    assert_eq!(covers.len(), 1, "{covers:?}");
+    assert_eq!(covers[0].kept, vec![given.clone()], "the door it was given");
+    let denied = covered_sockets(&covers);
+    let names: Vec<String> = denied
         .iter()
         .filter_map(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .collect();
     assert!(
-        names.iter().any(|n| n == "abc.sock"),
-        "the heads' socket is masked in the wide seat too: {hidden:?}"
+        names.iter().any(|n| n == "abc.sock") && names.iter().any(|n| n == "ssh-x-1-call.sock"),
+        "the heads' socket and the ssh master are held back in the wide seat too: {denied:?}"
     );
     assert!(
         !names.iter().any(|n| n == "abc-peer.sock"),
-        "the socket the command was given stays reachable: {hidden:?}"
+        "the socket the command was given stays reachable: {denied:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// What bwrap is handed for a covered directory: one `--tmpfs`, the given socket bound back
+/// read-write, and NOTHING mask-by-name inside it. A mask per socket is a start that fails when
+/// the socket's owner removes it first, which is this bug.
+#[test]
+fn a_covered_directory_is_one_mount_and_names_no_socket_inside_it() {
+    let dir = std::env::temp_dir().join(format!("letibot-cover-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("run/letibot");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::create_dir_all(dir.join("project")).unwrap();
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    let given = run.join("abc-peer.sock");
+    for n in ["abc.sock", "oneshot-1-peer.sock", "abc.json"] {
+        std::fs::write(run.join(n), "").unwrap();
+    }
+    std::fs::write(&given, "").unwrap();
+    let view = ViewSpec::project_only(dir.join("project"))
+        .with_home(HomeView::Dir(dir.join("home")))
+        .wide()
+        .covering(&run, vec![given.clone()]);
+    let argv = build_argv_with(
+        Path::new("/usr/bin/bwrap"),
+        &view,
+        &Egress::Denied,
+        &ConfinePlan {
+            cwd: &dir.join("project"),
+            env: &[],
+        },
+        Session::Detached,
+    );
+    let joined = argv.join(" ");
+    let cover = joined
+        .find(&format!("--tmpfs {}", run.display()))
+        .unwrap_or_else(|| panic!("the directory is one mount: {joined}"));
+    let door = joined
+        .find(&format!(
+            "--bind-try {} {}",
+            given.display(),
+            given.display()
+        ))
+        .unwrap_or_else(|| panic!("the socket it was given is bound back: {joined}"));
+    assert!(
+        cover < door,
+        "the door is bound after the directory is covered, or the mount erases it: {joined}"
+    );
+    for n in ["abc.sock", "oneshot-1-peer.sock", "abc.json"] {
+        let p = run.join(n).display().to_string();
+        assert!(
+            !joined.contains(&format!("{p} ")),
+            "{n} is named by a mask, and its owner can remove it before the mount: {joined}"
+        );
+    }
+    assert!(
+        !joined.contains(&format!("--ro-bind /dev/null {}", run.display())),
+        "the directory is one mount, not a bind per entry: {joined}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

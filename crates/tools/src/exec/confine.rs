@@ -612,6 +612,21 @@ pub struct ViewSpec {
     pub masked: Vec<PathBuf>,
     /// This session's children's spills, read-only: see [`ChildSpills`].
     pub children: Option<ChildSpills>,
+    /// Directories covered as one empty filesystem but for the paths they keep: the fence a
+    /// short-lived file cannot outrun (see [`Cover`]).
+    pub covered: Vec<Cover>,
+}
+
+/// A directory masked ONCE, with the paths inside it that stay visible and connectable: a mask per
+/// file depends on the file still being there when bwrap mounts it, and a socket whose owner removes
+/// it in between fails the whole start (`Unable to remount destination … No such file or directory`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cover {
+    /// The directory, which is an empty filesystem inside the view.
+    pub dir: PathBuf,
+    /// Paths bound back into it, read-write: connecting to a unix socket needs write permission on
+    /// it, and a socket on a read-only mount refuses `connect` with `EROFS`.
+    pub kept: Vec<PathBuf>,
 }
 
 /// A path a confined command must not write, and what to bind there when it does not exist. bwrap
@@ -684,10 +699,9 @@ pub fn room_files() -> Vec<PathBuf> {
     out
 }
 
-/// The daemon's control sockets a tight seat must not reach: every socket in the per-user `letibot`
-/// runtime directories (the daemon's own, the ssh control masters) and `$LETIBOT_SOCKET`. The wide
-/// seat keeps them, because `sudo -A` reaches the session through that socket.
-pub fn daemon_sockets() -> Vec<PathBuf> {
+/// The per-user `letibot` runtime directories that exist: a folder's daemon socket, the bridge's,
+/// the ssh control masters, and the records beside them.
+pub fn daemon_socket_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
         dirs.push(PathBuf::from(d).join("letibot"));
@@ -697,48 +711,100 @@ pub fn daemon_sockets() -> Vec<PathBuf> {
     dirs.push(PathBuf::from(format!("/run/user/{}/letibot", unsafe {
         libc::getuid()
     })));
-    daemon_sockets_in(
-        &dirs,
+    dirs.sort();
+    dirs.dedup();
+    dirs.retain(|d| d.is_dir());
+    dirs
+}
+
+/// One cover per runtime directory, keeping `given` where it lives: the heads' socket, the ssh
+/// masters and every other session's door are behind one `--tmpfs`, which a socket's owner cannot
+/// pull out from under the mount.
+pub fn daemon_socket_covers(given: Option<&Path>) -> Vec<Cover> {
+    daemon_socket_covers_in(&daemon_socket_dirs(), given)
+}
+
+/// The daemon sockets no cover holds, and which so still need a mask of their own: `$LETIBOT_SOCKET`
+/// when it is outside every runtime directory, and an ssh master left in the temp directory's own
+/// root. `given` is the one door this command was allowed.
+pub fn daemon_sockets_elsewhere(given: Option<&Path>) -> Vec<PathBuf> {
+    daemon_sockets_elsewhere_in(
+        &daemon_socket_dirs(),
         &std::env::temp_dir(),
         std::env::var_os("LETIBOT_SOCKET")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from),
+        given,
     )
 }
 
-/// [`daemon_sockets`] minus the one socket this command was given: what a view masks when the
-/// command is allowed exactly one door back to the daemon. `sudo -A` needs the one it was given,
-/// and the heads' socket is not a command's to reach at any level.
-pub fn daemon_sockets_hidden(given: Option<&Path>) -> Vec<PathBuf> {
-    keep_hidden(daemon_sockets(), given)
-}
-
-fn keep_hidden(all: Vec<PathBuf>, given: Option<&Path>) -> Vec<PathBuf> {
-    all.into_iter()
-        .filter(|p| Some(p.as_path()) != given)
+/// [`daemon_socket_covers`] over given directories, so a test does not race the process environment.
+fn daemon_socket_covers_in(dirs: &[PathBuf], given: Option<&Path>) -> Vec<Cover> {
+    dirs.iter()
+        .map(|dir| Cover {
+            dir: dir.clone(),
+            kept: given
+                .filter(|g| inside(g, dir))
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect(),
+        })
         .collect()
 }
 
-/// [`daemon_sockets`] over given directories, so a test does not race the process environment.
-fn daemon_sockets_in(dirs: &[PathBuf], tmp: &Path, named: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for dir in dirs {
-        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            if e.file_name().to_string_lossy().ends_with(".sock") {
-                out.push(e.path());
-            }
-        }
+/// Is `p` in `dir`? Lexically, or by the directory that really holds it: `/var/folders/…` and
+/// `/private/var/folders/…` are one directory on a Mac, and a door missed is a session that cannot
+/// answer `sudo -A`.
+fn inside(p: &Path, dir: &Path) -> bool {
+    if p.starts_with(dir) {
+        return true;
     }
-    // The ssh masters fall back to the temp dir when the runtime dir is too long for a socket path.
+    let Some(parent) = p.parent() else {
+        return false;
+    };
+    match (parent.canonicalize(), dir.canonicalize()) {
+        (Ok(real), Ok(want)) => real == want,
+        _ => false,
+    }
+}
+
+/// [`daemon_sockets_elsewhere`] over given directories, so a test does not race the environment.
+fn daemon_sockets_elsewhere_in(
+    dirs: &[PathBuf],
+    tmp: &Path,
+    named: Option<PathBuf>,
+    given: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    // The ssh masters fell back to the temp directory's root when the runtime path was too long
+    // for a socket name, and a socket a build older than this one left there is still masked.
     for e in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
         let n = e.file_name().to_string_lossy().to_string();
         if n.starts_with("letibot-ssh-") && n.ends_with(".sock") {
             out.push(e.path());
         }
     }
-    out.extend(named);
+    out.extend(named.filter(|p| !dirs.iter().any(|d| p.starts_with(d))));
+    out.retain(|p| Some(p.as_path()) != given);
     let canon: Vec<PathBuf> = out.iter().filter_map(|p| p.canonicalize().ok()).collect();
     out.extend(canon);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The sockets a cover holds back, for a rendering that denies by NAME (`seatbelt`): the same set
+/// the bwrap rendering puts behind one mount, so the two deny what the same measure found.
+pub fn covered_sockets(covers: &[Cover]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for c in covers {
+        for e in std::fs::read_dir(&c.dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.to_string_lossy().ends_with(".sock") && !c.kept.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
     out.sort();
     out.dedup();
     out
@@ -797,6 +863,7 @@ impl ViewSpec {
             protected: Vec::new(),
             wide: false,
             masked: Vec::new(),
+            covered: Vec::new(),
             children: None,
         }
     }
@@ -844,6 +911,21 @@ impl ViewSpec {
     /// Keep this path read-only even inside a read-write grant.
     pub fn protecting(mut self, protection: Protection) -> ViewSpec {
         self.protected.push(protection);
+        self
+    }
+
+    /// Cover `dir` as one empty filesystem, keeping `kept` — the doors this command was given. Per
+    /// directory rather than per file, because a mask whose destination can vanish is a start that
+    /// can fail: see [`Cover`].
+    pub fn covering(
+        mut self,
+        dir: impl Into<PathBuf>,
+        kept: impl IntoIterator<Item = PathBuf>,
+    ) -> ViewSpec {
+        self.covered.push(Cover {
+            dir: dir.into(),
+            kept: kept.into_iter().collect(),
+        });
         self
     }
 
@@ -2940,6 +3022,32 @@ fn pieces_of(
             }
             (false, false) => {}
         }
+    }
+
+    // One mount per covered directory, then back the doors this command was given: a mask per
+    // socket is a boundary decided by a listing, and bwrap refuses the argv when a destination is
+    // gone by the time it mounts it. Not remounted read-only, because a remount is what failed.
+    for c in &view.covered {
+        if view.classify(&c.dir) != Presence::Inside || !c.dir.is_dir() {
+            continue;
+        }
+        arg(&mut a, "--tmpfs");
+        arg(&mut a, c.dir.display().to_string());
+        for k in &c.kept {
+            // Read-WRITE, and `-try`: connecting to a unix socket needs write permission on it (a
+            // read-only mount answers `EROFS`), and the door may be gone, which is not a failure.
+            // Bound to its NAME inside the covered directory, so the spelling the socket was
+            // handed to us in cannot decide whether the door is there.
+            if let Some(name) = k.file_name()
+                && k.exists()
+            {
+                let dest = c.dir.join(name).display().to_string();
+                arg(&mut a, "--bind-try");
+                arg(&mut a, k.display().to_string());
+                arg(&mut a, dest);
+            }
+        }
+        emptied.push(&c.dir);
     }
 
     for p in &view.protected {
