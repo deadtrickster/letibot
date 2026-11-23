@@ -60,6 +60,7 @@ pub mod media;
 pub mod mode;
 pub mod notes_keeper;
 pub mod notes_repo;
+pub mod ownership;
 pub mod permission;
 pub mod profiles;
 pub mod project_code;
