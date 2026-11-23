@@ -1100,6 +1100,7 @@ fn an_override_does_not_overwrite_the_verdict_it_disagrees_with() {
         reply: Some("ALLOW 0".into()),
         baseline: "ask".into(),
         tier: "adjudicable",
+        ownership: None,
         tool: "bash".into(),
         arguments: serde_json::json!({"command": "systemctl restart harnessd"}),
         mode: "always-ask".into(),

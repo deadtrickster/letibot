@@ -41,6 +41,7 @@ impl Harness {
             shape_class: None,
             baseline: String::new(),
             tier: "may_approve",
+            ownership: None,
             tool: name.to_string(),
             arguments: serde_json::from_str(arguments)
                 .unwrap_or(serde_json::Value::String(arguments.to_string())),

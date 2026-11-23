@@ -1494,6 +1494,11 @@ pub struct CorpusRow {
     /// Layer A's deterministic reading.
     pub baseline: String,
     pub tier: &'static str,
+    /// What the session owned that made this call its own work (`worktree`, `temp`, `created`,
+    /// `unread_owned_cwd`), when automode admitted it for that reason. It reaches the corpus sink;
+    /// it is NOT yet a column on the `adjudication` table, so the store drops it - the one step
+    /// left on the measurement this row exists for.
+    pub ownership: Option<String>,
 
     // The input unnormalised: `action` above is layer A's reading, and keeping only the reading makes
     // the corpus unusable the day layer A changes, which is what the corpus is collected for.
