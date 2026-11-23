@@ -1278,6 +1278,10 @@ pub struct AdjudicationRow {
     pub asked: bool,
     /// This answer put the call's shape in the gate's approved shapes.
     pub remembered_shape: bool,
+    /// What the session owned that made this call its own work (`worktree`, `temp`, `created`,
+    /// `unread_owned_cwd`), when automode admitted it for that reason. One word per row, so the
+    /// corpus can count the calls that never reached a model with a `GROUP BY`.
+    pub ownership: Option<String>,
 }
 
 impl AdjudicationRow {
@@ -1301,6 +1305,7 @@ impl AdjudicationRow {
                 .map(|_| self.request.class.to_string()),
             baseline: self.request.baseline.clone(),
             tier: self.request.tier.as_str(),
+            ownership: self.ownership.clone(),
             tool: self.request.tool.clone(),
             arguments: self.request.arguments.clone(),
             mode: self.mode.clone(),
@@ -1556,6 +1561,11 @@ pub struct AdjudicatedGate {
     /// The folder the last view card's answer granted, when the operator took the whole-tree rung:
     /// the record, the ledger and the model's note name it rather than the file that asked.
     view_root: Option<std::path::PathBuf>,
+    /// The branch this session's worktree has checked out, handed in at open: `ik/*` and `wt-*`
+    /// are the operator's patterns for a session's own work, and only the caller can read one.
+    own_branch: Option<String>,
+    /// What the call in flight was admitted as, taken into the row by [`Self::record`].
+    owned: Option<String>,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1693,6 +1703,8 @@ impl AdjudicatedGate {
             view_by: Default::default(),
             view_answered_by: None,
             view_root: None,
+            own_branch: None,
+            owned: None,
         }
     }
 
@@ -1721,6 +1733,35 @@ impl AdjudicatedGate {
             self.refresh_grants();
         }
         self
+    }
+
+    /// The branch this session's worktree holds, so a call on an `ik/*` or `wt-*` branch counts as
+    /// its own work. Handed in: the gate reads no git.
+    pub fn with_worktree_branch(mut self, branch: Option<String>) -> Self {
+        self.own_branch = branch;
+        self
+    }
+
+    /// What this session owns, as the call in front of it sees it: its worktree, its scratch, the
+    /// temp directories, the paths its own commands created - read live off the view record, so a
+    /// tree a command made a moment ago counts at the next call - and its branches.
+    fn owned(&self) -> crate::ownership::Owned {
+        let mut owned = match &self.surroundings.workspace {
+            Some(w) => crate::ownership::Owned::of(std::path::Path::new(w)),
+            None => crate::ownership::Owned::default(),
+        };
+        if let Some(s) = &self.surroundings.scratch {
+            owned = owned.with_scratch(std::path::Path::new(s));
+        }
+        if let Some(v) = &self.view {
+            owned = owned.with_created(
+                v.entries()
+                    .into_iter()
+                    .filter(|(_, writable)| *writable)
+                    .map(|(p, _)| p),
+            );
+        }
+        owned.with_branch(self.own_branch.clone())
     }
 
     /// The scopes this session reads its grants from: its own, its tree's, and its queue's.
@@ -2714,6 +2755,7 @@ impl AdjudicatedGate {
             mode,
             asked,
             remembered_shape: std::mem::take(&mut self.shape_remembered),
+            ownership: self.owned.take(),
         });
         // Write through immediately, not at shutdown: a daemon that is killed is the
         // ordinary end of a session, and a corpus flushed on a clean exit is a corpus
@@ -3744,7 +3786,9 @@ impl Gate for AdjudicatedGate {
 
         // 1a. Layer A's own refusals, before any adjudicator. `NotRun` first: an action nobody
         //     could read is not one anybody can decide about. Except at a point that admits
-        //     everything, where an unreadable command goes on and the row says it ran unread.
+        //     everything, where an unreadable command goes on and the row says it ran unread - and
+        //     in automode, where a command that runs in the session's own worktree runs: the
+        //     operator's data is that an unreadable check in their own tree is the session's work.
         let ran_unread = match &baseline.verdict {
             BaselineVerdict::NotRun { why } if self.mode.admits_everything() => {
                 Some(why.lines().next().unwrap_or("").to_string())
@@ -3754,6 +3798,24 @@ impl Gate for AdjudicatedGate {
         if ran_unread.is_none()
             && let BaselineVerdict::NotRun { why } = &baseline.verdict
         {
+            if self.mode.decider == crate::mode::Decider::Model
+                && let Some(ws) = self.surroundings.workspace.clone()
+                && let Ok(landed) =
+                    crate::ownership::admits(&req, &self.owned(), std::path::Path::new(&ws))
+                && landed.unread.is_some()
+            {
+                let basis = format!(
+                    "admitted: automode, and this call is the session's own work ({}) - it ran \
+                     UNREAD ({}) and nothing outside what the session owns was named",
+                    landed.at.as_str(),
+                    why.lines().next().unwrap_or("")
+                );
+                let d = AdjudicationDecision::selected(&req, "allow_once", "gate:owned", &basis);
+                self.owned = Some(landed.label());
+                self.breaker.admitted(&direction);
+                self.record(req, d, "admit", direction.key());
+                return GateDecision::Admit;
+            }
             let d = AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Unavailable,
@@ -3941,6 +4003,31 @@ impl Gate for AdjudicatedGate {
             }
         }
 
+        // 4b. Automode, and every effect this call has lands in what the session owns: its
+        //     worktree, its scratch, a temp directory, a path its own command created. Nobody is
+        //     asked and no model is called - the operator approved essentially every one of these
+        //     cards for months. The always-ask list is not reachable here: `ownership::admits`
+        //     refuses it and `Blocked` by name.
+        if self.mode.decider == crate::mode::Decider::Model
+            && let Some(ws) = self.surroundings.workspace.clone()
+            && let Ok(landed) =
+                crate::ownership::admits(&req, &self.owned(), std::path::Path::new(&ws))
+            && landed.unread.is_none()
+        {
+            let basis = format!(
+                "admitted: automode, and every effect of this call lands in what the session \
+                 owns ({}, on {}) - the worktree, its scratch, a temp directory or a path its own \
+                 command created. Nothing was consulted, and nothing outside those moved",
+                landed.at.as_str(),
+                self.own_branch.as_deref().unwrap_or("its own branch")
+            );
+            let d = AdjudicationDecision::selected(&req, "allow_once", "gate:owned", &basis);
+            self.owned = Some(landed.label());
+            self.breaker.admitted(&direction);
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
+        }
+
         // 5. Inside a measured boundary a command is not asked about: at `writes-allowed`, where
         //    the confinement holds, a per-command ruling protects nothing a write the mode already
         // admits could not do. What still asks is what crosses the boundary or widens the view.
@@ -4110,6 +4197,40 @@ impl Gate for AdjudicatedGate {
         // At a point whose decider is the MODEL, the model's admit IS the decision: otherwise
         // `automode` is `supervised` under another name. Still bounded by the always-ask list,
         // the oracle's earned scope, and `Blocked` refused at 1b - and it admits once.
+        // And the model's BLOCK is a decision too: the call does not run, the reason goes back to
+        // the agent as the tool result, and no card is raised. A card about a call the reviewer has
+        // already answered is what taught the operator to press allow-all.
+        if self.mode.decider == crate::mode::Decider::Model
+            && let Some(a) = self.advice.clone()
+            && a.consulted
+            && a.would == "refuse"
+        {
+            let id = req.id.clone();
+            let basis = a.basis.clone();
+            let mut tell = format!(
+                "blocked, and this is a decision rather than a failure: {basis}\n\nThe call did \
+                 not run and nothing on disk changed. Change what you are doing, or ask the \
+                 operator for it by name; another spelling of the same action reaches the same \
+                 answer."
+            );
+            tell.push_str("\n\n");
+            tell.push_str(&format!("It is the row `{id}`."));
+            let d = AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome: DecisionOutcome::Selected {
+                    option_id: "deny_and_tell".into(),
+                },
+                by: a.by.clone(),
+                basis,
+                latency_ms: a.latency_ms,
+                grant_at: None,
+            };
+            self.breaker.refused(&direction);
+            self.file_exchange();
+            self.record(req, d, "refuse", direction.key());
+            return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
+        }
+
         if self.mode.decider == crate::mode::Decider::Model
             && !matches!(req.tier, Tier::AlwaysAsk { .. })
             && let Some(a) = self.advice.clone()
