@@ -11,6 +11,7 @@ pub mod judge;
 /// The permission ask as it shipped before the split, frozen for `--shadow-arm`.
 pub mod legacy;
 pub mod oracle;
+pub mod overreach;
 pub mod permission;
 pub mod prompts;
 pub mod record;
@@ -23,6 +24,8 @@ pub mod words;
 
 #[cfg(test)]
 mod oracle_tests;
+#[cfg(test)]
+mod overreach_tests;
 #[cfg(test)]
 mod persistent_tests;
 #[cfg(test)]
