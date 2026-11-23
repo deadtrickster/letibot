@@ -1476,6 +1476,14 @@ impl Harness {
                 // `[dotenv]`: a host the operator named gets the project's `.env` files, and a VM
                 // there gets them only under its own switch.
                 dotenv,
+                // Where a plain `sudo` on that machine asks for its password: this daemon's
+                // askpass-only door, forwarded over this very connection. A VM placement carries
+                // none - the guest is a second machine behind the host, and this socket is not
+                // there - so `SshBackend::place` drops it for one.
+                askpass: Some(letibot_tools::remote::AskpassForward::new(
+                    letibot_sessionlog::server::askpass_socket_path(&cfg.socket),
+                    cfg.session_id.clone(),
+                )),
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;
@@ -1555,14 +1563,29 @@ impl Harness {
                 }
                 match crate::sudo::install() {
                     Ok(plumbing) => {
+                        // One helper, four names: `sudo`, `ssh` and `git` all run a program the
+                        // same way (the prompt on argv, the value on stdout), and
+                        // `letibot-secret` is the same door for anything else.
+                        let helper = plumbing.askpass.display().to_string();
+                        env.push(("SUDO_ASKPASS".to_string(), helper.clone()));
+                        env.push(("SSH_ASKPASS".to_string(), helper.clone()));
+                        // Without this ssh asks a tty, and a session has none: the prompt is
+                        // exactly what must reach the head instead.
+                        env.push(("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()));
+                        env.push(("GIT_ASKPASS".to_string(), helper));
+                        // Where the generic helper is, for a command that names it outright and
+                        // for the `secret` shim beside the `sudo` one on `PATH`.
                         env.push((
-                            "SUDO_ASKPASS".to_string(),
-                            plumbing.askpass.display().to_string(),
+                            "LETIBOT_SECRET".to_string(),
+                            plumbing.secret.display().to_string(),
                         ));
                         h.set_path_prefix(Some(plumbing.shims.display().to_string()));
                     }
                     Err(why) => {
-                        eprintln!("letibot: sudo will have no way to ask for a password: {why}")
+                        eprintln!(
+                            "letibot: sudo, ssh and git will have no way to ask for a password: \
+                             {why}"
+                        )
                     }
                 }
                 // And the pairs this session's spawn gave it, so a worktree child's builds share
@@ -3515,6 +3538,23 @@ impl Harness {
                     point: point_cell.clone(),
                 },
             );
+            // The tree this session belongs to. A secret the person keeps is scoped by it, so a
+            // subagent shares its parent's window and a session of another tree shares nothing;
+            // the parent's own hub already knows the answer, which is what makes the walk one
+            // hop at every depth.
+            let root = match &cfg.parent_session_id {
+                Some(parent) => session_registry
+                    .get(parent)
+                    .map(|h| h.tree_root())
+                    .unwrap_or_else(|| parent.clone()),
+                None => cfg.session_id.clone(),
+            };
+            hub.set_tree_root(root.clone());
+            // And what this tree has already been given: a session that opens after the card was
+            // answered must not be able to print the value either.
+            if let Some(procs) = &processes {
+                parts.trees.secrets.adopt(&cfg.session_id, &root, procs);
+            }
             // Where a settlement gets written down: the watcher threads cannot be handed this harness's `Store`, so
             // they get the store it came from and open a handle onto the process's one connection. This session's own id
             // and not the tree's, since a job a child backgrounded is the child's row.

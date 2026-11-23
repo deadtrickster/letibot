@@ -33,6 +33,70 @@ impl Tree {
     }
 }
 
+/// The tree a session belongs to, and what a secret given in it goes to.
+///
+/// A value the person hands over must be invisible to every command of the tree it was given in
+/// - not just the session whose helper asked - and a session opened AFTER the card answered must
+/// not be able to print it either. So the values are kept here, beside the sessions, and
+/// replayed onto each host as it registers.
+#[derive(Clone, Default)]
+pub(crate) struct Secrets {
+    /// By tree root: every value given, oldest first. Never read out except to mask.
+    values: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Every live session's tree and host, by session id, so a value given later reaches them.
+    hosts: Arc<Mutex<HashMap<String, (String, Arc<dyn letibot_tools::exec::host::ProcessHost>)>>>,
+}
+
+impl Secrets {
+    /// Record a value and push it onto every host of `tree`, from the next byte on.
+    pub(crate) fn given(&self, tree: &str, value: &str) {
+        {
+            let mut g = self.values.lock().unwrap_or_else(|e| e.into_inner());
+            let slot = g.entry(tree.to_string()).or_default();
+            if slot.iter().any(|have| have == value) {
+                return;
+            }
+            slot.push(value.to_string());
+        }
+        let hosts = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+        for (root, host) in hosts.values() {
+            if root == tree {
+                host.add_secret(value);
+            }
+        }
+    }
+
+    /// A session's host is up: mark it with everything its tree has been given so far, and keep
+    /// it so a value given later finds it.
+    pub(crate) fn adopt(
+        &self,
+        session: &str,
+        tree: &str,
+        host: &Arc<dyn letibot_tools::exec::host::ProcessHost>,
+    ) {
+        let values = {
+            let g = self.values.lock().unwrap_or_else(|e| e.into_inner());
+            g.get(tree).cloned().unwrap_or_default()
+        };
+        for v in values {
+            host.add_secret(&v);
+        }
+        self.hosts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_string(), (tree.to_string(), Arc::clone(host)));
+    }
+
+    /// A session that closed takes its host with it: a mask pushed onto a dead host is a mask
+    /// with no reader.
+    pub(crate) fn forget(&self, session: &str) {
+        self.hosts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
+    }
+}
+
 /// Every session this daemon has open, by id. Cheap to clone - one `Arc` - because it rides
 /// [`crate::harness::Parts`] and every open puts its own entry in.
 #[derive(Clone, Default)]
@@ -41,6 +105,8 @@ pub(crate) struct Trees {
     /// The daemon's running-children counts, here because this table is the one thing every
     /// session of a daemon shares.
     pub(crate) admission: Arc<super::admission::Admission>,
+    /// The secrets the person has given, by tree - see [`Secrets`].
+    pub(crate) secrets: Secrets,
 }
 
 impl Trees {
@@ -59,6 +125,7 @@ impl Trees {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session);
+        self.secrets.forget(session);
     }
 
     /// The live point of an open session, for a child's ceiling.

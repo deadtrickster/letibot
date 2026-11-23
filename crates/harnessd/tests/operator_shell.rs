@@ -362,6 +362,11 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     let askpass = serde_json::to_string(&ClientFrame::Askpass {
         prompt: String::new(),
         command: String::new(),
+        for_what: String::new(),
+        key: None,
+        keep_ms: None,
+        host: String::new(),
+        session: String::new(),
     })
     .expect("askpass line");
 

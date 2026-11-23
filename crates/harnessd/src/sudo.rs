@@ -4,12 +4,14 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where the two pieces are.
+/// Where the pieces are.
 #[derive(Debug, Clone)]
 pub struct Plumbing {
-    /// The helper sudo runs.
+    /// The helper `sudo`, `ssh` and `git` run.
     pub askpass: PathBuf,
-    /// The directory holding the `sudo` shim, for the front of `PATH`.
+    /// The generic helper (`letibot-secret`), which `askpass` is a thin wrapper over.
+    pub secret: PathBuf,
+    /// The directory holding the `sudo` shim and the `secret` shim, for the front of `PATH`.
     pub shims: PathBuf,
 }
 
@@ -30,35 +32,58 @@ fn shim_dir() -> PathBuf {
     }
 }
 
-/// Find the helper beside this binary and write the shim. Idempotent; a missing
-/// helper or sudo is an error the caller discloses, not a panic.
+/// Find the helper beside this binary and write the shims. Idempotent; a missing helper or sudo
+/// is an error the caller discloses, not a panic.
 pub fn install() -> Result<Plumbing, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    // `$LETIBOT_ASKPASS` names the helper outright (a test binary has none
-    // beside it); otherwise it is beside this binary.
+    let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    // `$LETIBOT_ASKPASS` names the helper outright (a test binary has none beside it); otherwise
+    // it is the `letibot-askpass` link beside this binary, and `letibot-secret` beside it.
     let askpass = match std::env::var_os("LETIBOT_ASKPASS").map(PathBuf::from) {
         Some(p) if p.is_file() => p,
         Some(p) => return Err(format!("$LETIBOT_ASKPASS = {} is not a file", p.display())),
-        None => exe
-            .parent()
-            .map(|d| d.join("letibot-askpass"))
-            .filter(|p| p.is_file())
-            .ok_or_else(|| {
-                format!(
-                    "letibot-askpass is not beside {} — it is a symlink to `letibot-multi`, so make \
-                     one: ln -s letibot-multi {}/letibot-askpass",
-                    exe.display(),
-                    exe.parent()
-                        .map(|d| d.display().to_string())
-                        .unwrap_or_default()
-                )
-            })?,
+        None => dir.join("letibot-askpass"),
     };
+    if !askpass.is_file() {
+        return Err(format!(
+            "letibot-askpass is not beside {} — it is a symlink to `letibot-multi`, so make \
+             one: ln -s letibot-multi {}/letibot-askpass",
+            exe.display(),
+            dir.display()
+        ));
+    }
+    // The generic helper is what the `secret` shim runs. Absent is not fatal: the askpass shim
+    // still works, and the environment names nothing that is not there.
+    let secret = dir.join("letibot-secret");
     let sudo = real_sudo().ok_or_else(|| "no sudo on this box".to_string())?;
     let shims = shim_dir();
     std::fs::create_dir_all(&shims).map_err(|e| format!("{}: {e}", shims.display()))?;
     write_shim(&shims.join("sudo"), &sudo)?;
-    Ok(Plumbing { askpass, shims })
+    write_secret_shim(&shims.join("secret"), &secret)?;
+    Ok(Plumbing {
+        askpass,
+        secret,
+        shims,
+    })
+}
+
+/// `secret NAME [for-text]` — the door for anything that is not `sudo`, `ssh` or `git`.
+///
+/// A shim rather than a shell function: a function needs an rc file read by the shell a session
+/// runs, and a session's shell is `sh -c`. `--keep 15m` because a value asked for by name is a
+/// value the command expects to reuse; the person still chooses on the card.
+fn write_secret_shim(path: &Path, helper: &Path) -> Result<(), String> {
+    let body = format!(
+        "#!/bin/sh\n\
+         # letibot: `secret NAME [for-text]` asks the person for a named secret and prints it.\n\
+         # The value goes to this command's stdout and nowhere else.\n\
+         [ -n \"$1\" ] || {{ echo \"secret: usage: secret NAME [for-text]\" >&2; exit 2; }}\n\
+         exec \"{helper}\" ask --key \"$1\" --keep 15m \\\n\
+         \x20 --for \"${{2:-$1}}\" \\\n\
+         \x20 ${{SECRET_PROMPT:+--prompt \"$SECRET_PROMPT\"}}\n",
+        helper = helper.display()
+    );
+    write_if_changed(path, &body)
 }
 
 fn write_shim(path: &Path, real: &Path) -> Result<(), String> {
@@ -72,11 +97,19 @@ fn write_shim(path: &Path, real: &Path) -> Result<(), String> {
          exec {real} -A \"$@\"\n",
         real = real.display()
     );
-    if std::fs::read_to_string(path).ok().as_deref() == Some(body.as_str()) {
+    write_if_changed(path, &body)
+}
+
+/// Write an executable script only when its bytes would change, and do not return until it can
+/// be exec'd: "written, chmod'd and renamed into place" is not the same thing, because `execve`
+/// answers `ETXTBSY` for a file any process holds open for writing, and this daemon forks
+/// constantly.
+fn write_if_changed(path: &Path, body: &str) -> Result<(), String> {
+    if std::fs::read_to_string(path).ok().as_deref() == Some(body) {
         return Ok(());
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))

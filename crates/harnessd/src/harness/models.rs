@@ -464,10 +464,17 @@ impl Harness {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| (d + KEY_PATIENCE).as_millis() as u64)
                 .unwrap_or(0);
-            // An empty `command` is what tells a head this is not sudo's card.
-            let (req_id, rx) = self.hub.request_secret(&prompt, "", deadline);
+            // An empty `command` is what tells a head this is not sudo's card. It goes through
+            // the hub rather than the vault: a provider key is written to a file and must never
+            // be answerable from a window a later command could find.
+            let want = letibot_sessionlog::vault::SecretWant {
+                prompt,
+                ..Default::default()
+            };
+            let (req_id, rx) = self.hub.request_secret(&want, deadline);
             let given = match rx.recv_timeout(KEY_PATIENCE) {
-                Ok(s) => s,
+                Ok(Some((key, _keep))) => Some(key),
+                Ok(None) => None,
                 Err(_) => {
                     self.hub
                         .abandon_secret(&req_id, "nobody, before the deadline");

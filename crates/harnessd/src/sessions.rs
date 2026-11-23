@@ -803,6 +803,15 @@ impl<'a> Sessions<'a> {
             reply: None,
         };
         let (tool, cond) = sessions.seat_tool(&id);
+        // A secret the person gives this daemon goes to the session tree it was given in, which
+        // is a fact about a running command - so the masker is installed here, where the process
+        // hosts are, and `sessionlog` only forwards the value (see `Registry::set_secret_kept`).
+        {
+            let trees = sessions.parts.trees.clone();
+            registry.set_secret_kept(Arc::new(move |tree: &str, value: &str| {
+                trees.secrets.given(tree, value)
+            }));
+        }
         // The system prompt is composed at open, for the tools the seat actually holds
         // from `prompts.toml`, the standing notes and the fabric. Message 0 is written
         // from it and never rewritten after - see `Config::compose_for_seat`.
