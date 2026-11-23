@@ -62,6 +62,7 @@ pub mod migrate;
 mod notes;
 mod roles;
 mod rooms;
+mod secret;
 mod session;
 mod stats;
 mod store;
@@ -75,6 +76,9 @@ mod whereis;
 pub enum Role {
     /// `sudo`'s helper: one question over the socket, answer on stdout.
     Askpass,
+    /// The generic helper: what a program asks the person for, `--for` and all. Installed as
+    /// `letibot-secret`, and what `letibot-askpass` is a thin wrapper over.
+    Secret,
     /// The session owner: socket, store, model connection.
     Daemon,
     /// A head: the terminal interface, attached to a daemon.
@@ -90,6 +94,7 @@ pub enum Role {
 /// Every role, for the compile-time checks and for tests.
 pub const ALL_ROLES: &[Role] = &[
     Role::Askpass,
+    Role::Secret,
     Role::Daemon,
     Role::Head,
     Role::M1,
@@ -114,6 +119,7 @@ pub const REGISTRY: &[(&str, Role, Kind)] = &[
     ("harnessd", Role::Daemon, Kind::Program),
     ("letibot-tui", Role::Head, Kind::Program),
     ("letibot-askpass", Role::Askpass, Kind::Program),
+    ("letibot-secret", Role::Secret, Kind::Program),
     ("letibot-m1", Role::M1, Kind::Program),
     ("letibot-render", Role::Render, Kind::Program),
     ("letibot-render-qwen", Role::RenderQwen, Kind::Program),
@@ -124,6 +130,7 @@ pub const REGISTRY: &[(&str, Role, Kind)] = &[
     ("tui", Role::Head, Kind::Word),
     ("head", Role::Head, Kind::Word),
     ("askpass", Role::Askpass, Kind::Word),
+    ("secret", Role::Secret, Kind::Word),
     ("m1", Role::M1, Kind::Word),
     ("render", Role::Render, Kind::Word),
     ("render-qwen", Role::RenderQwen, Kind::Word),
@@ -152,6 +159,7 @@ const fn role_eq(a: Role, b: Role) -> bool {
     matches!(
         (a, b),
         (Role::Askpass, Role::Askpass)
+            | (Role::Secret, Role::Secret)
             | (Role::Daemon, Role::Daemon)
             | (Role::Head, Role::Head)
             | (Role::M1, Role::M1)
@@ -427,7 +435,11 @@ USAGE
 ROLES
   daemon                      the session owner (also installed as `harnessd`)
   tui | head                  a head, attached to a daemon
-  askpass [PROMPT]            what `sudo` runs (also installed as `letibot-askpass`)
+  askpass [PROMPT]            what `sudo`, `ssh` and `git` run (also installed as
+                              `letibot-askpass`)
+  secret ask --for TEXT       ask the person for a secret and print it: --key NAME,
+                              --keep 15m, --prompt TEXT, --host NAMES (also installed
+                              as `letibot-secret`)
   m1                          the M1 measurement
   render | render-qwen        the renderers the fidelity gate runs
 

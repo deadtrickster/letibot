@@ -17,7 +17,9 @@
 #   $PREFIX/harnessd           the daemon — the session, the gate, the model connection
 #   $PREFIX/letibot-tui        the head — the terminal interface you look at
 #   $PREFIX/letibot-multi      every role of the Rust binary, picked by argv[0] or the first word
-#   $PREFIX/letibot-askpass    a hardlink to letibot-multi: what `sudo` runs to ask for a password
+#   $PREFIX/letibot-askpass    a hardlink to letibot-multi: what `sudo`, `ssh` and `git` run
+#                              to ask for a password
+#   $PREFIX/letibot-secret     the generic helper: `letibot-secret ask --for "what uses it"`
 #   $PREFIX/letibot            the command you type: starts the daemon if needed, attaches a head
 #   $PREFIX/leticode           the same, seated as leticode (shell and web_fetch on, automode-edits)
 #   $PREFIX/letibot-mcp        the Claude Code bridge: the MCP server the `leticode` plugin runs
@@ -121,7 +123,7 @@ BINARIES="harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibo
 LAUNCHERS="letibot leticode"
 # Names of `letibot-multi` made at install time, not shipped: `sudo` runs its helper by PATH and
 # the multicall picks the role from `argv[0]` (`role_copies`).
-ROLE_LINKS="letibot-askpass"
+ROLE_LINKS="letibot-askpass letibot-secret"
 is_launcher() {
   case " $LAUNCHERS " in *" $1 "*) return 0 ;; esac
   return 1

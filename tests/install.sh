@@ -117,6 +117,11 @@ layout_ok() { # layout_ok CASE DIR -- the launcher a script, the multicall and i
   else
     fail "$1: letibot-askpass is letibot-multi under the role's name" "$(ls -lai "$d")"
   fi
+  if [ "$d/letibot-secret" -ef "$d/letibot-multi" ]; then
+    note "$1: letibot-secret is letibot-multi under the role's name"
+  else
+    fail "$1: letibot-secret is letibot-multi under the role's name" "$(ls -lai "$d")"
+  fi
 }
 
 # --- a source install --------------------------------------------------------------------------

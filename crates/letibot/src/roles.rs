@@ -11,7 +11,10 @@ use crate::Role;
 /// tell - and must not need to - which way it was reached.
 pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
     match role {
-        Role::Askpass => askpass(args),
+        // `sudo`, `ssh` and `git` run this one by PATH with their prompt as argv[1]. It is a
+        // thin wrapper over the generic helper, so there is one place a secret is asked for.
+        Role::Askpass => crate::secret::askpass(args),
+        Role::Secret => crate::secret::run(&args_to_strings(args)),
         // Wired, and it is the last one. `letibot_harnessd::cli::run` is that binary's body,
         // and this arm mirrors ITS `main` exactly, including the `harnessd: {e}` prefix a person
         // reading a failed start has always seen.
@@ -76,95 +79,6 @@ pub fn launcher() -> ExitCode {
     ExitCode::from(2)
 }
 
-/// The role `sudo` runs. Attach to the session's daemon, ask the person, print the secret on
-/// stdout. It takes the prompt as `args[0]` and `sudo` passes it as `argv[1]`, which is the whole
-/// argument for argv[0] dispatch. Exit codes are load-bearing: every refusal is 1 and says why.
-fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
-    askpass_in(
-        args,
-        &std::env::var("LETIBOT_SOCKET").unwrap_or_default(),
-        &std::env::var("LETIBOT_SESSION").unwrap_or_default(),
-        &std::env::var("LETIBOT_COMMAND").unwrap_or_default(),
-    )
-}
-
-/// [`askpass`] with the session handed over rather than read from the environment, so its test
-/// says "outside a session" with two empty strings: a `setenv` beside a C-side `getenv` is
-/// undefined behaviour, and `cargo test` is not single-threaded.
-fn askpass_in(args: &[std::ffi::OsString], socket: &str, session: &str, command: &str) -> ExitCode {
-    use std::io::Write;
-
-    use letibot_sessionlog::client::HeadClient;
-    use letibot_sessionlog::protocol::{Caps, ServerFrame};
-
-    let prompt = args
-        .first()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "[sudo] password:".into());
-    if socket.is_empty() || session.is_empty() {
-        eprintln!(
-            "letibot-askpass: not inside a letibot session (LETIBOT_SOCKET / LETIBOT_SESSION \
-             unset), so there is nobody to ask for a password"
-        );
-        return ExitCode::FAILURE;
-    }
-    let caps = Caps {
-        queue: 8,
-        can_decide: false,
-        ..Caps::default()
-    };
-    let (mut client, _hello, mut reader) =
-        match HeadClient::attach(socket, session, u64::MAX, "askpass", "sudo", caps) {
-            Ok(x) => x,
-            Err(e) => {
-                eprintln!("letibot-askpass: the session's daemon did not take the question: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-    if let Err(e) = client.askpass(&prompt, command) {
-        eprintln!("letibot-askpass: {e}");
-        return ExitCode::FAILURE;
-    }
-    // The daemon may deliver a snapshot or events before the answer; only the
-    // `Secret` frame is for us, and it comes on this connection or not at all.
-    loop {
-        match reader.read::<ServerFrame>() {
-            Ok(ServerFrame::Secret {
-                secret: Some(s), ..
-            }) => {
-                let mut out = std::io::stdout().lock();
-                let _ = out.write_all(s.as_bytes());
-                let _ = out.write_all(b"\n");
-                let _ = out.flush();
-                let _ = client.detach();
-                return ExitCode::SUCCESS;
-            }
-            Ok(ServerFrame::Secret { secret: None, why }) => {
-                // The daemon says which failure this was; an older daemon sends no reason and
-                // the old sentence is what is left to say.
-                match why {
-                    Some(why) => eprintln!("letibot-askpass: no password was given — {why}"),
-                    None => eprintln!(
-                        "letibot-askpass: no password was given — no head answered before the \
-                         deadline, or the person refused"
-                    ),
-                }
-                let _ = client.detach();
-                return ExitCode::FAILURE;
-            }
-            Ok(ServerFrame::Bye { reason }) => {
-                eprintln!("letibot-askpass: the daemon closed the connection: {reason}");
-                return ExitCode::FAILURE;
-            }
-            Ok(_) => continue,
-            Err(e) => {
-                eprintln!("letibot-askpass: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +91,7 @@ mod tests {
     fn every_installed_name_maps_to_its_role_and_the_dispatcher_does_not() {
         for (name, role) in [
             ("letibot-askpass", R::Askpass),
+            ("letibot-secret", R::Secret),
             ("harnessd", R::Daemon),
             ("letibot-tui", R::Head),
             ("letibot-m1", R::M1),
@@ -209,6 +124,7 @@ mod tests {
     #[test]
     fn subcommands_name_the_same_roles_as_the_installed_names() {
         assert_eq!(Role::from_subcommand("askpass"), Some(R::Askpass));
+        assert_eq!(Role::from_subcommand("secret"), Some(R::Secret));
         assert_eq!(Role::from_subcommand("daemon"), Some(R::Daemon));
         assert_eq!(Role::from_subcommand("tui"), Some(R::Head));
         assert_eq!(Role::from_subcommand("head"), Some(R::Head));
@@ -221,52 +137,5 @@ mod tests {
             "the path name is not a word"
         );
         assert_eq!(Role::from_subcommand(""), None);
-    }
-
-    /// `sudo`'s calling convention, which is why argv[0] exists. `SUDO_ASKPASS` is a path and
-    /// sudo passes the prompt as `argv[1]`, so the role takes it from the first argument and reads
-    /// no subcommand out of it. Outside a session the honest answer is a refusal, not a hang.
-    #[test]
-    fn askpass_outside_a_session_refuses_rather_than_waiting() {
-        // Both empty, which is what an unset `LETIBOT_SOCKET`/`LETIBOT_SESSION` reads as:
-        // with either set the role tries to reach a daemon. Handed in, not unset - see
-        // `askpass_in`.
-        let code = askpass_in(
-            &[std::ffi::OsString::from("[sudo] password for dead: ")],
-            "",
-            "",
-            "",
-        );
-        assert_eq!(
-            code,
-            ExitCode::FAILURE,
-            "no session means exit 1 so sudo reports that no password was given"
-        );
-    }
-
-    /// The session it asks in is the one HANDED IN rather than one read from the environment: a
-    /// socket that names nobody is a refusal at once, which is what keeps a `sudo` prompt from
-    /// hanging on a daemon that is not there.
-    #[test]
-    fn askpass_names_the_socket_it_was_given_and_refuses_when_no_daemon_is_at_it() {
-        let nowhere = std::env::temp_dir().join(format!(
-            "letibot-no-daemon-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        let code = askpass_in(
-            &[std::ffi::OsString::from("[sudo] password: ")],
-            &nowhere.to_string_lossy(),
-            "s-nobody",
-            "",
-        );
-        assert_eq!(
-            code,
-            ExitCode::FAILURE,
-            "a socket with no daemon behind it is a refusal, not a wait"
-        );
     }
 }
