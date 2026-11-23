@@ -461,3 +461,6 @@ Read from the user file, or $LETIBOT_GC_SETTINGS.
 |---|---|---|---|---|
 | `state` | path | none | user only | firecode state dir |
 | `runs` | path | none | user only | firecode runs dir |
+| `budget` | size | "150G" | user only | what the hourly gc --state keeps state under |
+| `max_age_days` | integer | 14 | user only | state older than this goes |
+| `pool_per_project` | integer | 2 | user only | pooled VMs per project |

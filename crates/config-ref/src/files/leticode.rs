@@ -539,6 +539,9 @@ pub const LETICODE: File = File {
             keys: &[
                 k("state", "path", "none", U, "firecode state dir", "\"/build/firecode/state\""),
                 k("runs", "path", "none", U, "firecode runs dir", "\"/build/firecode/runs\""),
+                k("budget", "size", "\"150G\"", U, "what the hourly gc --state keeps state under", "\"150G\""),
+                k("max_age_days", "integer", "14", U, "state older than this goes", "14"),
+                k("pool_per_project", "integer", "2", U, "pooled VMs per project", "2"),
             ],
         },
     ],
