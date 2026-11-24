@@ -307,6 +307,9 @@ The merge queue reads the project file only, except the three census keys.
 | `reviewers_run_suites` | bool | false | project only | reviewers may run whole test suites, not only named tests |
 | `grant_ttl_hours` | int >= 1 | 24 | project only | how long a session answer on a relayed reviewer card covers the queue |
 | `gate_deadline_minutes` | int >= 1 | 30 | project only | one gate run's deadline, counted from when the box's gate lock is held |
+| `gate_cache_root` | path | under the placement | project only | where every gate's build cache lives: `<root>/<repo>-<hex>`, on the box's build disk rather than in the placement |
+| `gate_cache_days` | int >= 1 | 3 | project only | a gate's build cache nothing has written to for this many days is removed |
+| `gate_min_free` | size | 30G | project only | free space the filesystem holding a gate's target, and the landing root, must have before a gate starts |
 
 ## `[queue.claude]`
 
