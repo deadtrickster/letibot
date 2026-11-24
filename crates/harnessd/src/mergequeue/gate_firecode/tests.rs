@@ -205,9 +205,8 @@ fn gate_in_is_read_from_the_queue_table() {
     let p = f.dir.join("leticode.toml");
     assert!(settings::parse(&p.with_file_name("none.toml")).is_err());
     std::fs::write(&p, "[queue]\n").unwrap();
-    // Nobody said: the SEAT's default decides, and the daemon resolves it when a gate starts - so a
-    // queue gate is a seat with no head like any other ([`crate::seat_default`]).
-    assert_eq!(settings::parse(&p).unwrap().gate_in, GateIn::Seat);
+    // Nobody said: the host. The seat default never moves a queue gate into a VM.
+    assert_eq!(settings::parse(&p).unwrap().gate_in, GateIn::Host);
     std::fs::write(&p, "[queue]\ngate_in = \"host\"\n").unwrap();
     assert_eq!(settings::parse(&p).unwrap().gate_in, GateIn::Host);
     std::fs::write(&p, "[queue]\ngate_in = \"firecode\"\n").unwrap();

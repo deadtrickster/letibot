@@ -117,14 +117,13 @@ impl Reviewers {
 /// Where a gate's steps run on the gate machine - `[queue] gate_in`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GateIn {
-    /// Directly on the gate machine.
+    /// Directly on the gate machine. The default.
+    #[default]
     Host,
     /// Inside a firecode VM over the gate's checkout.
     Firecode,
-    /// Nobody said: `[seat] default` decides, resolved when the gate starts - a VM where this
-    /// machine can start one, and this machine with one warning where it cannot. The default,
-    /// because a queue gate is a seat with no head.
-    #[default]
+    /// `[seat] default` decides, resolved when the gate starts. Never what a file says: a gate
+    /// whose suite boots VMs cannot run in one, so an unplaced gate is `Host`.
     Seat,
 }
 
@@ -219,7 +218,7 @@ impl Default for QueueSettings {
             gate_poll: super::gate::GATE_POLL_DEFAULT,
             // A gate is a seat with no head: `[seat] default` decides, and the daemon resolves it
             // when the gate starts. A fixture that wants this machine says `GateIn::Host`.
-            gate_in: GateIn::Seat,
+            gate_in: GateIn::Host,
             reviewer_skills: Vec::new(),
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
@@ -352,9 +351,9 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         Some(w) => Reviewers::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
     };
     let gate_in = match q.gate_in.as_deref() {
-        // Nobody said: the seat's default decides, and a machine that cannot start a VM runs the
-        // steps here rather than leaving every tip unjudged (`serve::start_gate` resolves it).
-        None => GateIn::Seat,
+        // Nobody said: the host. A gate whose own suite boots VMs cannot run inside one, so the
+        // seat default (a VM) never moves a queue gate; `gate_in = "firecode"` is the ask for one.
+        None => GateIn::Host,
         Some(w) => GateIn::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
     };
     let gate_train = match q.gate_train {
