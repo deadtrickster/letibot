@@ -124,7 +124,10 @@ pub fn pdf(line: &str) -> Vec<u8> {
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
          /Resources << /Font << /F1 5 0 R >> >> >>"
             .to_string(),
-        format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+        format!(
+            "<< /Length {} >>\nstream\n{stream}\nendstream",
+            stream.len()
+        ),
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
     ];
     for (n, body) in objects.iter().enumerate() {
