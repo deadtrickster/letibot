@@ -23,9 +23,12 @@ fn a_running_steps_tail_grows_between_two_reads() {
     std::fs::create_dir_all(&wt).expect("the landing tree");
     let repo = dir.display().to_string();
     watch(&wt, &repo);
-    // A trailing sleep, so the last line is observable: a poll that has to land between `three`
-    // being written and the step exiting misses under a loaded suite.
-    let steps = vec!["echo one; sleep 2; echo two; sleep 2; echo three; sleep 1".to_string()];
+    // The step waits for `go` after its first line, so the first read always lands before the
+    // rest is written however loaded the box is; the trailing sleep keeps `three` observable.
+    let steps = vec![
+        "echo one; while [ ! -f go ]; do sleep 0.05; done; echo two; echo three; sleep 1"
+            .to_string(),
+    ];
     std::thread::scope(|s| {
         let run = s.spawn(|| {
             let stop = AtomicBool::new(false);
@@ -48,6 +51,7 @@ fn a_running_steps_tail_grows_between_two_reads() {
             got.expect("the step wrote it")
         };
         let first = wait_for("one");
+        std::fs::write(wt.join("go"), "").expect("the step's go file");
         assert_eq!(
             (first.step, first.of),
             (1, 1),
@@ -55,7 +59,7 @@ fn a_running_steps_tail_grows_between_two_reads() {
         );
         assert_eq!(
             first.command,
-            "echo one; sleep 2; echo two; sleep 2; echo three; sleep 1"
+            "echo one; while [ ! -f go ]; do sleep 0.05; done; echo two; echo three; sleep 1"
         );
         let second = wait_for("three");
         assert!(
