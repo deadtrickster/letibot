@@ -192,6 +192,38 @@ fn a_wheel_notch_over_the_card_turns_its_page() {
     assert!(header.contains("p 2/3"), "{header:?}");
 }
 
+/// And a notch aimed at the conversation above the card scrolls the conversation: the card being
+/// on the screen is not the same question as the pointer being over it.
+#[test]
+fn a_wheel_notch_over_the_transcript_leaves_the_card_alone() {
+    let (mut a, _bytes) = a_prompt_with_a_pdf();
+    a.pdf_reader = reader(&fixture(3));
+    a.set_proto(rano::term::Proto::Kitty);
+    let _ = a.screen(100, 30);
+    settle(&mut a);
+    let frame = a.screen(100, 30);
+    let card = frame
+        .iter()
+        .position(|l| l.contains(crate::ui::transcript::pdf::GLYPH))
+        .expect("the card's header");
+    // The operator's own row, which is above the card.
+    let above = frame
+        .iter()
+        .position(|l| l.contains("summarise this"))
+        .expect("the operator's row");
+    assert!(above < card, "the premise: {above} is above {card}");
+    a.key(Key::Wheel {
+        up: false,
+        x: 10,
+        y: above as u16,
+    });
+    assert_eq!(
+        a.pdf.card("s.0", 1).map(|c| c.page),
+        Some(0),
+        "a notch over the transcript turned the card's page"
+    );
+}
+
 /// A page key with no pointer turns it too, and at the last page the step goes back to the
 /// conversation rather than dead-ending: that is how a reader scrolls past a document.
 #[test]

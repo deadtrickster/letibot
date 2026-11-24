@@ -517,8 +517,9 @@ impl App {
     /// in that direction, and hands the step back to the conversation at either end of the document.
     /// `true` when the card took it.
     ///
-    /// `at` is the line the step was aimed at - the pointer's row for a wheel notch - and the reader's
-    /// own line when a key sent it.
+    /// `at` is the line the step was AIMED at - the pointer's row for a wheel notch, which is the only
+    /// row a pointer names. `None` is a key, which names no row: then the card at the window's edge in
+    /// the direction of the step counts, and failing that one the window holds whole.
     pub(crate) fn turn_pdf_page(&mut self, up: bool, by: usize, at: Option<usize>) -> bool {
         let Some((key, space, at_row, page)) = self.card_for_step(up, at) else {
             return false;

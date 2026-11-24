@@ -385,7 +385,7 @@ impl App {
                     return ControlFlow::Break(None);
                 }
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
-                self.scroll_conversation(&k, up, NOTCH);
+                self.scroll_conversation_rows(&k, up, NOTCH);
             }
             Target::Decision | Target::QuitCard | Target::ReseatCard => {
                 self.scroll_card(up, NOTCH);

@@ -192,9 +192,17 @@ impl App {
         // A document card under the reader takes the step first: a page taller than the screen is the
         // conversation's to scroll, and at the page's last row - or its first, going up - the step
         // turns the page rather than leaving the card. At the ends of the document it hands back.
+        // A KEY aims at no row, so a card the window holds whole counts as what it is about; a wheel
+        // aims at one, and is answered by [`App::turn_pdf_page`] with the pointer's line instead - a
+        // notch over the transcript must not turn a card it is not over.
         if self.turn_pdf_page(up, by, None) {
             return;
         }
+        self.scroll_conversation_rows(k, up, by);
+    }
+
+    /// [`App::scroll_conversation`] with no card in front of it: the rows move, whatever is on them.
+    pub(crate) fn scroll_conversation_rows(&mut self, k: &Key, up: bool, by: usize) {
         if up {
             // Through `scroll_up`, which renders as it goes: the frame clamps against the rows
             // rendered so far, so assigning `scroll` here could never express "further up than
