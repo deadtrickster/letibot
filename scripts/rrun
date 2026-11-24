@@ -107,9 +107,10 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --gate)
-      # main's merge gate through its `cargo test` step, offline, read as the queue reads it.
-      gate=$(git -C "$wt" show main:AGENTS.md | sh "$here/gate-steps.sh") ||
-        die "main:AGENTS.md in $wt declares no merge gate"
+      # main's FULL gate through its `cargo test` step, offline, read as the queue reads it - the
+      # tier a tip's health is judged by, which is the one whose steps end at the suite.
+      gate=$(git -C "$wt" show main:AGENTS.md | sh "$here/gate-steps.sh" --full) ||
+        die "main:AGENTS.md in $wt declares no gate"
       steps=()
       while IFS= read -r s; do
         s=${s/clippy-gate.sh /clippy-gate.sh --offline }
