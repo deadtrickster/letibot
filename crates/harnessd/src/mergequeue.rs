@@ -31,6 +31,7 @@ pub mod settings;
 pub mod setup;
 pub mod stuck;
 pub mod verbs;
+pub mod waits;
 pub mod watch;
 
 #[cfg(test)]
@@ -530,6 +531,13 @@ impl serve::QueueDoor for RegistryDoor {
             return Err(missed.join("; "));
         }
         Ok(format!("told {}", told.join(", ")))
+    }
+
+    /// One session and no other: the queue's verdict on the gate it asked for. The message is the
+    /// one a head reads (`CommandKind::Message`), and its wake is the same one a job's end rings,
+    /// so an idle session starts a turn and a busy one reads it at its next boundary.
+    fn deliver_session(&self, session_id: &str, text: &str) -> Result<String, String> {
+        self.deliver(session_id, text)
     }
 }
 

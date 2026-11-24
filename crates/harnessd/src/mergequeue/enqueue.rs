@@ -144,6 +144,19 @@ pub fn enqueue_branch(
         .review_row(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("the review row `{id}` was written and read back as nothing"))?;
+    // The session that put the branch up is woken with the verdict: the row exists now, so a wait
+    // that could not be written is said and does not take the enqueue down with it.
+    if let Err(e) = super::waits::watch(
+        store,
+        &row.repository,
+        &super::waits::Waiting::Row(row.id.clone()),
+        session,
+    ) {
+        eprintln!(
+            "  merge queue: `{}` is queued and the wait for its gate could not be written: {e}",
+            row.id
+        );
+    }
     Ok(row)
 }
 

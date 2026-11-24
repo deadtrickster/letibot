@@ -113,6 +113,14 @@ pub trait QueueDoor: Send + Sync {
         let _ = (repository, text);
         Err(format!("this door delivers to no session of {repository}"))
     }
+    /// Put the words on ONE session - the queue's own verdict, owed to a session that asked for
+    /// the gate. A door that cannot reach sessions answers by name and the queue skips that one.
+    fn deliver_session(&self, session_id: &str, text: &str) -> Result<String, String> {
+        let _ = text;
+        Err(format!(
+            "this door delivers to no session `{session_id}` of its own"
+        ))
+    }
     /// Whether this door puts words on sessions at all - a door with no sessions answers `false`
     /// and the queue takes today's path exactly: the card, and nothing said about nobody reading it.
     /// A door that does deliver answers `true`, and a delivery it could not make is raised.
@@ -696,6 +704,34 @@ impl RepoQueue {
             .announce_to(&self.key, SessionEvent::warning(code, detail));
     }
 
+    /// Wake the sessions waiting on this gate: one row each, taken as it is sent, so a pass that
+    /// re-reads the same health does not say it again. A session that is gone is skipped - the
+    /// pane still shows the verdict, and a verdict nobody waits on says nothing.
+    fn wake_waits(&self, what: super::waits::Waiting, sha: &str, verdict: &str, why: &str) {
+        let waited = match super::waits::take(&self.store, &self.key, &what) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!(
+                    "  merge queue: who waits on {} could not be read: {e}",
+                    what.body()
+                );
+                return;
+            }
+        };
+        if waited.is_empty() {
+            return;
+        }
+        let text = super::waits::notice(&what, sha, verdict, why);
+        for session in waited {
+            if !self.env.door.session_live(&session) {
+                continue;
+            }
+            if let Err(e) = self.env.door.deliver_session(&session, &text) {
+                eprintln!("  merge queue: `{session}` was not told {verdict}: {e}");
+            }
+        }
+    }
+
     /// Where a gate nobody placed runs: `[seat] default` for this repository (a VM), resolved
     /// against this machine - and when it cannot start one, the steps run here with ONE warning
     /// naming why. An ASK for firecode is not this: it leaves the tip UNJUDGED instead, because
@@ -730,6 +766,14 @@ impl RepoQueue {
             .move_review(&r.id, r.state, to, &mv, gate::now_ms())?;
         if ok {
             self.announce_move("review", &r.id, to.as_str(), &why);
+            if super::waits::review_verdict(to, &why) {
+                self.wake_waits(
+                    super::waits::Waiting::Row(r.id.clone()),
+                    &r.head_sha,
+                    to.as_str(),
+                    &why,
+                );
+            }
         }
         Ok(ok)
     }
@@ -2387,6 +2431,12 @@ impl RepoQueue {
         h.checked_ms = gate::now_ms();
         self.store.set_target_health(h, &me)?;
         self.announce_move("target", &target, state.as_str(), &h.evidence);
+        self.wake_waits(
+            super::waits::Waiting::Target(target.clone()),
+            &h.sha,
+            state.as_str(),
+            &h.evidence,
+        );
         match state {
             HealthState::Red => self.target_went_red(h)?,
             HealthState::Green => self.target_is_green(h)?,
@@ -2836,12 +2886,26 @@ impl RepoQueue {
 
     fn gating_to(&self, row: &MergeRow, to: MergeState, mv: Move) -> Result<bool, StoreError> {
         let me = self.me().to_string();
-        self.merge_to(
+        let why = mv.why.clone();
+        let ok = self.merge_to(
             row,
             MergeState::Gating,
             to,
             mv.owned_by(&me).set("owner", ""),
-        )
+        )?;
+        if ok && super::waits::merge_verdict(to) {
+            let sha = row
+                .rebased_sha
+                .clone()
+                .unwrap_or_else(|| row.approved_sha.clone());
+            self.wake_waits(
+                super::waits::Waiting::Row(row.review_id.clone()),
+                &sha,
+                to.as_str(),
+                &why,
+            );
+        }
+        Ok(ok)
     }
 
     /// The landing, in the dedicated worktree, with a compare-and-swap on the target.
@@ -2893,6 +2957,14 @@ impl RepoQueue {
                 {
                     self.announce_move("merge", &row.id, "moved", &why);
                     self.announce_move("review", &row.review_id, "waiting", &why);
+                    // The change judged is not the change on the branch: a verdict, and the one
+                    // a session that asked for the gate would otherwise wait out for nothing.
+                    self.wake_waits(
+                        super::waits::Waiting::Row(row.review_id.clone()),
+                        &row.approved_sha,
+                        "moved",
+                        &why,
+                    );
                 }
                 return Ok(());
             }

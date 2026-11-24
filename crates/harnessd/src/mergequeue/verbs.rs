@@ -13,6 +13,7 @@ use letibot_tokencore::store::{
 
 use super::gate::now_ms;
 use super::git;
+use super::waits::{self, Waiting};
 
 /// A row either queue holds, found by its id or a unique prefix of it.
 enum Found {
@@ -132,6 +133,17 @@ fn announce(events: &dyn Fn(SessionEvent), queue: &str, id: &str, to: &str, why:
 
 fn by(session: &str) -> String {
     format!("operator:{session}")
+}
+
+/// Write down the waiter a verb's actor is, when the actor is a session: the gate's verdict is
+/// delivered to it, so asking for a gate and polling for its answer are not the same act.
+fn watch(store: &Store, repository: &str, what: &Waiting, who: &str) {
+    let Some(session) = waits::session_of(who) else {
+        return;
+    };
+    if let Err(e) = waits::watch(store, repository, what, session) {
+        eprintln!("  merge queue: the wait `{who}` asked for could not be written: {e}");
+    }
 }
 
 /// The mover's kind, `operator` for `operator:<session>` and `bridge` for `bridge:<handle>`.
@@ -368,6 +380,7 @@ pub fn restart_by(
                 return Err(format!("`{}` moved while you asked; look again", r.id));
             }
             announce(events, "review", &r.id, "waiting", &why);
+            watch(store, &r.repository, &Waiting::Row(r.id.clone()), &who);
             Ok(format!("`{}` waits for a reviewer again", r.branch))
         }
         Found::Merge(m) => {
@@ -410,6 +423,12 @@ pub fn restart_by(
                 return Err(format!("`{}` moved while you asked; look again", m.id));
             }
             announce(events, "merge", &m.id, "queued", &why);
+            watch(
+                store,
+                &m.repository,
+                &Waiting::Row(m.review_id.clone()),
+                &who,
+            );
             Ok(format!("`{}` is back in line to land", m.branch))
         }
     }
@@ -878,6 +897,9 @@ pub fn regate(
         )
         .map_err(|e| e.to_string())?;
     announce(events, "target", target, "gating", &why);
+    // The asker is woken with the verdict: a re-gate whose answer nobody is told is a poll, and
+    // that is the whole of what this verb was for.
+    watch(store, repository, &Waiting::Target(target.to_string()), who);
     // Who will run it: a re-gate nobody serves is a row that says `gating` for ever.
     let leases = store.queue_leases().map_err(|e| e.to_string())?;
     let served = leases.iter().any(|l| {
