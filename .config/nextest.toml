@@ -14,6 +14,9 @@ retries = 0
 [profile.gate]
 # The gate's own verdict, so a second failure is still worth reading about.
 fail-fast = false
+# Not one per core: the gate box runs other projects' work, and timing tests flake when the gate
+# alone fills it. Twelve still finishes in a fraction of the serial run.
+test-threads = 12
 retries = 0
 slow-timeout = { period = "60s", terminate-after = 10 }
 
