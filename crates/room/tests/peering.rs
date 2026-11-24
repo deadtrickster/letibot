@@ -1033,6 +1033,51 @@ fn a_box_in(dir: &std::path::Path, host: &str) -> (Server, Peer) {
     (server, peer)
 }
 
+/// The store is written before the mesh answers that this box holds a peer's seats. A far box's
+/// list is kept by the coordinator's sink, which runs on the link's own thread as the frame
+/// arrives, so a coordinator stopped in that window comes back knowing the seat rather than having
+/// admitted one it forgot. The sink is parked inside the write here, which is what makes the
+/// question answerable: the mesh is read while that thread is still in the sink.
+#[test]
+fn a_peers_seat_list_is_written_down_before_the_mesh_holds_it() {
+    let (peer, _events) = Peer::open(
+        PeerConfig::new("lab1", Cookie::of(COOKIE))
+            .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_tick(Tick::new(60, 4))
+            .without_announce(),
+    )
+    .expect("a peer");
+    let (in_sink, sink_ran) = mpsc::channel();
+    let (open, parked) = mpsc::channel::<()>();
+    let parked = Mutex::new(parked);
+    peer.on_seats(Arc::new(move |host: &str, seats: &[SeatProfile]| {
+        let _ = in_sink.send((host.to_string(), seats.len()));
+        // Held here until the test has read the mesh: the write this stands for is not over.
+        let _ = parked.lock().unwrap_or_else(|e| e.into_inner()).recv();
+    }));
+    let mut far = FakeBox::up(peer.addr(), "lab2", &Cookie::of(COOKIE));
+    wait_until("the far box to link", || peer.alive("lab2"));
+    far.say(&letibot_room::peer::PeerFrame::Profiles {
+        seats: vec![SeatProfile::new(
+            "lab2/s-b1",
+            &RepoIdentity::named(&an_identity("aaaa1111bbbb")),
+            "main",
+            "provider fixes",
+        )],
+    });
+    let (host, seats) = sink_ran
+        .recv_timeout(PATIENCE)
+        .expect("the far box's list reached the sink");
+    assert_eq!((host.as_str(), seats), ("lab2", 1));
+    assert!(
+        !peer.holds("lab2/s-b1"),
+        "the mesh answered `held` before the list was written down"
+    );
+    open.send(()).expect("the sink may finish");
+    wait_until("the mesh to hold the seat", || peer.holds("lab2/s-b1"));
+    peer.stop();
+}
+
 /// A far box that announced one seat and then stopped answering, and a coordinator that restarted
 /// after it did. The mesh that held the seat was in memory, so only the chat store can say who the
 /// box's seats are - which is the case seen on lab2x1: mac1 linked for a few seconds and stopped.

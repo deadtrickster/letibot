@@ -24,7 +24,7 @@ pub use cookie::{Cookie, CookieError};
 pub use frame::{ConsentRow, PEER_PROTOCOL, PeerFrame};
 pub use mesh::{Link, Mesh, PeerEvent, Tick};
 pub use profile::{Introductions, ProjectProfile, RepoIdentity, SeatProfile};
-pub use run::{Peer, PeerConfig, STOPPING};
+pub use run::{Peer, PeerConfig, STOPPING, SeatsSink};
 
 /// The default group, port and tick, for a caller that wants to say what it changed.
 pub use announce::{BEACON, GROUP, PORT as GROUP_PORT};

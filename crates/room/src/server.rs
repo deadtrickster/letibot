@@ -522,6 +522,17 @@ impl Server {
     /// A coordinator with no cookie has no peer and never calls this: every seat an id can name is
     /// then on this box, which is exactly the behaviour this server had before peering existed.
     pub fn with_peer(&self, peer: Peer, events: std::sync::mpsc::Receiver<PeerEvent>) -> &Self {
+        // The seats a box announces are kept as its frame arrives, not when the event behind it is
+        // drained: the mesh answers *held* at once, and a stop in between must not lose the seat.
+        // Weak, so the peer's copy of this room does not keep it alive past its own stop.
+        {
+            let weak = Arc::downgrade(&self.inner);
+            peer.on_seats(Arc::new(move |host: &str, seats: &[SeatProfile]| {
+                if let Some(inner) = weak.upgrade() {
+                    Server { inner }.remember_seats(host, seats);
+                }
+            }));
+        }
         *self.inner.peer.lock().expect("the peer lock") = Some(peer);
         let server = self.clone();
         std::thread::spawn(move || {
@@ -602,9 +613,10 @@ impl Server {
             PeerEvent::Down { why, .. } => eprintln!("room: {why}"),
             PeerEvent::BeaconCut { why } => self.say_beacon_cut(&why),
             PeerEvent::BeaconBack => self.say_beacon_back("the beacon is getting out again"),
-            PeerEvent::Profiles { host, seats } => {
-                // Kept before it is acted on: an id in this list stays an addressee after a restart.
-                self.remember_seats(&host, &seats);
+            PeerEvent::Profiles { seats, .. } => {
+                // The store already holds this list: it is written as the frame arrives, before the
+                // mesh answers that this box holds them (`Peer::on_seats`). What is left is the room
+                // work - an introduction, once per seat.
                 self.introduce(&seats)
             }
             PeerEvent::Message(message) => self.accept_remote(*message),

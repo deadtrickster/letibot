@@ -158,7 +158,13 @@ struct Inner {
     /// each said. A redial at the same protocol gets the same sentence, so there is none until that
     /// box says a different number - see [`Refused`].
     refused: Mutex<Refused>,
+    /// What keeps a peer's seat list: called with the frame's own list BEFORE the mesh answers that
+    /// it holds them, so a coordinator stopped in between does not know a seat it had admitted.
+    keep_seats: Mutex<Option<SeatsSink>>,
 }
+
+/// Where a peer's seat list is written down, the moment it arrives.
+pub type SeatsSink = Arc<dyn Fn(&str, &[SeatProfile]) + Send + Sync>;
 
 /// The peers this box gave up on, and the protocol each was refused at.
 #[derive(Default)]
@@ -231,6 +237,20 @@ impl Inner {
             // The coordinator's reader is behind. What is lost here is a roster note; the link
             // itself and the messages on it keep working, and the next `Up` re-sends the seats.
             self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Write a peer's seat list down before anything here says the box holds it. The copy is taken
+    /// out of the lock first: it reaches the coordinator's chat store, and that lock is not held
+    /// while a link's socket is read.
+    fn keep_seats(&self, host: &str, seats: &[SeatProfile]) {
+        let sink = self
+            .keep_seats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(sink) = sink {
+            sink(host, seats);
         }
     }
 
@@ -390,6 +410,7 @@ impl Peer {
                 dropped: AtomicU64::new(0),
                 refusals: Mutex::new(Vec::new()),
                 refused: Mutex::new(Refused::default()),
+                keep_seats: Mutex::new(None),
             }),
         };
         peer.spawn_accept(listener);
@@ -402,6 +423,17 @@ impl Peer {
 
     pub fn host(&self) -> &str {
         &self.inner.host
+    }
+
+    /// What to do with a peer's seat list as its frame arrives, before the mesh is told it holds
+    /// them: the coordinator keeps the list in its store, so nothing depends on the event behind it
+    /// being drained before the process stops.
+    pub fn on_seats(&self, sink: SeatsSink) {
+        *self
+            .inner
+            .keep_seats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
     /// The TCP port links arrive at: what a beacon carries, and what a peer must be told.
@@ -922,6 +954,10 @@ fn read_loop(inner: &Arc<Inner>, reader: &mut BufReader<TcpStream>, far: &str) -
                 if seats.len() > MAX_SEATS {
                     seats.truncate(MAX_SEATS);
                 }
+                // Written down first, because the mesh's copy is memory: a coordinator stopped
+                // between this frame and the event's turn would forget a seat it had admitted, and
+                // answer a dm to it as nobody once it came back.
+                inner.keep_seats(far, &seats);
                 let event = inner
                     .mesh
                     .lock()
