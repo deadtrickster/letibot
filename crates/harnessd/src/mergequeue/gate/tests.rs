@@ -25,7 +25,7 @@ fn a_running_steps_tail_grows_between_two_reads() {
     watch(&wt, &repo);
     // A trailing sleep, so the last line is observable: a poll that has to land between `three`
     // being written and the step exiting misses under a loaded suite.
-    let steps = vec!["echo one; sleep 0.6; echo two; sleep 0.6; echo three; sleep 1".to_string()];
+    let steps = vec!["echo one; sleep 2; echo two; sleep 2; echo three; sleep 1".to_string()];
     std::thread::scope(|s| {
         let run = s.spawn(|| {
             let stop = AtomicBool::new(false);
@@ -55,7 +55,7 @@ fn a_running_steps_tail_grows_between_two_reads() {
         );
         assert_eq!(
             first.command,
-            "echo one; sleep 0.6; echo two; sleep 0.6; echo three; sleep 1"
+            "echo one; sleep 2; echo two; sleep 2; echo three; sleep 1"
         );
         let second = wait_for("three");
         assert!(
