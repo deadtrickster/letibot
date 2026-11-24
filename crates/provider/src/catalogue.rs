@@ -162,7 +162,7 @@ pub fn opencode_path() -> Option<PathBuf> {
 
 /// The vendored snapshot's provenance, beside the data it describes. The script that
 /// writes the file prints this string, so the two stay honest with each other.
-pub const SNAPSHOT_FETCHED: &str = "2026-10-26";
+pub const SNAPSHOT_FETCHED: &str = "2026-11-24";
 
 /// The floor: every provider a preset can switch to, as models.dev carried them on
 /// [`SNAPSHOT_FETCHED`]. Small because this is not a browsing catalogue, only the answer

@@ -70,6 +70,673 @@
    }
   }
  },
+ "google": {
+  "models": {
+   "deep-research-max-preview-04-2026": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "deep-research-preview-04-2026": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-2.5-flash": {
+    "cost": {
+     "cache_read": 0.03,
+     "input": 0.3,
+     "output": 2.5
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "audio",
+      "video",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-2.5-flash-image": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.3,
+     "output": 2.5
+    },
+    "limit": {
+     "context": 32768,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "gemini-2.5-flash-lite": {
+    "cost": {
+     "cache_read": 0.01,
+     "input": 0.1,
+     "output": 0.4
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "audio",
+      "video",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-2.5-flash-preview-tts": {
+    "cost": {
+     "input": 0.5,
+     "output": 10
+    },
+    "limit": {
+     "context": 8192,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    }
+   },
+   "gemini-2.5-pro": {
+    "cost": {
+     "cache_read": 0.125,
+     "input": 1.25,
+     "output": 10
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "audio",
+      "video",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-2.5-pro-preview-tts": {
+    "cost": {
+     "input": 1,
+     "output": 20
+    },
+    "limit": {
+     "context": 8192,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    }
+   },
+   "gemini-3-flash-preview": {
+    "cost": {
+     "cache_read": 0.05,
+     "input": 0.5,
+     "output": 3
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3-pro-image": {
+    "cost": {
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 65536,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "gemini-3.1-flash-image": {
+    "cost": {
+     "input": 0.5,
+     "output": 3
+    },
+    "limit": {
+     "context": 131072,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.1-flash-lite": {
+    "cost": {
+     "cache_read": 0.025,
+     "input": 0.25,
+     "output": 1.5
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.1-flash-lite-image": {
+    "cost": {
+     "input": 0.25,
+     "output": 1.5
+    },
+    "limit": {
+     "context": 65536,
+     "output": 4096
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "gemini-3.1-flash-live-preview": {
+    "cost": {
+     "input": 0.75,
+     "output": 4.5
+    },
+    "limit": {
+     "context": 131072,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio"
+     ]
+    }
+   },
+   "gemini-3.1-flash-tts-preview": {
+    "cost": {
+     "input": 1,
+     "output": 20
+    },
+    "limit": {
+     "context": 8192,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    }
+   },
+   "gemini-3.1-pro-preview": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.1-pro-preview-customtools": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.5-flash": {
+    "cost": {
+     "cache_read": 0.15,
+     "input": 1.5,
+     "output": 9
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.5-flash-lite": {
+    "cost": {
+     "cache_read": 0.03,
+     "input": 0.3,
+     "output": 2.5
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.5-live-translate-preview": {
+    "cost": {
+     "input": 3.5,
+     "output": 21
+    },
+    "limit": {
+     "context": 16384,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "audio"
+     ]
+    }
+   },
+   "gemini-3.6-flash": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.75,
+     "output": 3.75
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.7-flash": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.75,
+     "output": 3.75
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-3.8-flash": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.75,
+     "output": 3.75
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-4-argon": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-4-carbon": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-4-hydrogen": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 1.5,
+     "output": 7.5
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-4-neon": {
+    "cost": {
+     "cache_read": 0.15,
+     "input": 3,
+     "output": 15
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-embedding-001": {
+    "cost": {
+     "input": 0.15,
+     "output": 0
+    },
+    "limit": {
+     "context": 2048,
+     "output": 1
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
+    }
+   },
+   "gemini-embedding-2": {
+    "cost": {
+     "input": 0.2,
+     "output": 0
+    },
+    "limit": {
+     "context": 8192,
+     "output": 1
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "audio",
+      "video",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-flash-latest": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.75,
+     "output": 3.75
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-flash-lite-latest": {
+    "cost": {
+     "cache_read": 0.03,
+     "input": 0.3,
+     "output": 2.5
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemini-pro-latest": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "pdf"
+     ]
+    }
+   },
+   "gemma-4-26b-a4b-it": {
+    "cost": {
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 262144,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "gemma-4-31b-it": {
+    "cost": {
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 262144,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "lyria-3-clip-preview": {
+    "cost": {
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "lyria-3-pro-preview": {
+    "cost": {
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 65536
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   }
+  }
+ },
  "kimi-code-plan-cn": {
   "models": {
    "k3": {
@@ -80,7 +747,7 @@
     },
     "limit": {
      "context": 1048576,
-     "output": 131072
+     "output": 1048576
     },
     "modalities": {
      "input": [
@@ -98,7 +765,7 @@
     },
     "limit": {
      "context": 262144,
-     "output": 131072
+     "output": 262144
     },
     "modalities": {
      "input": [
@@ -115,7 +782,7 @@
     },
     "limit": {
      "context": 1048576,
-     "output": 131072
+     "output": 1048576
     },
     "modalities": {
      "input": [
@@ -133,7 +800,7 @@
     },
     "limit": {
      "context": 1048576,
-     "output": 131072
+     "output": 1048576
     },
     "modalities": {
      "input": [
@@ -191,7 +858,7 @@
     },
     "limit": {
      "context": 1048576,
-     "output": 131072
+     "output": 1048576
     },
     "modalities": {
      "input": [
@@ -209,7 +876,7 @@
     },
     "limit": {
      "context": 262144,
-     "output": 131072
+     "output": 262144
     },
     "modalities": {
      "input": [
@@ -226,7 +893,7 @@
     },
     "limit": {
      "context": 1048576,
-     "output": 131072
+     "output": 1048576
     },
     "modalities": {
      "input": [
@@ -244,7 +911,7 @@
     },
     "limit": {
      "context": 1048576,
-     "output": 131072
+     "output": 1048576
     },
     "modalities": {
      "input": [
@@ -420,37 +1087,7 @@
      ]
     }
    },
-   "grok-build-0.1": {
-    "cost": {
-     "cache_read": 0.2,
-     "input": 1,
-     "output": 2
-    },
-    "limit": {
-     "context": 256000,
-     "output": 256000
-    },
-    "modalities": {
-     "input": [
-      "text",
-      "image",
-      "pdf"
-     ]
-    }
-   },
    "grok-imagine-image": {
-    "limit": {
-     "context": 16000,
-     "output": 0
-    },
-    "modalities": {
-     "input": [
-      "text",
-      "image"
-     ]
-    }
-   },
-   "grok-imagine-image-quality": {
     "limit": {
      "context": 16000,
      "output": 0
@@ -616,6 +1253,25 @@
     "modalities": {
      "input": [
       "text"
+     ]
+    }
+   },
+   "glm-5.4": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
      ]
     }
    }
@@ -980,6 +1636,25 @@
     "modalities": {
      "input": [
       "text"
+     ]
+    }
+   },
+   "glm-5.4": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
      ]
     }
    }
