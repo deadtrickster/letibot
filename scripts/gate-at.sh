@@ -1,10 +1,21 @@
 #!/bin/sh
-# gate-at.sh WORKTREE TARGET_DIR BASE: the merge gate BASE's AGENTS.md declares, run on WORKTREE.
-# Every step but the install (that one runs after the push), each in gate-env.sh's env, judged by
-# its exit status; `check-fmt.sh main` compares against BASE. docs/gate.md has the rest.
+# gate-at.sh WORKTREE TARGET_DIR BASE [--quick]: the gate BASE's AGENTS.md declares, run on
+# WORKTREE. `--quick` (or `QUICK=1` in the environment) runs the quick tier instead of the whole
+# gate - what a branch must pass to land, where the project declares two tiers. Every step but the
+# install (that one runs after the push), each in gate-env.sh's env, judged by its exit status;
+# `check-fmt.sh main` compares against BASE. docs/gate.md has the rest.
 set -u
-[ $# -eq 3 ] || {
-  echo "usage: gate-at.sh WORKTREE TARGET_DIR BASE" >&2
+quick=${QUICK:-0}
+case ${4:-} in
+  '' | --quick) ;;
+  *)
+    echo "usage: gate-at.sh WORKTREE TARGET_DIR BASE [--quick]" >&2
+    exit 2
+    ;;
+esac
+[ "${4:-}" = --quick ] && quick=1
+[ $# -eq 3 ] || [ $# -eq 4 ] || {
+  echo "usage: gate-at.sh WORKTREE TARGET_DIR BASE [--quick]" >&2
   exit 2
 }
 W=$(cd "$1" && pwd) || exit 2
@@ -42,8 +53,11 @@ note() {
   } >"$RD/owner"
 }
 note 0 ''
-# Read from BASE, as the queue reads it from the target: a stack cannot change its own gate.
-steps=$(git show "$B:AGENTS.md" | sh scripts/gate-steps.sh) || {
+# Read from BASE, as the queue reads it from the target: a stack cannot change its own gate. The
+# quick tier is the branch's own bar; the whole gate is what main's health is judged by.
+tier=--full
+[ "$quick" = 1 ] && tier=--quick
+steps=$(git show "$B:AGENTS.md" | sh scripts/gate-steps.sh "$tier") || {
   echo "gate: $B:AGENTS.md declares no merge gate" >&2
   exit 2
 }
@@ -69,6 +83,11 @@ rm -rf "$G"
 R=$(mktemp -d "${TMPDIR:-/tmp}/g.XXXX") || exit 2
 chmod 700 "$R"
 trap 'rm -rf "$R" "$RD"' EXIT
+# What every step is told it is compared against, the same two facts the queue hands its steps:
+# the sha BASE names, and the paths this worktree changes since it - so a step can aim itself.
+BASE_SHA=$(git rev-parse "$B" 2>/dev/null) || BASE_SHA=
+CHANGED="$R/changed.txt"
+git diff --name-only "$BASE_SHA" "$SHA" >"$CHANGED" 2>/dev/null || : >"$CHANGED"
 # One full workspace run at a time on this box: parallel gates choke it. Later callers wait here.
 # Steps run with fd 9 closed, so a process a test leaks cannot hold the lock after the gate.
 exec 9>"$LOCK"
@@ -94,7 +113,8 @@ while IFS= read -r step <&3; do
   note "$i" "$step"
   # A skip is not a pass: a test whose apparatus is missing fails instead of skipping.
   sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
-    LETIBOT_APPARATUS_REFUSALS="$refused" sh -c "$step" >"$log" 2>&1 </dev/null 9>&-
+    LETIBOT_APPARATUS_REFUSALS="$refused" LETIBOT_GATE_BASE="$BASE_SHA" \
+    LETIBOT_GATE_CHANGED="$CHANGED" sh -c "$step" >"$log" 2>&1 </dev/null 9>&-
   rc=$?
   # What passed: libtest's line per test binary, or nextest's own one-line summary for the step.
   ok=$(grep -cE '^test result: ok\.' "$log")

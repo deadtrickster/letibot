@@ -1,9 +1,83 @@
 # The gate
 
-The gate is the `## Merge gate` section of a repository's `AGENTS.md`: the first fenced block under
-that heading, one shell command per line. It is read from `main`'s copy, so a branch cannot weaken
-the gate it is judged by. A repository without the section has no gate, and the queue holds every
-branch of it until somebody writes one (`merge_gate` asks the operator what it should be).
+A repository declares its gate in its `AGENTS.md`, as fenced blocks of one shell command per line.
+A project can declare **two tiers**:
+
+- `## Quick gate` - what a branch must pass to LAND, with the review.
+- `## Full gate` - what `main`'s own health is judged by, after the landings.
+
+A project with one `## Merge gate` section is unchanged: that section is both tiers, so a branch is
+gated by it before landing and a tip nobody landed is gated by it when it moves. The sections are
+read from `main`'s copy, so a branch cannot weaken the gate it is judged by. A repository that
+declares none of the three has no gate, and the queue holds every branch of it until somebody writes
+one (`merge_gate` asks the operator what it should be).
+
+## Two tiers: what lands, and what main's health is judged by
+
+Review stays per branch and so does the landing: an approved branch is rebased onto the target's tip
+in the queue's own landing worktree and the **quick** gate runs there. Green: the landing is pushed,
+the install steps run, and the branch is on `main`. Red: the branch is parked `failed`, as ever.
+
+`main`'s health is the **full** gate's, and it is run nowhere near a landing:
+
+- **It is batched.** One run covers every landing since the last tip a full gate judged, and it
+  starts when the queue has nothing left to land - at the gate's own idle priority (`nice`, and a
+  cgroup with a fifth of systemd's default CPU and IO weight), so a busy queue keeps landing and
+  main is judged in the gaps. Landings an hour apart are one run each; five in ten minutes are one
+  run over all five.
+- **While the full gate is owed, the tip is green.** Its row says so in as many words - *the full
+  gate is owed since `<sha>`* - because nothing about that tip halts the queue. Landings go on.
+- **Red on a batch is bisected.** The step that failed is re-run, alone, at the midpoints of the
+  batch (`git rev-list base..tip`'s middle, then the middle of the half that answers), so the first
+  red landing is found in `log2(n)` runs of one step. That landing is reverted on `main` with a
+  commit of its own, `revert: <subject> - full gate red at <sha>`, pushed as a landing is pushed, and
+  the row it landed as goes `failed`. The session that landed it is woken with the failing step and
+  the end of its output - the same door a gate's own verdict uses.
+- **A red no landing caused is parked.** If the commit that broke `main` is not one the queue landed
+  (somebody pushed it), or every landing passes the step when re-run on its own, nothing is
+  reverted: the target goes `red` and says a person has to act, exactly as a red tip always has.
+- **Red `main` halts nothing but new landings onto it**, which is the rule it has always been: an
+  approved branch goes back to review, a fix lands alone, and reviews go on.
+
+The full gate's tree is the target's tip, so a step that only makes sense on main (a deploy check,
+a smoke test against the built binaries) belongs there rather than in the quick gate.
+
+## What every step is told: `LETIBOT_GATE_BASE` and `LETIBOT_GATE_CHANGED`
+
+Every step of either tier runs with two facts about the run in its environment, so a project's step
+can aim itself instead of running the world:
+
+- `LETIBOT_GATE_BASE` - the commit this run is compared against: for a landing, the target tip the
+  branch was rebased onto; for the full gate, the last tip anybody judged; for a bisection's own
+  re-run, the commit before the midpoint.
+- `LETIBOT_GATE_CHANGED` - the path of a file listing the paths this run changes, one per line, as
+  `git diff --name-only <base> <tip>` prints them. A file rather than a variable because a file is
+  what every tool can read, and it is always written: an empty file means *this run changed
+  nothing*, where an unset variable could only mean *nobody worked it out*.
+
+A step that ignores both is a step that runs the world, which is what a gate did before.
+
+```sh
+# Rust: the crates the change is in, and everything that depends on them.
+crates=$(sed -n 's#^crates/\([^/]*\)/.*#\1#p' "$LETIBOT_GATE_CHANGED" | sort -u)
+expr=$(for c in $crates; do printf 'rdeps(letibot-%s) + ' "$c"; done)
+cargo nextest run --profile gate -E "${expr% + }"
+
+# Go: the packages the change is in, and their importers.
+go test $(sed -n 's#^\([^/]*/[^/]*\).*#\1#p' "$LETIBOT_GATE_CHANGED" | sort -u | sed 's#^#./#')...
+
+# Python: the tests under the packages that changed.
+pytest $(sed -n 's#^\(src/[^/]*\)/.*#\1#p' "$LETIBOT_GATE_CHANGED" | sort -u | sed 's#^src/#tests/#') \
+  || pytest
+
+# Shell: the suite for the scripts that changed, and only those.
+for f in $(grep '^scripts/' "$LETIBOT_GATE_CHANGED"); do sh "$f" --self-test; done
+```
+
+This repository's own quick test step is `scripts/quick-tests.sh`: it maps the paths to crate names
+and runs `cargo nextest run --profile gate -E 'rdeps(<crate>) + …'`. `sh scripts/quick-tests.sh
+--print` prints the expression without running it. A change to a manifest or the nextest profile
+runs everything; a change that is only prose runs nothing and says so.
 
 ## Who runs it, and when
 
@@ -14,6 +88,8 @@ main tree's artifacts and nothing it builds reaches the main tree's `target/rele
 install step.
 
 - The first step that fails parks the branch. The row names the step and carries its output.
+- The target's own tip is judged by the full tier on the same terms - in that landing worktree, with
+  the same deadline and the same rows - one batched run at a time (above).
 - A gate on this machine first takes the box's gate lock, the one `scripts/gate-at.sh` takes
   (`/build/gate.lock`, or `LETIBOT_GATE_LOCK`), and holds it to its last step.
 - The daemon pokes a step every 5 s and the step's own launcher watches for the pokes. A step that
@@ -28,9 +104,11 @@ install step.
   catch a dead daemon's step (`mergequeue/gate_orphans.rs`) is gone.
 - One deadline covers the whole run, not each step, counted from when the lock is held: thirty
   minutes, or `[queue] gate_deadline_minutes`. Past it the step in flight is killed with its
-  process group and the row is `timed_out`.
-- The same steps, without the install, gate the target's own tip whenever it moves.
-- A step named `install-gate-build` runs only after the landing was pushed. It refuses when the
+  process group and the row is `timed_out`. Each of a bisection's re-runs is a run of its own, with
+  the deadline.
+- A step named `install-gate-build` runs only after the landing was pushed, and it is the landing's:
+  the queue splits a tier's install steps out of its list and runs them after the push, so a
+  two-tier project declares the one it wants a landing to run (`Quick gate`). It refuses when the
   build it was told about is the directory the launcher already starts from, and when that build
   is older than the newest `harnessd` it can see: both name `CARGO_TARGET_DIR`, because a step
   that lost it used to copy every binary onto itself and still say installed.
@@ -87,7 +165,7 @@ has `hostname`, `user`, `key` (the identity file ssh is given, never read into a
 
 ## Running it by hand
 
-The `AGENTS.md` section is the definition. By hand, on this box:
+The `AGENTS.md` sections are the definition. By hand, on this box, the full gate is:
 
 ```sh
 sh scripts/check-fmt.sh main
@@ -98,6 +176,18 @@ LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --doc --features local
 cargo build --release --bins --features local
 sh scripts/check-dist-names.sh --built
 ```
+
+and the quick one is the same file's `## Quick gate` block - or, through the script that runs either
+with the gate's own environment and lock:
+
+```sh
+sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main           # the full gate
+sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main --quick   # what a branch needs
+QUICK=1 sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main   # the same
+```
+
+`sh scripts/quick-tests.sh --print` says which crates the quick test step would run, from the same
+`LETIBOT_GATE_CHANGED` a gate writes.
 
 - **`--features local` is not optional on this box.** `local` is off by default, because it is
   llama.cpp and the default install is cloud-only; this box serves local models, so every step names
@@ -120,6 +210,9 @@ sh scripts/check-dist-names.sh --built
 - A test that cannot share the box with another test process - a fixed port, a fixed path, a socket
   at a well-known name - goes in the profile's `serial` group (`max-threads = 1`). Fixing it (its own
   temp dir, its own port) is the better answer; the group is for the ones that cannot be fixed.
+- The quick gate's test step is `scripts/quick-tests.sh`: the crates the change touches and what
+  depends on them (`-E 'rdeps(…)'`), not the workspace. A full workspace run is the full gate's, on
+  `main` afterwards; a branch that needs one can be run by hand.
 - Doc tests are libtest's and nextest does not run them, hence the `cargo test --doc` step beside it.
   Without that line a doctest is in no gate at all.
 - The shell suites `tests/launcher.sh` and `tests/rrun.sh` run inside the nextest step, from

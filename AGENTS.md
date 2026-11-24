@@ -59,16 +59,49 @@ the folder's daemon and exec the binaries from `target/release`.
   do real I/O against it or the network. Scope runs to the crate you touched (`cargo test -p
   letibot-tui`), not the workspace.
 
-## Merge gate
+## Quick gate
 
-The merge queue runs these steps in its own landing worktree after rebasing an approved branch onto
-the target's tip. The first failure parks the branch. A gate on this box takes `/build/gate.lock`
-first. One deadline (thirty minutes, or `[queue] gate_deadline_minutes`) covers the whole run, not
-each step: past it the step in flight is killed (`timed_out`). `install-gate-build` runs only after
-the landing was pushed. The same steps without the install gate the target's tip when it moves.
-The section is read from `main`, so a branch cannot change its own gate. The queue reads the first fenced block under this heading, one command per
-line. It runs on this box or the host `[queue] gate_host` names, never on GitHub Actions.
-`docs/gate.md` covers gating through the queue and by hand.
+What a branch must pass to LAND, with the review. The merge queue runs these in its own landing
+worktree after rebasing an approved branch onto the target's tip, and the first failure parks the
+branch. They are read from `main`, so a branch cannot lower the bar it is judged by; the queue reads
+the first fenced block under this heading, one command per line. Keep this one minutes: the suite is
+what `## Full gate` is for, and a green landing does not wait for it. A gate on this box takes
+`/build/gate.lock` first. One deadline (thirty minutes, or `[queue] gate_deadline_minutes`) covers
+the whole run, not each step.
+
+Every step is handed `LETIBOT_GATE_BASE` - the target sha the branch was rebased onto - and
+`LETIBOT_GATE_CHANGED`, a file of the paths the run changes, one per line. That is what lets a test
+step aim itself instead of running the world; `scripts/quick-tests.sh` is this project's.
+
+```sh
+sh scripts/check-fmt.sh main
+sh scripts/check-test-attrs.sh
+sh scripts/clippy-gate.sh --workspace --all-targets --features local -- -D warnings
+sh scripts/quick-tests.sh
+cargo build --release --bins --features local
+sh scripts/check-dist-names.sh --built
+sh scripts/install-gate-build.sh
+```
+
+- `scripts/quick-tests.sh` maps `LETIBOT_GATE_CHANGED`'s paths to the crates they are in and runs
+  `cargo nextest run --profile gate -E 'rdeps(<those crates>)'`: the touched crates and everything
+  that depends on them. A change to a manifest or the nextest profile runs everything; a change to
+  prose runs nothing and says so. `--print` says what it would run and runs nothing.
+- The build and the install are here, not below, because the install is the LANDING's: it copies
+  what this gate built into `target/release` after the push (`install-gate-build`), and a project
+  whose quick gate does not build has nothing to install. `Full gate` keeps the same line, where it
+  is documentation - the queue runs a project's install steps with its landing, from whichever
+  section declares them.
+
+## Full gate
+
+`main`'s own health, judged after the landings. These are the whole gate - the same steps by hand,
+and today's gate unchanged. The queue runs them on the target's tip, batched: one run covers every
+landing since the last tip it judged, and it starts when there is nothing left to land, at the gate's
+own idle priority. The first failure makes `main` red; when the tip is the queue's own landings it is
+bisected (the failing step re-run at the midpoints of the batch), the first landing that broke it is
+reverted with `revert: <subject> - full gate red at <sha>`, and the session that landed it is told.
+A red no landing caused is parked on a person. The section is read from `main` too.
 
 ```sh
 sh scripts/check-fmt.sh main
@@ -81,6 +114,9 @@ cargo build --release --bins --features local
 sh scripts/check-dist-names.sh --built
 sh scripts/install-gate-build.sh
 ```
+
+It runs on this box or the host `[queue] gate_host` names, never on GitHub Actions. `docs/gate.md`
+covers the two tiers, the variables and gating by hand.
 
 - `check-fmt.sh` format-checks only the Rust files the change touches. The tree is not rustfmt-clean.
 - `check-dist-names.sh --built` holds `install.sh`, `make-dist.sh` and the release workflow to one
