@@ -57,12 +57,26 @@ fn sq(s: &str) -> String {
 /// The line that runs `step` in a VM over `dir`. A Mac mounts `dir` read-only with a throwaway
 /// layer (`firecode sh`). Elsewhere `firecode run` sends the files and copies nothing back.
 pub fn launch_line(bin: &str, step: &str, dir: &str) -> String {
+    launch_line_subject(bin, step, dir, &super::gate::GateSubject::default())
+}
+
+/// [`launch_line`] for a run that carries what it is compared against.
+pub fn launch_line_subject(
+    bin: &str,
+    step: &str,
+    dir: &str,
+    subject: &super::gate::GateSubject,
+) -> String {
     let bin = sq(bin);
-    launch_with(&bin, step, dir)
+    launch_with_subject(&bin, step, dir, subject)
 }
 
 /// The program on a declared host: `$FIRECODE_BIN` there, else `firecode` on its `PATH`.
 pub const REMOTE_BIN: &str = "\"${FIRECODE_BIN:-firecode}\"";
+
+/// Where the VM keeps the changed-path list [`launch_with_subject`] writes: this process's
+/// environment does not cross into the VM, so the list is made there.
+const VM_CHANGED: &str = "/tmp/letibot-gate-changed";
 
 /// [`launch_line`] with `bin` already shell-ready.
 ///
@@ -70,6 +84,17 @@ pub const REMOTE_BIN: &str = "\"${FIRECODE_BIN:-firecode}\"";
 /// project the work is in, and `--purpose ephemeral` - a gate's VM has nothing to keep and is
 /// discarded the moment its verdict is in.
 pub fn launch_with(bin: &str, step: &str, dir: &str) -> String {
+    launch_with_subject(bin, step, dir, &super::gate::GateSubject::default())
+}
+
+/// [`launch_with`] for a run that carries what it is compared against. The two facts go in front of
+/// the step, inside the VM, because the daemon's environment does not reach it.
+pub fn launch_with_subject(
+    bin: &str,
+    step: &str,
+    dir: &str,
+    subject: &super::gate::GateSubject,
+) -> String {
     let stamp = letibot_tools::firecode::cli::Stamp {
         session: format!(
             "gate-{}",
@@ -80,11 +105,16 @@ pub fn launch_with(bin: &str, step: &str, dir: &str) -> String {
         purpose: letibot_tools::firecode::cli::Purpose::Ephemeral,
         reuse: false,
     };
+    let step = match subject.base.is_empty() && subject.changed.is_empty() {
+        true => step.to_string(),
+        false => format!("{}{step}", subject.prelude(VM_CHANGED)),
+    };
+    let step = sq(&step);
     format!(
         "if [ \"$(uname -s)\" = Darwin ]; then exec {bin} sh -c {step} {dir}; \
          else cd {dir} && exec {bin} run {stamp} --project {dir} -- bash -c {step}; fi",
         bin = bin,
-        step = sq(step),
+        step = step,
         dir = sq(dir),
         stamp = stamp.flags().join(" "),
     )
@@ -108,16 +138,23 @@ pub struct FirecodeGate {
 }
 
 impl FirecodeGate {
-    fn here(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+    fn here(
+        &self,
+        worktree: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        subject: &super::gate::GateSubject,
+    ) -> GateRun {
         let bin = match self.ready.ready() {
             Ok(b) => b,
             Err(why) => return super::gate::could_not_run(steps, unjudged(&why)),
         };
         let dir = worktree.display().to_string();
         let bin_s = bin.display().to_string();
-        let run = super::gate::run_with_launcher(worktree, steps, ctl, self.memory, &|s| {
-            launch_line(&bin_s, s, &dir)
-        });
+        let run =
+            super::gate::run_with_launcher_subject(worktree, steps, ctl, self.memory, &|s| {
+                launch_line_subject(&bin_s, s, &dir, subject)
+            }, subject);
         // `run` leaves its VM up for the next call; the gate has no next call.
         if cfg!(not(target_os = "macos")) {
             let _ = run_bounded(
@@ -128,13 +165,17 @@ impl FirecodeGate {
         }
         run
     }
-}
 
-impl GateRunner for FirecodeGate {
-    fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+    fn on(
+        &self,
+        worktree: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        subject: &super::gate::GateSubject,
+    ) -> GateRun {
         match &self.host {
             Some(name) => match super::gate_host::firecode_ready(name, worktree) {
-                Ok(()) => super::gate_host::run_on_host(name, worktree, steps, ctl, true),
+                Ok(()) => super::gate_host::run_on_host_for(name, worktree, steps, ctl, true, subject),
                 // The VM is the same Linux on either machine, so a host without firecode hands
                 // the steps to this machine's VM rather than leaving the tip unjudged.
                 Err(why) => {
@@ -142,11 +183,27 @@ impl GateRunner for FirecodeGate {
                         "  merge queue: {name} cannot start a firecode VM ({why}); the steps run \
                          in this machine's"
                     );
-                    self.here(worktree, steps, ctl)
+                    self.here(worktree, steps, ctl, subject)
                 }
             },
-            None => self.here(worktree, steps, ctl),
+            None => self.here(worktree, steps, ctl, subject),
         }
+    }
+}
+
+impl GateRunner for FirecodeGate {
+    fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        self.on(worktree, steps, ctl, &super::gate::GateSubject::default())
+    }
+
+    fn run_for(
+        &self,
+        worktree: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        subject: &super::gate::GateSubject,
+    ) -> GateRun {
+        self.on(worktree, steps, ctl, subject)
     }
 
     fn name(&self) -> String {

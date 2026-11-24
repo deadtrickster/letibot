@@ -46,9 +46,13 @@ fn main() {
         let target = gate::declared_gate(&tree, "main")
             .unwrap_or_else(|e| panic!("reading the gate from {}: {e}", tree.display()));
         match target {
-            Some((steps_from_target, _install)) => steps = steps_from_target,
+            // The full tier: the longest gate a project declares, which is what a hand run wants.
+            Some(declared) => steps = declared.steps(letibot_tools::gatekeeper::Tier::Full).to_vec(),
             None => {
-                eprintln!("{} declares no `## Merge gate` on main", tree.display());
+                eprintln!(
+                    "{} declares no gate section (`Merge gate`, `Quick gate` or `Full gate`) on main",
+                    tree.display()
+                );
                 std::process::exit(1);
             }
         }

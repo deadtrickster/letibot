@@ -20,6 +20,7 @@ use super::gate::{self, GateControl, GateRun, GateRunner, GateVerdict};
 use super::git;
 use super::lease::{HEARTBEAT_EVERY, LEASE_TTL_MS};
 use super::settings::{self, QueueSettings};
+use letibot_tools::gatekeeper::Tier;
 
 /// A reviewer's time - an hour from the claim. A reviewer still running then is killed and
 /// the attempt counted.
@@ -385,13 +386,17 @@ impl Running {
 
 /// What a running gate judges - and so how its verdict is applied.
 enum GateFor {
-    /// The target's tip: its health.
+    /// The target's tip: its health, by the FULL tier. `base` is the last tip anybody judged - where
+    /// the batch a red is about starts - and `two_tiers` says whether this project's red can be
+    /// bisected back to a landing at all (a project with one section has no batch to blame).
     Target {
         health: TargetHealth,
         wt: PathBuf,
         carried: Vec<String>,
+        base: String,
+        two_tiers: bool,
     },
-    /// A branch rebased onto the target, before the compare-and-swap.
+    /// A branch rebased onto the target, before the compare-and-swap: the QUICK tier.
     Land(Box<Landing>),
     /// Several branches rebased one onto the last, gated once (`[queue] gate_train`).
     Train(Box<Train>),
@@ -407,6 +412,55 @@ enum GateFor {
         gate: GateRun,
         pushed: String,
     },
+    /// One step, at one commit in the middle of a batch the full gate failed on: the search for the
+    /// landing that broke the target.
+    Bisect(Box<Bisect>),
+}
+
+/// The search for the landing a red full gate is about. One step re-run at a midpoint of the batch
+/// answers one question - *is the target red at this commit?* - and a batch is monotone in it, so
+/// the first red commit is found in `log2(n)` runs.
+struct Bisect {
+    /// The target, and the tip the full gate judged red.
+    target: String,
+    tip: String,
+    /// The last tip the full gate judged: the batch is `base..tip`.
+    base: String,
+    /// The commits of the batch, oldest first, and the window the first red one is still in.
+    cands: Vec<String>,
+    lo: usize,
+    hi: usize,
+    /// The candidate being judged now, and the tree it runs in.
+    at: usize,
+    wt: PathBuf,
+    /// The one step each try runs: the step that failed, whole and alone.
+    step: String,
+    /// How many tries this search has spent, so a step that is red at random cannot bisect for ever.
+    tries: usize,
+    /// The red run's own rows and words, for the verdict that parks the target.
+    steps: Vec<letibot_tokencore::store::MergeGateStep>,
+    evidence: String,
+}
+
+/// How many tries one bisection may spend. `log2(256)` is 8, and a search that has not settled in
+/// that either found no landing (a flake) or is chasing a step nobody can rely on.
+pub const BISECT_TRIES: usize = 8;
+
+/// The prefix a target's health row leads with while the FULL gate is owed: the tip is the queue's
+/// own landings, judged by the quick gate, and the sha after it is the last tip the full gate judged.
+/// A machine-written prefix, so a sentence a person wrote is never read as one.
+pub const FULL_OWED: &str = "the full gate is owed since ";
+
+/// The last tip the full gate judged, out of a health row that says one is owed.
+pub fn full_owed_base(evidence: &str) -> Option<String> {
+    let rest = evidence.strip_prefix(FULL_OWED)?;
+    let base = rest.split([':', ' ']).next().unwrap_or("").trim();
+    (!base.is_empty()).then(|| base.to_string())
+}
+
+/// Is this health row one where the full gate is owed? Green, and saying so.
+fn full_owed(h: &TargetHealth) -> bool {
+    h.state == HealthState::Green && full_owed_base(&h.evidence).is_some()
 }
 
 /// One landing between its rebase and its end - what `land` knew when it started the gate.
@@ -420,6 +474,9 @@ struct Landing {
     install: Vec<String>,
     /// The bisection half this row was gated as ([`half_of`]); its green is recorded.
     half: Option<String>,
+    /// Whether the project declares `Quick gate`/`Full gate`: `false` is one tier, where this
+    /// gate's green IS the target's health, as it was before there were two.
+    two_tiers: bool,
 }
 
 /// How a failed push opens in the row; [`Self::landed`] reads it to pick `landed_local`.
@@ -437,6 +494,8 @@ struct Train {
     install: Vec<String>,
     /// The bisection half every car is in, `None` for a train of plain rows.
     half: Option<String>,
+    /// See [`Landing::two_tiers`].
+    two_tiers: bool,
 }
 
 /// One branch in a train - the row, the head it was approved at, and the commit it became.
@@ -465,6 +524,7 @@ impl Train {
             carried: self.carried.clone(),
             install: self.install.clone(),
             half: self.half.clone(),
+            two_tiers: self.two_tiers,
         }
     }
 
@@ -1068,7 +1128,9 @@ impl RepoQueue {
 
     /// Start a gate on its own thread - under the same controls as ever: the deadline from
     /// now, the daemon's stop (through `cancel`), and the lease (through [`Self::lease_ok`]).
-    fn start_gate(&self, what: GateFor, wt: PathBuf, steps: Vec<String>, sha: &str) {
+    /// `base` is what the run is compared against ([`gate::GateSubject`]): the target tip a branch
+    /// was rebased onto, or the last tip a full gate judged. Empty when nobody knows it.
+    fn start_gate(&self, what: GateFor, wt: PathBuf, steps: Vec<String>, sha: &str, base: &str) {
         gate::watch(&wt, &self.key);
         let cancel = Arc::new(AtomicBool::new(false));
         let lease = self.lease_ok.clone();
@@ -1092,6 +1154,9 @@ impl RepoQueue {
             gate_in = super::settings::GateIn::Firecode;
         }
         let runner = super::gate_firecode::runner_for(gate_in, &self.env.gate);
+        // What every step of this run is told it is compared against: worked out here, on the
+        // worker's thread, because the run's thread has nothing to read a repository with.
+        let subject = gate::GateSubject::of(&self.repo, base, sha);
         // Where it runs and where its build goes, read before the runner is moved into its thread.
         let host = runner.name();
         let dir = build_dir(&host, &wt);
@@ -1145,7 +1210,7 @@ impl RepoQueue {
                     eprintln!("  merge queue: {self_key}: {why}");
                     return gate::not_run(&steps, why);
                 }
-                runner.run(&wt, &steps, &ctl)
+                runner.run_for(&wt, &steps, &ctl, &subject)
             });
         let run = match run {
             Ok(h) => Running::Thread(h),
@@ -1392,7 +1457,9 @@ impl RepoQueue {
                 health,
                 wt,
                 carried,
-            } => self.finish_health(health, &wt, &carried, run),
+                base,
+                two_tiers,
+            } => self.finish_health(health, &wt, &carried, run, &base, two_tiers),
             GateFor::Land(landing) => self.finish_land(landing, run),
             GateFor::Train(train) => self.finish_train(train, run),
             GateFor::Install {
@@ -1405,7 +1472,33 @@ impl RepoQueue {
                 gate,
                 pushed,
             } => self.finish_install_train(*train, gate, pushed, run),
+            GateFor::Bisect(b) => self.finish_bisect(b, run),
         }
+    }
+
+    /// The verdict of one try at a midpoint: the window halves on it, and a search that cannot
+    /// conclude at all parks the target rather than guessing at a landing.
+    fn finish_bisect(&self, mut b: Box<Bisect>, run: GateRun) -> Result<(), StoreError> {
+        match run.verdict {
+            GateVerdict::Passed => b.lo = b.at + 1,
+            GateVerdict::Failed(_) => b.hi = b.at,
+            // A step that could not run judged no commit: the search has no answer it can trust, and
+            // the target is a person's.
+            GateVerdict::TimedOut(w) | GateVerdict::Infra(w) | GateVerdict::Stopped(w) => {
+                let steps = std::mem::take(&mut b.steps);
+                return self.park_main(
+                    &b.target,
+                    &b.tip,
+                    &format!(
+                        "{}\n\nThe search for the landing that broke it was ended at {}: {w}",
+                        b.evidence,
+                        super::capacity::short(&b.cands[b.at])
+                    ),
+                    steps,
+                );
+            }
+        }
+        self.bisect_step(b)
     }
 
     /// A `gating` landing this worker runs no gate for - its worker ended mid-gate, so it goes
@@ -2337,12 +2430,38 @@ impl RepoQueue {
         // The target is back: what was said about it being missing is not true any more, so a
         // second disappearance is news again - and it need not have been green in between.
         self.forget(&self.alarm_key(target, "", "target_unjudged"))?;
-        if let Some(h) = self.store.target_health(&self.key, target)?
+        let before = self.store.target_health(&self.key, target)?;
+        // A tip is judged when a row says so about THIS sha. A row that says the full gate is owed is
+        // the one exception: it is green (nothing halts) and unjudged in the way that matters here,
+        // so it falls through to the gate below.
+        if let Some(h) = &before
             && h.sha == tip
             && h.state != HealthState::Gating
+            && !full_owed(h)
         {
-            return Ok(Health::Known(h, false));
+            return Ok(Health::Known(h.clone(), false));
         }
+        // The full gate is batched: one run covers every landing since the last tip it judged, so it
+        // waits while the queue still has something to land. The tip's row stays what it is (green,
+        // owed), which is what lets the landing go ahead - a full run never holds a branch up.
+        let owed = before
+            .as_ref()
+            .filter(|h| h.sha == tip)
+            .and_then(|h| full_owed_base(&h.evidence));
+        if let Some(h) = &before
+            && h.sha == tip
+            && full_owed(h)
+            && self.landable(target)
+        {
+            return Ok(Health::Known(h.clone(), false));
+        }
+        // Where the batch this tip is starts: the last tip anybody judged. A tip that moved under a
+        // judged row (a hand push, another machine) is still a batch - of exactly the commits since.
+        let base = match (&owed, &before) {
+            (Some(since), _) => since.clone(),
+            (None, Some(h)) if h.state != HealthState::Gating => h.sha.clone(),
+            _ => String::new(),
+        };
         // A gate that could not run waits out its retry window: the row is `gating` and carries the
         // sentence that stopped it, so the tip is neither judged nor blocked and a host that is down is
         // not dialled once a second. `Gating` with plain *gating* evidence is a gate on its thread now.
@@ -2382,59 +2501,109 @@ impl RepoQueue {
             Ok(None) => (
                 HealthState::Blocked,
                 format!(
-                    "{}: `{target}` has no `Merge gate` section in AGENTS.md at {tip}, so nothing \
-                     can be judged and nothing lands. The project's agent can propose one \
-                     (`merge_gate`) for the operator to choose.",
+                    "{}: `{target}` declares no gate in AGENTS.md at {tip} - no `Merge gate`, \
+                     `Quick gate` or `Full gate` section - so nothing can be judged and nothing \
+                     lands. The project's agent can propose one (`merge_gate`) for the operator to \
+                     choose.",
                     super::WAITING_FOR_GATE
                 ),
-                vec![gate::no_gate_row("no `Merge gate` section on the target")],
+                vec![gate::no_gate_row("no gate section on the target")],
             ),
             Err(e) => (
                 HealthState::Blocked,
                 format!("the gate could not be read from `{target}` at {tip}: {e}"),
                 vec![],
             ),
-            Ok(Some((steps, _install))) => match self.landing_at(&tip) {
-                Err(e) => (
-                    HealthState::Blocked,
-                    format!("the landing worktree could not be made ready at {tip}: {e}"),
-                    vec![],
-                ),
-                Ok((wt, carried)) => {
-                    self.start_gate(
-                        GateFor::Target {
-                            health: h,
-                            wt: wt.clone(),
-                            carried,
-                        },
-                        wt,
-                        steps,
-                        &tip,
-                    );
-                    return Ok(Health::Started);
+            Ok(Some(declared)) => {
+                // What a reader is told this gate is: `merge` for a project that declares one
+                // section, `full` for the tier a two-section project judges main's health by.
+                let tier = match declared.two_tiers {
+                    true => format!("{} gate", Tier::Full.as_str()),
+                    false => "gate".to_string(),
+                };
+                self.announce_move(
+                    "target",
+                    target,
+                    "gating",
+                    &format!(
+                        "gating `{target}`'s tip with its {tier} ({} step(s), {})",
+                        declared.steps(Tier::Full).len(),
+                        self.env.gate.name()
+                    ),
+                );
+                let steps = declared.steps(Tier::Full).to_vec();
+                match self.landing_at(&tip) {
+                    Err(e) => (
+                        HealthState::Blocked,
+                        format!("the landing worktree could not be made ready at {tip}: {e}"),
+                        vec![],
+                    ),
+                    Ok((wt, carried)) => {
+                        self.start_gate(
+                            GateFor::Target {
+                                health: h,
+                                wt: wt.clone(),
+                                carried,
+                                base: base.clone(),
+                                two_tiers: declared.two_tiers,
+                            },
+                            wt,
+                            steps,
+                            &tip,
+                            &base,
+                        );
+                        return Ok(Health::Started);
+                    }
                 }
-            },
+            }
         };
         self.judged(&mut h, state, evidence, steps)?;
         Ok(Health::Known(h, true))
     }
 
-    /// The verdict of the target's gate.
+    /// Whether a branch could land on `target` right now - the question the full gate's batching asks
+    /// before it takes the gate. Any row in line counts: `land_next` takes one per pass, and a row it
+    /// cannot take yet (a retry window) is one the batch waits out, which is bounded and said on that
+    /// row.
+    fn landable(&self, target: &str) -> bool {
+        self.store
+            .merge_rows(Some(&self.key))
+            .map(|rows| {
+                rows.into_iter()
+                    .any(|m| m.state == MergeState::Queued && m.target == target)
+            })
+            .unwrap_or(false)
+    }
+
+    /// The verdict of the target's gate. `base` is the last tip the FULL gate judged, which is what
+    /// the batch a red is about starts at - empty when the tip is not the queue's own landings.
     fn finish_health(
         &self,
         mut h: TargetHealth,
         wt: &Path,
         carried: &[String],
         run: GateRun,
+        base: &str,
+        two_tiers: bool,
     ) -> Result<(), StoreError> {
         let target = h.target.clone();
         let tip = h.sha.clone();
-        let (state, evidence, steps) = match run.verdict {
+        let (state, evidence, steps) = match run.verdict.clone() {
             GateVerdict::Passed => (
                 HealthState::Green,
                 format!(
-                    "`{target}` is green at {tip} ({} gate)",
-                    self.env.gate.name()
+                    "`{target}` is green at {tip} ({} gate){}",
+                    self.env.gate.name(),
+                    // What the run covered, when the row can say: a batched full gate judges every
+                    // landing since the last tip it judged, and the count is the whole point of it.
+                    match two_tiers && !base.is_empty() {
+                        false => String::new(),
+                        true => format!(
+                            ", and the {} landing(s) since {} with it",
+                            git::commits_between(&self.repo, base, &tip).len(),
+                            super::capacity::short(base)
+                        ),
+                    }
                 ),
                 run.steps,
             ),
@@ -2444,6 +2613,13 @@ impl RepoQueue {
                 let w = self.with_carry_hint(w, wt, carried);
                 match super::setup::setup_failure(&run.steps) {
                     Some(setup) => (HealthState::Blocked, format!("{setup}\n\n{w}"), run.steps),
+                    // The batch the landings made is what a two-tier project's red is about: the
+                    // first red landing is bisected out and reverted rather than the tip being
+                    // parked on a person. A project with one section has no batch to blame - its
+                    // gate IS the landing's, and a red tip is the tip's own.
+                    None if two_tiers && !base.is_empty() => {
+                        return self.start_bisect(h, base, run, w);
+                    }
                     None => (HealthState::Red, w, run.steps),
                 }
             }
@@ -2463,6 +2639,348 @@ impl RepoQueue {
             }
         };
         self.judged(&mut h, state, evidence, steps)
+    }
+
+    // ===== A red full gate: the batch, the bisection, the revert =====
+
+    /// The full gate failed on a tip the queue's own landings made: find the landing that broke it.
+    /// The batch is `base..tip`, and one step - the one that failed - is re-run at its midpoints.
+    fn start_bisect(
+        &self,
+        h: TargetHealth,
+        base: &str,
+        run: GateRun,
+        why: String,
+    ) -> Result<(), StoreError> {
+        let cands = git::commits_between(&self.repo, base, &h.sha);
+        let Some((_, _, step, _)) = super::notices::failing_step(&run.steps) else {
+            return self.park_main(
+                &h.target,
+                &h.sha,
+                &format!("{why}\n\nThe failed run named no failing step, so there is nothing to re-run."),
+                run.steps,
+            );
+        };
+        if cands.is_empty() {
+            return self.park_main(
+                &h.target,
+                &h.sha,
+                &format!(
+                    "{why}\n\n`{}` is not made of the queue's landings since {base}, so no landing \
+                     of it is one to take back",
+                    super::capacity::short(&h.sha)
+                ),
+                run.steps,
+            );
+        }
+        let b = Box::new(Bisect {
+            target: h.target.clone(),
+            tip: h.sha.clone(),
+            base: base.to_string(),
+            cands,
+            lo: 0,
+            hi: 0,
+            at: 0,
+            wt: PathBuf::new(),
+            step: step.command.clone(),
+            tries: 0,
+            steps: run.steps,
+            evidence: why,
+        });
+        let mut b = b;
+        b.hi = b.cands.len();
+        self.bisect_step(b)
+    }
+
+    /// One midpoint: is the target red at this commit? The window halves on the answer, so the
+    /// first red landing is found in `log2(n)` runs of one step each.
+    fn bisect_step(&self, mut b: Box<Bisect>) -> Result<(), StoreError> {
+        if b.lo >= b.hi {
+            return self.bisect_done(b);
+        }
+        // A search that cannot settle is one a person settles: a step that is red at random has no
+        // first red commit, and pretending otherwise would revert a landing nobody proved bad.
+        if b.tries >= BISECT_TRIES {
+            return self.park_main(
+                &b.target,
+                &b.tip,
+                &format!(
+                    "{} landing(s) and {} re-runs of `{}` have not settled which one broke it, so \
+                     the step is not a fact about a landing",
+                    b.cands.len(),
+                    b.tries,
+                    b.step
+                ),
+                std::mem::take(&mut b.steps),
+            );
+        }
+        let at = b.lo + (b.hi - b.lo) / 2;
+        let Some(cand) = b.cands.get(at).cloned() else {
+            return self.bisect_done(b);
+        };
+        let (wt, _carried) = match self.landing_at(&cand) {
+            Ok(w) => w,
+            Err(e) => {
+                let steps = std::mem::take(&mut b.steps);
+                return self.park_main(
+                    &b.target,
+                    &b.tip,
+                    &format!(
+                        "the landing tree at {} could not be made to re-run `{}`: {e}",
+                        super::capacity::short(&cand),
+                        b.step
+                    ),
+                    steps,
+                );
+            }
+        };
+        b.at = at;
+        b.tries += 1;
+        b.wt = wt.clone();
+        self.announce_move(
+            "target",
+            &b.target,
+            "gating",
+            &format!(
+                "the full gate of `{}` failed; bisecting its {} landing(s): `{}` re-run at {} of \
+                 {} ({})",
+                super::capacity::short(&b.tip),
+                b.cands.len(),
+                b.step,
+                at + 1,
+                b.cands.len(),
+                super::capacity::short(&cand)
+            ),
+        );
+        let step = b.step.clone();
+        self.start_gate(
+            GateFor::Bisect(b),
+            wt,
+            vec![step],
+            &cand,
+            &self.bisect_base_of(&cand),
+        );
+        Ok(())
+    }
+
+    /// The commit one try is compared against: the one before the midpoint, so the step's changed
+    /// paths are that commit's own change and not the whole batch's.
+    fn bisect_base_of(&self, cand: &str) -> String {
+        git::rev_parse(&self.repo, &format!("{cand}^")).unwrap_or_default()
+    }
+
+    /// The window settled: the first red landing is `cands[lo]`, or there is none.
+    fn bisect_done(&self, b: Box<Bisect>) -> Result<(), StoreError> {
+        match b.cands.get(b.lo).cloned() {
+            Some(commit) => self.revert_landing(&b, &commit),
+            None => self.park_main(
+                &b.target,
+                &b.tip,
+                &format!(
+                    "{}\n\nEach of the {} landing(s) since {} passed `{}` when it was re-run on its \
+                     own, so the red belongs to no one landing: the tip may have been pushed by \
+                     hand, or the step is red only at the tip",
+                    b.evidence,
+                    b.cands.len(),
+                    super::capacity::short(&b.base),
+                    b.step
+                ),
+                b.steps.clone(),
+            ),
+        }
+    }
+
+    /// The first red landing goes back off the target, as a commit of its own, pushed as a landing is
+    /// pushed - and the session that landed it is told, in the words of the step that failed.
+    fn revert_landing(&self, b: &Bisect, commit: &str) -> Result<(), StoreError> {
+        if let Some(why) = self.lease_refusal() {
+            // Nothing is written into a repository this daemon does not hold: the search was right
+            // and the landing it found stays until whoever holds the lease reverts it.
+            return Err(StoreError::Refused(format!(
+                "the revert of `{commit}` was not made: {why}"
+            )));
+        }
+        let subject = git::subject_of(&self.repo, commit).unwrap_or_default();
+        // The row this commit landed as. A commit no landing made is not one to take back: the queue
+        // reverts what it landed and asks a person about anything else.
+        let landed = self
+            .store
+            .merge_rows(Some(&self.key))?
+            .into_iter()
+            .find(|m| m.landed_sha.as_deref() == Some(commit));
+        if landed.is_none() {
+            return self.park_main(
+                &b.target,
+                &b.tip,
+                &format!(
+                    "{}\n\nThe first commit that broke it is {} (`{subject}`), which no landing of \
+                     the queue made - somebody put it on `{}` by hand, so nothing is reverted",
+                    b.evidence,
+                    super::capacity::short(commit),
+                    b.target
+                ),
+                b.steps.clone(),
+            );
+        }
+        let message = format!(
+            "revert: {subject} - full gate red at {}",
+            super::capacity::short(&b.tip)
+        );
+        let wt = match self.landing_at(&b.tip) {
+            Ok((wt, _)) => wt,
+            Err(e) => {
+                return self.park_main(
+                    &b.target,
+                    &b.tip,
+                    &format!("{}\n\nand its tree could not be made to revert it: {e}", b.evidence),
+                    b.steps.clone(),
+                );
+            }
+        };
+        let revert = match git::revert_in(&wt, commit, &message) {
+            Ok(r) => r,
+            Err(e) => {
+                return self.park_main(
+                    &b.target,
+                    &b.tip,
+                    &format!(
+                        "{}\n\nThe landing that broke it is {} (`{}`), and reverting it does not \
+                         apply cleanly: {e}",
+                        b.evidence,
+                        super::capacity::short(commit),
+                        subject
+                    ),
+                    b.steps.clone(),
+                );
+            }
+        };
+        if let Err(e) = git::update_ref_cas(&self.repo, &b.target, &revert, &b.tip) {
+            return self.park_main(
+                &b.target,
+                &b.tip,
+                &format!(
+                    "{}\n\nThe landing that broke it is {} (`{}`), and `{}` moved while it was being \
+                     reverted: {e}",
+                    b.evidence,
+                    super::capacity::short(commit),
+                    subject,
+                    b.target
+                ),
+                b.steps.clone(),
+            );
+        }
+        let _ = git::follow_checkouts(&self.repo, &b.target, &b.tip, &revert);
+        let pushed = git::push(&self.repo, &b.target, &revert);
+        let pushed_text = match &pushed {
+            git::Pushed::Yes(s) => s.clone(),
+            git::Pushed::NoRemote => "no `origin` to push to".to_string(),
+            git::Pushed::Failed(e) => format!("{PUSH_FAILED}: {e}"),
+        };
+        // The session that put that landing up, for the row below.
+        let session = landed
+            .as_ref()
+            .and_then(|m| self.store.review_row(&m.review_id).ok().flatten())
+            .map(|r| r.session_id)
+            .unwrap_or_default();
+        let why = format!(
+            "reverted on `{}`: the full gate was red at {} and {} was the first landing that made \
+             it so (`{}` failed). The revert is {revert} ({pushed_text}).",
+            b.target,
+            super::capacity::short(&b.tip),
+            super::capacity::short(commit),
+            b.step
+        );
+        if let Some(row) = &landed {
+            self.announce_move("merge", &row.id, "failed", &why);
+            self.merge_to(
+                row,
+                MergeState::Landed,
+                MergeState::Failed,
+                Move::new(self.me(), why.clone())
+                    .set("owner", "")
+                    .set("pushed", pushed_text.clone()),
+            )?;
+            self.wake_waits(
+                super::waits::Waiting::Row(row.review_id.clone()),
+                commit,
+                "failed",
+                &why,
+            );
+        }
+        // The session that landed it hears the step and the end of its output, through the door a
+        // gate's own verdict uses - it is idle by now, and a warning on a hub is not a turn.
+        if !session.is_empty() && self.env.door.session_live(&session) {
+            let said = super::notices::revert_told(&b.target, &b.tip, commit, &subject, &b.step, &b.steps, &why);
+            if let Err(e) = self.env.door.deliver_session(&session, &said) {
+                self.raise(
+                    "target_red",
+                    format!(
+                        "…and the session `{session}` that landed {} was not told: {e}",
+                        super::capacity::short(commit)
+                    ),
+                );
+            }
+        }
+        self.raise(
+            "target_red",
+            format!(
+                "`{}` was red at {}: {} (`{}`, `{}` failed) was reverted as {revert}. {pushed_text}",
+                b.target,
+                super::capacity::short(&b.tip),
+                super::capacity::short(commit),
+                subject,
+                b.step
+            ),
+        );
+        // The reverted tip is unjudged, and the landings that are left are the batch again: the next
+        // pass with nothing to land runs the full gate on it, and landings go on meanwhile.
+        let mut h = TargetHealth {
+            repository: self.key.clone(),
+            target: b.target.clone(),
+            sha: revert.clone(),
+            state: HealthState::Green,
+            checked_ms: gate::now_ms(),
+            evidence: format!(
+                "{FULL_OWED}{}: {} was reverted, so `{}` is at {revert} with the landings since {} \
+                 judged by the quick gate only",
+                b.base,
+                super::capacity::short(commit),
+                b.target,
+                super::capacity::short(&b.base)
+            ),
+            gate_steps: b.steps.clone(),
+        };
+        h.state = HealthState::Green;
+        let me = self.me().to_string();
+        self.store.set_target_health(&h, &me)?;
+        self.announce_move("target", &b.target, "green", &h.evidence);
+        Ok(())
+    }
+
+    /// A red nobody can pin on one landing: the target goes red (which is what halts the queue and
+    /// puts the tip in front of a person), and the row says what was tried. No revert.
+    fn park_main(
+        &self,
+        target: &str,
+        tip: &str,
+        why: &str,
+        steps: Vec<letibot_tokencore::store::MergeGateStep>,
+    ) -> Result<(), StoreError> {
+        let evidence = format!(
+            "{why}\n\nNothing was reverted, and a person has to act: the target is red and only a \
+             fix lands until it is green."
+        );
+        let mut h = TargetHealth {
+            repository: self.key.clone(),
+            target: target.to_string(),
+            sha: tip.to_string(),
+            state: HealthState::Red,
+            checked_ms: gate::now_ms(),
+            evidence,
+            gate_steps: steps,
+        };
+        let (evidence, steps) = (h.evidence.clone(), h.gate_steps.clone());
+        self.judged(&mut h, HealthState::Red, evidence, steps)
     }
 
     /// The health row of a tip whose gate was stopped: gating, un-judged, and saying who stopped it.
@@ -3146,8 +3664,11 @@ impl RepoQueue {
                 return Ok(());
             }
         };
-        let (steps, install) = match gate::declared_gate(&repo, &tip) {
-            Ok(Some(s)) => s,
+        let (steps, install, two_tiers) = match gate::declared_gate(&repo, &tip) {
+            Ok(Some(s)) => {
+                let (steps, install) = s.tier(Tier::Quick).clone();
+                (steps, install, s.two_tiers)
+            }
             Ok(None) => {
                 // Not the branch's fault: back in line until the target declares a gate.
                 self.gating_to(
@@ -3182,9 +3703,11 @@ impl RepoQueue {
             Move::new(
                 &me,
                 format!(
-                    "rebased onto {tip} as {rebased}; running `{target}`'s gate ({} step(s), {} gate)",
+                    "rebased onto {tip} as {rebased}; running `{target}`'s {tier} ({} step(s), {} \
+                     gate)",
                     steps.len(),
-                    self.env.gate.name()
+                    self.env.gate.name(),
+                    tier = gate_word(two_tiers, Tier::Quick)
                 ),
             )
             .owned_by(&me)
@@ -3212,10 +3735,14 @@ impl RepoQueue {
                 carried,
                 install,
                 half,
+                two_tiers,
             })),
             wt,
             steps,
             &rebased,
+            // What the branch's steps are compared against: the tip it was rebased onto, so a
+            // project's quick step can scope itself to what the branch brings.
+            &tip,
         );
         Ok(())
     }
@@ -3354,8 +3881,11 @@ impl RepoQueue {
             }
             return Ok(true);
         }
-        let (steps, install) = match gate::declared_gate(&self.repo, &tip) {
-            Ok(Some(s)) => s,
+        let (steps, install, two_tiers) = match gate::declared_gate(&self.repo, &tip) {
+            Ok(Some(s)) => {
+                let (steps, install) = s.tier(Tier::Quick).clone();
+                (steps, install, s.two_tiers)
+            }
             Ok(None) => {
                 let why = format!(
                     "{}: `{target}` declares no gate at {tip}",
@@ -3380,13 +3910,14 @@ impl RepoQueue {
         let mut prev = tip.clone();
         for (i, c) in kept.iter().enumerate() {
             let why = format!(
-                "car {} of {}: rebased onto {prev} as {}; the train's gate runs once on the final \
+                "car {} of {}: rebased onto {prev} as {}; the train's {tier} runs once on the final \
                  tree ({} step(s), {} gate)",
                 i + 1,
                 kept.len(),
                 c.rebased,
                 steps.len(),
-                self.env.gate.name()
+                self.env.gate.name(),
+                tier = gate_word(two_tiers, Tier::Quick)
             );
             self.merge_to(
                 &c.row,
@@ -3418,10 +3949,12 @@ impl RepoQueue {
                 carried,
                 install,
                 half,
+                two_tiers,
             })),
             wt,
             steps,
             &at,
+            &tip,
         );
         Ok(true)
     }
@@ -3745,6 +4278,7 @@ impl RepoQueue {
         if !landing.install.is_empty() {
             if may_install {
                 let install = landing.install.clone();
+                let base = landing.tip.clone();
                 self.start_gate(
                     GateFor::Install {
                         landing,
@@ -3754,6 +4288,7 @@ impl RepoQueue {
                     wt,
                     install,
                     &rebased,
+                    &base,
                 );
                 return Ok(());
             } else {
@@ -3955,6 +4490,7 @@ impl RepoQueue {
         if !train.install.is_empty() && may_install {
             let wt = train.wt.clone();
             let install = train.install.clone();
+            let base = train.tip.clone();
             self.start_gate(
                 GateFor::InstallTrain {
                     train,
@@ -3964,6 +4500,7 @@ impl RepoQueue {
                 wt,
                 install,
                 &prev,
+                &base,
             );
             return Ok(());
         }
@@ -4181,6 +4718,24 @@ impl RepoQueue {
         // The gate passed on exactly this tree, so the target is green at it - not gated again. Through
         // `target_is_green`, like any green : a pending review of a red tip is withdrawn and an
         // alarm that stood is said to be over.
+        //
+        // A project with two tiers is the exception: its landing's green is the QUICK gate's, and the
+        // full gate is owed on this tip. The row says so and still says green, because nothing about
+        // this tip halts anything - main is judged by the full gate when the queue has nothing to land.
+        let owed = match landing.two_tiers {
+            true => {
+                let since = match self.store.target_health(&self.key, &target)? {
+                    // A batch already owed: its base is the last tip the FULL gate judged, and this
+                    // landing does not move that. Keeping it is what makes one run cover them all.
+                    Some(old) if old.sha.as_str() == tip.as_str() => {
+                        full_owed_base(&old.evidence).unwrap_or_else(|| tip.clone())
+                    }
+                    _ => tip.clone(),
+                };
+                Some(since)
+            }
+            false => None,
+        };
         let green = TargetHealth {
             repository: self.key.clone(),
             target: target.clone(),
@@ -4189,11 +4744,21 @@ impl RepoQueue {
             checked_ms: gate::now_ms(),
             // The machine, as the gated-tip path says it: a green tip's row is where a reader
             // checks what judged it, and a landing is one more way a tip gets green.
-            evidence: format!(
-                "the queue's own gate passed on this tree (`{}`, {} gate)",
-                row.branch,
-                self.env.gate.name()
-            ),
+            evidence: match &owed {
+                None => format!(
+                    "the queue's own gate passed on this tree (`{}`, {} gate)",
+                    row.branch,
+                    self.env.gate.name()
+                ),
+                Some(since) => format!(
+                    "{FULL_OWED}{since}: `{}` was judged by the quick gate ({}), so this tip is \
+                     green and the full gate is owed on it - one run covers every landing since \
+                     {} and happens once the queue has nothing left to land",
+                    row.branch,
+                    self.env.gate.name(),
+                    super::capacity::short(since)
+                ),
+            },
             gate_steps: run.steps,
         };
         self.store.set_target_health(&green, &me)?;
@@ -4323,6 +4888,17 @@ fn with_stop(run: GateRun, stop: Option<String>) -> GateRun {
     }
 }
 
+/// What a gate is called in a row: `quick gate`/`full gate` for a project that declares two
+/// sections, `gate` for one that declares a single `Merge gate` - a reader is never told about a
+/// tier nobody wrote.
+fn gate_word(two_tiers: bool, tier: Tier) -> &'static str {
+    match (two_tiers, tier) {
+        (true, Tier::Quick) => "quick gate",
+        (true, Tier::Full) => "full gate",
+        (false, _) => "gate",
+    }
+}
+
 /// What a gate is for, as its published row says it: the kind of subject, the target, and the rows
 /// (comma-joined for a train, empty for a target's own tip).
 fn gate_subject(what: &GateFor) -> (&'static str, String, String) {
@@ -4345,6 +4921,9 @@ fn gate_subject(what: &GateFor) -> (&'static str, String, String) {
             ("land", landing.row.target.clone(), landing.row.id.clone())
         }
         GateFor::InstallTrain { train, .. } => of_train(train),
+        // A bisection is a gate of the target's tip, and no row of it: the `entry` is the commit it
+        // is re-running the failing step at, so a pane can name what is being judged.
+        GateFor::Bisect(b) => ("bisect", b.target.clone(), b.cands.get(b.at).cloned().unwrap_or_default()),
     }
 }
 

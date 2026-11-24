@@ -61,8 +61,9 @@ pub fn enqueue_branch(
         Ok(Some(_)) => {}
         Ok(None) => {
             return Err(format!(
-                "`{target}` has no `## Merge gate` section in AGENTS.md at {tip}, so nothing \
-                 could judge or land the branch. Propose one to the operator first (`merge_gate`)"
+                "`{target}` declares no gate in AGENTS.md at {tip} - no `## Merge gate`, \
+                 `## Quick gate` or `## Full gate` section - so nothing could judge or land the \
+                 branch. Propose one to the operator first (`merge_gate`)"
             ));
         }
         Err(e) => return Err(format!("the gate could not be read from `{target}`: {e}")),
@@ -222,7 +223,8 @@ mod tests {
         sh(&repo, &["checkout", "-q", "-b", "feat/y", "main"]);
         commit(&repo, "y.txt", "y\n", "work");
         let why = go(&store, &repo, "feat/y", Some("ungated")).unwrap_err();
-        assert!(why.contains("no `## Merge gate` section"), "{why}");
+        assert!(why.contains("declares no gate"), "{why}");
+        assert!(why.contains("`## Merge gate`"), "{why}");
     }
 
     #[test]

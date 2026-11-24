@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use letibot_tools::exec::memory::{Amount, Ask, Meminfo};
 use letibot_tools::exec::{MemoryUse, SiblingScope, join_script};
+use letibot_tools::gatekeeper::Tier;
 use letibot_transcript::text::bytes_head;
 
 use super::gate_tick::{self, Tick};
@@ -546,26 +547,111 @@ struct StepEnv {
     tmp: PathBuf,
     /// `None` when the gate is `uncapped`: no number to give, so cargo's own default stands.
     jobs: Option<usize>,
+    /// The commit this run is compared against and the paths that changed since - so a project's
+    /// step can scope itself (`cargo nextest -E 'rdeps(...)'`, `go test` on the packages touched).
+    subject: GateSubject,
 }
 
 impl StepEnv {
     /// One step's environment, for a run whose scratch is already made ([`GateScratch`]).
-    fn for_run(worktree: &Path, scratch: &Path, cap: Option<u64>) -> StepEnv {
+    fn for_run(worktree: &Path, scratch: &Path, cap: Option<u64>, subject: &GateSubject) -> StepEnv {
         StepEnv {
             target: gate_target_dir(worktree),
             tmp: scratch.to_path_buf(),
             jobs: build_jobs(cap),
+            subject: subject.clone(),
         }
     }
 
-    /// Point a step's command at the tree's `target/`, at its own scratch, and at the parallelism
-    /// its cap pays for.
+    /// Point a step's command at the tree's `target/`, at its own scratch, at the parallelism its
+    /// cap pays for, and at what this run changed.
     fn apply(&self, cmd: &mut Command) {
         cmd.env(GATE_TARGET_DIR, &self.target);
         cmd.env(GATE_TMPDIR, &self.tmp);
         if let Some(jobs) = self.jobs {
             cmd.env(GATE_BUILD_JOBS, jobs.to_string());
         }
+        cmd.env(GATE_BASE_ENV, &self.subject.base);
+        match self.subject.changed_file(&self.tmp) {
+            Ok(path) => {
+                cmd.env(GATE_CHANGED_ENV, path);
+            }
+            // A list nobody could write is said, not passed off as "nothing changed": a step that
+            // reads the file and finds it missing refuses, which is the honest answer.
+            Err(why) => eprintln!("  merge queue: the gate's changed-path list: {why}"),
+        }
+    }
+}
+
+/// `LETIBOT_GATE_BASE`: the commit a gate's steps are compared against - the target tip a branch
+/// was rebased onto, or the last tip the target's own gate judged.
+pub const GATE_BASE_ENV: &str = "LETIBOT_GATE_BASE";
+
+/// `LETIBOT_GATE_CHANGED`: a file listing the paths this run changed, one per line.
+pub const GATE_CHANGED_ENV: &str = "LETIBOT_GATE_CHANGED";
+
+/// The name of the changed-path list inside a run's scratch.
+const CHANGED_FILE: &str = "changed.txt";
+
+/// What a run is compared against: the commit it is judged against, and the paths that changed
+/// since. An empty `base` and an empty list is a run nobody could work them out for, which is what
+/// a gate by hand passes when it has neither.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GateSubject {
+    pub base: String,
+    pub changed: Vec<String>,
+}
+
+impl GateSubject {
+    /// The subject of a run at `at` compared against `base`. A `base` git cannot answer for (a
+    /// target that was rewritten, a shallow tree) leaves the list empty rather than failing the
+    /// gate: the steps still run, and one that needs the list says so itself.
+    pub fn of(repo: &Path, base: &str, at: &str) -> GateSubject {
+        let from = match base.trim().is_empty() {
+            true => format!("{at}^"),
+            false => base.trim().to_string(),
+        };
+        let changed = git::git(repo, &["diff", "--name-only", &from, at])
+            .map(|out| {
+                out.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        GateSubject {
+            base: base.trim().to_string(),
+            changed,
+        }
+    }
+
+    /// Write the list into `dir` and answer where it went.
+    pub fn changed_file(&self, dir: &Path) -> Result<PathBuf, String> {
+        let path = dir.join(CHANGED_FILE);
+        let mut text = String::new();
+        for p in &self.changed {
+            text.push_str(p);
+            text.push('\n');
+        }
+        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path)
+    }
+
+    /// The same two facts as a shell prelude, for a step that runs where this process's environment
+    /// does not reach - a declared host's launcher, a firecode VM. `sq`-free: the caller quotes.
+    pub fn prelude(&self, changed_at: &str) -> String {
+        let mut out = format!("export {}='{}'\n", GATE_BASE_ENV, self.base);
+        out.push_str(&format!("printf '%s\\n'"));
+        for p in &self.changed {
+            out.push_str(&format!(" '{p}'"));
+        }
+        out.push_str(&format!(" > '{changed_at}'\n"));
+        out.push_str(&format!(
+            "export {}='{changed_at}'\n",
+            GATE_CHANGED_ENV
+        ));
+        out
     }
 }
 
@@ -883,6 +969,18 @@ pub struct GateControl<'a> {
 pub trait GateRunner: Send + Sync {
     /// Run `steps` in `worktree`, in order, stopping at the first red one.
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun;
+    /// The same run, told what it is compared against ([`GateSubject`]) - so every step hears
+    /// `LETIBOT_GATE_BASE` and can read the changed-path list. A runner that cannot carry the two
+    /// to its steps (a test's own, a VM whose environment does not reach) keeps `run`'s behaviour.
+    fn run_for(
+        &self,
+        worktree: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        _subject: &GateSubject,
+    ) -> GateRun {
+        self.run(worktree, steps, ctl)
+    }
     /// What this runner is, for the row: `local`, or the host's name.
     fn name(&self) -> String {
         "local".to_string()
@@ -909,6 +1007,23 @@ impl GateRunner for LocalGate {
     /// [`run_with_memory`] resolves the cap once, so one gate never judges two steps by different numbers.
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
         run_gate(gate_host().as_deref(), worktree, steps, ctl, gate_memory())
+    }
+
+    fn run_for(
+        &self,
+        worktree: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        subject: &GateSubject,
+    ) -> GateRun {
+        run_gate_for(
+            gate_host().as_deref(),
+            worktree,
+            steps,
+            ctl,
+            gate_memory(),
+            subject,
+        )
     }
 
     /// The name the row carries: the host's, or `local`.
@@ -941,6 +1056,16 @@ impl GateRunner for HostGate {
         super::gate_host::run_on_host(&self.host, worktree, steps, ctl, false)
     }
 
+    fn run_for(
+        &self,
+        worktree: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        subject: &GateSubject,
+    ) -> GateRun {
+        super::gate_host::run_on_host_for(&self.host, worktree, steps, ctl, false, subject)
+    }
+
     fn name(&self) -> String {
         self.host.clone()
     }
@@ -958,7 +1083,19 @@ pub fn run_with_memory(
     ctl: &GateControl,
     memory: Ask,
 ) -> GateRun {
-    run_with_tick(worktree, steps, ctl, memory, &Tick::default())
+    run_with_subject(worktree, steps, ctl, memory, &GateSubject::default())
+}
+
+/// [`run_with_memory`] for a run that knows what it is compared against ([`GateSubject`]): the same
+/// run, with `LETIBOT_GATE_BASE` and the changed-path list in every step's environment.
+pub fn run_with_subject(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    subject: &GateSubject,
+) -> GateRun {
+    run_with_tick_subject(worktree, steps, ctl, memory, &Tick::default(), subject)
 }
 
 /// [`run_with_memory`] on a tick of the caller's choosing. The daemon pokes each step every
@@ -971,7 +1108,28 @@ pub fn run_with_tick(
     memory: Ask,
     tick: &Tick,
 ) -> GateRun {
-    run_steps(worktree, steps, ctl, memory, &|s| s.to_string(), true, tick)
+    run_with_tick_subject(worktree, steps, ctl, memory, tick, &GateSubject::default())
+}
+
+/// [`run_with_tick`] for a run that carries a subject.
+pub fn run_with_tick_subject(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    tick: &Tick,
+    subject: &GateSubject,
+) -> GateRun {
+    run_steps(
+        worktree,
+        steps,
+        ctl,
+        memory,
+        &|s| s.to_string(),
+        true,
+        tick,
+        subject,
+    )
 }
 
 /// [`run_with_memory`] where `launch` turns a step into the command line the shell runs: the row,
@@ -984,6 +1142,19 @@ pub fn run_with_launcher(
     memory: Ask,
     launch: &dyn Fn(&str) -> String,
 ) -> GateRun {
+    run_with_launcher_subject(worktree, steps, ctl, memory, launch, &GateSubject::default())
+}
+
+/// [`run_with_launcher`] for a run that carries a subject. The launcher is the boundary, so the two
+/// facts reach the step through `launch` itself ([`GateSubject::prelude`]) and this only hands it on.
+pub fn run_with_launcher_subject(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    launch: &dyn Fn(&str) -> String,
+    subject: &GateSubject,
+) -> GateRun {
     // The launcher starts a VM, which needs the daemon's HOME; the VM is the step's boundary.
     run_steps(
         worktree,
@@ -993,6 +1164,7 @@ pub fn run_with_launcher(
         launch,
         false,
         &Tick::default(),
+        subject,
     )
 }
 
@@ -1004,6 +1176,7 @@ fn run_steps(
     launch: &dyn Fn(&str) -> String,
     isolate: bool,
     tick: &Tick,
+    subject: &GateSubject,
 ) -> GateRun {
     // The cap is resolved once and used twice: the cgroup the step joins is capped with it and the
     // build's parallelism is bounded by it ([`StepEnv`]), so a step is never judged by two numbers.
@@ -1027,6 +1200,7 @@ fn run_steps(
         place: &place,
         isolate,
         tick: *tick,
+        subject,
     };
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
@@ -1256,9 +1430,23 @@ pub fn run_gate(
     ctl: &GateControl,
     memory: Ask,
 ) -> GateRun {
+    run_gate_for(host, worktree, steps, ctl, memory, &GateSubject::default())
+}
+
+/// [`run_gate`] for a run that carries what it is compared against.
+pub fn run_gate_for(
+    host: Option<&str>,
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    subject: &GateSubject,
+) -> GateRun {
     match host {
-        Some(name) => super::gate_host::run_on_host(name, worktree, steps, ctl, false),
-        None => run_with_memory(worktree, steps, ctl, memory),
+        Some(name) => {
+            super::gate_host::run_on_host_for(name, worktree, steps, ctl, false, subject)
+        }
+        None => run_with_subject(worktree, steps, ctl, memory, subject),
     }
 }
 
@@ -1303,6 +1491,8 @@ struct Bound<'a> {
     /// How often each step is poked, and how long it may go unpoked before its own watchdog ends
     /// it - see [`gate_tick`].
     tick: Tick,
+    /// What the run is compared against, in every step's environment.
+    subject: &'a GateSubject,
 }
 
 /// `scripts/gate-env.sh`, the clean step environment `scripts/gate-at.sh` also uses: compiled in,
@@ -1331,8 +1521,9 @@ fn run_step(
         place,
         isolate,
         tick,
+        subject,
     } = *bound;
-    let env = StepEnv::for_run(worktree, scratch, cap);
+    let env = StepEnv::for_run(worktree, scratch, cap, subject);
     let log = match tempfile_in(worktree) {
         Ok(l) => l,
         Err(e) => return (StepEnd::Infra(e), StepMemory::Unknown, 0),
@@ -2355,10 +2546,37 @@ pub(crate) use letibot_metrics::now_ms;
 /// The gate's steps and the install steps split off them ([`INSTALL_MARK`]).
 pub type GateAndInstall = (Vec<String>, Vec<String>);
 
+/// A project's gate as the queue reads it: two tiers, each with its install steps split off. Both
+/// tiers are non-empty, because [`letibot_tools::gatekeeper::parse_gates`] falls back - so a
+/// project with one `Merge gate` section has the same list twice and behaves as it always did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredGate {
+    pub quick: GateAndInstall,
+    pub full: GateAndInstall,
+    /// Whether the project declared `Quick gate`/`Full gate` at all. `false` is one tier: the
+    /// landing's gate is the target's, as it was before there were two.
+    pub two_tiers: bool,
+}
+
+impl DeclaredGate {
+    /// One tier's steps and install steps.
+    pub fn tier(&self, tier: Tier) -> &GateAndInstall {
+        match tier {
+            Tier::Quick => &self.quick,
+            Tier::Full => &self.full,
+        }
+    }
+
+    /// One tier's steps, the install ones excluded.
+    pub fn steps(&self, tier: Tier) -> &[String] {
+        &self.tier(tier).0
+    }
+}
+
 /// The steps, as the TARGET declares them at `at` - read from that commit's `AGENTS.md` (any case), so
-/// a branch cannot change its own gate. `Ok(None)` when the target declares no gate; the second list
-/// is the install steps ([`INSTALL_MARK`]), split off to run after the push.
-pub fn declared_gate(repo: &Path, at: &str) -> Result<Option<GateAndInstall>, String> {
+/// a branch cannot change its own gate. `Ok(None)` when the target declares no gate; each tier's
+/// second list is its install steps ([`INSTALL_MARK`]), split off to run after the push.
+pub fn declared_gate(repo: &Path, at: &str) -> Result<Option<DeclaredGate>, String> {
     let names = git::git(repo, &["ls-tree", "--name-only", at])?;
     let Some(file) = names
         .lines()
@@ -2368,13 +2586,16 @@ pub fn declared_gate(repo: &Path, at: &str) -> Result<Option<GateAndInstall>, St
         return Ok(None);
     };
     let text = git::git(repo, &["show", &format!("{at}:{file}")])?;
-    Ok(
-        letibot_tools::gatekeeper::parse_merge_gate(&text).map(|steps| {
-            steps
-                .into_iter()
-                .partition(|s: &String| !s.contains(INSTALL_MARK))
-        }),
-    )
+    let split = |steps: Vec<String>| -> GateAndInstall {
+        steps
+            .into_iter()
+            .partition(|s: &String| !s.contains(INSTALL_MARK))
+    };
+    Ok(letibot_tools::gatekeeper::parse_gates(&text).map(|g| DeclaredGate {
+        quick: split(g.quick),
+        full: split(g.full),
+        two_tiers: g.two_tiers,
+    }))
 }
 
 /// The one row a target with no gate records - not an empty list, which reads *nothing ran*.

@@ -64,9 +64,12 @@ for a in \
   [ -n "$v" ] || v=${a#*=}
   [ -e "$v" ] && set -- "$n=$v" "$@"
 done
-# Kept from the caller by name: the gate's own refusals file and, above, the apparatus paths, and
-# nothing else of LETIBOT_*. No keys, sockets, XDG_CONFIG_HOME or XDG_CACHE_HOME.
-for n in PATH USER LOGNAME LANG LC_ALL TZ TMPDIR CARGO_TARGET_DIR CARGO_BUILD_JOBS LETIBOT_APPARATUS_REFUSALS; do
+# Kept from the caller by name: the gate's own refusals file and, above, the apparatus paths, the
+# two facts that say what the run is compared against (`LETIBOT_GATE_BASE`, and the file of changed
+# paths `LETIBOT_GATE_CHANGED` names), and nothing else of LETIBOT_*. No keys, sockets,
+# XDG_CONFIG_HOME or XDG_CACHE_HOME.
+for n in PATH USER LOGNAME LANG LC_ALL TZ TMPDIR CARGO_TARGET_DIR CARGO_BUILD_JOBS LETIBOT_APPARATUS_REFUSALS \
+  LETIBOT_GATE_BASE LETIBOT_GATE_CHANGED; do
   eval "has=\${$n+x}"
   # shellcheck disable=SC2154 # assigned by the eval above
   if [ -n "$has" ]; then

@@ -60,6 +60,59 @@ pub fn unlanded_patches(dir: &Path, tip: &str, head: &str) -> Result<usize, Stri
         .count())
 }
 
+/// The commits `tip` has that `base` does not, oldest first - a batch of landings, in the order they
+/// went on. Empty when `base` is not an ancestor (a rewritten target): nothing can be bisected then.
+pub fn commits_between(repo: &Path, base: &str, tip: &str) -> Vec<String> {
+    if base.trim().is_empty() {
+        return Vec::new();
+    }
+    git(repo, &["rev-list", "--reverse", &format!("{base}..{tip}")])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A commit's subject line - what a revert's message names.
+pub fn subject_of(repo: &Path, sha: &str) -> Option<String> {
+    git(repo, &["log", "-1", "--format=%s", sha])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Undo `sha` on the tip checked out in `wt`, as one commit of its own: `git revert` for the patch,
+/// and an identity of this build's so a machine-made revert does not depend on who runs the daemon.
+/// `Err` is the patch not applying cleanly, which is a person's to settle and no landing's verdict.
+pub fn revert_in(wt: &Path, sha: &str, message: &str) -> Result<String, String> {
+    git(wt, &["revert", "--no-commit", sha])?;
+    let committed = git(
+        wt,
+        &[
+            "-c",
+            "user.name=letibot",
+            "-c",
+            "user.email=letibot@localhost",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+    );
+    if let Err(e) = committed {
+        // Half a revert in the index is worse than none: the next gate's `landing_at` resets the
+        // tree, but a caller that reads it in between must not see a merge in progress.
+        let _ = git(wt, &["revert", "--quit"]);
+        let _ = git(wt, &["reset", "--hard"]);
+        return Err(e);
+    }
+    git(wt, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+}
+
 /// The top of the checkout `path` is in.
 pub fn repo_root(path: &Path) -> Result<PathBuf, String> {
     let out = git(path, &["rev-parse", "--show-toplevel"])?;

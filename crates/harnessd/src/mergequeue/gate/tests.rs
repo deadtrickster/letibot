@@ -2016,3 +2016,86 @@ fn a_step_whose_owner_is_sigkilled_leaves_no_orphan() {
 /// The tick this test's owner is poked on - long enough that a spawn and a file write fit inside
 /// one, short enough that a window is four tenths of a second.
 const TICK_MS: u64 = 100;
+
+/// Every step is told what the run is compared against: `LETIBOT_GATE_BASE` and a file at
+/// `LETIBOT_GATE_CHANGED` naming the paths that changed - so a project's quick step can scope
+/// itself to the crates a branch touched.
+#[test]
+fn a_step_is_told_the_base_it_is_compared_against_and_what_changed() {
+    let dir = std::env::temp_dir().join(format!("letibot-gate-subject-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let steps = vec![
+        "printf '%s\\n' \"$LETIBOT_GATE_BASE\" > base.txt".to_string(),
+        "cat \"$LETIBOT_GATE_CHANGED\" > changed.txt".to_string(),
+    ];
+    let subject = GateSubject {
+        base: "1111111111111111111111111111111111111111".to_string(),
+        changed: vec!["crates/tools/src/lib.rs".to_string(), "scripts/a.sh".to_string()],
+    };
+    let stop = AtomicBool::new(false);
+    let alive = || true;
+    let ctl = GateControl {
+        deadline: Instant::now() + Duration::from_secs(60),
+        budget: Duration::from_secs(60),
+        stop: &stop,
+        alive: &alive,
+    };
+    let run = run_with_subject(&dir, &steps, &ctl, Ask::Default, &subject);
+    assert_eq!(run.verdict, GateVerdict::Passed, "{:?}", run.verdict);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("base.txt")).unwrap().trim(),
+        subject.base
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("changed.txt")).unwrap(),
+        "crates/tools/src/lib.rs\nscripts/a.sh\n"
+    );
+    // A run nobody told is still a run: the base is empty and the list is an empty file, which is
+    // a different thing from the variable being absent.
+    let run = run_with_memory(&dir, &steps, &ctl, Ask::Default);
+    assert_eq!(run.verdict, GateVerdict::Passed, "{:?}", run.verdict);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("changed.txt")).unwrap(),
+        ""
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The subject a run is given, from two commits: `git diff --name-only` between them, and no
+/// failure when the base is one git cannot answer for (a rewritten target).
+#[test]
+fn a_subject_is_the_paths_two_commits_differ_by() {
+    let dir = std::env::temp_dir().join(format!("letibot-gate-subjset-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    letibot_tools::testing::git(&dir).args(["init", "-q"]).output().unwrap();
+    letibot_tools::testing::repo_config(&dir);
+    std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+    letibot_tools::testing::git(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    letibot_tools::testing::git(&dir)
+        .args(["commit", "-q", "-m", "base"])
+        .output()
+        .unwrap();
+    let base = git::rev_parse(&dir, "HEAD").unwrap();
+    std::fs::write(dir.join("b.txt"), "two\n").unwrap();
+    letibot_tools::testing::git(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    letibot_tools::testing::git(&dir)
+        .args(["commit", "-q", "-m", "more"])
+        .output()
+        .unwrap();
+    let at = git::rev_parse(&dir, "HEAD").unwrap();
+    let subject = GateSubject::of(&dir, &base, &at);
+    assert_eq!(subject.base, base);
+    assert_eq!(subject.changed, vec!["b.txt".to_string()]);
+    // A base git cannot resolve is an empty list, not a failed gate.
+    let subject = GateSubject::of(&dir, "0000000000000000000000000000000000000000", &at);
+    assert!(subject.changed.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

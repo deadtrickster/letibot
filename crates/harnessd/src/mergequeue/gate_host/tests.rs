@@ -726,3 +726,48 @@ fn the_wait_between_polls_is_the_projects_number_moved_by_a_tenth() {
         drawn[0]
     );
 }
+
+/// A step on a declared host is told what the run is compared against, by the launcher: the base is
+/// exported and the changed-path list is written beside the step's own output - the same two facts a
+/// local step is handed in its environment.
+#[test]
+fn a_host_step_is_told_the_base_and_the_changed_paths() {
+    let subject = crate::mergequeue::gate::GateSubject {
+        base: "abc123".to_string(),
+        changed: vec!["crates/tools/src/lib.rs".to_string(), "docs/gate.md".to_string()],
+    };
+    let script = launcher_script_for(
+        "cargo test",
+        "/h/tree",
+        "/h/target",
+        &files(Tick::default()),
+        false,
+        &subject,
+    );
+    assert!(
+        script.contains("export LETIBOT_GATE_BASE='abc123'"),
+        "{script}"
+    );
+    assert!(
+        script.contains("export LETIBOT_GATE_CHANGED='/h/gate/x/run/step-0.out.changed'"),
+        "{script}"
+    );
+    assert!(
+        script.contains("'crates/tools/src/lib.rs' 'docs/gate.md'"),
+        "one path per word, written on the host: {script}"
+    );
+    // Nothing to say is still two facts: an empty base and an empty list, not an absent variable.
+    let bare = launcher_script_for(
+        "cargo test",
+        "/h/tree",
+        "/h/target",
+        &files(Tick::default()),
+        false,
+        &crate::mergequeue::gate::GateSubject::default(),
+    );
+    assert!(bare.contains("export LETIBOT_GATE_BASE=''"), "{bare}");
+    assert!(
+        bare.contains("export LETIBOT_GATE_CHANGED="),
+        "the file is named whether or not anything went into it: {bare}"
+    );
+}

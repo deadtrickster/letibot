@@ -201,6 +201,26 @@ pub fn run_on_host(
     ctl: &GateControl,
     in_firecode: bool,
 ) -> GateRun {
+    run_on_host_for(
+        name,
+        worktree,
+        steps,
+        ctl,
+        in_firecode,
+        &super::gate::GateSubject::default(),
+    )
+}
+
+/// [`run_on_host`] for a run that carries what it is compared against: the launcher exports the base
+/// and writes the changed-path list on the host, beside the step's output.
+pub fn run_on_host_for(
+    name: &str,
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    in_firecode: bool,
+    subject: &super::gate::GateSubject,
+) -> GateRun {
     let remote = match Remote::open(name, worktree) {
         Ok(r) => r,
         Err(why) => return infra(steps, why),
@@ -310,16 +330,18 @@ pub fn run_on_host(
         let started = now_ms();
         let wrapped;
         let command = if in_firecode {
-            wrapped = super::gate_firecode::launch_with(
+            wrapped = super::gate_firecode::launch_with_subject(
                 super::gate_firecode::REMOTE_BIN,
                 plan.command,
                 &remote.tree,
+                subject,
             );
             wrapped.as_str()
         } else {
             plan.command
         };
-        let (end, refused) = remote.run_step(command, plan.own_scope, (i + 1, steps.len()), ctl);
+        let (end, refused) =
+            remote.run_step(command, plan.own_scope, (i + 1, steps.len()), ctl, subject);
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(
             step,
@@ -1075,6 +1097,7 @@ impl Remote {
         own_scope: bool,
         at: (usize, usize),
         ctl: &GateControl,
+        subject: &super::gate::GateSubject,
     ) -> (StepEnd, String) {
         let n = self.next();
         let log = match tempfile_in(&self.local) {
@@ -1091,7 +1114,7 @@ impl Remote {
         // pane reads the running step of a gate on another machine here.
         super::gate::watch_step(&self.local, step, at.0, at.1, &log);
         let _running = super::gate::step_guard(&self.local);
-        let end = self.run_step_into(n, step, own_scope, &log, ctl);
+        let end = self.run_step_into(n, step, own_scope, &log, ctl, subject);
         let _ = std::fs::remove_file(&log);
         let refused = match end {
             StepEnd::Red(..) => self.refusals(n),
@@ -1124,9 +1147,17 @@ impl Remote {
         own_scope: bool,
         log: &Path,
         ctl: &GateControl,
+        subject: &super::gate::GateSubject,
     ) -> StepEnd {
         let files = self.files(n);
-        let launcher = launcher_script(step, &self.tree, &self.target, &files, own_scope);
+        let launcher = launcher_script_for(
+            step,
+            &self.tree,
+            &self.target,
+            &files,
+            own_scope,
+            subject,
+        );
         let script = files.launcher.clone();
         if let Err(why) = self.feed(
             &format!("writing `{step}`'s launcher on {}", self.name),
@@ -1424,6 +1455,26 @@ pub fn launcher_script(
     files: &Files,
     own_scope: bool,
 ) -> String {
+    launcher_script_for(
+        step,
+        tree,
+        target,
+        files,
+        own_scope,
+        &super::gate::GateSubject::default(),
+    )
+}
+
+/// [`launcher_script`] for a run that carries what it is compared against: the base is exported and
+/// the changed-path list is written on the host, beside the step's output.
+pub fn launcher_script_for(
+    step: &str,
+    tree: &str,
+    target: &str,
+    files: &Files,
+    own_scope: bool,
+    subject: &super::gate::GateSubject,
+) -> String {
     let Files {
         pid,
         out,
@@ -1461,6 +1512,9 @@ pub fn launcher_script(
            LETIBOT_CALIBRATION=\"$real/.local/share/letibot/calibration\"; do \\
            n=${a%%=*}; v=${a#*=}; [ -e \"$v\" ] && export \"$n=$v\"; done; \\
          unset real a n v";
+    // What the run is compared against, written on the host beside this step's output: the same two
+    // facts a local step is handed in its environment (`gate.rs::StepEnv`).
+    let subject = subject.prelude(&format!("{out}.changed"));
     format!(
         "#!/bin/bash\n\
          echo $$ > '{pid}'\n\
@@ -1470,6 +1524,7 @@ pub fn launcher_script(
          rm -f '{out}.refused'\n\
          export LETIBOT_APPARATUS_REFUSALS='{out}.refused'\n\
          {apparatus}\n\
+         {subject}\n\
          printf '0\\n' > '{beat}'\n\
          {watchdog} &\n\
          ( {run} ) > '{out}' 2>&1\n\

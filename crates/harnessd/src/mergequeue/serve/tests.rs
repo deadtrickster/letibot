@@ -74,16 +74,26 @@ pub(crate) fn sh(dir: &Path, args: &[&str]) -> String {
 
 const GATE_MD: &str = "# agents\n\n## Merge gate\n\n```sh\ntest ! -f broken\n```\n";
 
+/// A project whose gate has two tiers: what a branch must pass to land, and what main's health is
+/// judged by afterwards. Two files, so one landing can be red for the full gate alone.
+const TWO_TIER_MD: &str = "# agents\n\n## Quick gate\n\n```sh\ntest ! -f quick-broken\n```\n\n\
+                          ## Full gate\n\n```sh\ntest ! -f full-broken\n```\n";
+
 /// A repository with a gate: `main` carries `AGENTS.md` whose gate is red while a file named
 /// `broken` exists - so a test turns the target red with one commit.
 pub(crate) fn repo(under: &Path) -> PathBuf {
+    repo_with(under, GATE_MD)
+}
+
+/// [`repo`], with the `AGENTS.md` the caller named.
+pub(crate) fn repo_with(under: &Path, md: &str) -> PathBuf {
     let repo = under.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     sh(&repo, &["init", "-q", "-b", "main"]);
     // The landing rebases into this repository with the daemon's environment, so the identity and
     // the signing policy have to be the repository's own rather than the box's.
     letibot_tools::testing::repo_config(&repo);
-    std::fs::write(repo.join("AGENTS.md"), GATE_MD).unwrap();
+    std::fs::write(repo.join("AGENTS.md"), md).unwrap();
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
     sh(&repo, &["add", "."]);
     sh(&repo, &["commit", "-q", "-m", "base"]);
@@ -300,8 +310,13 @@ struct World {
 
 impl World {
     fn new(tag: &str) -> Self {
+        World::with_agents(tag, GATE_MD)
+    }
+
+    /// A world whose repository declares `md` as its gate - a two-tier one, or one with no gate.
+    fn with_agents(tag: &str, md: &str) -> Self {
         let dir = TempDir::new(tag);
-        let repo = repo(&dir.0);
+        let repo = repo_with(&dir.0, md);
         let db = dir.0.join("sessions.db");
         World {
             repo,
@@ -7243,4 +7258,340 @@ fn a_restart_asks_again_so_the_next_verdict_wakes_again() {
         "a restart asks again, so the same verdict wakes again: {told:?}"
     );
     assert!(told[1].1.contains(" is failed: "), "{}", told[1].1);
+}
+
+
+// ===== Two tiers: a quick gate before the landing, a full one after =====
+
+/// A gate that runs the real steps and remembers what each run was asked for, in order - the only
+/// way a test can say *the full gate ran once* and not once per landing.
+#[derive(Clone, Default)]
+struct Recording(Arc<Mutex<Vec<Vec<String>>>>);
+
+impl Recording {
+    fn runs(&self) -> Vec<Vec<String>> {
+        self.0.lock().unwrap().clone()
+    }
+    /// How many runs asked for `step` - which tells the full gate's own runs from a bisection's,
+    /// which asks for the one step that failed.
+    fn of(&self, step: &str) -> usize {
+        self.runs()
+            .iter()
+            .filter(|r| r.iter().any(|s| s == step))
+            .count()
+    }
+}
+
+impl GateRunner for Recording {
+    fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        self.0.lock().unwrap().push(steps.to_vec());
+        LocalGate.run(wt, steps, ctl)
+    }
+    fn run_for(
+        &self,
+        wt: &Path,
+        steps: &[String],
+        ctl: &GateControl,
+        subject: &crate::mergequeue::gate::GateSubject,
+    ) -> GateRun {
+        self.0.lock().unwrap().push(steps.to_vec());
+        LocalGate.run_for(wt, steps, ctl, subject)
+    }
+    fn name(&self) -> String {
+        "local".into()
+    }
+}
+
+/// A `pass` loop that drives a row's OWN gate to its verdict without settling - a settle drives
+/// every gate the verdict starts, and a test that wants to look at what a landing leaves before the
+/// full gate takes the next pass must not let it.
+fn drive(w: &World, q: &RepoQueue, id: &str) -> MergeState {
+    let mut state = MergeState::Queued;
+    for _ in 0..60 {
+        state = w.store().merge_row(id).unwrap().unwrap().state;
+        if !matches!(state, MergeState::Queued | MergeState::Gating) {
+            return state;
+        }
+        let stop = AtomicBool::new(false);
+        let _ = q.pass(&stop).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("`{id}` never left the queue: {state:?}");
+}
+
+/// A project that declares one `Merge gate` section is the project it was: that gate lands the
+/// branch AND is the target's health, with no second run on the landed tip.
+#[test]
+fn one_gate_section_is_the_landing_and_the_targets_health() {
+    let w = World::new("one-tier");
+    let gate = Arc::new(Recording::default());
+    let q = w.worker(gate.clone(), "a");
+    // The queue judges a tip nobody has judged yet - that is the one run before any landing.
+    run(&q, 1);
+    assert_eq!(gate.of("test ! -f broken"), 1, "the pristine tip");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    run(&q, 1);
+    let m = w.accept("one", "test/a");
+    assert_eq!(drive(&w, &q, &m), MergeState::Landed);
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.sha, w.tip());
+    assert!(
+        full_owed_base(&health.evidence).is_none(),
+        "one section means nothing is owed: {}",
+        health.evidence
+    );
+    run(&q, 2);
+    assert_eq!(
+        gate.of("test ! -f broken"),
+        2,
+        "one run for the pristine tip and one for the branch - nothing runs on the landed tip: \
+         {:?}",
+        gate.runs()
+    );
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.state, HealthState::Green);
+    assert_eq!(health.sha, w.tip());
+    assert!(
+        full_owed_base(&health.evidence).is_none(),
+        "{}",
+        health.evidence
+    );
+}
+
+/// Two sections: the quick gate decides the landing, and the full gate judges the tip afterwards.
+/// The landing is green while the full gate has not run, and main's row says the full gate is owed.
+#[test]
+fn a_quick_gate_lands_and_the_full_gate_judges_the_tip_afterwards() {
+    let w = World::with_agents("two-tier", TWO_TIER_MD);
+    let gate = Arc::new(Recording::default());
+    let q = w.worker(gate.clone(), "a");
+    run(&q, 1);
+    // The pristine tip is the one full run before the landing.
+    let before = gate.of("test ! -f full-broken");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    run(&q, 1);
+    let m = w.accept("one", "test/a");
+    assert_eq!(drive(&w, &q, &m), MergeState::Landed);
+    let landed = w.store().merge_row(&m).unwrap().unwrap();
+    assert!(
+        landed
+            .gate_steps
+            .iter()
+            .any(|s| s.command == "test ! -f quick-broken"),
+        "the landing ran the QUICK tier: {:?}",
+        landed.gate_steps
+    );
+    assert!(
+        !landed
+            .gate_steps
+            .iter()
+            .any(|s| s.command == "test ! -f full-broken"),
+        "and not the full one: {:?}",
+        landed.gate_steps
+    );
+    // Nothing left to land, so the full gate runs on the landed tip - once.
+    run(&q, 2);
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.state, HealthState::Green, "{health:?}");
+    assert_eq!(health.sha, w.tip());
+    assert!(
+        full_owed_base(&health.evidence).is_none(),
+        "judged, so nothing is owed: {}",
+        health.evidence
+    );
+    assert_eq!(
+        gate.of("test ! -f full-broken"),
+        before + 1,
+        "one full run for the landing: {:?}",
+        gate.runs()
+    );
+}
+
+/// One full run covers every landing since the last tip it judged: two branches land on the quick
+/// gate, and the full gate runs ONCE over the pair rather than once per landing.
+#[test]
+fn the_full_gate_covers_two_landings_in_one_run() {
+    let w = World::with_agents("two-tier-batch", TWO_TIER_MD);
+    let gate = Arc::new(Recording::default());
+    let q = w.worker(gate.clone(), "a");
+    run(&q, 1);
+    let (wt1, base, head1) = branch(&w.repo, "one", "one.txt");
+    let (wt2, _, head2) = branch(&w.repo, "two", "two.txt");
+    w.enqueue("one", &wt1, &base, &head1);
+    w.enqueue("two", &wt2, &base, &head2);
+    run(&q, 1);
+    let m1 = w.accept("one", "test/a");
+    let m2 = w.accept("two", "test/a");
+    let before = gate.of("test ! -f full-broken");
+    // The first lands; the second is still in line, so the full gate WAITS for it - and the row it
+    // leaves says so.
+    assert_eq!(drive(&w, &q, &m1), MergeState::Landed);
+    assert_eq!(
+        gate.of("test ! -f full-broken"),
+        before,
+        "no full run while a branch is still in line: {:?}",
+        gate.runs()
+    );
+    let owed = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(owed.state, HealthState::Green, "nothing about the tip halts");
+    assert_eq!(
+        full_owed_base(&owed.evidence),
+        w.store()
+            .merge_row(&m1)
+            .unwrap()
+            .unwrap()
+            .onto_sha
+            .clone(),
+        "the batch starts at the tip the first landing went onto: {}",
+        owed.evidence
+    );
+    assert_eq!(drive(&w, &q, &m2), MergeState::Landed);
+    // Both are down the quick gate, so nothing is in line and the full gate runs once over the tip
+    // both landings made.
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m1).unwrap().unwrap().state,
+        MergeState::Landed
+    );
+    assert_eq!(
+        w.store().merge_row(&m2).unwrap().unwrap().state,
+        MergeState::Landed
+    );
+    assert_eq!(
+        gate.of("test ! -f full-broken"),
+        before + 1,
+        "one run for two landings: {:?}",
+        gate.runs()
+    );
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.sha, w.tip());
+    assert!(
+        health.evidence.contains("2 landing(s) since"),
+        "the row says what the batch was: {}",
+        health.evidence
+    );
+}
+
+/// A red full gate on a batch of two: the failing step is re-run at the midpoint, the second
+/// landing is the one that broke main, it is reverted with a commit of its own, and the session
+/// that landed it is told - with the failing step and the end of its output.
+#[test]
+fn a_red_full_gate_bisects_to_the_second_landing_and_reverts_it() {
+    let w = World::with_agents("two-tier-red", TWO_TIER_MD);
+    *w.door.live.lock().unwrap() = vec!["s-two".to_string()];
+    let gate = Arc::new(Recording::default());
+    let q = w.worker(gate.clone(), "a");
+    run(&q, 1);
+    // The first landing is a plain file; the second adds the one the full gate refuses.
+    let (wt1, base, head1) = branch(&w.repo, "one", "one.txt");
+    let (wt2, _, head2) = branch(&w.repo, "two", "full-broken");
+    w.enqueue("one", &wt1, &base, &head1);
+    w.enqueue("two", &wt2, &base, &head2);
+    run(&q, 1);
+    let m1 = w.accept("one", "test/a");
+    let m2 = w.accept("two", "test/a");
+    assert_eq!(drive(&w, &q, &m1), MergeState::Landed);
+    assert_eq!(drive(&w, &q, &m2), MergeState::Landed);
+    let red = w.tip();
+    assert_eq!(
+        w.store()
+            .merge_row(&m2)
+            .unwrap()
+            .unwrap()
+            .landed_sha
+            .as_deref(),
+        Some(red.as_str()),
+        "the second landing is the tip"
+    );
+    // And now the full gate: red, bisected, reverted, and the reverted tip gated again (green).
+    run(&q, 6);
+    let after = w.tip();
+    assert_ne!(after, red, "main moved: the landing was reverted");
+    let subject = git::subject_of(&w.repo, &after).unwrap_or_default();
+    assert!(
+        subject.starts_with("revert: work on two - full gate red at"),
+        "the revert names the landing and the tip that was red: {subject}"
+    );
+    assert!(
+        !w.repo.join("full-broken").exists(),
+        "the file the full gate choked on is gone from main"
+    );
+    assert_eq!(
+        sh(&w.repo, &["rev-parse", "main~1"]),
+        red,
+        "the revert sits on top of the tip that was red"
+    );
+    // The row: the landing that was reverted is `failed`, and says what took it back.
+    let reverted = w.store().merge_row(&m2).unwrap().unwrap();
+    assert_eq!(reverted.state, MergeState::Failed, "{reverted:?}");
+    assert!(
+        reverted.evidence.contains("reverted on `main`"),
+        "{}",
+        reverted.evidence
+    );
+    // The session that landed it was woken, through the door a gate's verdict uses.
+    let told = w.door.told.lock().unwrap().clone();
+    assert!(
+        told.iter()
+            .any(|(s, t)| s == "s-two" && t.contains("was REVERTED") && t.contains("full-broken")),
+        "the lander is told, with the failing step: {told:?}"
+    );
+    // The first landing is still on main and was never reverted.
+    assert_eq!(
+        w.store().merge_row(&m1).unwrap().unwrap().state,
+        MergeState::Landed
+    );
+    // Main is green again: the full gate ran on the reverted tip.
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.state, HealthState::Green, "{health:?}");
+    assert_eq!(health.sha, after);
+    assert!(
+        full_owed_base(&health.evidence).is_none(),
+        "the reverted tip was judged: {}",
+        health.evidence
+    );
+    assert!(gate.of("test ! -f full-broken") >= 2, "{:?}", gate.runs());
+}
+
+/// A commit nobody's queue landed is not a landing to take back: main is parked on a person instead,
+/// and nothing is reverted.
+#[test]
+fn a_commit_no_landing_made_parks_main_with_no_revert() {
+    let w = World::with_agents("two-tier-hand", TWO_TIER_MD);
+    let q = w.worker(Arc::new(Recording::default()), "a");
+    run(&q, 1);
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    run(&q, 1);
+    let m = w.accept("one", "test/a");
+    // The landing alone: it is green for both tiers.
+    run(&q, 4);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Landed
+    );
+    // A person commits the file that breaks the full gate straight onto main.
+    let hand = commit(&w.repo, "full-broken", "x\n", "by hand");
+    let health = {
+        run(&q, 3);
+        w.store().target_health(&w.key(), "main").unwrap().unwrap()
+    };
+    assert_eq!(health.state, HealthState::Red, "{health:?}");
+    assert!(
+        health.evidence.contains("a person has to act"),
+        "{}",
+        health.evidence
+    );
+    assert_eq!(
+        w.tip(),
+        hand,
+        "nothing was reverted: the commit that broke it is not a landing"
+    );
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Landed,
+        "and the landing is untouched"
+    );
 }

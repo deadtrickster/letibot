@@ -196,6 +196,37 @@ pub fn merge_gate_killed(m: &MergeRow, words: &str) -> String {
     )
 }
 
+/// The row a session gets when its landed branch is reverted: the full gate judged the target red,
+/// the bisection found this landing, and the failing step's own end is what it has to act on.
+pub fn revert_told(
+    target: &str,
+    tip: &str,
+    commit: &str,
+    subject: &str,
+    step: &str,
+    steps: &[MergeGateStep],
+    why: &str,
+) -> String {
+    let tail = match failing_step(steps) {
+        Some((n, of, s, tail)) => format!(
+            "The `{target}` full gate failed at {tip} and the step that failed is {n} of {of}, \
+             `{}`. The end of its output:\n\n```\n{}\n```",
+            s.command,
+            if tail.trim().is_empty() {
+                "(it printed nothing)"
+            } else {
+                tail.trim_end()
+            }
+        ),
+        None => format!("The `{target}` full gate failed at `{step}` at {tip}."),
+    };
+    format!(
+        "[queue] your landing `{subject}` ({}) was REVERTED from `{target}`: the full gate judged \
+         it the first landing that broke the target.\n\n{why}\n\n{tail}",
+        super::capacity::short(commit)
+    )
+}
+
 /// The landing states nobody moves out of without the row's own session or a person: entering one
 /// wakes the root of the tree that enqueued the branch, once per entry.
 pub fn wakes_owner(m: MergeState) -> bool {
