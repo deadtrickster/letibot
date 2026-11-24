@@ -805,7 +805,13 @@ fn a_project_asking_for_claude_on_a_daemon_without_one_is_refused_by_name() {
 #[test]
 fn the_runs_table_holds_a_process_until_it_is_dead() {
     let dir = TempDir::new("claude-runs");
-    let binary = stub(&dir, "claude", "sleep 60\n");
+    // It outlives the SIGINT by a second, so "still held" is a fact about the table and not a race
+    // with how fast a loaded box reaps the child; a second is well inside the grace.
+    let binary = stub(
+        &dir,
+        "claude",
+        "trap 'sleep 1; exit 0' INT\nsleep 60 &\nwait\n",
+    );
     let runs = Runs::new();
     let handle = runs
         .start(

@@ -792,6 +792,11 @@ fn a_step_that_refused_to_skip_is_unjudged_and_not_red() {
 /// runs a step where a VM would.
 const FAKE_FIRECODE: &str = "#!/bin/sh\n\
      echo \"$@\" >> \"$FAKE_FIRECODE_LOG\"\n\
+     sub=$1; shift; n=$#; i=0\n\
+     while [ $i -lt $n ]; do a=$1; shift; i=$((i+1))\n\
+       case $a in --owner|--purpose|--owner-project) shift; i=$((i+1)) ;; --reuse) ;; *) set -- \"$@\" \"$a\" ;; esac\n\
+     done\n\
+     set -- \"$sub\" \"$@\"\n\
      case \"$1\" in\n\
        doctor) exit \"${FAKE_DOCTOR:-0}\" ;;\n\
        sh) cd \"$4\" && exec sh -c \"$3\" ;;\n\
