@@ -1,4 +1,422 @@
 {
+ "anthropic": {
+  "models": {
+   "claude-fable-5": {
+    "cost": {
+     "cache_read": 1,
+     "input": 10,
+     "output": 50
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-06-07",
+    "tool_call": true
+   },
+   "claude-fable-5-1": {
+    "cost": {
+     "cache_read": 0.25,
+     "input": 10,
+     "output": 50
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-01",
+    "tool_call": true
+   },
+   "claude-fable-5-2": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 8,
+     "output": 40
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-11-09",
+    "tool_call": true
+   },
+   "claude-haiku-4-5": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 1,
+     "output": 5
+    },
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-10-15",
+    "tool_call": true
+   },
+   "claude-haiku-4-5-20251001": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 1,
+     "output": 5
+    },
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-10-15",
+    "tool_call": true
+   },
+   "claude-haiku-5-5": {
+    "cost": {
+     "cache_read": 0.01,
+     "input": 0.1,
+     "output": 0.5
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-10-07",
+    "tool_call": true
+   },
+   "claude-opus-4-5": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 25
+    },
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-11-24",
+    "tool_call": true
+   },
+   "claude-opus-4-5-20251101": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 25
+    },
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-11-24",
+    "tool_call": true
+   },
+   "claude-opus-4-6": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 25
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-02-04",
+    "tool_call": true
+   },
+   "claude-opus-4-7": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 25
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-04-14",
+    "tool_call": true
+   },
+   "claude-opus-4-8": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 25
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-05-28",
+    "tool_call": true
+   },
+   "claude-opus-5": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 25
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-07-24",
+    "tool_call": true
+   },
+   "claude-opus-5-5": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 4,
+     "output": 20
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-22",
+    "tool_call": true
+   },
+   "claude-sonnet-4-5": {
+    "cost": {
+     "cache_read": 0.3,
+     "input": 3,
+     "output": 15
+    },
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-09-29",
+    "tool_call": true
+   },
+   "claude-sonnet-4-5-20250929": {
+    "cost": {
+     "cache_read": 0.3,
+     "input": 3,
+     "output": 15
+    },
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-09-29",
+    "tool_call": true
+   },
+   "claude-sonnet-4-6": {
+    "cost": {
+     "cache_read": 0.3,
+     "input": 3,
+     "output": 15
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-02-17",
+    "tool_call": true
+   },
+   "claude-sonnet-5": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-06-29",
+    "tool_call": true
+   },
+   "claude-sonnet-5-5": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-28",
+    "tool_call": true
+   }
+  }
+ },
  "deepseek": {
   "models": {
    "deepseek-flash": {
@@ -15,8 +433,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-17",
+    "tool_call": true
    },
    "deepseek-v4-flash": {
     "cost": {
@@ -32,8 +455,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-17",
+    "tool_call": true
    },
    "deepseek-v4-flash-vision-exp": {
     "cost": {
@@ -49,8 +477,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-17",
+    "tool_call": true
    },
    "deepseek-v4-pro": {
     "cost": {
@@ -65,8 +498,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-13",
+    "tool_call": true
    }
   }
  },
@@ -89,8 +527,14 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text",
+      "image"
      ]
-    }
+    },
+    "release_date": "2026-04-21",
+    "tool_call": true
    },
    "deep-research-preview-04-2026": {
     "cost": {
@@ -109,8 +553,14 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text",
+      "image"
      ]
-    }
+    },
+    "release_date": "2026-04-21",
+    "tool_call": true
    },
    "gemini-2.5-flash": {
     "cost": {
@@ -129,8 +579,13 @@
       "audio",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-06-17",
+    "tool_call": true
    },
    "gemini-2.5-flash-image": {
     "cost": {
@@ -139,15 +594,21 @@
      "output": 2.5
     },
     "limit": {
-     "context": 32768,
+     "context": 65536,
      "output": 32768
     },
     "modalities": {
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text",
+      "image"
      ]
-    }
+    },
+    "release_date": "2025-08-26",
+    "tool_call": false
    },
    "gemini-2.5-flash-lite": {
     "cost": {
@@ -166,8 +627,13 @@
       "audio",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-06-17",
+    "tool_call": true
    },
    "gemini-2.5-flash-preview-tts": {
     "cost": {
@@ -181,8 +647,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "audio"
      ]
-    }
+    },
+    "release_date": "2025-05-01",
+    "tool_call": false
    },
    "gemini-2.5-pro": {
     "cost": {
@@ -201,8 +672,13 @@
       "audio",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-06-17",
+    "tool_call": true
    },
    "gemini-2.5-pro-preview-tts": {
     "cost": {
@@ -216,8 +692,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "audio"
      ]
-    }
+    },
+    "release_date": "2025-05-01",
+    "tool_call": false
    },
    "gemini-3-flash-preview": {
     "cost": {
@@ -236,8 +717,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-12-17",
+    "tool_call": true
    },
    "gemini-3-pro-image": {
     "cost": {
@@ -252,8 +738,14 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text",
+      "image"
      ]
-    }
+    },
+    "release_date": "2026-05-28",
+    "tool_call": false
    },
    "gemini-3.1-flash-image": {
     "cost": {
@@ -270,8 +762,14 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text",
+      "image"
      ]
-    }
+    },
+    "release_date": "2026-05-28",
+    "tool_call": false
    },
    "gemini-3.1-flash-lite": {
     "cost": {
@@ -290,8 +788,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-05-07",
+    "tool_call": true
    },
    "gemini-3.1-flash-lite-image": {
     "cost": {
@@ -305,9 +808,17 @@
     "modalities": {
      "input": [
       "text",
+      "image",
+      "video",
+      "pdf"
+     ],
+     "output": [
+      "text",
       "image"
      ]
-    }
+    },
+    "release_date": "2026-06-30",
+    "tool_call": true
    },
    "gemini-3.1-flash-live-preview": {
     "cost": {
@@ -324,8 +835,14 @@
       "image",
       "video",
       "audio"
+     ],
+     "output": [
+      "text",
+      "audio"
      ]
-    }
+    },
+    "release_date": "2026-03-26",
+    "tool_call": true
    },
    "gemini-3.1-flash-tts-preview": {
     "cost": {
@@ -339,8 +856,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "audio"
      ]
-    }
+    },
+    "release_date": "2026-04-15",
+    "tool_call": false
    },
    "gemini-3.1-pro-preview": {
     "cost": {
@@ -359,8 +881,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-02-19",
+    "tool_call": true
    },
    "gemini-3.1-pro-preview-customtools": {
     "cost": {
@@ -379,8 +906,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-02-19",
+    "tool_call": true
    },
    "gemini-3.5-flash": {
     "cost": {
@@ -399,8 +931,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-05-19",
+    "tool_call": true
    },
    "gemini-3.5-flash-lite": {
     "cost": {
@@ -419,8 +956,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-21",
+    "tool_call": true
    },
    "gemini-3.5-live-translate-preview": {
     "cost": {
@@ -434,8 +976,14 @@
     "modalities": {
      "input": [
       "audio"
+     ],
+     "output": [
+      "audio",
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-06-09",
+    "tool_call": false
    },
    "gemini-3.6-flash": {
     "cost": {
@@ -454,8 +1002,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-21",
+    "tool_call": true
    },
    "gemini-3.7-flash": {
     "cost": {
@@ -474,8 +1027,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-13",
+    "tool_call": true
    },
    "gemini-3.8-flash": {
     "cost": {
@@ -494,8 +1052,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-09-02",
+    "tool_call": true
    },
    "gemini-4-argon": {
     "cost": {
@@ -514,8 +1077,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-13",
+    "tool_call": true
    },
    "gemini-4-carbon": {
     "cost": {
@@ -534,8 +1102,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-11-10",
+    "tool_call": true
    },
    "gemini-4-hydrogen": {
     "cost": {
@@ -554,8 +1127,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-11-12",
+    "tool_call": true
    },
    "gemini-4-neon": {
     "cost": {
@@ -574,8 +1152,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-11-18",
+    "tool_call": true
    },
    "gemini-embedding-001": {
     "cost": {
@@ -589,8 +1172,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-05-20",
+    "tool_call": false
    },
    "gemini-embedding-2": {
     "cost": {
@@ -608,8 +1196,13 @@
       "audio",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-04-22",
+    "tool_call": false
    },
    "gemini-flash-latest": {
     "cost": {
@@ -628,8 +1221,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-09-02",
+    "tool_call": true
    },
    "gemini-flash-lite-latest": {
     "cost": {
@@ -648,8 +1246,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-21",
+    "tool_call": true
    },
    "gemini-pro-latest": {
     "cost": {
@@ -668,8 +1271,13 @@
       "video",
       "audio",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-02-19",
+    "tool_call": true
    },
    "gemma-4-26b-a4b-it": {
     "cost": {
@@ -684,8 +1292,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-04-02",
+    "tool_call": true
    },
    "gemma-4-31b-it": {
     "cost": {
@@ -700,40 +1313,49 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-04-02",
+    "tool_call": true
    },
    "lyria-3-clip-preview": {
-    "cost": {
-     "input": 0,
-     "output": 0
-    },
     "limit": {
-     "context": 1048576,
+     "context": 131072,
      "output": 65536
     },
     "modalities": {
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text",
+      "audio"
      ]
-    }
+    },
+    "release_date": "2026-03-25",
+    "tool_call": false
    },
    "lyria-3-pro-preview": {
-    "cost": {
-     "input": 0,
-     "output": 0
-    },
     "limit": {
-     "context": 1048576,
+     "context": 131072,
      "output": 65536
     },
     "modalities": {
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text",
+      "audio"
      ]
-    }
+    },
+    "release_date": "2026-03-25",
+    "tool_call": false
    }
   }
  },
@@ -754,8 +1376,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-16",
+    "tool_call": true
    },
    "k3-256k": {
     "cost": {
@@ -771,8 +1398,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-16",
+    "tool_call": true
    },
    "k3.1-pro": {
     "cost": {
@@ -789,8 +1421,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-23",
+    "tool_call": true
    },
    "k3.1-pro-highspeed": {
     "cost": {
@@ -807,8 +1444,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-23",
+    "tool_call": true
    },
    "kimi-for-coding": {
     "cost": {
@@ -825,8 +1467,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-09-11",
+    "tool_call": true
    },
    "kimi-for-coding-highspeed": {
     "cost": {
@@ -843,8 +1490,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-06-12",
+    "tool_call": true
    }
   }
  },
@@ -865,8 +1517,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-16",
+    "tool_call": true
    },
    "k3-256k": {
     "cost": {
@@ -882,8 +1539,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-16",
+    "tool_call": true
    },
    "k3.1-pro": {
     "cost": {
@@ -900,8 +1562,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-23",
+    "tool_call": true
    },
    "k3.1-pro-highspeed": {
     "cost": {
@@ -918,8 +1585,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-10-23",
+    "tool_call": true
    },
    "kimi-for-coding": {
     "cost": {
@@ -936,8 +1608,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-09-11",
+    "tool_call": true
    },
    "kimi-for-coding-highspeed": {
     "cost": {
@@ -954,8 +1631,928 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-06-12",
+    "tool_call": true
+   }
+  }
+ },
+ "openai": {
+  "models": {
+   "chatgpt-image-latest": {
+    "cost": {
+     "cache_read": 1.25,
+     "input": 5,
+     "output": 10
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text",
+      "image"
+     ]
+    },
+    "release_date": "2025-12-16",
+    "tool_call": false
+   },
+   "gpt-4.1": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 2,
+     "output": 8
+    },
+    "limit": {
+     "context": 1047576,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-04-14",
+    "tool_call": true
+   },
+   "gpt-4.1-mini": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 0.4,
+     "output": 1.6
+    },
+    "limit": {
+     "context": 1047576,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-04-14",
+    "tool_call": true
+   },
+   "gpt-4o": {
+    "cost": {
+     "cache_read": 1.25,
+     "input": 2.5,
+     "output": 10
+    },
+    "limit": {
+     "context": 128000,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2024-05-13",
+    "tool_call": true
+   },
+   "gpt-4o-2024-08-06": {
+    "cost": {
+     "cache_read": 1.25,
+     "input": 2.5,
+     "output": 10
+    },
+    "limit": {
+     "context": 128000,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2024-08-06",
+    "tool_call": true
+   },
+   "gpt-4o-2024-11-20": {
+    "cost": {
+     "cache_read": 1.25,
+     "input": 2.5,
+     "output": 10
+    },
+    "limit": {
+     "context": 128000,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2024-11-20",
+    "tool_call": true
+   },
+   "gpt-4o-mini": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.15,
+     "output": 0.6
+    },
+    "limit": {
+     "context": 128000,
+     "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2024-07-18",
+    "tool_call": true
+   },
+   "gpt-5": {
+    "cost": {
+     "cache_read": 0.125,
+     "input": 1.25,
+     "output": 10
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-08-07",
+    "tool_call": true
+   },
+   "gpt-5-mini": {
+    "cost": {
+     "cache_read": 0.025,
+     "input": 0.25,
+     "output": 2
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-08-07",
+    "tool_call": true
+   },
+   "gpt-5-nano": {
+    "cost": {
+     "cache_read": 0.005,
+     "input": 0.05,
+     "output": 0.4
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-08-07",
+    "tool_call": true
+   },
+   "gpt-5-pro": {
+    "cost": {
+     "input": 15,
+     "output": 120
+    },
+    "limit": {
+     "context": 400000,
+     "output": 272000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-10-06",
+    "tool_call": true
+   },
+   "gpt-5.1": {
+    "cost": {
+     "cache_read": 0.125,
+     "input": 1.25,
+     "output": 10
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-11-13",
+    "tool_call": true
+   },
+   "gpt-5.2": {
+    "cost": {
+     "cache_read": 0.175,
+     "input": 1.75,
+     "output": 14
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-12-11",
+    "tool_call": true
+   },
+   "gpt-5.2-pro": {
+    "cost": {
+     "input": 21,
+     "output": 168
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-12-11",
+    "tool_call": true
+   },
+   "gpt-5.3-codex": {
+    "cost": {
+     "cache_read": 0.175,
+     "input": 1.75,
+     "output": 14
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-02-05",
+    "tool_call": true
+   },
+   "gpt-5.4": {
+    "cost": {
+     "cache_read": 0.25,
+     "input": 2.5,
+     "output": 15
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-03-05",
+    "tool_call": true
+   },
+   "gpt-5.4-mini": {
+    "cost": {
+     "cache_read": 0.075,
+     "input": 0.75,
+     "output": 4.5
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-03-17",
+    "tool_call": true
+   },
+   "gpt-5.4-nano": {
+    "cost": {
+     "cache_read": 0.02,
+     "input": 0.2,
+     "output": 1.25
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-03-17",
+    "tool_call": true
+   },
+   "gpt-5.4-pro": {
+    "cost": {
+     "input": 30,
+     "output": 180
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-03-05",
+    "tool_call": true
+   },
+   "gpt-5.5": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 5,
+     "output": 30
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-04-23",
+    "tool_call": true
+   },
+   "gpt-5.5-pro": {
+    "cost": {
+     "input": 30,
+     "output": 180
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-04-23",
+    "tool_call": true
+   },
+   "gpt-5.6": {
+    "cost": {
+     "cache_read": 0.4,
+     "input": 4,
+     "output": 20
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-07-09",
+    "tool_call": true
+   },
+   "gpt-5.6-luna": {
+    "cost": {
+     "cache_read": 0.02,
+     "input": 0.2,
+     "output": 1.2
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-07-09",
+    "tool_call": true
+   },
+   "gpt-5.6-sol": {
+    "cost": {
+     "cache_read": 0.4,
+     "input": 4,
+     "output": 20
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-07-09",
+    "tool_call": true
+   },
+   "gpt-5.6-terra": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 12
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-07-09",
+    "tool_call": true
+   },
+   "gpt-6-astra": {
+    "cost": {
+     "cache_read": 1,
+     "input": 10,
+     "output": 50
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-04",
+    "tool_call": true
+   },
+   "gpt-6-luna": {
+    "cost": {
+     "cache_read": 0.01,
+     "input": 0.1,
+     "output": 0.5
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-22",
+    "tool_call": true
+   },
+   "gpt-6-sol": {
+    "cost": {
+     "cache_read": 0.2,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-22",
+    "tool_call": true
+   },
+   "gpt-6.1-sol": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-09-29",
+    "tool_call": true
+   },
+   "gpt-6.1-terra": {
+    "cost": {
+     "cache_read": 0.05,
+     "input": 1,
+     "output": 5
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-10-26",
+    "tool_call": true
+   },
+   "gpt-6.2-astra": {
+    "cost": {
+     "cache_read": 0.4,
+     "input": 8,
+     "output": 40
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-11-17",
+    "tool_call": true
+   },
+   "gpt-6.2-sol": {
+    "cost": {
+     "cache_read": 0.1,
+     "input": 2,
+     "output": 10
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-11-17",
+    "tool_call": true
+   },
+   "gpt-daybreak-blue-latest": {
+    "cost": {
+     "cache_read": 0.4,
+     "input": 4,
+     "output": 20
+    },
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-08-07",
+    "tool_call": true
+   },
+   "gpt-daybreak-red-latest": {
+    "cost": {
+     "cache_read": 1.25,
+     "input": 12.5,
+     "output": 75
+    },
+    "limit": {
+     "context": 400000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-08-07",
+    "tool_call": true
+   },
+   "gpt-image-1-mini": {
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text",
+      "image"
+     ]
+    },
+    "release_date": "2025-09-26",
+    "tool_call": false
+   },
+   "gpt-image-1.5": {
+    "cost": {
+     "cache_read": 1.25,
+     "input": 5,
+     "output": 10
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text",
+      "image"
+     ]
+    },
+    "release_date": "2025-11-25",
+    "tool_call": false
+   },
+   "gpt-image-2": {
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "image"
+     ]
+    },
+    "release_date": "2026-04-21",
+    "tool_call": false
+   },
+   "o3": {
+    "cost": {
+     "cache_read": 0.5,
+     "input": 2,
+     "output": 8
+    },
+    "limit": {
+     "context": 200000,
+     "output": 100000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-04-16",
+    "tool_call": true
+   },
+   "o3-pro": {
+    "cost": {
+     "input": 20,
+     "output": 80
+    },
+    "limit": {
+     "context": 200000,
+     "output": 100000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2025-06-10",
+    "tool_call": true
+   },
+   "text-embedding-3-large": {
+    "cost": {
+     "input": 0.13,
+     "output": 0
+    },
+    "limit": {
+     "context": 8191,
+     "output": 3072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2024-01-25",
+    "tool_call": false
+   },
+   "text-embedding-3-small": {
+    "cost": {
+     "input": 0.02,
+     "output": 0
+    },
+    "limit": {
+     "context": 8191,
+     "output": 1536
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2024-01-25",
+    "tool_call": false
+   },
+   "text-embedding-ada-002": {
+    "cost": {
+     "input": 0.1,
+     "output": 0
+    },
+    "limit": {
+     "context": 8192,
+     "output": 1536
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2022-12-15",
+    "tool_call": false
    }
   }
  },
@@ -976,8 +2573,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-03-09",
+    "tool_call": true
    },
    "grok-4.20-0309-reasoning": {
     "cost": {
@@ -994,8 +2596,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-03-09",
+    "tool_call": true
    },
    "grok-4.20-multi-agent-0309": {
     "cost": {
@@ -1012,8 +2619,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-03-09",
+    "tool_call": false
    },
    "grok-4.3": {
     "cost": {
@@ -1030,8 +2642,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-04-17",
+    "tool_call": true
    },
    "grok-4.5": {
     "cost": {
@@ -1048,8 +2665,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-07-08",
+    "tool_call": true
    },
    "grok-4.6": {
     "cost": {
@@ -1066,8 +2688,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-12",
+    "tool_call": true
    },
    "grok-4.7": {
     "cost": {
@@ -1084,8 +2711,13 @@
       "text",
       "image",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-09-21",
+    "tool_call": true
    },
    "grok-imagine-image": {
     "limit": {
@@ -1096,8 +2728,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "image"
      ]
-    }
+    },
+    "release_date": "2026-01-28",
+    "tool_call": false
    },
    "grok-imagine-video": {
     "limit": {
@@ -1109,8 +2746,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "video"
      ]
-    }
+    },
+    "release_date": "2026-01-28",
+    "tool_call": false
    },
    "grok-imagine-video-1.5": {
     "limit": {
@@ -1122,8 +2764,13 @@
       "text",
       "image",
       "audio"
+     ],
+     "output": [
+      "video"
      ]
-    }
+    },
+    "release_date": "2026-05-30",
+    "tool_call": false
    },
    "grok-imagine-video-1.5-lite": {
     "limit": {
@@ -1134,8 +2781,13 @@
      "input": [
       "text",
       "image"
+     ],
+     "output": [
+      "video"
      ]
-    }
+    },
+    "release_date": "2026-10-01",
+    "tool_call": false
    }
   }
  },
@@ -1154,8 +2806,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-12-22",
+    "tool_call": true
    },
    "glm-5-turbo": {
     "cost": {
@@ -1170,8 +2827,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-03-16",
+    "tool_call": true
    },
    "glm-5.2": {
     "cost": {
@@ -1186,8 +2848,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-06-13",
+    "tool_call": true
    },
    "glm-5.2-highspeed": {
     "cost": {
@@ -1202,8 +2869,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-06-13",
+    "tool_call": true
    },
    "glm-5.3": {
     "cost": {
@@ -1218,8 +2890,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-14",
+    "tool_call": true
    },
    "glm-5.3-flash": {
     "cost": {
@@ -1237,8 +2914,13 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-26",
+    "tool_call": true
    },
    "glm-5.3-highspeed": {
     "cost": {
@@ -1253,8 +2935,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-14",
+    "tool_call": true
    },
    "glm-5.4": {
     "cost": {
@@ -1272,8 +2959,13 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-11-23",
+    "tool_call": true
    }
   }
  },
@@ -1292,8 +2984,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-07-28",
+    "tool_call": true
    },
    "glm-4.5-air": {
     "cost": {
@@ -1308,8 +3005,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-07-28",
+    "tool_call": true
    },
    "glm-4.5-flash": {
     "cost": {
@@ -1324,8 +3026,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-07-28",
+    "tool_call": true
    },
    "glm-4.5v": {
     "cost": {
@@ -1342,8 +3049,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-08-11",
+    "tool_call": true
    },
    "glm-4.6": {
     "cost": {
@@ -1358,8 +3070,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-09-30",
+    "tool_call": true
    },
    "glm-4.6v": {
     "cost": {
@@ -1376,8 +3093,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-12-08",
+    "tool_call": true
    },
    "glm-4.6v-flash": {
     "cost": {
@@ -1394,8 +3116,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-12-08",
+    "tool_call": true
    },
    "glm-4.7": {
     "cost": {
@@ -1410,8 +3137,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-12-22",
+    "tool_call": true
    },
    "glm-4.7-flash": {
     "cost": {
@@ -1426,8 +3158,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-01-19",
+    "tool_call": true
    },
    "glm-4.7-flashx": {
     "cost": {
@@ -1442,8 +3179,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-01-19",
+    "tool_call": true
    },
    "glm-5": {
     "cost": {
@@ -1458,8 +3200,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-02-12",
+    "tool_call": true
    },
    "glm-5.1": {
     "cost": {
@@ -1474,8 +3221,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-04-07",
+    "tool_call": true
    },
    "glm-5.2": {
     "cost": {
@@ -1490,8 +3242,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-06-13",
+    "tool_call": true
    },
    "glm-5.3": {
     "cost": {
@@ -1506,8 +3263,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-14",
+    "tool_call": true
    },
    "glm-5.3-flash": {
     "cost": {
@@ -1525,8 +3287,13 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-26",
+    "tool_call": true
    },
    "glm-5.3-flashx": {
     "cost": {
@@ -1544,8 +3311,37 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-09-18",
+    "tool_call": true
+   },
+   "glm-5.3-flashx-legal": {
+    "cost": {
+     "cache_read": 0.08534,
+     "input": 0.29943,
+     "output": 1.04801
+    },
+    "limit": {
+     "context": 1000000,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "release_date": "2026-11-02",
+    "tool_call": true
    },
    "glm-5v-turbo": {
     "cost": {
@@ -1563,8 +3359,13 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-04-01",
+    "tool_call": true
    }
   }
  },
@@ -1585,8 +3386,13 @@
       "text",
       "image",
       "video"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2025-12-08",
+    "tool_call": true
    },
    "glm-5.3": {
     "cost": {
@@ -1601,8 +3407,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-14",
+    "tool_call": true
    },
    "glm-5.3-flash": {
     "cost": {
@@ -1620,8 +3431,13 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-26",
+    "tool_call": true
    },
    "glm-5.3-highspeed": {
     "cost": {
@@ -1636,8 +3452,13 @@
     "modalities": {
      "input": [
       "text"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-08-14",
+    "tool_call": true
    },
    "glm-5.4": {
     "cost": {
@@ -1655,8 +3476,13 @@
       "image",
       "video",
       "pdf"
+     ],
+     "output": [
+      "text"
      ]
-    }
+    },
+    "release_date": "2026-11-23",
+    "tool_call": true
    }
   }
  }

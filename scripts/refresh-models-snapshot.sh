@@ -56,8 +56,16 @@ for pid in WANT:
         # "text only" — and `letibot_provider::messages` sent `image_url` to a model
         # that answers `messages.content.type is invalid, allowed values: ['text']`.
         mod = m.get("modalities") or {}
-        if mod.get("input"):
-            e["modalities"] = {"input": mod["input"]}
+        if mod.get("input") or mod.get("output"):
+            e["modalities"] = {k: mod[k] for k in ("input", "output") if mod.get(k)}
+        # **Which model is the newest, and whether it is a chat model at all.** `Catalogue::pick`
+        # ranks by `release_date` and skips a row whose output is not text or whose `tool_call` is
+        # false, so a snapshot without these fields would put every box with no cache back on the
+        # window-and-price rule.
+        if m.get("tool_call") is not None:
+            e["tool_call"] = m["tool_call"]
+        if m.get("release_date"):
+            e["release_date"] = m["release_date"]
         if e:
             ms[name] = e
     trimmed[pid] = {"models": ms}

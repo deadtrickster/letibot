@@ -26,6 +26,31 @@ pub struct ModelFacts {
     /// What it accepts as input, from models.dev's `modalities.input`. `None` when the row
     /// says nothing, which is not the same as text only - see [`Catalogue::takes_images`].
     pub inputs: Option<Inputs>,
+    /// Whether this model's output is text, from `modalities.output`: a video or image model is
+    /// not one a session can run on. `None` when the row says nothing.
+    pub output_is_text: Option<bool>,
+    /// models.dev's `tool_call`. A model that cannot call a tool is not this harness's model.
+    pub tool_call: Option<bool>,
+    /// models.dev's `release_date` as `YYYYMMDD`, so it orders as a number and stays `Copy`: which
+    /// model is the new one, which is the question [`Catalogue::pick`] answers rather than a
+    /// constant written down here.
+    pub released: Option<u32>,
+}
+
+/// `20261123` back as the `2026-11-23` the catalogue wrote.
+fn date_words(v: u32) -> String {
+    format!("{:04}-{:02}-{:02}", v / 10_000, (v / 100) % 100, v % 100)
+}
+
+/// `YYYY-MM-DD` as `YYYYMMDD`. A date this cannot read is an absent one, never a zero - a zero
+/// would sort first and be read as the oldest model there is.
+fn parsed_date(text: &str) -> Option<u32> {
+    let mut parts = text.trim().split('-');
+    let y: u32 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    (parts.next().is_none() && (1..=12).contains(&m) && (1..=31).contains(&d))
+        .then_some(y * 10_000 + m * 100 + d)
 }
 
 impl ModelFacts {
@@ -94,12 +119,18 @@ struct RawModel {
     cost: Option<RawCost>,
     #[serde(default)]
     modalities: Option<RawModalities>,
+    #[serde(default)]
+    tool_call: Option<bool>,
+    #[serde(default)]
+    release_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawModalities {
     #[serde(default)]
     input: Vec<String>,
+    #[serde(default)]
+    output: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +236,106 @@ pub const SNAPSHOT_FETCHED: &str = "2026-11-24";
 /// [`SNAPSHOT_FETCHED`]. Small because this is not a browsing catalogue, only the answer
 /// to *a box with nothing else still plans against the right window*.
 const SNAPSHOT: &str = include_str!("../data/models-snapshot.json");
+
+/// One provider's default model, and the rung that chose it - [`Catalogue::pick`]'s answer, so a
+/// reader can see why the name is what it is instead of trusting a rule they cannot read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    pub model: String,
+    pub why: String,
+}
+
+/// Names a vendor ships as an experiment rather than as the model to be on. A default is what a
+/// new session starts from, so it may not be a preview of something.
+fn experimental(name: &str) -> bool {
+    name.split('-').any(|seg| {
+        matches!(
+            seg.to_ascii_lowercase().as_str(),
+            "exp" | "preview" | "beta" | "alpha"
+        )
+    })
+}
+
+/// The name without a date on the end, when the date is `YYYYMMDD` or `YYYY-MM-DD`.
+fn undated_name(name: &str) -> Option<&str> {
+    let (head, tail) = name.rsplit_once('-')?;
+    if tail.len() == 8 && tail.chars().all(|c| c.is_ascii_digit()) {
+        return Some(head);
+    }
+    if tail.len() != 2 || !tail.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (head2, month) = head.rsplit_once('-')?;
+    if month.len() != 2 || !month.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (head3, year) = head2.rsplit_once('-')?;
+    (year.len() == 4 && year.chars().all(|c| c.is_ascii_digit())).then_some(head3)
+}
+
+/// A dated snapshot of a model this provider also carries undated: the snapshot is the same model
+/// and is the one that gets retired, so it is not the name a new session should start on.
+fn dated_snapshot(name: &str, carried: &std::collections::BTreeSet<String>) -> bool {
+    undated_name(name).is_some_and(|plain| carried.contains(plain))
+}
+
+/// Where the defaults this box last resolved are kept, beside the cache: `models.json.defaults`.
+/// A refresh that changes what a provider starts on is news, and news needs the previous answer.
+pub fn defaults_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".defaults");
+    PathBuf::from(name)
+}
+
+/// The defaults recorded last time, per catalogue id. An absent or unreadable file is an empty
+/// map: a first look has nothing to compare against, which is not a change.
+pub fn known_defaults(path: &Path) -> BTreeMap<String, String> {
+    std::fs::read_to_string(defaults_path(path))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Note what this catalogue resolves each provider to now and answer one line per provider whose
+/// default moved: `<provider>: default is now <new> (was <old>)`. The record is written before the
+/// lines come back, so a restart says each one once. A failure to write says nothing rather than
+/// losing the lines.
+pub fn note_defaults(path: &Path) -> Vec<String> {
+    let Ok(cat) = Catalogue::read(path) else {
+        return Vec::new();
+    };
+    let was = known_defaults(path);
+    let now: BTreeMap<String, String> = crate::refresh::catalogue_ids()
+        .into_iter()
+        .filter_map(|id| cat.pick(id).map(|p| (id.to_string(), p.model)))
+        .collect();
+    let mut lines = Vec::new();
+    for (id, model) in &now {
+        if let Some(old) = was.get(id)
+            && old != model
+        {
+            lines.push(format!("{id}: default is now {model} (was {old})"));
+        }
+    }
+    let text = serde_json::to_string_pretty(&now).unwrap_or_default();
+    let mut tmp = defaults_path(path).as_os_str().to_os_string();
+    tmp.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, defaults_path(path));
+    }
+    lines
+}
+
+/// The cheaper input rate first, and an unpriced model after every priced one: unpriced is not
+/// free, and it is not evidence of anything either.
+fn cheaper(a: &ModelFacts, b: &ModelFacts) -> std::cmp::Ordering {
+    let (x, y) = (
+        a.prices.map(|p| p.input).unwrap_or(f64::MAX),
+        b.prices.map(|p| p.input).unwrap_or(f64::MAX),
+    );
+    x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+}
 
 /// A model name's version, and how much is written after it: the two rungs that ask which model is
 /// newer and which name is a plain model rather than a variant of one.
@@ -337,11 +468,20 @@ impl Catalogue {
                         output: l.output,
                         // Absent is not empty: a row with no `modalities` says nothing
                         // about what it takes, and a zeroed `Inputs` would say text only.
-                        inputs: m.modalities.map(|mo| Inputs {
+                        inputs: m.modalities.as_ref().map(|mo| Inputs {
                             text: mo.input.iter().any(|i| i == "text"),
                             image: mo.input.iter().any(|i| i == "image"),
                             pdf: mo.input.iter().any(|i| i == "pdf"),
                         }),
+                        // Absent output modalities is not "no text": it is a row that did not
+                        // say, and a default may not be withheld for a field nobody publishes.
+                        output_is_text: m
+                            .modalities
+                            .as_ref()
+                            .filter(|mo| !mo.output.is_empty())
+                            .map(|mo| mo.output.iter().any(|o| o == "text")),
+                        tool_call: m.tool_call,
+                        released: m.release_date.as_deref().and_then(parsed_date),
                         prices: m.cost.map(|c| crate::presets::Prices {
                             input: c.input,
                             // No `cache_read` means no discount, which is the input
@@ -426,35 +566,70 @@ impl Catalogue {
             .map(|(n, _)| n.clone())
     }
 
-    /// The model to use when the operator names none, chosen by rule rather than written down, because
-    /// a constant goes stale silently. Largest window, cheapest input, the plainest name, the newest
-    /// version, the shortest name; a model with no price is skipped, since unpriced is not free.
+    /// The model to use when the operator names none, chosen by rule rather than written down,
+    /// because a constant goes stale silently. See [`Catalogue::pick`].
     pub fn default_model(&self, provider: &str) -> Option<String> {
-        self.providers
-            .get(provider)?
-            .models
+        self.pick(provider).map(|p| p.model)
+    }
+
+    /// The model a provider's sessions start on, and the rung that chose it.
+    ///
+    /// A vendor's own listing says which model is the new one, and a rule written down here goes
+    /// stale the week a model ships - so the newest `release_date` among the provider's CHAT models
+    /// wins, as Claude Code picks up a new model by picking the most recent one:
+    ///
+    /// 1. chat models only: `modalities.output` names text and `tool_call` is true, and a row that
+    ///    says neither (an absent field is not a `no`) is kept;
+    /// 2. experiments are not a default: `-exp`, `-preview`, `-beta`, `-alpha`, and a dated
+    ///    snapshot where the undated name is carried too;
+    /// 3. the newest `release_date`; among one date's models the plainest name, then the cheaper
+    ///    input, then the shorter name;
+    /// 4. a model with no `release_date` ranks after every dated one, and among themselves they
+    ///    keep today's rule (largest window, cheapest input, plainest name, newest version) - a
+    ///    catalogue that publishes no dates then gets the answer it always got.
+    pub fn pick(&self, provider: &str) -> Option<Pick> {
+        let models = &self.providers.get(provider)?.models;
+        let chat = |m: &ModelFacts| m.output_is_text.unwrap_or(true) && m.tool_call.unwrap_or(true);
+        let carried: std::collections::BTreeSet<String> = models.keys().cloned().collect();
+        let (mut dated, mut undated): (Vec<_>, Vec<_>) = models
             .iter()
-            .filter(|(_, m)| m.prices.is_some())
-            .min_by(|a, b| {
-                b.1.context
-                    .cmp(&a.1.context)
-                    .then_with(|| {
-                        let (x, y) = (
-                            a.1.prices.map(|p| p.input).unwrap_or(f64::MAX),
-                            b.1.prices.map(|p| p.input).unwrap_or(f64::MAX),
-                        );
-                        x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    // A plain name beats a decorated one: fewest segments written after
-                    // the version, so a variant or a dated snapshot loses to the model.
-                    .then_with(|| model_version(a.0).1.cmp(&model_version(b.0).1))
-                    // The newer version wins among equally plain names.
-                    .then_with(|| model_version(b.0).0.cmp(&model_version(a.0).0))
-                    // Shortest name wins a tie, because the dated name is the one retired.
-                    .then_with(|| a.0.len().cmp(&b.0.len()))
-                    .then_with(|| a.0.cmp(b.0))
-            })
-            .map(|(name, _)| name.clone())
+            .filter(|(n, m)| chat(m) && !experimental(n) && !dated_snapshot(n, &carried))
+            .partition(|(_, m)| m.released.is_some());
+        // Rung 3: newest first, then the plainest of that date, the cheaper, the shorter.
+        dated.sort_by(|a, b| {
+            b.1.released
+                .cmp(&a.1.released)
+                .then_with(|| model_version(a.0).1.cmp(&model_version(b.0).1))
+                .then_with(|| cheaper(a.1, b.1))
+                .then_with(|| a.0.len().cmp(&b.0.len()))
+                .then_with(|| a.0.cmp(b.0))
+        });
+        // Rung 4, unchanged from before the dates arrived.
+        undated.sort_by(|a, b| {
+            b.1.context
+                .cmp(&a.1.context)
+                .then_with(|| cheaper(a.1, b.1))
+                .then_with(|| model_version(a.0).1.cmp(&model_version(b.0).1))
+                .then_with(|| model_version(b.0).0.cmp(&model_version(a.0).0))
+                .then_with(|| a.0.len().cmp(&b.0.len()))
+                .then_with(|| a.0.cmp(b.0))
+        });
+        let (name, facts) = dated.first().or(undated.first())?;
+        let same_day = dated
+            .iter()
+            .filter(|(_, f)| f.released == facts.released)
+            .count();
+        Some(Pick {
+            model: (*name).clone(),
+            why: match facts.released {
+                Some(d) if same_day > 1 => format!(
+                    "newest release_date ({}); the plainest of {same_day} on that date",
+                    date_words(d)
+                ),
+                Some(d) => format!("newest release_date ({})", date_words(d)),
+                None => "no chat model here carries a release_date, so today's rule chose".into(),
+            },
+        })
     }
 
     /// Every model a provider lists that carries a context limit, largest first: for a
@@ -625,6 +800,192 @@ mod tests {
         assert_eq!(model_version("grok-4.20-0309-reasoning"), (vec![4, 20], 2));
         assert_eq!(model_version("deepseek-flash"), (vec![], 0));
         assert_eq!(model_version("deepseek-v4-flash"), (vec![4], 1));
+    }
+
+    /// The rule the operator asked for, one rung per test: the newest release date among the chat
+    /// models wins, and every other clause has to hold or a session starts on a preview.
+    #[test]
+    fn the_newest_release_date_wins_and_only_chat_models_are_considered() {
+        const FIXTURE: &str = r#"{
+          "p": {"id": "p", "models": {
+            "m-old":     {"limit": {"context": 900000}, "cost": {"input": 0.1},
+                          "release_date": "2026-08-13", "tool_call": true,
+                          "modalities": {"input": ["text"], "output": ["text"]}},
+            "m-new":     {"limit": {"context": 100000}, "cost": {"input": 9.0},
+                          "release_date": "2026-10-17", "tool_call": true,
+                          "modalities": {"input": ["text"], "output": ["text"]}},
+            "m-video":   {"limit": {"context": 900000}, "cost": {"input": 0.1},
+                          "release_date": "2026-11-01", "tool_call": false,
+                          "modalities": {"input": ["text"], "output": ["video"]}},
+            "m-no-tool": {"limit": {"context": 900000}, "cost": {"input": 0.1},
+                          "release_date": "2026-11-02", "tool_call": false,
+                          "modalities": {"input": ["text"], "output": ["text"]}},
+            "m-open":    {"limit": {"context": 50000}, "cost": {"input": 5.0},
+                          "release_date": "2026-09-01"}
+          }}
+        }"#;
+        let cat = read_fixture(FIXTURE);
+        // The newest date wins over the widest window and the cheapest rate: a new session is
+        // about which model is the new one, not which is the largest.
+        let pick = cat.pick("p").expect("a chat model");
+        assert_eq!(pick.model, "m-new");
+        assert!(pick.why.contains("2026-10-17"), "{}", pick.why);
+        // `m-video` (a video output, no tool calls) and `m-no-tool` are BOTH newer and are not
+        // candidates; `m-open`, which says neither field, would win if it were dated newer - it is
+        // not, and an absent field is not a `no`.
+        assert_eq!(
+            cat.model("p", "m-video")
+                .map(|m| (m.output_is_text, m.tool_call)),
+            Some((Some(false), Some(false)))
+        );
+        assert_eq!(
+            cat.model("p", "m-open")
+                .map(|m| (m.output_is_text, m.tool_call)),
+            Some((None, None))
+        );
+    }
+
+    #[test]
+    fn a_preview_or_a_dated_snapshot_is_never_the_default() {
+        const FIXTURE: &str = r#"{
+          "p": {"id": "p", "models": {
+            "m-5.3":              {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                                   "release_date": "2026-10-01"},
+            "m-5.4-exp":          {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                                   "release_date": "2026-11-01"},
+            "m-5.4-preview":      {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                                   "release_date": "2026-11-02"},
+            "m-5.4-beta-2":       {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                                   "release_date": "2026-11-03"},
+            "m-5.4":              {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                                   "release_date": "2026-09-01"}
+          }},
+          "q": {"id": "q", "models": {
+            "q-5":        {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                           "release_date": "2026-10-01"},
+            "q-5-20251001": {"limit": {"context": 100000}, "cost": {"input": 1.0},
+                           "release_date": "2026-11-01"}
+          }}
+        }"#;
+        let cat = read_fixture(FIXTURE);
+        // Every experiment is newer and every one of them is skipped, so the answer is the newest
+        // model that is not one.
+        let pick = cat.pick("p").expect("a model that is not an experiment");
+        assert_eq!(pick.model, "m-5.3");
+        assert!(pick.why.contains("2026-10-01"), "{}", pick.why);
+        // `q-5-20251001` is a dated snapshot of a model this provider also carries undated.
+        assert_eq!(cat.default_model("q").as_deref(), Some("q-5"));
+        // And without the undated twin the dated name is all there is, so it stands.
+        assert_eq!(
+            read_fixture(
+                r#"{"r": {"id": "r", "models": {
+                     "r-5-20251001": {"limit": {"context": 100000},
+                                       "cost": {"input": 1.0},
+                                       "release_date": "2026-11-01"}}}}"#
+            )
+            .default_model("r")
+            .as_deref(),
+            Some("r-5-20251001")
+        );
+    }
+
+    #[test]
+    fn one_day_is_ties_by_plainest_then_cheaper_then_shorter() {
+        const FIXTURE: &str = r#"{
+          "p": {"id": "p", "models": {
+            "m-v4-flash":     {"limit": {"context": 100000}, "cost": {"input": 0.1},
+                               "release_date": "2026-10-17"},
+            "m-flash":        {"limit": {"context": 100000}, "cost": {"input": 9.0},
+                               "release_date": "2026-10-17"},
+            "m-flash-vision": {"limit": {"context": 100000}, "cost": {"input": 20.0},
+                               "release_date": "2026-10-17"}
+          }},
+          "q": {"id": "q", "models": {
+            "q-a-long": {"limit": {"context": 100000}, "cost": {"input": 0.5},
+                         "release_date": "2026-10-17"},
+            "q-b":      {"limit": {"context": 100000}, "cost": {"input": 0.5},
+                         "release_date": "2026-10-17"}
+          }}
+        }"#;
+        let cat = read_fixture(FIXTURE);
+        // The plainest name wins the date before the price does: `m-v4-flash` is the cheapest and
+        // loses to `m-flash`, whose name has nothing written after the version.
+        assert_eq!(cat.default_model("p").as_deref(), Some("m-flash"));
+        let pick = cat.pick("p").unwrap();
+        assert!(pick.why.contains("plainest of 3"), "{}", pick.why);
+        // Two equally plain names: the shorter one.
+        assert_eq!(cat.default_model("q").as_deref(), Some("q-b"));
+    }
+
+    /// A refresh that moves a provider's default says so once, and a first look is not a change.
+    #[test]
+    fn a_default_that_moves_is_said_once_and_recorded() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-defaults-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        let write = |model: &str, date: &str| {
+            let mut all = serde_json::Map::new();
+            for id in crate::refresh::catalogue_ids() {
+                let name = if id == "deepseek" { model } else { "kept" };
+                all.insert(
+                    id.to_string(),
+                    serde_json::json!({"models": {name: {
+                        "limit": {"context": 1000},
+                        "cost": {"input": 1.0},
+                        "release_date": date}}}),
+                );
+            }
+            std::fs::write(&path, serde_json::to_string(&all).unwrap()).unwrap();
+        };
+        write("deepseek-flash", "2026-10-17");
+        assert!(
+            note_defaults(&path).is_empty(),
+            "a first look has nothing to compare against"
+        );
+        assert_eq!(
+            known_defaults(&path).get("deepseek").map(String::as_str),
+            Some("deepseek-flash")
+        );
+        // The catalogue moves: one line, naming both answers.
+        write("deepseek-v4-pro", "2026-11-20");
+        let lines = note_defaults(&path);
+        assert_eq!(
+            lines,
+            vec!["deepseek: default is now deepseek-v4-pro (was deepseek-flash)".to_string()]
+        );
+        // Said once: the record moved with it.
+        write("deepseek-v4-pro", "2026-11-20");
+        assert!(note_defaults(&path).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rule against the vendored floor, as models.dev carried it on [`SNAPSHOT_FETCHED`]: four
+    /// answers measured by hand. This fails when the snapshot is regenerated, and that is the point -
+    /// the numbers are re-measured then, not trusted for ever.
+    #[test]
+    fn the_floor_picks_the_newest_chat_model_of_each_provider() {
+        let cat = Catalogue::snapshot();
+        for (id, want) in [
+            // Same day as dv4-flash and its vision experiment: the plainest of the three.
+            ("deepseek", "deepseek-flash"),
+            // `glm-5.4` is the newest the coding plan carries.
+            ("zai-coding-plan", "glm-5.4"),
+            // `grok-imagine-video-1.5-lite` is newer and its output is video, so it is not a chat
+            // model at all.
+            ("xai", "grok-4.7"),
+            ("anthropic", "claude-fable-5-2"),
+        ] {
+            assert_eq!(
+                cat.default_model(id).as_deref(),
+                Some(want),
+                "{id}: the rule picked {}",
+                cat.pick(id).map(|p| p.why).unwrap_or_default()
+            );
+        }
     }
 
     /// A catalogue read from a JSON string this test owns, at a path per call: these tests run
@@ -852,17 +1213,19 @@ mod tests {
         );
     }
 
-    /// The default is derived, so it cannot go stale the way two hardcoded ones did: largest
-    /// window first, then cheapest.
+    /// A catalogue that publishes no release dates - the shape every cache had before the rule
+    /// asked for one - still answers by the rule it always had: widest window, then cheapest, and
+    /// an unpriced model is skipped rather than chosen.
     #[test]
-    fn the_default_model_is_the_biggest_window_at_the_lowest_price() {
+    fn a_catalogue_with_no_dates_keeps_todays_rule() {
         let c = sample();
         assert_eq!(
             c.default_model("deepseek").as_deref(),
             Some("deepseek-chat")
         );
-        // `deepseek-legacy` has no price, so it is skipped rather than chosen: unpriced and
-        // free are different, and an unpriced default reports every turn as costing nothing.
+        // `deepseek-legacy` has no price, so it ranks after every priced model rather than being
+        // read as free: unpriced and free are different, and an unpriced default reports every
+        // turn as costing nothing.
         assert_eq!(c.default_model("zhipuai").as_deref(), Some("glm-5"));
         assert!(c.default_model("nobody").is_none());
     }

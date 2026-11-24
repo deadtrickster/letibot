@@ -541,11 +541,26 @@ impl Preset {
     /// The model to use when the operator names none: the catalogue's pick by
     /// rule, else this build's frozen fallback. See [`Preset::fallback_model`].
     pub fn default_model(&self, cat: &crate::catalogue::Catalogue) -> String {
+        self.pick(cat).0
+    }
+
+    /// [`Preset::default_model`] with the rung that chose it, so a reader sees why: the vendor's
+    /// own pick, the catalogue's rule, or the fallback frozen into this build.
+    pub fn pick(&self, cat: &crate::catalogue::Catalogue) -> (String, String) {
         if self.vendor_pick && cat.model(self.catalogue_id, self.fallback_model).is_some() {
-            return self.fallback_model.to_string();
+            return (
+                self.fallback_model.to_string(),
+                "the vendor's own pick for this door".to_string(),
+            );
         }
-        cat.default_model(self.catalogue_id)
-            .unwrap_or_else(|| self.fallback_model.to_string())
+        match cat.pick(self.catalogue_id) {
+            Some(p) => (p.model, p.why),
+            None => (
+                self.fallback_model.to_string(),
+                "this build's frozen fallback (the catalogue carries no model for this door)"
+                    .to_string(),
+            ),
+        }
     }
 
     /// Remove the keys this door fixes from `sampling`, returning each as `key=value`.

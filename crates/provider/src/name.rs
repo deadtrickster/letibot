@@ -66,7 +66,23 @@ pub struct Resolved {
 /// The model a door sends when the operator names only the door: its own `[<preset>]` table's
 /// `model` in providers.toml, else the catalogue's rule, else this build's frozen fallback.
 pub fn default_model(preset: &Preset, file: Option<&Path>, cat: &Catalogue) -> String {
-    crate::keys::preset_model(preset.name, file).unwrap_or_else(|| preset.default_model(cat))
+    default_model_why(preset, file, cat).0
+}
+
+/// [`default_model`] with the rung that chose it, so `letibot catalogue` can say why and not only
+/// which.
+pub fn default_model_why(
+    preset: &Preset,
+    file: Option<&Path>,
+    cat: &Catalogue,
+) -> (String, String) {
+    match crate::keys::preset_model(preset.name, file) {
+        Some(m) => (
+            m.clone(),
+            format!("providers.toml [{0}] model = \"{m}\"", preset.name),
+        ),
+        None => preset.pick(cat),
+    }
 }
 
 /// `spec` as exactly one meaning.

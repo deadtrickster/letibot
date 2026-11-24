@@ -96,11 +96,10 @@ pub fn show(path: &Path) -> Vec<String> {
         carried.join(", ")
     ));
     for p in letibot_provider::registry::all(None) {
+        let (model, why) = letibot_provider::name::default_model_why(p, None, &cat);
         out.push(format!(
-            "  default    {:<12} -> {}/{}",
-            p.name,
-            p.name,
-            letibot_provider::name::default_model(p, None, &cat)
+            "  default    {:<12} -> {}/{model} — {why}",
+            p.name, p.name
         ));
     }
     out
@@ -128,6 +127,9 @@ pub fn refresh_at(
         }
     }];
     lines.extend(diff(before.as_ref(), Catalogue::read(path).ok().as_ref()));
+    // What a refresh moved: the provider whose default is a different model now says so, and the
+    // record is written either way so the next look compares against this one.
+    lines.extend(letibot_provider::catalogue::note_defaults(path));
     Ok(lines)
 }
 
@@ -246,6 +248,26 @@ mod tests {
         );
         // One line per provider that moved, and the others are not news.
         assert_eq!(lines.len(), 2, "{lines:?}");
+        // A second refresh whose body moves deepseek's default says so, once - the record of what
+        // each provider started on moved with it.
+        let fetch = |_: &refresh::Conditional| {
+            Ok::<Answer, String>(answers(200, body(&["deepseek-flash", "deepseek-old"])))
+        };
+        let lines = refresh_at(&path, &fetch, SystemTime::now()).expect("the second body");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("deepseek: default is now ")),
+            "{lines:?}"
+        );
+        let fetch = |_: &refresh::Conditional| {
+            Ok::<Answer, String>(answers(200, body(&["deepseek-flash", "deepseek-old"])))
+        };
+        let lines = refresh_at(&path, &fetch, SystemTime::now()).expect("the same body again");
+        assert!(
+            !lines.iter().any(|l| l.contains("default is now")),
+            "a default is said once: {lines:?}"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

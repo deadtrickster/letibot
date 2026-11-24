@@ -128,6 +128,25 @@ snapshot `crates/provider/data/models-snapshot.json` as the floor. A file that c
 floor also carries keeps its own facts, and takes what it lacks from the floor, so an older cache
 cannot hide a model.
 
+**Which model a bare `--model <preset>` sends is the provider's newest chat model**
+(`Catalogue::pick`), not a constant here and not the largest window: a vendor's own listing says
+which model is the new one, and a rule written down goes stale the week one ships.
+
+1. Chat models only: `modalities.output` names text and `tool_call` is true. A row that says
+   neither is kept - an absent field is not a `no` - so a provider that publishes neither still
+   has a default.
+2. Not an experiment: `-exp`, `-preview`, `-beta`, `-alpha`, and a dated snapshot
+   (`-20251001`) where the undated name is carried too.
+3. The newest `release_date`; among the models of one date the plainest name (fewest segments
+   after the version), then the cheaper input, then the shorter name.
+4. A model with no `release_date` ranks after every dated one, and among themselves they keep the
+   old rule (widest window, cheapest input, plainest name, newest version).
+
+A `[<preset>] model = "…"` line in providers.toml still wins over all of it, and
+`letibot catalogue` prints the answer and the rung that chose it. When a refresh moves a
+provider's default, the daemon files one warning (`<provider>: default is now <new> (was <old>)`)
+and records what each provider starts on in `models.json.defaults`, so it says it once.
+
 **The daemon keeps the cache fresh by itself** (`crates/provider/src/refresh.rs`,
 `crates/harnessd/src/catalogue_refresh.rs`): at start and then once an hour it asks whether the
 cache is missing or older than a day, and only then fetches `https://models.dev/api.json`, trims it

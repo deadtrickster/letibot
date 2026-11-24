@@ -126,6 +126,23 @@ fn run(enabled: bool, registry: Arc<Registry>) {
             // provider without a restart.
             let _ = letibot_provider::catalogue::Catalogue::load();
         }
+        // What the refresh moved: a provider whose default is now a different model is said once,
+        // on every live session's hub and in this log, because the next session to start is on a
+        // model the operator did not choose. The record of what each provider started on is
+        // written by the same call, so a restart says nothing twice.
+        if let Some(path) = path.as_deref()
+            && (matches!(look, Look::Written { .. })
+                || !letibot_provider::catalogue::defaults_path(path).exists())
+        {
+            for line in letibot_provider::catalogue::note_defaults(path) {
+                eprintln!("  catalogue: {line}");
+                for session in registry.list() {
+                    if let Some(hub) = registry.get(&session.session_id) {
+                        hub.warn("catalogue_default_moved", line.clone());
+                    }
+                }
+            }
+        }
         if let Some(why) = look.failed() {
             let day = day_of(SystemTime::now());
             if warned != Some(day) {
