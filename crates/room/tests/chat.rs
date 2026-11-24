@@ -334,6 +334,88 @@ fn dms_mentions_threads_and_the_inbox() {
 }
 
 #[test]
+fn the_operator_reads_every_dm_and_no_session_can() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let a2 = seat(&server, "s-a2", A, Seat::Session);
+    let b1 = seat(&server, "s-b1", B, Seat::Session);
+    let cc = seat(&server, "claude-code", "", Seat::External);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+
+    // Two pairs, neither of them the operator's: what the box's seats say to each other.
+    let one = said(a1.call(Request::Dm {
+        id: "d1".into(),
+        to: "s-a2".into(),
+        text: "only the two of us".into(),
+        thread: None,
+        attachments: Vec::new(),
+    }));
+    let two = said(b1.call(Request::Dm {
+        id: "d2".into(),
+        to: "claude-code".into(),
+        text: "a word between projects".into(),
+        thread: None,
+        attachments: Vec::new(),
+    }));
+    let _ = (a2.next(), cc.next());
+
+    // The operator reads both, and every other dm on the box.
+    match op.call(Request::Dms { last: None }) {
+        Response::History(h) => {
+            let seqs: Vec<u64> = h.rows.iter().map(|m| m.seq).collect();
+            assert!(
+                seqs.contains(&one.seq) && seqs.contains(&two.seq),
+                "{seqs:?}"
+            );
+            assert_eq!(h.room, "dm");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // Reading them moves nothing: the operator's inbox cursor is where it was, and each party
+    // still reads its own dm and only that.
+    let cursor = |who: &Seated| match who.call(Request::Inbox {
+        attention: Attention::All,
+        limit: None,
+        after: None,
+    }) {
+        Response::Inbox { cursor, .. } => cursor,
+        other => panic!("{other:?}"),
+    };
+    let before = cursor(&op);
+    let _ = op.call(Request::Dms { last: None });
+    assert_eq!(cursor(&op), before, "the all-dms read moved a cursor");
+    for (who, expect) in [(&a1, one.seq), (&a2, one.seq)] {
+        match who.call(Request::Read {
+            room: "dm".into(),
+            since: 0,
+            last: None,
+            thread: None,
+            before: None,
+        }) {
+            Response::History(h) => assert_eq!(
+                h.rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                vec![expect],
+                "a party still reads its own dm, and only that"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // A session asking for the box's dms is refused: another pair's talk is not a read.
+    assert_eq!(
+        refused(a1.call(Request::Dms { last: None })),
+        Refused::NotTheOperator
+    );
+    assert_eq!(
+        refused(cc.call(Request::Dms { last: None })),
+        Refused::NotTheOperator
+    );
+    server.stop();
+}
+
+#[test]
 fn a_daemon_reports_facts_and_nobody_else_may() {
     let dir = Scratch::new();
     let server = coordinator(&dir);

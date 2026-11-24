@@ -3745,6 +3745,31 @@ impl Server {
                     trimmed: false,
                 })
             }
+            // The operator's own reading of the box: every dm, of every pair. Only the person's
+            // seat may ask - a session asking is refused rather than shown another pair's talk -
+            // and nothing here moves a cursor or a mark, so a party's unread count is untouched.
+            Request::Dms { last } => {
+                if seat != Seat::Operator {
+                    return refuse(None, crate::Refused::NotTheOperator);
+                }
+                let handles = self.handles();
+                let chat = self.inner.chat.lock().expect("the chat lock");
+                let mut history = chat.read(
+                    chat::DM_ROOM,
+                    0,
+                    last.map(|n| n as usize),
+                    None,
+                    None,
+                    |_| true,
+                );
+                drop(chat);
+                history.rows = history
+                    .rows
+                    .into_iter()
+                    .map(|m| self.shown(m, &handles))
+                    .collect();
+                Response::History(history)
+            }
             // The blob store is the room's, not a room's: an upload is a file with an id and no
             // audience until a message names it, so it is not gated on which room this seat is in.
             Request::PutBlob {
@@ -6232,6 +6257,7 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Notify { .. }
             | Request::Read { .. }
             | Request::Search { .. }
+            | Request::Dms { .. }
             | Request::Roster { .. }
             | Request::MayPrompt { .. }
             | Request::Inbox { .. }

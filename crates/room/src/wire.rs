@@ -306,6 +306,13 @@ pub enum Request {
         #[serde(default)]
         last: Option<u32>,
     },
+    /// Every dm on this box, of every pair, for the OPERATOR's seat only: the person reading what
+    /// the box's seats say to each other. A read - it moves no cursor and marks nothing seen for
+    /// either party - and a session that sends it is refused rather than shown another's talk.
+    Dms {
+        #[serde(default)]
+        last: Option<u32>,
+    },
     /// Who is in a room. [`crate::chat::SEATS`] is no room: it lists the box's queue seats, which
     /// are in none.
     Roster { room: String },
@@ -505,6 +512,7 @@ impl Request {
             | Request::Rooms
             | Request::Read { .. }
             | Request::Search { .. }
+            | Request::Dms { .. }
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
@@ -979,6 +987,7 @@ impl Room {
             | Request::Notify { .. }
             | Request::Read { .. }
             | Request::Search { .. }
+            | Request::Dms { .. }
             | Request::Roster { .. }
             | Request::MayPrompt { .. }
             | Request::Inbox { .. }

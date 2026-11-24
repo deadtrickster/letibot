@@ -170,6 +170,7 @@ impl OperatorSeat {
                 | Request::Dm { .. }
                 | Request::Read { .. }
                 | Request::Search { .. }
+                | Request::Dms { .. }
                 | Request::Roster { .. }
                 | Request::Inbox { .. }
                 | Request::Ack { .. }
@@ -437,6 +438,52 @@ mod tests {
         assert_eq!(said["message"]["kind"], "operator");
         let read = seat.ask("h1", json!({"type": "read", "room": "host"}));
         assert_eq!(read["rows"][0]["text"], "hi");
+        server.stop();
+    }
+
+    /// Every dm on the box is the operator's to read and no daemon's to ask for: the seat passes
+    /// `dms` through, and the coordinator refuses it for any seat but the person's own.
+    #[test]
+    fn the_seat_passes_the_operators_reading_of_every_dm() {
+        let (server, sock) = serve("alldms");
+        let seat = OperatorSeat::new(sock.clone());
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+        let one = crate::room::link::SessionRoom::connect(
+            "s-one",
+            &sock,
+            "aaaaaaaaaaaa",
+            None,
+            Arc::clone(&bell),
+            None,
+        )
+        .expect("a session link");
+        let two = crate::room::link::SessionRoom::connect(
+            "s-two",
+            &sock,
+            "aaaaaaaaaaaa",
+            None,
+            bell,
+            None,
+        )
+        .expect("a second session link");
+        // The addressee has to be a live name the room knows, and this connection is what makes it
+        // one: nothing is sent through `two` itself.
+        let _ = &two;
+        // Two seats talking privately, and neither end is the operator: the daemon's whitelist is
+        // what lets the head's `dms` frame through at all. A `say` with a `to` is the dm door.
+        one.call(
+            "say",
+            &json!({"to": "s-two", "text": "only the two of us"}),
+        )
+        .expect("the dm lands");
+        let all = seat.ask("h1", json!({"type": "dms", "last": 50}));
+        assert_eq!(all["type"], "history", "{all}");
+        assert!(
+            all["rows"]
+                .as_array()
+                .is_some_and(|r| r.iter().any(|m| m["text"] == "only the two of us")),
+            "another pair's dm is in the operator's read: {all}"
+        );
         server.stop();
     }
 
