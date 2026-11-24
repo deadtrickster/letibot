@@ -4061,7 +4061,7 @@ impl HarnessTaskRunner {
             // unless the file says otherwise, and this box with one line when it cannot. A tool's
             // own HELPER is not that kind of child - it is one read whose answer is used in place,
             // and a boot per part of a digest would cost more than the work.
-            (Placement::Host, false) if !spec.helper => {
+            (Placement::Host, false) if !spec.helper && self.base.seat_default_applies => {
                 let (default, unreadable) = crate::seat_default::default_for(
                     &self.base.workspace,
                     self.base.read_project_config,

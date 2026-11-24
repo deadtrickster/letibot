@@ -492,6 +492,9 @@ pub struct Config {
     /// `--no-project-config`. Carried because one key is read per SESSION, `[memory]`, whose
     /// project is the session's own workspace ([`crate::leticode_config::memory_policy`]).
     pub read_project_config: bool,
+    /// Whether `[seat] default` may place a child nobody placed in a VM. Off in a fixture, so a
+    /// test on a box with a working firecode keeps its children here; the daemon turns it on.
+    pub seat_default_applies: bool,
     /// The box's own directories: where its instruction file and its box-wide notes live. Read
     /// once from `$HOME` by [`Config::read_the_box`] and empty in a fixture, so a test's prompt is
     /// a function of its own files and not of whose home the suite runs in.
@@ -1842,6 +1845,7 @@ impl Config {
             // `providers.toml`. Same byte-identical case at the other level.
             leticode_user: crate::leticode_config::LeticodeConfig::default(),
             read_project_config: true,
+            seat_default_applies: false,
             // An empty box: no instruction file, no box-wide notes, no box skills. A fixture
             // that read this laptop's home would assert about the laptop. The daemon fills these
             // (`for_the_daemon`), and a test that IS about the box passes its own.
@@ -1969,6 +1973,7 @@ impl Config {
         // The rule the docs state: a project nobody configured is `automode`. Set HERE and not in
         // `for_this_box`, which every fixture builds on and none of them has an oracle.
         cfg.mode = letibot_tools::mode::UNSEEN_PROJECT;
+        cfg.seat_default_applies = true;
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
         // The reviewers' own directory, beside the landing root and for the same reason: it is
         // the daemon's, not a session's, and a fixture that serves reviews names its own.
