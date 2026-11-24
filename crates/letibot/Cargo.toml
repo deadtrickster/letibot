@@ -37,6 +37,9 @@ letibot-dialect-glm.workspace = true
 letibot-dialect-qwen.workspace = true
 # The `m1` role: `m1::run` is that binary's body, moved into this crate's lib.
 letibot-harnessd = { workspace = true, default-features = false }
+# `letibot catalogue [refresh]`: the cache, its age, and a fetch on demand are the provider
+# crate's own, so the verb reads them from there rather than a second reader in this binary.
+letibot-provider.workspace = true
 # The `Head` role: `head::run` is that binary's body, moved into this crate's lib.
 letibot-tui.workspace = true
 # The record beside a socket is flat JSON, written by whichever launcher started

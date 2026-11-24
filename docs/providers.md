@@ -144,6 +144,15 @@ and `LETIBOT_MODELS_JSON`, which says the catalogue is a file of the operator's 
 to replace. `scripts/refresh-models-snapshot.sh` still regenerates the vendored snapshot for a
 release; its `WANT` list and the presets' ids are kept equal by a test.
 
+**`letibot catalogue [refresh]`** is the person's door (`crates/letibot/src/catalogue.rs`). Bare, it
+prints what this box reads: the cache's path and age, the providers it carries with how many models
+each, and the model every preset sends when `--model <preset>` names none (`deepseek ->
+deepseek/deepseek-flash`). `refresh` fetches models.dev there and then - whatever the cache's age and
+whatever `[catalogue] refresh` says, because a person asked - and prints which models came and went
+per provider (`zai-coding-plan: +glm-5.4 -glm-4.6`), or the failure sentence, which exits non-zero
+with the cache byte-identical. It is `refresh::refresh_at` through the same live fetch the daemon
+uses, so the two cannot disagree about what a refresh writes.
+
 ## Four protocols
 
 A preset's `protocol` is the whole of the choice, and `harness::open::build_provider` is where it is

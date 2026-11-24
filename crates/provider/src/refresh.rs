@@ -253,8 +253,9 @@ fn read_sidecar(path: &Path) -> Option<Conditional> {
 }
 
 /// The one GET this box makes: ureq, a 30 s budget, no redirect followed, and a body read
-/// through a cap.
-fn fetch_live(condition: &Conditional) -> Result<Answer, String> {
+/// through a cap. Public so `letibot catalogue refresh` drives [`refresh_at`] with the real
+/// network rather than a second fetch that could drift from this one.
+pub fn fetch_live(condition: &Conditional) -> Result<Answer, String> {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))

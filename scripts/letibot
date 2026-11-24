@@ -2870,7 +2870,7 @@ SESSIONS_EOF
     ;;
   # The binary's own verbs, which take words after them. Without an arm the first word falls
   # through to a billed one-shot prompt; the verb's parser refuses what it does not know.
-  stats | boundary | fb | holds | gc | hold | release)
+  stats | boundary | fb | holds | gc | hold | release | catalogue)
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the metrics, boundary and lifecycle verbs live there)"
     # The store the daemon was handed, folding included, so a hold lands where the daemon reads.
     LETIBOT_STORE="$STORE" exec "$BIN/letibot-multi" "$@"

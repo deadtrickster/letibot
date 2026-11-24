@@ -54,6 +54,7 @@ use std::process::ExitCode;
 
 mod boundary;
 mod browser;
+mod catalogue;
 mod config_ref;
 mod doctor;
 mod gc;
@@ -268,8 +269,23 @@ fn lookup(name: &str, kind: Kind) -> Option<Role> {
 /// Every word `letibot <word>` answers with a verb, sorted, printed by `--verbs`. A person types
 /// these and nothing invokes them by path, so they have no symlink and no row in the table above.
 pub const VERB_WORDS: &[&str] = &[
-    "attach", "boundary", "browser", "doctor", "fb", "gc", "hold", "holds", "migrate", "notes",
-    "release", "rooms", "session", "shadow", "stats", "where",
+    "attach",
+    "boundary",
+    "browser",
+    "catalogue",
+    "doctor",
+    "fb",
+    "gc",
+    "hold",
+    "holds",
+    "migrate",
+    "notes",
+    "release",
+    "rooms",
+    "session",
+    "shadow",
+    "stats",
+    "where",
 ];
 
 /// Sorted, so a reader can find a word and a diff cannot reorder it silently.
@@ -372,6 +388,10 @@ fn main() -> ExitCode {
                     letibot_harnessd::shadow::replay::run(&tail())
                 } else if word == "browser" {
                     browser::run(&tail())
+                } else if word == "catalogue" {
+                    // What this box's model catalogue is, and a fetch on demand: the daemon keeps
+                    // it fresh by age, and a person asking here is not that rule.
+                    catalogue::run(&tail())
                 } else if word == "rooms" {
                     rooms::run(&tail())
                 } else if word == "fb" {
@@ -452,6 +472,9 @@ VERBS
                               --job turn_end|during|permission, --model M
   browser [VERB]              the Chrome extension's bridge on 127.0.0.1 (docs/browser.md):
                               install, start, stop, restart, off, on, status, logs
+  catalogue [refresh]         this box's model catalogue (docs/providers.md): its cache, its
+                              age, the providers it carries and each preset's default model;
+                              `refresh` fetches models.dev now and says which models moved
   rooms [VERB]                the box's room coordinator (docs/room.md): bare runs it in the
                               foreground; the same verbs as browser
   fb --session S [+|-] NOTE   mark a session's last turn from a shell
