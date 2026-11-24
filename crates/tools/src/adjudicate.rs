@@ -1570,6 +1570,9 @@ pub struct AdjudicatedGate {
     /// another card, and without telling the operator again, until the row is revoked. Read from
     /// the ledger at each call, so a lift reaches a live session.
     refusals: Vec<(String, String, String)>,
+    /// The one tool whose calls are judged at a HOST seat's point instead of this session's -
+    /// `host` on a VM seat. See [`AdjudicatedGate::with_host_seat_tool`].
+    host_seat_tool: Option<String>,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1691,6 +1694,7 @@ impl AdjudicatedGate {
             supervise: false,
             corpus_sink: None,
             unasked: false,
+            host_seat_tool: None,
             admissions: None,
             view: None,
             granted: crate::view::GrantedRoots::default(),
@@ -2019,6 +2023,15 @@ impl AdjudicatedGate {
     /// session had already opened, printed a banner and seated tools.
     pub fn with_mode(mut self, mode: crate::mode::Mode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// The one tool whose calls are judged at a HOST seat's point rather than this session's:
+    /// `host` on a VM seat, whose own point is `allow-all` and would admit it unasked. The VM is
+    /// the boundary for what runs INSIDE it; a command that runs on this box crosses it, and the
+    /// card is what says so. `None` is every other session, and then this gate decides as before.
+    pub fn with_host_seat_tool(mut self, tool: Option<String>) -> Self {
+        self.host_seat_tool = tool;
         self
     }
 
@@ -3765,6 +3778,17 @@ impl Gate for AdjudicatedGate {
     }
 
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
+        // A call that leaves this seat is judged at the HOST seat's point: `host` on a VM seat runs
+        // a command on this box, and the VM's own `allow-all` is the boundary for what runs inside
+        // it, not for what crosses out of it. `automode` is that point - a card wherever a host
+        // seat would raise one. The recursion is one deep: `AUTO` does not admit everything, so the
+        // second call runs the ladder itself.
+        if self.host_seat_tool.as_deref() == Some(call.name) && self.mode.admits_everything() {
+            let own = std::mem::replace(&mut self.mode, crate::mode::Mode::AUTO);
+            let decision = self.admit(call);
+            self.mode = own;
+            return decision;
+        }
         use crate::authorise::{BreakerState, TaskDirection};
         use crate::intent::BaselineVerdict;
         self.refresh_grants();

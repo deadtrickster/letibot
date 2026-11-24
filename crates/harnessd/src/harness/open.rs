@@ -1008,6 +1008,24 @@ impl Harness {
         }
     }
 
+    /// The machine's own backend, for the `host` tool of a seat whose commands run elsewhere. A VM
+    /// seat's commands leave this box entirely, so the one thing it cannot do for itself is change
+    /// this box - ssh keys, a shell profile - and this is that door. `None` on a host seat, where
+    /// `bash` already runs here, and on a machine whose daemon has no process host of its own: a
+    /// door with no command behind it refuses by name rather than pretending.
+    fn host_seat_backend(
+        cfg: &Config,
+    ) -> Option<std::sync::Arc<dyn letibot_tools::backend::ExecBackend>> {
+        let may_exec = !cfg.downgrade.denies(letibot_tools::schema::Access::Exec);
+        if !cfg.placement.is_vm() || !cfg.allow_bash || !may_exec {
+            return None;
+        }
+        let host = HostBackend::executable(&cfg.workspace)
+            .and_then(|b| b.with_cwd(&cfg.workspace))
+            .ok()?;
+        Some(std::sync::Arc::new(host) as std::sync::Arc<dyn letibot_tools::backend::ExecBackend>)
+    }
+
     /// Where this session's tools run and what bounds them: host backend, firecode VM, or remote checkout, then the shared home, promote channel and scratch directory.
     /// The one place a downgrade, placement or missing boundary is decided.
     fn place_the_tools(
@@ -2802,6 +2820,13 @@ impl Harness {
                 .with_firecode_route(firecode_route(&cfg))
                 .refusing_whole_suites(refuses_whole_suites(&cfg)),
             ))
+            // The way home from a VM seat: one command on this machine, adjudicated as a host
+            // seat's. Registered only where there is such a door - a role naming a tool the
+            // registry does not hold is refused at resolve, so the two must agree.
+            .and_then(|_| match cfg.placement.is_vm() {
+                true => registry.register(Box::new(letibot_tools::builtins::host::Host)),
+                false => Ok(()),
+            })
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobExtend)))
@@ -3456,6 +3481,13 @@ impl Harness {
                         cfg.parent_session_id
                             .is_some()
                             .then(|| cfg.session_id.clone()),
+                    )
+                    // A call that LEAVES a VM seat is judged as a host seat's: `host` runs one
+                    // command on this box, and the guest's `allow-all` is the boundary for what
+                    // runs inside it. Nothing on a host seat, where the shell is already here.
+                    .with_host_seat_tool(
+                        cfg.in_a_guest()
+                            .then(|| letibot_tools::builtins::host::HOST_TOOL.to_string()),
                     );
                 let g = match advisor {
                     // A point whose decider is the MODEL starts supervised: `Decider::Model` is the
@@ -3697,6 +3729,10 @@ impl Harness {
             .with_spiller(spiller)
             .with_recall(recall.clone())
             .with_gate(gate)
+            // A seat whose tools run in a VM keeps ONE door home: `host` runs a command here, and
+            // this is the machine's own backend it runs it through. On a host seat the machine is
+            // already the session's, and the tool says so rather than running it twice.
+            .with_host_seat(Self::host_seat_backend(&cfg))
             // `[tools] parallel`: a round's adjacent reads run at once unless a `leticode.toml`
             // turned it off. Read here, at open, so the switch is a file rather than a build.
             .with_parallel_reads(cfg.leticode.parallel_reads())
@@ -5259,6 +5295,17 @@ pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
         && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper)
     {
         r.tools.push("flowy".into());
+        r.max_tools += 1;
+    }
+    // `host`: the one door back to this machine from a seat whose commands run in a VM. Registered
+    // only for a VM placement, so the role and the registry agree; a host seat needs no door home.
+    if cfg.in_a_guest()
+        && cfg.allow_bash
+        && !matches!(seat, Seat::Runner | Seat::NotesKeeper)
+        && r.tools.iter().any(|t| t == "bash")
+    {
+        r.tools
+            .push(letibot_tools::builtins::host::HOST_TOOL.into());
         r.max_tools += 1;
     }
     // `web_search` is seated only when something is behind it, and a subagent inherits that. Conditional because a

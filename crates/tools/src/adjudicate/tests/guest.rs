@@ -82,7 +82,7 @@ fn a_plain_write_outside_the_project_asks_nothing_in_a_vm() {
 /// The escape surface: a copy-out whose destination is a HOST path is a call this box answers, and
 /// it is still refused. The exemption above is the guest's filesystem, not "the session is a VM".
 #[test]
-fn a_copy_out_to_a_host_path_outside_the_run_dir_is_still_refused() {
+fn the_guest_exemption_is_the_filesystem_and_not_the_placement() {
     let args = json!({
         "command": "firecode cp vm:/work/tree ~/.ssh/id_ed25519"
     });
@@ -95,4 +95,40 @@ fn a_copy_out_to_a_host_path_outside_the_run_dir_is_still_refused() {
         }
         other => panic!("a copy-out onto the operator's key was not refused: {other:?}"),
     }
+}
+
+/// The one door out of a VM is judged HERE: `host` runs a command on this box, so the guest's
+/// `allow-all` - right about a command inside the guest - must not admit it in silence. The
+/// command is one whose answer DEPENDS on the point: a network call, admitted at `allow-all` and
+/// a card at `automode`.
+#[test]
+fn the_host_tool_is_judged_as_a_host_seat_and_not_as_the_guest() {
+    let args = json!({ "command": "curl -sS https://example.com" });
+    let guest = || {
+        gate_in(in_a_guest(), crate::mode::Mode::ALLOW_ALL)
+            .with_host_seat_tool(Some(crate::builtins::host::HOST_TOOL.to_string()))
+    };
+    assert_eq!(
+        guest().admit(&bash(&args)),
+        GateDecision::Admit,
+        "a command inside the guest is the guest's"
+    );
+    let leaving = GateCall {
+        name: crate::builtins::host::HOST_TOOL,
+        access: Access::Exec,
+        ..bash(&args)
+    };
+    // `automode` is the point read for it, and this gate has nobody to ask, so the answer is not
+    // `Admit`. What the test is about is WHICH point was read.
+    assert_ne!(
+        guest().admit(&leaving),
+        GateDecision::Admit,
+        "a command on THIS box is not covered by the guest's allow-all"
+    );
+    // A host seat carries no such door, and its own point is unchanged.
+    assert_eq!(
+        gate_in(pinned(), crate::mode::Mode::ALLOW_ALL).admit(&leaving),
+        GateDecision::Admit,
+        "nothing about a host seat changed"
+    );
 }

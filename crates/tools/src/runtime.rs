@@ -386,6 +386,9 @@ pub struct InvokeCtx<'a> {
     /// What this session's own commands may see, so a spawn starts from it and the operator can be
     /// asked for anything beyond. `None` in a runtime with no daemon behind it.
     pub perimeter: Option<&'a crate::exec::perimeter::Perimeter>,
+    /// This machine's own backend, when the session's commands run elsewhere: the `host` tool's
+    /// door. `None` on a host seat - there the shell already runs here.
+    pub host_seat: Option<&'a dyn crate::backend::ExecBackend>,
     /// When this call started, so [`InvokeCtx::out_of_time`] can answer. Set by the runtime and
     /// never by a tool: a tool that could move its own start would have no bound at all.
     started: std::time::Instant,
@@ -1741,6 +1744,9 @@ pub struct ToolRuntime {
     /// every call of the round alone, in the order the model proposed it, and nothing else changes:
     /// [`ToolRuntime::batches`] answers one call per batch.
     pub parallel_reads: bool,
+    /// This machine's own backend, for a seat whose tools run elsewhere: the `host` tool's door.
+    /// `None` is every host seat, and then that tool answers that the command is already hers.
+    host_seat: Option<std::sync::Arc<dyn ExecBackend>>,
 }
 
 /// A call the model proposed and this layer reproposed as a different tool. One shape produces
@@ -1809,7 +1815,16 @@ impl ToolRuntime {
             perimeter: None,
             job_sweeps: None,
             parallel_reads: true,
+            host_seat: None,
         }
+    }
+
+    /// Wire the machine's own backend for a seat whose commands run elsewhere: `host` is the one
+    /// tool that runs a command HERE, and this is what it runs it through. `None` everywhere else,
+    /// which is every session on this box - a host seat needs no second door.
+    pub fn with_host_seat(mut self, backend: Option<std::sync::Arc<dyn ExecBackend>>) -> Self {
+        self.host_seat = backend;
+        self
     }
 
     /// Whether a round's adjacent read-class calls run at once: `[tools] parallel`, on unless a
@@ -2622,6 +2637,7 @@ impl ToolRuntime {
                 one_shot: self.one_shot,
                 provenance: self.provenance.as_deref(),
                 recall: self.recall.as_deref(),
+                host_seat: self.host_seat.as_deref(),
                 perimeter: self.perimeter.as_deref(),
                 started: std::time::Instant::now(),
             };

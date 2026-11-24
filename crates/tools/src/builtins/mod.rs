@@ -17,6 +17,8 @@ pub mod fanout_bg;
 pub mod glob;
 pub mod grep;
 pub mod harness_view;
+/// `host`: one command on the machine itself, for a seat whose tools run in a VM.
+pub mod host;
 /// `host_config`: this box's own settings in the platform's own vocabulary, every change
 /// recorded in [`changelog`].
 pub mod host_config;
