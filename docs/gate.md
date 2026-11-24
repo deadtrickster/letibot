@@ -21,10 +21,13 @@ the install steps run, and the branch is on `main`. Red: the branch is parked `f
 `main`'s health is the **full** gate's, and it is run nowhere near a landing:
 
 - **It is batched.** One run covers every landing since the last tip a full gate judged, and it
-  starts when the queue has nothing left to land - at the gate's own idle priority (`nice`, and a
-  cgroup with a fifth of systemd's default CPU and IO weight), so a busy queue keeps landing and
-  main is judged in the gaps. Landings an hour apart are one run each; five in ten minutes are one
-  run over all five.
+  starts when the queue has nothing left to land, so a busy queue keeps landing and main is judged
+  in the gaps. Landings an hour apart are one run each; five in ten minutes are one run over all
+  five.
+- **It yields the box.** The run is in the gate's one slot, so it never runs beside a landing's
+  gate; on a declared host it is started `nice -n 10` inside a scope weighted a fifth of systemd's
+  default CPU and IO weight, and on this box it is a cgroup of its own (memory-capped) with the
+  box's gate lock keeping it the only gate running.
 - **While the full gate is owed, the tip is green.** Its row says so in as many words - *the full
   gate is owed since `<sha>`* - because nothing about that tip halts the queue. Landings go on.
 - **Red on a batch is bisected.** The step that failed is re-run, alone, at the midpoints of the

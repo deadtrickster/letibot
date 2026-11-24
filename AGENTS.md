@@ -97,11 +97,13 @@ sh scripts/install-gate-build.sh
 
 `main`'s own health, judged after the landings. These are the whole gate - the same steps by hand,
 and today's gate unchanged. The queue runs them on the target's tip, batched: one run covers every
-landing since the last tip it judged, and it starts when there is nothing left to land, at the gate's
-own idle priority. The first failure makes `main` red; when the tip is the queue's own landings it is
-bisected (the failing step re-run at the midpoints of the batch), the first landing that broke it is
-reverted with `revert: <subject> - full gate red at <sha>`, and the session that landed it is told.
-A red no landing caused is parked on a person. The section is read from `main` too.
+landing since the last tip it judged, and it starts when there is nothing left to land. It runs in
+the gate's one slot per repository, so a full run and a landing's gate never overlap; the batching
+is what keeps a landing from queueing behind one. The first failure makes `main` red; when the tip is
+the queue's own landings it is bisected (the failing step re-run at the midpoints of the batch), the
+first landing that broke it is reverted with `revert: <subject> - full gate red at <sha>`, and the
+session that landed it is told. A red no landing caused is parked on a person. The section is read
+from `main` too.
 
 ```sh
 sh scripts/check-fmt.sh main
