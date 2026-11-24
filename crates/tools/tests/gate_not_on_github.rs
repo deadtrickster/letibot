@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use letibot_tools::gatekeeper::parse_merge_gate;
+use letibot_tools::gatekeeper::{Tier, parse_gates, parse_merge_gate};
 
 /// The repository this test was built in.
 fn root() -> PathBuf {
@@ -127,8 +127,9 @@ fn no_workflow_runs_the_gate() {
 }
 
 /// And the repository still has a gate to run, because the queue holds every branch of a
-/// repository whose `AGENTS.md` has no `## Merge gate` section. Deleting the workflow must not have
-/// deleted the definition with it.
+/// repository whose `AGENTS.md` declares none. Deleting the workflow must not have deleted the
+/// definition with it. The FULL tier is the one this asks about: it is the section that has every
+/// step of the long gate, whichever heading it is under.
 #[test]
 fn the_repository_still_declares_its_gate() {
     let path = ["AGENTS.md", "agents.md", "Agents.md"]
@@ -137,13 +138,14 @@ fn the_repository_still_declares_its_gate() {
         .find(|p| p.is_file())
         .expect("the repository has an AGENTS.md, which is where the queue reads its gate from");
     let text = std::fs::read_to_string(&path).expect("AGENTS.md is text");
-    let steps = parse_merge_gate(&text).unwrap_or_else(|| {
+    let gates = parse_gates(&text).unwrap_or_else(|| {
         panic!(
-            "{} has no `## Merge gate` section, so the merge queue would hold every branch of \
-             this repository",
+            "{} declares no `## Merge gate`, `## Quick gate` or `## Full gate` section, so the \
+             merge queue would hold every branch of this repository",
             path.display()
         )
     });
+    let steps = &gates.full;
     assert!(
         steps.len() >= 5,
         "the gate is {} step(s): {steps:?}",
@@ -155,11 +157,15 @@ fn the_repository_still_declares_its_gate() {
     );
 }
 
-/// What `scripts/gate-steps.sh` prints for `md`, or `None` when it says there is no gate.
-fn gate_steps_sh(md: &str) -> Option<Vec<String>> {
+/// What `scripts/gate-steps.sh` prints for `md` at one tier, or `None` when it says there is none.
+fn gate_steps_sh_tier(md: &str, tier: Option<Tier>) -> Option<Vec<String>> {
     use std::io::Write;
-    let mut child = std::process::Command::new("sh")
-        .arg(root().join("scripts/gate-steps.sh"))
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(root().join("scripts/gate-steps.sh"));
+    if let Some(t) = tier {
+        cmd.arg(format!("--{}", t.as_str()));
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -177,6 +183,11 @@ fn gate_steps_sh(md: &str) -> Option<Vec<String>> {
             .map(str::to_string)
             .collect()
     })
+}
+
+/// What `scripts/gate-steps.sh` prints for `md`, or `None` when it says there is no gate.
+fn gate_steps_sh(md: &str) -> Option<Vec<String>> {
+    gate_steps_sh_tier(md, None)
 }
 
 /// `gate-at.sh` and `rrun --gate` read AGENTS.md through `gate-steps.sh`; it must read the same
@@ -200,6 +211,40 @@ fn gate_steps_sh_reads_what_the_queue_reads() {
     ];
     for md in cases {
         assert_eq!(gate_steps_sh(md), parse_merge_gate(md), "for {md:?}");
+    }
+}
+
+/// And each tier: a project's two sections, one section, or none - the fallbacks the queue
+/// resolves, so a hand gate (`gate-at.sh --quick`) runs what the queue's quick gate runs.
+#[test]
+fn gate_steps_sh_reads_the_two_tiers_the_queue_reads() {
+    let agents = std::fs::read_to_string(root().join("AGENTS.md")).expect("AGENTS.md");
+    let cases = [
+        agents.as_str(),
+        "# Project\n\n```sh\nmake test\n```\n",
+        "## Merge gate\n\n```sh\n# nothing\n```\n",
+        "## Quick gate\n\n```sh\ncargo check\n```\n\n## Full gate\n\n```sh\ncargo test\n```\n",
+        "## Quick gate\n```sh\nfast\n```\n",
+        "## Full gate\n```sh\nslow\n```\n",
+        "## Merge gate\n```sh\nmake test\n```\n\n## Quick gate\n```sh\nfast\n```\n",
+        "## Merge gate\n```\nmerge\n```\n\n## Full gate\n~~~\nslow\n~~~\n",
+        "## Quick gate\n```toml\nnot a command\n```\n\n## Merge gate\n```sh\nmake test\n```\n",
+    ];
+    for md in cases {
+        let gates = parse_gates(md);
+        for tier in [Tier::Quick, Tier::Full] {
+            let want = gates
+                .as_ref()
+                .map(|g| g.steps(tier).to_vec())
+                .filter(|s| !s.is_empty());
+            assert_eq!(
+                gate_steps_sh_tier(md, Some(tier)),
+                want,
+                "for the {} gate of {md:?}",
+                tier.as_str()
+            );
+        }
+        assert_eq!(gate_steps_sh_tier(md, None), gate_steps_sh(md));
     }
 }
 

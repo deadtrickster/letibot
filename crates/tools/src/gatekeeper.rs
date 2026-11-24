@@ -667,10 +667,111 @@ mod tests {
 /// about how a project is worked on.
 pub const MERGE_GATE_HEADING: &str = "Merge gate";
 
+/// The heading a project writes when its gate has two tiers: what a branch must pass to land.
+/// Absent, `Merge gate` is this tier, and a project that declares nothing new behaves as before.
+pub const QUICK_GATE_HEADING: &str = "Quick gate";
+
+/// And what `main`'s health is judged by after the landings. Absent, `Merge gate` is this tier too.
+pub const FULL_GATE_HEADING: &str = "Full gate";
+
+/// Which of the two tiers a gate is - the one a branch waits for, and the one the target's own
+/// tip is judged by afterwards. One name per tier, because the rows and the sentences that
+/// report them must not be spelled differently in five places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Before landing, with the review: the branch is checked on its own.
+    Quick,
+    /// After landing, on the target's tip: one run covers every landing since the last judged one.
+    Full,
+}
+
+impl Tier {
+    /// The word a row says: `quick`, `full`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Tier::Quick => "quick",
+            Tier::Full => "full",
+        }
+    }
+
+    /// Its heading in `AGENTS.md`.
+    pub fn heading(&self) -> &'static str {
+        match self {
+            Tier::Quick => QUICK_GATE_HEADING,
+            Tier::Full => FULL_GATE_HEADING,
+        }
+    }
+}
+
+/// A project's gate, both tiers, as its `AGENTS.md` declares it. `quick` and `full` are never
+/// empty: a missing tier falls back to the other one, and then to `Merge gate`, so an `AGENTS.md`
+/// with one section means exactly what it always did.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Gates {
+    pub quick: Vec<String>,
+    pub full: Vec<String>,
+    /// Whether `Quick gate`/`Full gate` were declared at all - what decides whether the queue says
+    /// two tiers or one, and whether a landing's gate is also the target's.
+    pub two_tiers: bool,
+}
+
+impl Gates {
+    /// The steps of one tier.
+    pub fn steps(&self, tier: Tier) -> &[String] {
+        match tier {
+            Tier::Quick => &self.quick,
+            Tier::Full => &self.full,
+        }
+    }
+
+    /// The gate as one list: the quick tier, which is what a single-tier project has.
+    pub fn only(&self) -> Vec<String> {
+        self.quick.clone()
+    }
+}
+
+/// A project's gate out of its `AGENTS.md`: each heading's first fenced block, then the fallbacks
+/// above. `None` when the file declares no gate at all, which is the queue's "nothing lands" case.
+pub fn parse_gates(md: &str) -> Option<Gates> {
+    let merge = parse_merge_gate(md);
+    let quick = gate_section(md, QUICK_GATE_HEADING);
+    let full = gate_section(md, FULL_GATE_HEADING);
+    let two_tiers = quick.is_some() || full.is_some();
+    let (quick, full) = match (quick, full) {
+        (Some(q), Some(f)) => (q, f),
+        // One tier declared: the other is what the declared one is, because a tier nobody wrote is
+        // not a tier nobody judges - it is the same gate under the old name.
+        (Some(q), None) => {
+            let full = merge.clone().unwrap_or_else(|| q.clone());
+            (q, full)
+        }
+        (None, Some(f)) => {
+            let quick = merge.clone().unwrap_or_else(|| f.clone());
+            (quick, f)
+        }
+        (None, None) => {
+            let steps = merge?;
+            (steps.clone(), steps)
+        }
+    };
+    Some(Gates {
+        quick,
+        full,
+        two_tiers,
+    })
+}
+
 /// The gate's steps, out of an `AGENTS.md`: the first fenced block under a `Merge gate` heading
 /// (any level, any case), one command per line; blank lines and `#` comments skipped. The block
 /// ends at its closing fence and the search at the next heading of the same level.
 pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
+    gate_section(md, MERGE_GATE_HEADING)
+}
+
+/// One `## <heading>` section's fenced block, for any of the three headings the gate has. The
+/// reading below is the whole of it: the queue, `scripts/gate-steps.sh` and the merge-gate tool
+/// all go through here, so one section cannot be read two ways.
+pub fn gate_section(md: &str, wanted: &str) -> Option<Vec<String>> {
     let heading = |line: &str| -> Option<(usize, String)> {
         let t = line.trim_start();
         let level = t.chars().take_while(|c| *c == '#').count();
@@ -685,7 +786,7 @@ pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
     let level = loop {
         let line = lines.next()?;
         if let Some((level, title)) = heading(line)
-            && title.eq_ignore_ascii_case(MERGE_GATE_HEADING)
+            && title.eq_ignore_ascii_case(wanted)
         {
             break level;
         }
@@ -809,5 +910,57 @@ mod merge_gate_section {
             parse_merge_gate("### merge GATE\n~~~\ngo test ./...\n~~~\n"),
             Some(vec!["go test ./...".into()])
         );
+    }
+
+    /// A project with one section is the project it always was: that section is both tiers.
+    #[test]
+    fn one_section_is_both_tiers() {
+        let one = parse_gates("## Merge gate\n\n```sh\nmake test\n```\n").unwrap();
+        assert_eq!(one.quick, vec!["make test".to_string()]);
+        assert_eq!(one.full, one.quick, "the same gate judges main");
+        assert!(!one.two_tiers, "and the queue says one gate, as before");
+        assert_eq!(one.steps(Tier::Quick), one.steps(Tier::Full));
+    }
+
+    /// Two sections: a branch waits for the cheap one, main is judged by the long one.
+    #[test]
+    fn two_sections_are_the_two_tiers() {
+        let md = "## Quick gate\n\n```sh\ncargo check\n```\n\n## Full gate\n\n```sh\n\
+                  cargo nextest run\n```\n\n## Merge gate\n\n```sh\nneither\n```\n";
+        let g = parse_gates(md).unwrap();
+        assert_eq!(g.quick, vec!["cargo check".to_string()]);
+        assert_eq!(g.full, vec!["cargo nextest run".to_string()]);
+        assert!(g.two_tiers);
+        assert_eq!(Tier::Quick.heading(), "Quick gate");
+        assert_eq!(Tier::Full.as_str(), "full");
+        assert_eq!(g.steps(Tier::Full), ["cargo nextest run"]);
+    }
+
+    /// One tier named and the other not: the unnamed one is `Merge gate` when the file has one,
+    /// and otherwise the tier that is there. It is never empty, because an empty tier would be a
+    /// gate that judges nothing while its row says green.
+    #[test]
+    fn a_missing_tier_is_the_merge_gate_then_the_other_tier() {
+        let one_fence = "## Quick gate\n\n```sh\ncargo check\n```\n";
+        let g = parse_gates(one_fence).unwrap();
+        assert_eq!(g.quick, g.full, "quick is the only gate, so it is both");
+
+        let with_merge = "## Merge gate\n\n```sh\nmake test\n```\n\n## Quick gate\n\n```sh\n\
+                          make fast\n```\n";
+        let g = parse_gates(with_merge).unwrap();
+        assert_eq!(g.quick, vec!["make fast".to_string()]);
+        assert_eq!(g.full, vec!["make test".to_string()], "the merge gate is main's");
+
+        let full_only = "## Full gate\n\n```sh\nmake slow\n```\n";
+        let g = parse_gates(full_only).unwrap();
+        assert_eq!(g.quick, g.full);
+        assert!(g.two_tiers);
+    }
+
+    /// No section anywhere is no gate, and a `Quick gate` empty of commands is no section.
+    #[test]
+    fn a_file_with_no_gate_has_no_tiers_either() {
+        assert_eq!(parse_gates("# Project\n\nHello.\n"), None);
+        assert_eq!(parse_gates("## Quick gate\n\n```sh\n# nothing\n```\n"), None);
     }
 }
