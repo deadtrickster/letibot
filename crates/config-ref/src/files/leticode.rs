@@ -352,6 +352,7 @@ pub const LETICODE: File = File {
                 k("gate_cache_root", "path", "under the placement", P, "where every gate's build cache lives: `<root>/<repo>-<hex>`, on the box's build disk rather than in the placement", "\"/build/letibot-gate\""),
                 k("gate_cache_days", "int >= 1", "3", P, "a gate's build cache nothing has written to for this many days is removed", "7"),
                 k("gate_min_free", "size", "30G", P, "free space the filesystem holding a gate's target, and the landing root, must have before a gate starts", "\"50G\""),
+                k("gate_regates", "int >= 0", "2", P, "times a daemon taking the queue gates a red tip again on its own, each after a growing wait; then the tip waits for a person", "1"),
             ],
         },
         Table {

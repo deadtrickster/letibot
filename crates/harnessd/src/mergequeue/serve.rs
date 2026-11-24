@@ -4358,13 +4358,34 @@ impl QueueService {
                         gate::now_ms(),
                         self.env.review_deadline_ms,
                     )?;
-                    // : a tip whose last verdict was red, blocked or timed out is
-                    // gated again by the daemon that takes the queue - a restart is a re-gate.
-                    match super::verbs::regate_at_start(store, &key, &self.env.me.owner) {
-                        Ok(t) if !t.is_empty() => {
-                            eprintln!("  merge queue: {key}: re-gating {}", t.join(", "))
+                    // A tip whose last verdict was red, blocked or timed out is gated again by the
+                    // daemon that takes the queue - but only within its budget: a lease that flaps
+                    // is not a verdict, and a red tip nobody fixed stays red for a person.
+                    let settings = (self.env.settings)(&repo).unwrap_or_default();
+                    match super::verbs::regate_at_start(
+                        store,
+                        &key,
+                        &self.env.me.owner,
+                        &settings,
+                        gate::now_ms(),
+                    ) {
+                        Ok(t) => {
+                            if !t.regated.is_empty() {
+                                eprintln!(
+                                    "  merge queue: {key}: re-gating {}",
+                                    t.regated.join(", ")
+                                );
+                            }
+                            for (target, why) in t.parked {
+                                eprintln!(
+                                    "  merge queue: {key}: `{target}` waits for a person: {why}"
+                                );
+                                self.env.door.announce_to(
+                                    &key,
+                                    SessionEvent::warning(super::verbs::PARKED, why),
+                                );
+                            }
                         }
-                        Ok(_) => {}
                         Err(e) => eprintln!("  merge queue: {key}: no re-gate at start: {e}"),
                     }
                     eprintln!(

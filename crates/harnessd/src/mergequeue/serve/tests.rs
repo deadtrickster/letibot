@@ -478,6 +478,12 @@ fn run(q: &RepoQueue, passes: usize) {
     }
 }
 
+/// A daemon taking the queue, as `serve.rs` asks it - at an instant the caller names and under the
+/// project's `[queue]`, so a test can walk hours of lease takes without sleeping through them.
+fn at_start(w: &World, settings: &QueueSettings, now: u64) -> crate::mergequeue::verbs::AtStart {
+    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a", settings, now).unwrap()
+}
+
 // ===== How many reviewers at once =====
 
 /// The claim limit belongs to the placement: the project's `reviewers_at_once` is honoured, a `vm`
@@ -2071,7 +2077,7 @@ fn the_same_sha_red_again_after_green_is_said_and_a_restart_is_not() {
         let env = env(Arc::new(LocalGate), w.door.clone(), "a");
         RepoQueue::new(w.store(), w.repo.clone(), env)
     };
-    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a").unwrap();
+    at_start(&w, &QueueSettings::default(), gate::now_ms());
     run(&q2, 2);
     assert_eq!(
         w.door.warnings("target_red").len(),
@@ -2218,7 +2224,7 @@ fn both_regate_doors_keep_a_red_tip_halting() {
     };
     let health = || w.store().target_health(&w.key(), "main").unwrap().unwrap();
     w.store().set_target_health(&red(w.tip()), "test").unwrap();
-    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a").unwrap();
+    at_start(&w, &QueueSettings::default(), gate::now_ms());
     assert!(halts_reviews(&health()), "{:?}", health());
     w.store().set_target_health(&red(w.tip()), "test").unwrap();
     crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
@@ -2236,6 +2242,127 @@ fn both_regate_doors_keep_a_red_tip_halting() {
     crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
         .unwrap();
     assert!(!halts_reviews(&health()), "{:?}", health());
+}
+
+// ===== A red tip's automatic re-gates are a budget =====
+
+/// The row a tip judged red leaves.
+fn a_red_tip(w: &World, sha: &str) -> TargetHealth {
+    TargetHealth {
+        repository: w.key(),
+        target: "main".into(),
+        sha: sha.into(),
+        state: HealthState::Red,
+        checked_ms: gate::now_ms(),
+        evidence: "`cargo test` failed".into(),
+        gate_steps: vec![],
+    }
+}
+
+/// A daemon that takes the queue re-gates a red tip within a budget and then stops: the incident
+/// was a lease that flapped ~25 times in a day, each take running the whole suite again on a red
+/// `main` until every gate on the box was fighting every other.
+#[test]
+fn a_red_tip_is_re_gated_at_most_the_budget_then_waits_for_a_person() {
+    let w = World::new("regate-budget");
+    let sha = w.tip();
+    let settings = QueueSettings::default();
+    assert_eq!(settings.gate_regates, 2, "the default budget");
+    let t0 = gate::now_ms();
+
+    // Two takes re-gate it, and the second only once the growing wait has passed.
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    assert_eq!(at_start(&w, &settings, t0).regated, vec!["main".to_string()]);
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    let flapped = at_start(&w, &settings, t0 + 1_000);
+    assert!(flapped.regated.is_empty(), "inside the wait: {flapped:?}");
+    assert_eq!(
+        crate::mergequeue::verbs::regate_backoff_ms(1),
+        10 * 60 * 1000,
+        "the wait after the first re-gate"
+    );
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    let second = at_start(&w, &settings, t0 + 10 * 60 * 1000 + 1);
+    assert_eq!(second.regated, vec!["main".to_string()], "{second:?}");
+
+    // The budget is spent: no gate, the verdict is kept, and the person is told once.
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    let parked = at_start(&w, &settings, t0 + 3 * 3_600_000);
+    assert!(parked.regated.is_empty(), "{parked:?}");
+    assert_eq!(parked.parked.len(), 1, "{parked:?}");
+    assert_eq!(parked.parked[0].0, "main");
+    assert!(
+        parked.parked[0].1.contains("a person has to act"),
+        "{}",
+        parked.parked[0].1
+    );
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Red, "the verdict it earned is kept");
+    assert!(halts_reviews(&h), "and a red tip still halts its review queue");
+    assert!(h.evidence.contains("a person has to act"), "{}", h.evidence);
+
+    // A later take is silent: nothing gated, nothing said twice.
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    let later = at_start(&w, &settings, t0 + 6 * 3_600_000);
+    assert!(
+        later.regated.is_empty() && later.parked.is_empty(),
+        "{later:?}"
+    );
+}
+
+/// A new tip is a new question, and a person's `regate` restarts the budget they own.
+#[test]
+fn a_new_tip_and_a_persons_regate_each_start_the_budget_again() {
+    let w = World::new("regate-budget-reset");
+    let settings = QueueSettings::default();
+    let sha = w.tip();
+    let mut now = gate::now_ms();
+    // Spend the budget on the first tip.
+    for _ in 0..3 {
+        w.store()
+            .set_target_health(&a_red_tip(&w, &sha), "test")
+            .unwrap();
+        at_start(&w, &settings, now);
+        now += 4 * 3_600_000;
+    }
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    assert!(at_start(&w, &settings, now).regated.is_empty(), "spent");
+
+    // A person regates: the count starts over, so the queue may gate it twice again.
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    w.store()
+        .set_target_health(&a_red_tip(&w, &sha), "test")
+        .unwrap();
+    assert_eq!(
+        at_start(&w, &settings, now + 1).regated,
+        vec!["main".to_string()],
+        "a person's verb restarts the budget"
+    );
+
+    // And a tip that is not the one that was parked is gated as usual.
+    let moved = commit(&w.repo, "a.txt", "two\n", "main moves");
+    now += 4 * 3_600_000;
+    w.store()
+        .set_target_health(&a_red_tip(&w, &moved), "test")
+        .unwrap();
+    assert_eq!(
+        at_start(&w, &settings, now).regated,
+        vec!["main".to_string()],
+        "a new tip is a new question"
+    );
 }
 
 // ===== : a gate that cannot judge, a rewritten target, a re-gate =====
@@ -2475,8 +2602,8 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     // A daemon taking the queue re-gates a tip judged red (here: sick again), and leaves green.
     std::fs::write(&flag, "x").unwrap();
     assert!(
-        crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/b")
-            .unwrap()
+        at_start(&w, &QueueSettings::default(), gate::now_ms())
+            .regated
             .is_empty(),
         "a green tip is not in doubt"
     );
@@ -2486,7 +2613,7 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     assert_eq!(health().state, HealthState::Red);
     std::fs::remove_file(&flag).unwrap();
     assert_eq!(
-        crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/b").unwrap(),
+        at_start(&w, &QueueSettings::default(), gate::now_ms()).regated,
         vec!["main".to_string()]
     );
     run(&q, 1);
@@ -4054,9 +4181,16 @@ fn a_tip_killed_at_its_cap_backs_off_before_a_daemon_regates_it() {
         HealthState::Blocked
     );
     assert!(
-        crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/b")
-            .unwrap()
-            .is_empty(),
+        crate::mergequeue::verbs::regate_at_start(
+            &w.store(),
+            &w.key(),
+            "test/b",
+            &QueueSettings::default(),
+            gate::now_ms(),
+        )
+        .unwrap()
+        .regated
+        .is_empty(),
         "killed a moment ago: it waits"
     );
     assert_eq!(

@@ -52,6 +52,9 @@
 //!                                 #   the landing root - must have before a gate starts: the
 //!                                 #   stale caches are removed first, and if that is not
 //!                                 #   enough the gate does NOT run. Default: 30G
+//! gate_regates = 2                # how many times a daemon that takes the queue may gate a
+//!                                 #   RED tip again without a person: each after a growing wait,
+//!                                 #   then the tip is parked for a person. Default: 2
 //! [queue.claude]                  # the reviewers are headless `claude -p` runs instead of
 //!                                 #   letibot children. The table absent is the letibot
 //!                                 #   reviewer.
@@ -206,6 +209,10 @@ pub struct QueueSettings {
     /// `[queue] gate_deadline_minutes`: one gate run's deadline. `None` is the daemon's thirty
     /// minutes ([`super::gate::GATE_DEADLINE`]).
     pub gate_deadline: Option<std::time::Duration>,
+    /// `[queue] gate_regates`: how many times a daemon taking the queue may gate a judged tip
+    /// again on its own ([`super::verbs::regate_at_start`]). `0` never does, and every tip is a
+    /// person's to re-gate.
+    pub gate_regates: u32,
     /// `[queue] grant_ttl_hours`: how long a session answer on a relayed queue card covers the
     /// queue. It covers every later reviewer, so it is bounded in time rather than by one seat.
     pub grant_ttl_hours: u64,
@@ -246,6 +253,7 @@ impl Default for QueueSettings {
             reviewer_hosts: Some(vec!["local".to_string()]),
             reviewers_run_suites: false,
             gate_deadline: None,
+            gate_regates: GATE_REGATES,
             grant_ttl_hours: GRANT_TTL_HOURS,
             gate_min_free: GATE_MIN_FREE,
             gate_cache_root: None,
@@ -306,6 +314,8 @@ struct QueueTable {
     /// name, never defaulted - a floor that quietly became 30 GiB is a rule nobody can read.
     #[serde(default)]
     gate_min_free: Option<String>,
+    #[serde(default)]
+    gate_regates: Option<i64>,
     /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
     #[serde(default)]
     claude: Option<ClaudeTable>,
@@ -356,6 +366,10 @@ pub const GATE_CACHE_DAYS: u64 = 3;
 /// gate_min_free`, and the same floor for the landing root. Thirty GiB: the incident this exists
 /// for ended with 4 GiB free and firecode refusing to boot a VM under 6.
 pub const GATE_MIN_FREE: u64 = 30 << 30;
+/// How many automatic re-gates of one judged tip a daemon may make when `[queue] gate_regates` is
+/// not set: two, so a machine that was loaded for one gate is not mistaken for a red branch, and a
+/// branch that is red stays red for a person rather than for a loop.
+pub const GATE_REGATES: u32 = 2;
 
 /// The settings from the nearest `leticode.toml` at or above `repo`. No file or no `[queue]` is
 /// the defaults. A `[queue]` that does not parse or names an unknown key is an `Err`, never a default.
@@ -410,6 +424,18 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
                 "{}: [queue] gate_train = {other} — it is how many approved branches one gate may \
                  judge together, so it is 1 (one branch, one gate — the default) or more. `0` would \
                  mean a train that never runs a gate",
+                path.display()
+            ));
+        }
+    };
+    let gate_regates = match q.gate_regates {
+        None => GATE_REGATES,
+        Some(n) if n >= 0 => n as u32,
+        Some(other) => {
+            return Err(format!(
+                "{}: [queue] gate_regates = {other} - it is how many times a daemon taking the \
+                 queue may gate a red tip again on its own, so it is 0 or more (the default is \
+                 {GATE_REGATES})",
                 path.display()
             ));
         }
@@ -563,6 +589,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         reviewer_hosts,
         reviewers_run_suites: q.reviewers_run_suites.unwrap_or(false),
         gate_deadline,
+        gate_regates,
         grant_ttl_hours,
         gate_min_free,
         gate_cache_root,
@@ -712,6 +739,22 @@ mod tests {
         assert!(e.contains("gate_deadline_minutes = 0"), "{e}");
         std::fs::write(dir.join("leticode.toml"), "[queue]\n").unwrap();
         assert_eq!(for_repository(&repo).unwrap().gate_deadline, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The re-gate budget: read from the project, two by default, and a negative number refused by
+    /// name - `0` is a real answer (the queue never re-gates a judged tip on its own).
+    #[test]
+    fn gate_regates_is_read_and_a_negative_is_refused() {
+        let (dir, repo) = file("[queue]\ngate_regates = 0\n");
+        assert_eq!(for_repository(&repo).unwrap().gate_regates, 0);
+        std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_regates = 5\n").unwrap();
+        assert_eq!(for_repository(&repo).unwrap().gate_regates, 5);
+        std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_regates = -1\n").unwrap();
+        let e = for_repository(&repo).unwrap_err();
+        assert!(e.contains("gate_regates = -1"), "{e}");
+        std::fs::write(dir.join("leticode.toml"), "[queue]\n").unwrap();
+        assert_eq!(for_repository(&repo).unwrap().gate_regates, GATE_REGATES);
         let _ = std::fs::remove_dir_all(dir);
     }
 

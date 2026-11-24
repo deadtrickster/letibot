@@ -896,6 +896,14 @@ pub fn regate(
             who,
         )
         .map_err(|e| e.to_string())?;
+    // A person who regates restarts the automatic budget: the cause is theirs to have fixed, and
+    // the next park of this tip is news again.
+    for key in [
+        regates_key(repository, target, &tip),
+        parked_key(repository, target, &tip),
+    ] {
+        store.untell_prefix(&key).map_err(|e| e.to_string())?;
+    }
     announce(events, "target", target, "gating", &why);
     // The asker is woken with the verdict: a re-gate whose answer nobody is told is a poll, and
     // that is the whole of what this verb was for.
@@ -928,10 +936,57 @@ pub fn killed_backoff_ms(kills: u32) -> u64 {
         .min(CAP)
 }
 
-/// What a daemon re-gates when it takes a repository's lease: every target whose last
-/// verdict was `red`, `blocked` or `timed_out`.
-pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
+/// The `queue_told` key counting the times one tip has been gated again without a person -
+/// [`regate_at_start`]'s budget, kept in the store because the loop it bounds outlives a restart.
+pub fn regates_key(repository: &str, target: &str, sha: &str) -> String {
+    format!("regates:{repository}:{target}:{sha}")
+}
+
+/// The warning code a tip whose automatic re-gates are spent is said under: the queue has stopped
+/// gating it by itself, and what a head styles as *a person has to act*.
+pub const PARKED: &str = "target_parked";
+
+/// The `queue_told` key that says a tip has been parked for a person because its automatic
+/// re-gates are spent - once per tip, not once per lease take.
+pub fn parked_key(repository: &str, target: &str, sha: &str) -> String {
+    format!("parked:{repository}:{target}:{sha}")
+}
+
+/// How long a judged tip waits before it is gated again, `made` re-gates into it: ten minutes,
+/// doubled per re-gate, at most four hours. A daemon restart is a moment, not a reason to run a
+/// whole suite again at once.
+pub fn regate_backoff_ms(made: u32) -> u64 {
+    const BASE: u64 = 10 * 60 * 1000;
+    const CAP: u64 = 4 * 60 * 60 * 1000;
+    BASE.saturating_mul(1u64 << made.saturating_sub(1).min(16))
+        .min(CAP)
+}
+
+/// What [`regate_at_start`] decided about the tips it found judged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AtStart {
+    /// The tips handed back to the gate now.
+    pub regated: Vec<String>,
+    /// `(target, sentence)` for each tip whose automatic re-gates are spent. The sentence is news
+    /// only once per tip, so the caller rings it once.
+    pub parked: Vec<(String, String)>,
+}
+
+/// What a daemon re-gates when it takes a repository's lease: a tip whose last verdict was `red`
+/// or `timed_out` is gated again at most `settings.gate_regates` times, each after a growing wait,
+/// and then it waits for a person. A `blocked` tip has no gate of its own to spend - the gate never
+/// ran - so it keeps the rule it had.
+///
+/// `now` is the caller's clock and `settings` the project's `[queue]`, so a test can walk hours of
+/// lease takes without sleeping through them.
+pub fn regate_at_start(
+    store: &Store,
+    repository: &str,
+    who: &str,
+    settings: &super::settings::QueueSettings,
+    now: u64,
+) -> Result<AtStart, String> {
+    let mut out = AtStart::default();
     for h in store.target_healths().map_err(|e| e.to_string())? {
         if h.repository != repository
             || !matches!(
@@ -947,9 +1002,28 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
             && h.evidence.starts_with(super::gate::GATE_KILLED)
             && let Ok(Some(t)) =
                 store.told(&super::serve::killed_key(repository, &h.target, &h.sha))
-            && now_ms().saturating_sub(t.at_ms) < killed_backoff_ms(t.count)
+            && now.saturating_sub(t.at_ms) < killed_backoff_ms(t.count)
         {
             continue;
+        }
+        // A verdict the gate read cost the box a whole suite. Only the budget below may spend
+        // another: a restart, a flapping lease or a second daemon is not a verdict.
+        if matches!(h.state, HealthState::Red | HealthState::TimedOut) {
+            let key = regates_key(repository, &h.target, &h.sha);
+            let made = store.told(&key).map_err(|e| e.to_string())?;
+            let count = made.map(|t| t.count).unwrap_or(0);
+            if count >= settings.gate_regates {
+                if let Some(parked) = park(store, &h, who, count, now).map_err(|e| e.to_string())? {
+                    out.parked.push(parked);
+                }
+                continue;
+            }
+            if let Some(t) = made
+                && now.saturating_sub(t.at_ms) < regate_backoff_ms(count)
+            {
+                continue;
+            }
+            store.tell_again(&key, now).map_err(|e| e.to_string())?;
         }
         let mut why = format!(
             "re-gated as this daemon took the queue: the last verdict was `{}` at {}",
@@ -963,7 +1037,7 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
             .set_target_health(
                 &TargetHealth {
                     state: HealthState::Gating,
-                    checked_ms: now_ms(),
+                    checked_ms: now,
                     evidence: why,
                     gate_steps: vec![],
                     ..h.clone()
@@ -971,9 +1045,51 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
                 who,
             )
             .map_err(|e| e.to_string())?;
-        out.push(h.target);
+        out.regated.push(h.target);
     }
     Ok(out)
+}
+
+/// Park a tip whose automatic re-gates are spent. Its row keeps the verdict it earned - a red tip
+/// still halts its review queue - and says instead that the queue has stopped gating it by itself.
+/// The sentence comes back once per tip, so a flapping lease cannot make it news twice.
+fn park(
+    store: &Store,
+    h: &TargetHealth,
+    who: &str,
+    made: u32,
+    now: u64,
+) -> Result<Option<(String, String)>, String> {
+    let news = store
+        .tell_once(&parked_key(&h.repository, &h.target, &h.sha), now)
+        .map_err(|e| e.to_string())?;
+    if !news {
+        return Ok(None);
+    }
+    let why = parked_words(h, made, now);
+    store
+        .set_target_health(
+            &TargetHealth {
+                checked_ms: now,
+                evidence: why.clone(),
+                ..h.clone()
+            },
+            who,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(Some((h.target.clone(), why)))
+}
+
+/// The words a parked tip carries: that the queue has stopped gating it by itself, and the two
+/// things that start it again - a new tip, or a person.
+pub fn parked_words(h: &TargetHealth, made: u32, now: u64) -> String {
+    let at = letibot_claude::handover::iso_ts(now);
+    format!(
+        "the gate was run again automatically {made} time(s) on this tip and the verdict is still \
+         `{}` at {at}, so the queue stops gating it on its own and a person has to act (fix the \
+         cause, then `queue` with `action: \"regate\"`); a new tip is gated as usual",
+        h.state.as_str()
+    )
 }
 
 #[cfg(test)]
