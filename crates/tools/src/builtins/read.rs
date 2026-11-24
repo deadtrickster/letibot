@@ -156,7 +156,7 @@ impl Tool for Read {
                 };
             }
             let cap = ctx.limits.max_document_bytes / (1024 * 1024);
-            match letibot_transcript::media::pdf_text(&bytes) {
+            match letibot_transcript::pdf::markdown(&bytes, path) {
                 Some(text) => {
                     doc_note = Some(format!(
                         "{path} is {} KiB, over the {cap} MiB a document may be sent whole, so \
