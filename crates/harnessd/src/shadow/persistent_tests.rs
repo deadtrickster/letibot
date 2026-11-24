@@ -1100,7 +1100,9 @@ fn a_capped_log_still_answers_the_operators_last_request() {
         asked.tail
     );
     assert!(
-        asked.tail.contains("rows between here and the next are not shown"),
+        asked
+            .tail
+            .contains("rows between here and the next are not shown"),
         "the rows between it and the window are counted: {}",
         asked.tail
     );
