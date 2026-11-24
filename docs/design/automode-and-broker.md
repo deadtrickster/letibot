@@ -401,20 +401,24 @@ The shadow answers a card only for the stages they promote, one list in provider
 [shadow]
 enabled = ["permission"]
 permission = "deepseek/deepseek-flash"   # any provider: this is what answers
-answers = ["reads", "workspace_writes", "exec"]
+answers = ["reads", "workspace_writes", "exec", "publish"]
 
 [gatekeeper]
 endpoint = "127.0.0.1:8081"              # the local guard, when the box has one
 via = "both"                            # the endpoint first, the shadow when it is down
 ```
 
-`answers` replaces `answer_reads`, which still works and means `["reads"]`. Each stage is the
-operator's own act, and what stays with them never moves: the always-ask list (destruction
-outside the project, raising privilege, credentials), any secret path, anything past the
-stage's reach, and every `ask`, timeout and void the model gives back. Two disagreements - a
-revoke, or a later No to a shape the shadow granted - stop answering until `/shadow arm`, and
-the trip is kept in the store. Every answer is a row on the session naming the model and the
-stage, and the card's own line reads *allowed by the shadow (deepseek, exec)*.
+`answers` replaces `answer_reads`, which still works and means `["reads"]`. `publish` is the fourth
+and last: a call that leaves the box - a push, a release, `cargo publish`, a request to a host - is
+the reviewer's to judge by the categories (force-push or history rewrite on a shared branch, a push
+to the default branch, a published package or release, data to a service the operator did not name)
+instead of being refused before it is asked. An ordinary `git push` of the session's own branch is
+not one of those. Each stage is the operator's own act, and what stays with them never moves: the
+always-ask list (destruction outside the project, raising privilege, credentials), any secret path,
+anything past the stage's reach, and every `ask`, timeout and void the model gives back. Two
+disagreements - a revoke, or a later No to a shape the shadow granted - stop answering until
+`/shadow arm`, and the trip is kept in the store. Every answer is a row on the session naming the
+model and the stage, and the card's own line reads *allowed by the shadow (deepseek, exec)*.
 
 A stage's reach is the workspace AND the roots the operator granted this session, read live off
 the view the boundary and the file fence enforce. A `grants_rw` folder - or one answered on a

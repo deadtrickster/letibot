@@ -677,3 +677,102 @@ fn an_unknown_program_without_the_exec_stage_asks() {
     assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
     assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
 }
+
+/// The reviewer's answer when it blocks: the category and one sentence, as automode's prompt asks.
+const BLOCK_PUSH: &str = r#"{"block":true,"category":"push_to_a_protected_ref",
+    "reason":"it force-pushes over main, which nobody here can undo"}"#;
+
+/// The reviewer's answer when it blocks a release: the category `cargo publish` is one of.
+const BLOCK_PUBLISH: &str = r#"{"block":true,"category":"production_deploy_or_cloud_mutation",
+    "reason":"it publishes a release the operator never asked for"}"#;
+
+/// A force-push is what the `publish` stage exists for: it reaches the reviewer, and a block is the
+/// answer instead of a card - the call the categories were written for.
+#[test]
+fn a_force_push_reaches_the_reviewer_at_the_publish_stage() {
+    let push = serde_json::json!({ "command": "/usr/bin/git push --force origin main" });
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), BLOCK_PUSH);
+    assert!(!matches!(g.admit(&call(&push)), GateDecision::Admit));
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the reviewer judged it: a network call used to match no stage"
+    );
+    assert_eq!(
+        *person.0.lock().unwrap(),
+        0,
+        "a block is the answer, not a card"
+    );
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Publish);
+    let row = g.log.last().expect("the decision is a row");
+    assert!(
+        row.decision.basis.contains("push_to_a_protected_ref"),
+        "the category is what the agent is told: {}",
+        row.decision.basis
+    );
+    assert!(
+        !row.decision.by.starts_with("human:"),
+        "the reviewer decided it: {}",
+        row.decision.by
+    );
+}
+
+/// An ordinary push of the session's own branch is not a block: the reviewer is asked, sees nothing
+/// to block, and at automode that answer is the decision - the push runs.
+#[test]
+fn an_ordinary_push_of_the_sessions_own_branch_is_not_a_block() {
+    let push = serde_json::json!({ "command": "/usr/bin/git push origin pk/x" });
+    let (mut g, person, answering, asked) = automode_gate(&all_stages(), ALLOW);
+    assert!(
+        matches!(g.admit(&call(&push)), GateDecision::Admit),
+        "nothing in an ordinary push is one of the categories"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer judged it");
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Publish);
+    assert_eq!(*person.0.lock().unwrap(), 0, "and the person was not asked");
+    let row = g.log.last().expect("the decision is a row");
+    assert!(
+        !row.decision.basis.contains("blocked ("),
+        "nothing was blocked, so no category was named: {}",
+        row.decision.basis
+    );
+    assert!(
+        answering.take_rows().is_empty(),
+        "an allow is machinery, not a card"
+    );
+}
+
+/// `cargo publish` is a release: the same stage, and the reviewer is what puts the category on it.
+#[test]
+fn a_publish_reaches_the_reviewer_at_the_publish_stage() {
+    let publish = serde_json::json!({ "command": "cargo publish --no-verify" });
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), BLOCK_PUBLISH);
+    assert!(!matches!(g.admit(&call(&publish)), GateDecision::Admit));
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer judged it");
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Publish);
+    assert_eq!(
+        *person.0.lock().unwrap(),
+        0,
+        "a block is the answer, not a card"
+    );
+    let row = g.log.last().expect("the decision is a row");
+    assert!(
+        row.decision
+            .basis
+            .contains("production_deploy_or_cloud_mutation"),
+        "the category is what the agent is told: {}",
+        row.decision.basis
+    );
+}
+
+/// The stage is not the reviewer's to reach for: without `publish` promoted, a push is a card, and
+/// the card says the stage rather than a lexical refusal that answers for nobody.
+#[test]
+fn without_the_publish_stage_a_push_is_still_the_persons() {
+    let push = serde_json::json!({ "command": "/usr/bin/git push --force origin main" });
+    let (mut g, person, _, asked) = automode_gate(&[Stage::Reads, Stage::Exec], ALLOW);
+    assert!(!matches!(g.admit(&call(&push)), GateDecision::Admit));
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the shadow was not asked");
+    assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Publish);
+}

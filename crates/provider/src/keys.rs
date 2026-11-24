@@ -613,8 +613,9 @@ pub struct ShadowLines {
 }
 
 /// The stages `[shadow] answers` takes, in the order they are promoted. A closed set: a stage
-/// this build does not run is a fault in the file, not a line nothing reads.
-pub const SHADOW_STAGES: [&str; 3] = ["reads", "workspace_writes", "exec"];
+/// this build does not run is a fault in the file, not a line nothing reads. `publish` is the one
+/// that reaches off the box; `Stage::Publish` in `harnessd`'s shadow config is the same list.
+pub const SHADOW_STAGES: [&str; 4] = ["reads", "workspace_writes", "exec", "publish"];
 
 /// A TOML list of words, as the file writes it: `["a", "b"]`. `None` is not a list at all.
 fn words(v: &str) -> Option<Vec<&str>> {

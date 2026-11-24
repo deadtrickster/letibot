@@ -6,16 +6,26 @@ use std::path::Path;
 use super::Job;
 
 /// A class of call the permission job may answer for the operator, in the order they are
-/// promoted. `reads` is the one that reaches outside the workspace; the other two never do.
+/// promoted. `reads` reaches outside the project, `exec` outside the workspace, and `publish`
+/// off the box - which is why it is last: the operator promotes it knowing that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
     Reads,
     WorkspaceWrites,
     Exec,
+    /// A call that leaves the box: a push, a release, a publish, a request to some host. The
+    /// reviewer's categories are what decide it, so a force-push is refused by name and not by a
+    /// card nobody is at.
+    Publish,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 3] = [Stage::Reads, Stage::WorkspaceWrites, Stage::Exec];
+    pub const ALL: [Stage; 4] = [
+        Stage::Reads,
+        Stage::WorkspaceWrites,
+        Stage::Exec,
+        Stage::Publish,
+    ];
 
     /// The spelling `[shadow] answers` uses, and the card's.
     pub fn as_str(self) -> &'static str {
@@ -23,6 +33,7 @@ impl Stage {
             Stage::Reads => "reads",
             Stage::WorkspaceWrites => "workspace_writes",
             Stage::Exec => "exec",
+            Stage::Publish => "publish",
         }
     }
 

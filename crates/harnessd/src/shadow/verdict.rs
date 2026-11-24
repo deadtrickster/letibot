@@ -773,7 +773,13 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
             if matches!(decision, Decision::Allow { .. }) && shown.oracle {
                 log.pass("denylist: read by the stage-1 gate before the brief");
             } else if matches!(decision, Decision::Allow { .. }) {
-                match shown.call.as_ref().map(guard::allow_passes) {
+                // The annotator's allow is the old question's, and it meets the whole denylist: a
+                // push is nobody's allow here - the publish stage is where a push is judged.
+                match shown
+                    .call
+                    .as_ref()
+                    .map(|c| guard::allow_passes(c, super::guard::Pushes::Refused))
+                {
                     Some(Ok(())) => log.pass("denylist"),
                     Some(Err(why)) => {
                         log.0.push(format!("narrow denylist: {why}; allow is ask"));

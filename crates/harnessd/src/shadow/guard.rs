@@ -23,6 +23,15 @@ pub struct Call {
 /// Commands that raise privilege.
 const PRIVILEGE: [&str; 5] = ["sudo", "doas", "pkexec", "su", "run0"];
 
+/// Whether the lexical screen refuses a `git push`. Every stage but `publish` does, because none of
+/// them was promoted knowing a call can leave the box; `publish` exists so the reviewer's
+/// categories judge the push instead of a lexical refusal that answers for nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pushes {
+    Refused,
+    Answered,
+}
+
 /// Commands that write to the paths they are given.
 const WRITERS: [&str; 15] = [
     "rm", "mv", "cp", "tee", "touch", "mkdir", "rmdir", "ln", "chmod", "chown", "dd", "install",
@@ -33,7 +42,7 @@ const WRITERS: [&str; 15] = [
 const PATH_KEYS: [&str; 4] = ["path", "file_path", "filePath", "target"];
 
 /// `Ok` when nothing on the denylist is in the call; `Err` names the first thing that is.
-pub fn allow_passes(call: &Call) -> Result<(), String> {
+pub fn allow_passes(call: &Call, pushes: Pushes) -> Result<(), String> {
     let command = call.args.get("command").and_then(|c| c.as_str());
     let text = command.map_or_else(|| call.args.to_string(), str::to_string);
     if text.contains(".config/letibot/keys") {
@@ -57,6 +66,7 @@ pub fn allow_passes(call: &Call) -> Result<(), String> {
         }
         if let Some(g) = words.iter().position(|w| base(w) == "git")
             && words[g..].contains(&"push")
+            && pushes == Pushes::Refused
         {
             return Err("it pushes".into());
         }

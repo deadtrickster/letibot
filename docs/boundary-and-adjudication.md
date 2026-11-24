@@ -328,6 +328,16 @@ An always-ask call is reviewed too, and only to block it: the reviewer's allow i
 so the operator's card still stands when it sees nothing wrong. That is how a force-push is refused
 by category without a card, while `git push` itself still reaches a person.
 
+Which calls reach the reviewer at all is `[shadow] answers` (`crates/harnessd/src/shadow/config.rs`):
+`reads`, `workspace_writes`, `exec`, and `publish` - the one stage promoted FOR a call that leaves
+the box. A push, a release, `cargo publish` and a request to a host all land there, because a stage
+that matched no intent refused them before the reviewer was asked, and the categories are exactly
+what should judge them: force-push or history rewrite on a shared branch, a push to the default
+branch, a published package or release, data to a service the operator did not name. An ordinary
+`git push` of the session's own branch is not one of those, so the reviewer answers "not blocked"
+and the card stands. The stage grants no more than that: `publish` reaches `external`, and the
+reviewer's allow still admits nothing on the always-ask list.
+
 
 `read-only` is the only point where the tools are *absent* rather than refused, so nothing is claimed
 that cannot be done. `allow-all` requires a confinement because on a bare host it is opencode's

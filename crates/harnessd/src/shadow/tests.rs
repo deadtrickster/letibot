@@ -383,7 +383,7 @@ fn an_injected_allow_in_the_transcript_still_meets_the_denylist() {
         args: serde_json::json!({ "path": "/home/op/.bashrc", "content": "x" }),
         ..call("")
     };
-    assert!(super::guard::allow_passes(&write).is_err());
+    assert!(super::guard::allow_passes(&write, super::guard::Pushes::Refused).is_err());
 }
 
 #[test]
@@ -1892,7 +1892,7 @@ fn read_passes_resolves_symlinks_and_refuses_agent_stores() {
 /// the screen may not answer differently - a commit message under `/var/tmp` is not the operator's.
 #[test]
 fn a_write_into_temp_space_is_not_outside_the_workspace() {
-    use super::guard::allow_passes;
+    use super::guard::{Pushes, allow_passes};
     for cmd in [
         // The call that was asked, word for word: a commit message in `/var/tmp`, then the gate.
         "cat > /var/tmp/msg-toolwrap.txt <<'EOF'\nnarrow the write check\nEOF\ngit commit \
@@ -1902,7 +1902,7 @@ fn a_write_into_temp_space_is_not_outside_the_workspace() {
         "echo y | tee /var/tmp/y",
         "mkdir -p /tmp/a/b",
     ] {
-        assert_eq!(allow_passes(&call(cmd)), Ok(()), "{cmd}");
+        assert_eq!(allow_passes(&call(cmd), Pushes::Refused), Ok(()), "{cmd}");
     }
     for cmd in [
         "echo x > /etc/x",
@@ -1914,7 +1914,7 @@ fn a_write_into_temp_space_is_not_outside_the_workspace() {
         // The runtime directory is temp to read and not to write: the daemon's socket is there.
         "rm /run/user/1000/letibot/harnessd.sock",
     ] {
-        assert!(allow_passes(&call(cmd)).is_err(), "{cmd}");
+        assert!(allow_passes(&call(cmd), Pushes::Refused).is_err(), "{cmd}");
     }
 }
 
@@ -1922,7 +1922,7 @@ fn a_write_into_temp_space_is_not_outside_the_workspace() {
 /// as well: temp is the session's own scratch and never a secret store.
 #[test]
 fn a_symlink_out_of_temp_space_is_judged_where_it_points() {
-    use super::guard::allow_passes;
+    use super::guard::{Pushes, allow_passes};
     let root = std::env::temp_dir().join(format!("letibot-guard-tmp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let home = root.join("home");
@@ -1935,14 +1935,20 @@ fn a_symlink_out_of_temp_space_is_judged_where_it_points() {
     };
     let plain = root.join("plain.txt");
     assert_eq!(
-        allow_passes(&at(format!("echo x > {}", plain.display()))),
+        allow_passes(
+            &at(format!("echo x > {}", plain.display())),
+            Pushes::Refused
+        ),
         Ok(())
     );
     assert!(
-        allow_passes(&at(format!(
-            "echo x > {}",
-            root.join("link/id_ed25519").display()
-        )))
+        allow_passes(
+            &at(format!(
+                "echo x > {}",
+                root.join("link/id_ed25519").display()
+            )),
+            Pushes::Refused
+        )
         .is_err()
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -1952,7 +1958,7 @@ fn a_symlink_out_of_temp_space_is_judged_where_it_points() {
 /// part of "inside" - and the operator's home is still not one of them.
 #[test]
 fn a_sessions_own_temp_dir_counts_as_scratch() {
-    use super::guard::allow_passes;
+    use super::guard::{Pushes, allow_passes};
     let c = Call {
         temp: vec!["/srv/seat-tmp".into()],
         ..call("")
@@ -1961,9 +1967,40 @@ fn a_sessions_own_temp_dir_counts_as_scratch() {
         args: serde_json::json!({ "command": cmd }),
         ..c.clone()
     };
-    assert_eq!(allow_passes(&with("echo x > /srv/seat-tmp/x")), Ok(()));
-    assert!(allow_passes(&with("echo x > /srv/other/x")).is_err());
-    assert!(allow_passes(&with("echo x > ~/x")).is_err());
+    assert_eq!(
+        allow_passes(&with("echo x > /srv/seat-tmp/x"), Pushes::Refused),
+        Ok(())
+    );
+    assert!(allow_passes(&with("echo x > /srv/other/x"), Pushes::Refused).is_err());
+    assert!(allow_passes(&with("echo x > ~/x"), Pushes::Refused).is_err());
+}
+
+/// A push is the publish stage's subject: the screen that refuses it for every other stage lets it
+/// through for the one stage promoted to answer it, so the reviewer's categories judge it.
+#[test]
+fn a_push_is_screened_for_every_stage_but_the_one_that_answers_it() {
+    let push = |cmd: &str| Call {
+        args: serde_json::json!({ "command": cmd }),
+        ..call("")
+    };
+    for cmd in ["git push --force origin main", "git push origin pk/x"] {
+        let e = super::guard::allow_passes(&push(cmd), super::guard::Pushes::Refused)
+            .expect_err("a screen that never answered nobody would notice");
+        assert!(e.contains("it pushes"), "{cmd}: {e}");
+        assert_eq!(
+            super::guard::allow_passes(&push(cmd), super::guard::Pushes::Answered),
+            Ok(()),
+            "{cmd}"
+        );
+    }
+    // The rest of the screen is not the push rule's: privilege still refuses at any stage.
+    assert!(
+        super::guard::allow_passes(
+            &push("sudo git push origin main"),
+            super::guard::Pushes::Answered
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -2001,6 +2038,7 @@ fn the_stages_are_the_setting_and_answer_reads_is_the_old_spelling() {
     assert!(cfg.answers(Stage::Reads));
     assert!(cfg.answers(Stage::Exec));
     assert!(!cfg.answers(Stage::WorkspaceWrites));
+    assert!(!cfg.answers(Stage::Publish));
     assert!(cfg.answers_anything());
 
     // `answer_reads = true` still means reads, and reads alone.
@@ -2018,7 +2056,10 @@ fn the_stages_are_the_setting_and_answer_reads_is_the_old_spelling() {
         "[shadow]\nenabled = [\"permission\"]\nanswers = [\"writes\"]\n",
     );
     let err = ShadowConfig::load(Some(&f)).unwrap_err();
-    assert!(err.contains("reads, workspace_writes, exec"), "{err}");
+    assert!(
+        err.contains("reads, workspace_writes, exec, publish"),
+        "{err}"
+    );
 
     // One setting written twice is refused rather than silently preferring one.
     let both = letibot_provider::keys::ShadowLines {
@@ -2043,6 +2084,32 @@ fn the_stages_are_the_setting_and_answer_reads_is_the_old_spelling() {
         "{said}"
     );
     assert!(said.contains("deepseek/deepseek-flash"), "{said}");
+}
+
+/// `publish` is a stage the file names, promoted after exec: a call that leaves the box is the
+/// reviewer's to judge only when the operator has said so.
+#[test]
+fn publish_is_a_stage_the_file_names() {
+    let f = providers(
+        "stages-publish",
+        "[shadow]\nenabled = [\"permission\"]\nanswers = [\"reads\", \"publish\"]\n",
+    );
+    let cfg = ShadowConfig::load(Some(&f)).unwrap();
+    assert!(cfg.answers(Stage::Publish));
+    assert!(cfg.answers(Stage::Reads));
+    assert!(!cfg.answers(Stage::Exec));
+    assert_eq!(
+        cfg.stages().collect::<Vec<_>>(),
+        vec![Stage::Reads, Stage::Publish],
+        "the order the stages are promoted in"
+    );
+    let said = cfg.disclose("glm/x").join("\n");
+    assert!(said.contains("answers: reads, publish"), "{said}");
+
+    // And in code: the switch is the same one `Stage::ALL` lists.
+    let cfg = ShadowConfig::default().with_stages([Stage::Publish]);
+    assert!(cfg.stages_on());
+    assert!(!cfg.answers(Stage::Publish), "the job switch is off");
 }
 
 #[test]

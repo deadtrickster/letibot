@@ -28,7 +28,8 @@ use super::verdict::{Decision, Shown, Verdict};
 
 /// The scope the stages in force earn. `reads` reaches outside the project at most; exec reaches
 /// the host when the call only looks at it (see [`stage_of`]) and the workspace plus the operator's
-/// writable grants when it writes, which one scope cannot say per call.
+/// writable grants when it writes, which one scope cannot say per call; `publish` reaches off the
+/// box, and only a stage the operator promoted puts `external` in the scope.
 pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
     let mut intents: BTreeSet<Intent> = BTreeSet::new();
     let mut reach = EffectScope::HostProject;
@@ -53,6 +54,21 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
                 // scope has to reach that far for `stage_of`'s per-call answer to be reachable.
                 reach = reach.max(EffectScope::HostOther);
             }
+            Stage::Publish => {
+                // Every intent a call leaving the box carries: the push and the release, the
+                // package `cargo publish` installs on the way, and whatever program it runs.
+                intents.extend([
+                    Intent::Inspect,
+                    Intent::ReadFile,
+                    Intent::WriteFile,
+                    Intent::ExecuteCode,
+                    Intent::Destroy,
+                    Intent::Network,
+                    Intent::VersionControlPublish,
+                    Intent::PackageChange,
+                ]);
+                reach = EffectScope::External;
+            }
         }
     }
     OracleScope::earned(
@@ -60,9 +76,9 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
         reach,
         format!(
             "R316 stages {}: reads past the shadow's read denylist, writes and exec inside the \
-             workspace and the operator's writable grants, and an exec that only looks at the host \
-             as far as `host_other`, promoted by `[shadow] answers` and measured by `letibot shadow \
-             replay --job permission`",
+             workspace and the operator's writable grants, an exec that only looks at the host as \
+             far as `host_other`, and a publish that leaves the box as far as `external`, promoted \
+             by `[shadow] answers` and measured by `letibot shadow replay --job permission`",
             stages
                 .iter()
                 .map(|s| s.as_str())
@@ -117,7 +133,7 @@ pub fn stage_of(
     // Reach is per call because a scope carries one reach for every intent it holds. Only the
     // intents decide it: `Region::Device` is a place inside the host, so `/sys`, `ip neigh` and
     // `networkctl status` land at `host_other`, while a class reaches `external` only through the
-    // network intent, and such a call is refused below.
+    // network intent - which is what makes such a call the publish stage's and no other's.
     //
     // An always-ask call is not screened for reach, and that is the whole reason it is here: the
     // reviewer is asked about it only to BLOCK, and a block is a refusal whatever the call's reach
@@ -132,6 +148,8 @@ pub fn stage_of(
         // Writing or destroying at exec keeps the workspace and the operator's grants: the host is
         // not a place this session writes to, and what may be written is the class's own answer.
         Stage::Exec if looks_only => EffectScope::HostOther,
+        // The one stage promoted FOR leaving the box, so the reach is the whole answer here.
+        Stage::Publish => EffectScope::External,
         _ => EffectScope::HostProject,
     };
     if !always_ask && req.class.scope > allowed {
@@ -152,9 +170,15 @@ pub fn stage_of(
         temp: super::guard::temp_roots(home),
     };
     if stage != Stage::Reads && !always_ask {
-        // The lexical screen a shadow allow meets anyway: privilege, a push, a write, a redirect
-        // or a file-tool path outside the workspace, and the key store.
-        super::guard::allow_passes(&call)?;
+        // The lexical screen a shadow allow meets anyway: privilege, a write, a redirect or a
+        // file-tool path outside the workspace, and the key store. A push is the publish stage's
+        // subject - the reviewer judges it by category - so only the stages that do not answer it
+        // keep the lexical refusal.
+        let pushes = match stage {
+            Stage::Publish => super::guard::Pushes::Answered,
+            _ => super::guard::Pushes::Refused,
+        };
+        super::guard::allow_passes(&call, pushes)?;
     }
     for s in &reading.scoped {
         let t = s.target.trim();
@@ -202,6 +226,23 @@ fn stage_for(intents: &BTreeSet<Intent>) -> Result<Stage, String> {
     ];
     if within(&exec) {
         return Ok(Stage::Exec);
+    }
+    let publish = [
+        Intent::Inspect,
+        Intent::ReadFile,
+        Intent::WriteFile,
+        Intent::ExecuteCode,
+        Intent::Destroy,
+        Intent::Unknown,
+        // What makes a call the publish stage's: it leaves the box. A release, a push, a package
+        // published or fetched, a request to a host - all of them are the reviewer's to block by
+        // category, and refusing them here is what left a force-push to a card.
+        Intent::Network,
+        Intent::VersionControlPublish,
+        Intent::PackageChange,
+    ];
+    if within(&publish) {
+        return Ok(Stage::Publish);
     }
     Err(format!(
         "it carries {}, and no stage answers that",
