@@ -261,6 +261,14 @@ pub struct ModelBrief {
     /// rather than passing an attempted structure off as a reading. Whether an ALLOW admits it is the
     /// witness rule's.
     unresolved: bool,
+    /// How many constructs the parse could not place: the size of what [`Self::written`] is
+    /// standing in for.
+    unplaced: usize,
+    /// The command as written, and only when the reading did not resolve. A reading that resolved
+    /// IS the meaning the shell produces, and showing the string as well invites a second meaning
+    /// the shell never produces; one that did not resolve has no meaning to show, so the text is
+    /// the only evidence there is and the reviewer judges it.
+    written: Option<String>,
 }
 
 impl ModelBrief {
@@ -333,6 +341,8 @@ impl ModelBrief {
             prior: req.prior.clone(),
             witness: req.adjudicable(),
             unresolved: !req.resolved,
+            unplaced: baseline.command.as_ref().map_or(0, |c| c.unresolved.len()),
+            written: if req.resolved { None } else { written_of(req) },
         }
     }
 
@@ -399,10 +409,18 @@ impl ModelBrief {
         // reading is layer A's best attempt, so a model asked to judge it must know
         // that, or it judges a tentative reading as though it were the action.
         if self.unresolved {
-            s.push_str(
-                "unresolved: layer A could not read this call; `<unresolved>` marks what it \
-                 could not place, and the judgement is the operator's words, not the structure.\n",
-            );
+            s.push_str(&format!(
+                "unresolved: layer A could not read this call ({} construct(s)); `<unresolved>` \
+                 marks what it could not place, so the structure below is its attempt at the \
+                 action and not the action.\n",
+                self.unplaced
+            ));
+            if let Some(text) = &self.written {
+                s.push_str("as written (judge this, since no reading produced its meaning):\n");
+                for line in text.lines() {
+                    s.push_str(&format!("  {line}\n"));
+                }
+            }
         }
         // The per-verb lines are what the call does and over what; `intents` is their rolled-up
         // form and says the same thing in fewer words, so it is shown only when there are none
@@ -468,6 +486,33 @@ impl ModelBrief {
         s
     }
 }
+
+/// The command as the model wrote it, for a reading that did not resolve. Capped at
+/// [`WRITTEN_BYTES`] with the tail kept: an unclosed quote or a `for` body is usually at the end,
+/// and the lexical screens that refuse privilege or a write outside the workspace see the whole
+/// string whether or not this does.
+fn written_of(req: &AdjudicationRequest) -> Option<String> {
+    let text = req.arguments.get("command")?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() <= WRITTEN_BYTES {
+        return Some(text.to_string());
+    }
+    let head: String = text.chars().take(WRITTEN_BYTES / 2).collect();
+    let tail: String = text
+        .chars()
+        .skip(text.chars().count().saturating_sub(WRITTEN_BYTES / 2))
+        .collect();
+    Some(format!(
+        "{head}\n  … ({} bytes in all; the middle is not shown) …\n  {tail}",
+        text.len()
+    ))
+}
+
+/// How much of an unresolved command the model is shown: enough for a diagnostic line, not a
+/// 40 KB script, and any command longer than this is one a reading would have been needed for.
+const WRITTEN_BYTES: usize = 8192;
 
 // ---------------------------------------------------------------------------
 // The oracle

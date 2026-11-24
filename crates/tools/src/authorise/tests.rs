@@ -451,6 +451,27 @@ fn the_brief_tells_the_oracle_the_reading_did_not_resolve() {
     );
 }
 
+/// An unresolved action is the one case where the oracle is shown the command as written: no
+/// reading produced its meaning, so the text is the only evidence there is - and the brief says
+/// how many constructs it is standing in for.
+#[test]
+fn an_unresolved_brief_carries_the_command_as_written() {
+    let raw = r#"for f in a b; do du -h "$f" $(date) 2>/dev/null; done"#;
+    let req = request(raw, trail_saying("have a look", 0));
+    assert!(!req.resolved, "the fixture must not resolve");
+    let shown = ModelBrief::new(&req, &Baseline::of_command(raw, &env())).render();
+    assert!(shown.contains("as written"), "{shown}");
+    assert!(
+        shown.contains(raw),
+        "the command itself is not there:\n{shown}"
+    );
+    assert!(
+        shown.contains("unresolved: layer A could not read this call ("),
+        "the brief does not say the reading failed:\n{shown}"
+    );
+    assert!(shown.contains("construct(s)"), "{shown}");
+}
+
 #[test]
 fn an_uncollected_trail_refuses_rather_than_deciding_without_one() {
     let adj = adjudicator(|_: &mut ModelBrief| OracleAnswer::NotAuthorised { why: "n".into() });
