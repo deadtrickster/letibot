@@ -4962,10 +4962,13 @@ pub(crate) fn cloud_sampling(
     profiles: Option<&std::path::Path>,
     notes: &letibot_provider::openai::Notes,
 ) -> serde_json::Value {
-    let model = pc
-        .model
-        .clone()
-        .unwrap_or_else(|| preset.default_model(&letibot_provider::catalogue::Catalogue::load()));
+    let model = pc.model.clone().unwrap_or_else(|| {
+        letibot_provider::name::default_model(
+            preset,
+            profiles,
+            &letibot_provider::catalogue::Catalogue::load(),
+        )
+    });
     let scoped = format!("{}/{model}", preset.name);
     let profile = letibot_provider::keys::model_profile(&model, &scoped, profiles);
     let serde_json::Value::Object(mut sampling) =

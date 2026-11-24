@@ -591,6 +591,114 @@ fn a_file_alias_does_not_rebind_the_command_line_and_says_so() {
     assert_eq!(cfg.model, "glm-5.3-flash");
 }
 
+/// `--model deepseek` is the door AND the model it sends, not the word `deepseek` as a model id:
+/// the API refused that once, and the agent then picked a model four times the price. The catalogue
+/// is a fixture file, so nothing here reaches the network.
+#[test]
+fn a_bare_model_that_is_a_door_resolves_to_that_doors_default_model() {
+    let dir = TempDir::new();
+    let mut env = letibot_testenv::EnvGuard::lock();
+    let (cat, file) = door_fixture(&dir, "plain", "");
+    env.set("LETIBOT_MODELS_JSON", &cat);
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(file.clone());
+    let said = cli_door_model(&mut cfg, "deepseek");
+    assert_eq!(
+        said,
+        CliModel::Door {
+            said: Some("deepseek -> deepseek/deepseek-flash".into())
+        }
+    );
+    let pc = cfg.provider.clone().expect("the door answers the turns");
+    assert_eq!(pc.name, "deepseek");
+    assert_eq!(pc.model.as_deref(), Some("deepseek-flash"));
+
+    // The pair is what it says it is, and the alias keeps today's meaning.
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(file.clone());
+    assert_eq!(
+        cli_door_model(&mut cfg, "deepseek/deepseek-v4-pro"),
+        CliModel::Door { said: None },
+        "a pair needs no sentence: its start line already says what it is"
+    );
+    assert_eq!(
+        cfg.provider
+            .as_ref()
+            .and_then(|p| p.model.clone())
+            .as_deref(),
+        Some("deepseek-v4-pro")
+    );
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(file.clone());
+    assert_eq!(
+        cli_door_model(&mut cfg, "qwen-3.8-flash-next"),
+        CliModel::Local,
+        "a name no door claims is the local binding, as it always was"
+    );
+    assert!(cfg.provider.is_none());
+    assert_eq!(cli_door_model(&mut cfg, "local"), CliModel::Local);
+
+    // A door the box's own file answers to as a model keeps the LOCAL meaning.
+    let (cat, local) = door_fixture(
+        &dir,
+        "local",
+        "\n[model.\"deepseek\"]\nurl = \"http://127.0.0.1:9\"\nmodel = \"local-probe\"\n",
+    );
+    env.set("LETIBOT_MODELS_JSON", &cat);
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(local);
+    assert_eq!(cli_door_model(&mut cfg, "deepseek"), CliModel::Local);
+    assert!(cfg.provider.is_none(), "the local meaning is kept");
+}
+
+/// The door's own `[<preset>] model` in providers.toml is what a bare word sends, over the
+/// catalogue's rule and over the build's frozen fallback.
+#[test]
+fn a_providers_toml_model_line_is_what_a_bare_door_sends() {
+    let dir = TempDir::new();
+    let mut env = letibot_testenv::EnvGuard::lock();
+    let (cat, file) = door_fixture(&dir, "line", "\n[deepseek]\nmodel = \"deepseek-v4-pro\"\n");
+    env.set("LETIBOT_MODELS_JSON", &cat);
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(file);
+    let said = cli_door_model(&mut cfg, "deepseek");
+    assert_eq!(
+        said,
+        CliModel::Door {
+            said: Some("deepseek -> deepseek/deepseek-v4-pro".into())
+        }
+    );
+    assert_eq!(
+        cfg.provider.and_then(|p| p.model).as_deref(),
+        Some("deepseek-v4-pro")
+    );
+}
+
+/// A catalogue carrying deepseek's two models and a providers.toml that holds its key, both in
+/// their own directory under `dir`. The windows are larger than the vendored floor's, which `load`
+/// merges under any file: an equal window would let the snapshot's own models decide the rule. The
+/// caller pins the catalogue because `EnvGuard` is not reentrant.
+fn door_fixture(
+    dir: &TempDir,
+    name: &str,
+    extra: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let here = dir.0.join(name);
+    std::fs::create_dir_all(&here).expect("the fixture's own directory");
+    let cat = here.join("models.json");
+    std::fs::write(
+        &cat,
+        r#"{"deepseek":{"models":{
+            "deepseek-flash":{"limit":{"context":8000000},"cost":{"input":0.15,"output":0.6}},
+            "deepseek-v4-pro":{"limit":{"context":4000000},"cost":{"input":0.66,"output":1.98}}}}}}"#,
+    )
+    .expect("the fixture catalogue");
+    let file = here.join("providers.toml");
+    std::fs::write(&file, format!("[deepseek]\nkey = \"sk-probe\"\n{extra}"))
+        .expect("the fixture providers file");
+    (cat, file)
+}
+
 /// A model a file named that this box cannot reach is named at startup. The three
 /// shapes the tree has paid for: a provider this build does not know, a provider with no
 /// key here, and a local alias the server is not serving.

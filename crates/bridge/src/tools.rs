@@ -418,10 +418,10 @@ impl Bridge {
     /// behind it can serve at all. A name this build cannot resolve is left to the daemon, whose
     /// own sentence a caller already knows.
     fn account_refusal(model: &str) -> Option<String> {
-        let (provider, name) = model.split_once('/').unwrap_or((model, ""));
-        let name = (!name.is_empty()).then_some(name);
+        // One string, one meaning: `deepseek` is the door and the model it sends, the same answer
+        // `models_choice` gives a `/models` line.
         let (choice, _notes) =
-            letibot_harnessd::slash::models_choice(provider, name, None, None).ok()?;
+            letibot_harnessd::slash::models_choice_named(model, None, None).ok()?;
         let letibot_harnessd::slash::ModelChoice::Metered(pc) = choice else {
             return None;
         };

@@ -3604,6 +3604,21 @@ impl Harness {
                 format!("{} said {}", self.model_name(), r.line()),
             );
         }
+        // A door that does not carry the model names none of its own, and "model not found" is
+        // the refusal with no fix in it: the catalogue's list and the door's default are the fix,
+        // and they are said only where the catalogue has the evidence.
+        if let Some(pc) = &self.cfg.provider
+            && let Ok(preset) =
+                letibot_provider::registry::lookup(&pc.name, self.cfg.providers_file.as_deref())
+            && let Some(said) = letibot_provider::name::unknown_model(
+                preset,
+                pc.model.as_deref().unwrap_or_default(),
+                self.cfg.providers_file.as_deref(),
+                &letibot_provider::catalogue::Catalogue::load(),
+            )
+        {
+            self.hub.warn("model_not_carried", said);
+        }
     }
 
     fn publish_trouble(&mut self, e: &letibot_turn::HttpError, switched_to: Option<String>) {

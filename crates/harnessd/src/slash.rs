@@ -908,7 +908,9 @@ pub fn models_listing(current: &str) -> Vec<String> {
         lines.push(format!(
             "  {:<16} default model {:<18} {auth}   /models {}/MODEL{origin}",
             p.name,
-            p.default_model(&cat),
+            // The door's own `[<preset>] model` beats the catalogue's rule: it is the word the
+            // operator wrote, and the word a bare `--model {0}` sends.
+            letibot_provider::name::default_model(p, None, &cat),
             p.name
         ));
     }
@@ -1001,12 +1003,86 @@ pub fn models_choice(
     Ok((
         ModelChoice::Metered(ProviderConfig {
             name: preset.name.to_string(),
-            model: model.map(str::to_string),
+            // A bare door name IS the door's default model, and it is named here rather than left
+            // `None` so every door downstream - the start line, the record, the stored row - says
+            // the model instead of the word that stood for it.
+            model: Some(match model.map(str::trim).filter(|m| !m.is_empty()) {
+                Some(m) => m.to_string(),
+                None => letibot_provider::name::default_model(
+                    preset,
+                    file,
+                    &letibot_provider::catalogue::Catalogue::load(),
+                ),
+            }),
             api_key: None,
             thinking: false,
         }),
         notes,
     ))
+}
+
+/// What a model string means, without asking for a key: the shape a caller that is BUILDING an
+/// argv or a daemon record needs, where a missing key must reach the daemon's own sentence rather
+/// than a refusal here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Named {
+    /// A door this build knows, and the model a bare word for it sends.
+    Door {
+        name: &'static str,
+        model: String,
+        said: Option<String>,
+    },
+    /// `PROVIDER/MODEL` whose provider nothing here knows: kept as asked, so the refusal that
+    /// names the doors is the one the operator reads.
+    Unknown {
+        provider: String,
+        model: Option<String>,
+    },
+    /// The local binding: `local`, a fleet model, or a name no door claims.
+    Local(String),
+}
+
+/// [`Named`] for one string, through the tree's one rule ([`letibot_provider::name::resolve`]).
+pub fn model_named(spec: &str, file: Option<&std::path::Path>) -> Named {
+    resolve_named(spec, file, &letibot_provider::catalogue::Catalogue::load())
+}
+
+pub(crate) fn resolve_named(
+    spec: &str,
+    file: Option<&std::path::Path>,
+    cat: &letibot_provider::catalogue::Catalogue,
+) -> Named {
+    let r = letibot_provider::name::resolve(spec, file, cat);
+    match r.name {
+        letibot_provider::name::Name::Provider { preset, model } => Named::Door {
+            name: preset.name,
+            model,
+            said: r.said,
+        },
+        letibot_provider::name::Name::Unresolved { provider, model } => {
+            Named::Unknown { provider, model }
+        }
+        letibot_provider::name::Name::Local(alias) => Named::Local(alias),
+    }
+}
+
+/// `PROVIDER[/MODEL] [--key K]` as ONE string - what `--model`, a spawn's `model` and
+/// `leticode_start` carry - resolved by the tree's one rule and then through [`models_choice`].
+pub fn models_choice_named(
+    spec: &str,
+    key: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> Result<(ModelChoice, Vec<String>), Vec<String>> {
+    let cat = letibot_provider::catalogue::Catalogue::load();
+    let named = resolve_named(spec, file, &cat);
+    let (provider, model, said) = match named {
+        Named::Door { name, model, said } => (name.to_string(), Some(model), said),
+        Named::Unknown { provider, model } => (provider, model, None),
+        Named::Local(alias) => (alias, None, None),
+    };
+    let (choice, mut notes) = models_choice(&provider, model.as_deref(), key, file)?;
+    notes.extend(said);
+    Ok((choice, notes))
 }
 
 /// Is this name a model the fleet declares - a `[model."…"]` block with an address? The
@@ -1120,10 +1196,13 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
                 format!(
                     "new sessions start on {}/{}, written to [default] in {}",
                     preset.name,
-                    model
-                        .map(str::to_string)
-                        .unwrap_or_else(|| preset
-                            .default_model(&letibot_provider::catalogue::Catalogue::load())),
+                    model.map(str::to_string).unwrap_or_else(|| {
+                        letibot_provider::name::default_model(
+                            preset,
+                            file,
+                            &letibot_provider::catalogue::Catalogue::load(),
+                        )
+                    }),
                     f.display()
                 ),
                 "This conversation is unchanged — `/models` switches the one you are in.".into(),

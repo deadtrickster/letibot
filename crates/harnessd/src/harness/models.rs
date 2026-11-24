@@ -1051,9 +1051,13 @@ impl Harness {
                 ". The catalogue has no window for {}/{}, so compaction still plans \
                  against {} — check that is the right size before a long turn",
                 pc.name,
-                pc.model
-                    .clone()
-                    .unwrap_or_else(|| preset.default_model(&cat)),
+                pc.model.clone().unwrap_or_else(|| {
+                    letibot_provider::name::default_model(
+                        preset,
+                        self.cfg.providers_file.as_deref(),
+                        &cat,
+                    )
+                }),
                 match was {
                     Some(w) => w.to_string(),
                     None => "no window at all".into(),
@@ -1116,7 +1120,15 @@ impl Harness {
                     Ok(p) => {
                         let cat = catalogue
                             .get_or_insert_with(letibot_provider::catalogue::Catalogue::load);
-                        format!("{}/{}", p.name, p.default_model(cat))
+                        format!(
+                            "{}/{}",
+                            p.name,
+                            letibot_provider::name::default_model(
+                                p,
+                                self.cfg.providers_file.as_deref(),
+                                cat
+                            )
+                        )
                     }
                     Err(_) => continue,
                 },

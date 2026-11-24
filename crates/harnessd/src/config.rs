@@ -2326,7 +2326,13 @@ impl Config {
                 let model = pc.model.clone().unwrap_or_else(|| {
                     letibot_provider::registry::lookup(&pc.name, self.providers_file.as_deref())
                         .ok()
-                        .map(|p| p.default_model(&letibot_provider::catalogue::Catalogue::load()))
+                        .map(|p| {
+                            letibot_provider::name::default_model(
+                                p,
+                                self.providers_file.as_deref(),
+                                &letibot_provider::catalogue::Catalogue::load(),
+                            )
+                        })
                         .unwrap_or_default()
                 });
                 if model.is_empty() {
@@ -2484,31 +2490,32 @@ impl Config {
             let listed = model_rows(&doors, &keyed, &cat, &fleet, file);
             let mut names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
             let mut facts: Vec<String> = listed.iter().map(|(_, f)| f.clone()).collect();
-            let now = match &self.provider {
-                // The local alias is kept in the value, and named when it is a declared local
-                // model, so the picker shows the row the operator is on. Matched on the address
-                // because that is what the switch moved: two blocks can name one alias.
-                None => match letibot_provider::keys::local_models(None)
-                    .into_iter()
-                    .find(|m| {
-                        crate::harness::local_url_authority(&m.url).as_deref()
-                            == Some(self.endpoint.authority().as_str())
-                            && m.model == self.model
-                    }) {
-                    Some(m) => format!("{} ({} at {})", m.name, m.model, m.url),
-                    None => format!("local ({})", self.model),
-                },
-                Some(pc) => match letibot_provider::registry::lookup(&pc.name, file) {
-                    Ok(preset) => format!(
-                        "{}/{}",
-                        preset.name,
-                        pc.model
-                            .clone()
-                            .unwrap_or_else(|| preset.default_model(&cat))
-                    ),
-                    Err(_) => pc.name.clone(),
-                },
-            };
+            let now =
+                match &self.provider {
+                    // The local alias is kept in the value, and named when it is a declared local
+                    // model, so the picker shows the row the operator is on. Matched on the address
+                    // because that is what the switch moved: two blocks can name one alias.
+                    None => match letibot_provider::keys::local_models(None)
+                        .into_iter()
+                        .find(|m| {
+                            crate::harness::local_url_authority(&m.url).as_deref()
+                                == Some(self.endpoint.authority().as_str())
+                                && m.model == self.model
+                        }) {
+                        Some(m) => format!("{} ({} at {})", m.name, m.model, m.url),
+                        None => format!("local ({})", self.model),
+                    },
+                    Some(pc) => match letibot_provider::registry::lookup(&pc.name, file) {
+                        Ok(preset) => format!(
+                            "{}/{}",
+                            preset.name,
+                            pc.model.clone().unwrap_or_else(|| {
+                                letibot_provider::name::default_model(preset, file, &cat)
+                            })
+                        ),
+                        Err(_) => pc.name.clone(),
+                    },
+                };
             // A model the operator named that is not one of the defaults is still
             // where this conversation is, so it joins the list rather than being
             // silently absent from a menu that claims to show what answers now.
@@ -3941,7 +3948,7 @@ fn model_rows(
         // A key with no catalogue behind it still gets its row: the card losing a provider the
         // operator holds a key for would be worse than a row that says it knows no window.
         if !keyed.contains(&p.name) || names.is_empty() {
-            names = vec![p.default_model(cat)];
+            names = vec![letibot_provider::name::default_model(p, file, cat)];
         }
         for m in names {
             out.push((format!("{}/{}", p.name, m), p.facts_line(&m, cat, &prices)));

@@ -1478,6 +1478,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A `--model` that names a door, or a `door/MODEL` pair, is a provider run: the turns leave the
+# box, so no local endpoint is looked up for it, and the daemon resolves the model (a bare door
+# name is that door's default - `deepseek -> deepseek/deepseek-flash`). Asked of the binary,
+# whose `--providers` is the one reader of the preset table; a list here would drift.
+if [ -z "$PROVIDER_SET" ] && [ -n "$MODEL_OVERRIDE" ]; then
+  case "$MODEL_OVERRIDE" in
+    */*)
+      if door_named "${MODEL_OVERRIDE%%/*}"; then
+        PROVIDER_SET=1
+        PROVIDER_NAME="${MODEL_OVERRIDE%%/*}"
+      fi
+      ;;
+    *)
+      if door_named "$MODEL_OVERRIDE"; then
+        PROVIDER_SET=1
+        PROVIDER_NAME="$MODEL_OVERRIDE"
+      fi
+      ;;
+  esac
+fi
+
 # The address is the [model."..."] block whose model value matches; `LETIBOT_ENDPOINT` wins.
 # Among several, a loopback one wins, since the flags name this box's servers. Still ambiguous
 # is refused by name.
@@ -1623,6 +1644,9 @@ answers_now() {
     printf '%s' "$MODEL"
     return 0
   }
+  # A bare door name is the door, not a model id: `--model deepseek` answers `deepseek`, and the
+  # daemon says which model that resolved to (`deepseek/deepseek-flash`).
+  [ "$m" = "$p" ] && m=""
   [ -n "$m" ] && printf '%s/%s' "$p" "$m" || printf '%s' "$p"
 }
 
@@ -3121,6 +3145,14 @@ provider_section() { # provider_section NAME
     }
     END { exit !found }
   ' "$PROVIDERS" 2>/dev/null
+}
+
+# A door this build ships (`deepseek`, `glm-coding`, `kimi`), asked of the daemon rather than
+# listed here: `--providers` reads the preset table, so a door added there is known here too.
+door_named() { # door_named NAME
+  [ -x "$BIN/harnessd" ] || return 1
+  "$BIN/harnessd" --providers 2>/dev/null |
+    awk -v want="$1" '$1 == want { found = 1 } END { exit !found }'
 }
 
 # A one-shot's `--model` applies or refuses. harnessd reads a bare `--model` as the local

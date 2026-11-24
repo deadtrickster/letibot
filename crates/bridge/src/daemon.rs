@@ -154,11 +154,13 @@ pub(crate) fn socket_in(rundir: &Path, key: &str) -> PathBuf {
 /// and nothing else - not the folder, not the role - so the record is the one place those facts
 /// exist, and the shell reads it with `sed`: a flat object, `pid` as a NUMBER, named `<key>.json`.
 fn write_record(d: &Daemon, pid: u32, model: Option<&str>) -> std::io::Result<PathBuf> {
+    // What answers the turns, in one spelling: a bare door name is the door and the model it
+    // sends, so a record that said `deepseek` never says which model that was.
     let answers = match model {
-        Some(m) => match m.split_once('/') {
-            Some((provider, name)) => format!("{provider}/{name}"),
-            None if is_provider(m) => m.to_string(),
-            None => String::new(),
+        Some(m) => match letibot_harnessd::slash::model_named(m, None) {
+            letibot_harnessd::slash::Named::Door { name, model, .. } => format!("{name}/{model}"),
+            letibot_harnessd::slash::Named::Unknown { .. } => m.to_string(),
+            letibot_harnessd::slash::Named::Local(_) => String::new(),
         },
         None => String::new(),
     };
@@ -360,32 +362,35 @@ fn daemon_args(
         args.push("firecode".into());
     }
     if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
-        // `deepseek`, `glm`, `grok` are providers (the turns leave the box); anything else
-        // is the local binding, which is what the launcher's `--model` means. A
-        // `provider/model` pair names both.
-        match m.split_once('/') {
-            Some((provider, name)) => {
+        // The tree's one rule for what a name means. A bare door is `--provider NAME` and the
+        // daemon resolves its default model, so the two cannot disagree about `deepseek`;
+        // `deepseek/MODEL` names both; anything else is the local binding `--model` means.
+        match letibot_harnessd::slash::model_named(m, None) {
+            letibot_harnessd::slash::Named::Door { name, model, .. } if m.contains('/') => {
                 args.push("--provider".into());
-                args.push(provider.into());
+                args.push(name.into());
                 args.push("--model".into());
+                args.push(model);
+            }
+            letibot_harnessd::slash::Named::Door { name, .. } => {
+                args.push("--provider".into());
                 args.push(name.into());
             }
-            None if is_provider(m) => {
+            letibot_harnessd::slash::Named::Unknown { provider, model } => {
                 args.push("--provider".into());
-                args.push(m.into());
+                args.push(provider);
+                if let Some(model) = model {
+                    args.push("--model".into());
+                    args.push(model);
+                }
             }
-            None => {
+            letibot_harnessd::slash::Named::Local(alias) => {
                 args.push("--model".into());
-                args.push(m.into());
+                args.push(alias);
             }
         }
     }
     args
-}
-
-/// The provider names this build's launcher offers (`letibot --provider`).
-fn is_provider(name: &str) -> bool {
-    matches!(name, "deepseek" | "glm" | "grok")
 }
 
 /// A package daemon's wall-clock bound in seconds: the reaper's hard TTL plus an hour. The user

@@ -161,6 +161,35 @@ pub(crate) fn apply_main_model(
     }
 }
 
+/// What a bare `--model` meant, once resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CliModel {
+    /// A door answered, and its model is now on `cfg.provider`. `said` is the sentence the start
+    /// line carries when the name did not already spell the model (`deepseek -> deepseek/…`).
+    Door { said: Option<String> },
+    /// The local binding: today's meaning, decided by the flags below.
+    Local,
+}
+
+/// A `--model` on a line with no `--provider`: a word that is a door - or a `door/MODEL` pair - is
+/// that door and the model it sends, which is what the request would otherwise send as the model
+/// id. Anything else keeps today's meaning, the local binding. In a function so the rule is
+/// testable without opening a session.
+pub(crate) fn cli_door_model(cfg: &mut Config, given: &str) -> CliModel {
+    let cat = letibot_provider::catalogue::Catalogue::load();
+    let r = letibot_provider::name::resolve(given, cfg.providers_file.as_deref(), &cat);
+    let letibot_provider::name::Name::Provider { preset, model } = r.name else {
+        return CliModel::Local;
+    };
+    cfg.provider = Some(crate::config::ProviderConfig {
+        name: preset.name.to_string(),
+        model: Some(model),
+        api_key: None,
+        thinking: false,
+    });
+    CliModel::Door { said: r.said }
+}
+
 /// What `--spill-inline VALUE` and `--spill-lines VALUE` do to a `Config` - the flags' whole
 /// body, in a function so the one thing they must get right is a value a test can read. Each flag
 /// names one cap and leaves the other as the files set it; `--spill-inline 0` is the whole cap off,
@@ -586,6 +615,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `--model` under `--provider` names the provider's model, not the local
     // alias; resolved after the flags, because either may come first.
     let mut model_given: Option<String> = None;
+    // What `--model` meant when it named a door rather than a local alias: the sentence the start
+    // line says (`deepseek -> deepseek/deepseek-flash`), so a run states the model it is on.
+    let mut model_resolved: Option<String> = None;
     // Whether the command line chose WHO ANSWERS. That is `--provider`, and it is the flag
     // level of the precedence: `--provider deepseek` beats the project file, the project file
     // beats the user file, and the user file beats the built-in default.
@@ -1164,6 +1196,21 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         crate::room::coordinator::configure(&mut cfg)?;
     }
 
+    // `--model` names ONE thing. A bare word that is a door is that door and its default model -
+    // sending the door's name as the model id is what a provider refuses, naming the models it
+    // does have. Resolved after the loop, because `--provider` may come on either side of it.
+    if !cli_main_model
+        && let Some(given) = model_given.clone()
+        && let CliModel::Door { said } = cli_door_model(&mut cfg, &given)
+    {
+        // The command line chose WHO ANSWERS, so no file level speaks below it, and there is no
+        // local binding left to keep - the same state `--provider` produces.
+        cli_main_model = true;
+        cli_binding = None;
+        model_resolved = said;
+        model_given = cfg.provider.as_ref().and_then(|p| p.model.clone());
+    }
+
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
             // Read off the preset table, so a door added there is named here too.
@@ -1568,7 +1615,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             value: Some(cfg.prompt_model_name()),
             file: None,
             origin: String::new(),
-            note: None,
+            // `--model deepseek` is said in the words it resolved to, once, where a reader looks
+            // for what answers the turns.
+            note: model_resolved.take(),
         };
     }
 

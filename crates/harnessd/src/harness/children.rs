@@ -2085,19 +2085,16 @@ pub fn subagent_model_in(
             local: None,
         });
     }
-    let (provider, model) = match want.split_once('/') {
-        Some((p, m)) if !p.is_empty() && !m.is_empty() => (p, Some(m)),
-        _ => (want, None),
-    };
-    let (pc, _notes) =
-        crate::slash::models_choice(provider, model, None, file).map_err(|lines| {
-            let mut out = lines;
-            out.push(format!(
-                "nothing was spawned on `{want}`; `local` needs no name, and a provider's \
-                 name is the one `/models` lists"
-            ));
-            out
-        })?;
+    // One string in, one meaning out: a bare word that names a door is that door and its default
+    // model, which is the same answer `/models` and `--model` give. See `provider::name`.
+    let (pc, _notes) = crate::slash::models_choice_named(want, None, file).map_err(|lines| {
+        let mut out = lines;
+        out.push(format!(
+            "nothing was spawned on `{want}`; `local` needs no name, and a provider's \
+             name is the one `/models` lists"
+        ));
+        out
+    })?;
     let pc = match pc {
         crate::slash::ModelChoice::Metered(pc) => pc,
         // A declared local model seats a child like any other model: `provider` stays `None`, because this IS
@@ -2135,7 +2132,7 @@ pub(crate) fn provider_model(
         pc.name,
         pc.model
             .clone()
-            .unwrap_or_else(|| preset.default_model(&cat))
+            .unwrap_or_else(|| letibot_provider::name::default_model(preset, None, &cat))
     );
     Ok(SubagentModel {
         label,
@@ -5287,6 +5284,48 @@ mod subagent_model_tests {
         // about what a bare name means.
         let bare = subagent_model("deepseek", None).expect("the key is held");
         assert!(bare.label.starts_with("deepseek/"), "{}", bare.label);
+    }
+
+    /// A config key is ONE string, resolved by the same rule the command line and `/models` follow:
+    /// `subagent_model = "deepseek"` is the door AND the model it sends, so a child is never
+    /// spawned on a model id that is a provider's name. The catalogue is a fixture file.
+    #[test]
+    fn a_bare_config_key_resolves_like_the_command_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "harnessd-child-model-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cat = dir.join("models.json");
+        // A window wider than the vendored floor's, which `load` merges under any file, so the
+        // rule cannot be decided by the snapshot's own models instead of this fixture's.
+        std::fs::write(
+            &cat,
+            r#"{"deepseek":{"models":{
+                "deepseek-flash":{"limit":{"context":8000000},"cost":{"input":0.15,"output":0.6}},
+                "deepseek-v4-pro":{"limit":{"context":4000000},"cost":{"input":0.66,"output":1.98}}}}}}"#,
+        )
+        .unwrap();
+        let file = dir.join("providers.toml");
+        std::fs::write(&file, "[deepseek]\nkey = \"sk-probe\"\n").unwrap();
+        let mut env = letibot_testenv::EnvGuard::lock();
+        env.set("LETIBOT_MODELS_JSON", &cat);
+        let m = subagent_model_in(Some(&file), "deepseek", None).expect("the fixture's key");
+        assert_eq!(m.label, "deepseek/deepseek-flash");
+        assert_eq!(
+            m.provider.as_ref().and_then(|p| p.model.clone()).as_deref(),
+            Some("deepseek-flash")
+        );
+        // And the door's own `model` line is the operator's word for what a bare name sends.
+        std::fs::write(
+            &file,
+            "[deepseek]\nkey = \"sk-probe\"\nmodel = \"deepseek-v4-pro\"\n",
+        )
+        .unwrap();
+        let m = subagent_model_in(Some(&file), "deepseek", None).expect("the fixture's key");
+        assert_eq!(m.label, "deepseek/deepseek-v4-pro");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A child nobody can give a window to is refused, by name, rather than run unbounded: the failure is three
