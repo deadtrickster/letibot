@@ -2482,21 +2482,27 @@ impl RepoQueue {
             .store
             .target_health(&self.key, target)?
             .is_some_and(|old| old.sha == tip && halts_reviews(&old));
+        // What the run will be, read before the row is written so the row can say which gate is on
+        // the tip: `full` for a two-tier project, `gate` for one section, which is both tiers.
+        let declared = gate::declared_gate(&self.repo, &tip);
+        let tier = match &declared {
+            Ok(Some(d)) => gate_word(d.two_tiers, Tier::Full),
+            _ => "gate",
+        };
         let mut h = TargetHealth {
             repository: self.key.clone(),
             target: target.into(),
             sha: tip.clone(),
             state: HealthState::Gating,
             checked_ms: now,
-            evidence: match was_red {
-                true => format!("gating `{target}`'s tip; {STILL_HALTED}"),
-                false => format!("gating `{target}`'s tip"),
-            },
+            evidence: format!("gating `{target}`'s tip with its {tier}"),
             gate_steps: vec![],
         };
+        if was_red {
+            h.evidence = format!("{}; {STILL_HALTED}", h.evidence);
+        }
         self.store.set_target_health(&h, &me)?;
         self.announce_move("target", target, "gating", &h.evidence);
-        let declared = gate::declared_gate(&self.repo, &tip);
         let (state, evidence, steps) = match declared {
             Ok(None) => (
                 HealthState::Blocked,
@@ -2515,22 +2521,6 @@ impl RepoQueue {
                 vec![],
             ),
             Ok(Some(declared)) => {
-                // What a reader is told this gate is: `merge` for a project that declares one
-                // section, `full` for the tier a two-section project judges main's health by.
-                let tier = match declared.two_tiers {
-                    true => format!("{} gate", Tier::Full.as_str()),
-                    false => "gate".to_string(),
-                };
-                self.announce_move(
-                    "target",
-                    target,
-                    "gating",
-                    &format!(
-                        "gating `{target}`'s tip with its {tier} ({} step(s), {})",
-                        declared.steps(Tier::Full).len(),
-                        self.env.gate.name()
-                    ),
-                );
                 let steps = declared.steps(Tier::Full).to_vec();
                 match self.landing_at(&tip) {
                     Err(e) => (
@@ -2657,7 +2647,9 @@ impl RepoQueue {
             return self.park_main(
                 &h.target,
                 &h.sha,
-                &format!("{why}\n\nThe failed run named no failing step, so there is nothing to re-run."),
+                &format!(
+                    "{why}\n\nThe failed run named no failing step, so there is nothing to re-run."
+                ),
                 run.steps,
             );
         };
@@ -2832,7 +2824,10 @@ impl RepoQueue {
                 return self.park_main(
                     &b.target,
                     &b.tip,
-                    &format!("{}\n\nand its tree could not be made to revert it: {e}", b.evidence),
+                    &format!(
+                        "{}\n\nand its tree could not be made to revert it: {e}",
+                        b.evidence
+                    ),
                     b.steps.clone(),
                 );
             }
@@ -2910,7 +2905,9 @@ impl RepoQueue {
         // The session that landed it hears the step and the end of its output, through the door a
         // gate's own verdict uses - it is idle by now, and a warning on a hub is not a turn.
         if !session.is_empty() && self.env.door.session_live(&session) {
-            let said = super::notices::revert_told(&b.target, &b.tip, commit, &subject, &b.step, &b.steps, &why);
+            let said = super::notices::revert_told(
+                &b.target, &b.tip, commit, &subject, &b.step, &b.steps, &why,
+            );
             if let Err(e) = self.env.door.deliver_session(&session, &said) {
                 self.raise(
                     "target_red",
@@ -4923,7 +4920,11 @@ fn gate_subject(what: &GateFor) -> (&'static str, String, String) {
         GateFor::InstallTrain { train, .. } => of_train(train),
         // A bisection is a gate of the target's tip, and no row of it: the `entry` is the commit it
         // is re-running the failing step at, so a pane can name what is being judged.
-        GateFor::Bisect(b) => ("bisect", b.target.clone(), b.cands.get(b.at).cloned().unwrap_or_default()),
+        GateFor::Bisect(b) => (
+            "bisect",
+            b.target.clone(),
+            b.cands.get(b.at).cloned().unwrap_or_default(),
+        ),
     }
 }
 

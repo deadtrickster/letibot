@@ -1032,3 +1032,43 @@ fn a_stuck_row_stands_outside_the_history_and_the_filter_lists_only_stuck_rows()
         "the evidence line is under the row: {view}"
     );
 }
+
+/// A row says which tier its gate is: a landing's is the quick one and the run on the target's tip is
+/// the full one, so a project with two sections reads as two gates rather than one long one - and a
+/// daemon that knows no tiers sends no word, which draws no word.
+#[test]
+fn a_row_says_which_tier_its_gate_is() {
+    let mut feed = a_queue();
+    let mut row = a_merge("m-gating", "gating", true);
+    row["waits_on"] = Value::Null;
+    row["gate"] = json!("quick");
+    row["running_gate"] = a_running_gate(3, 6, 200, "compiling");
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    let under = under_of(&feed, "m-gating");
+    assert!(
+        under
+            .iter()
+            .any(|l| l.starts_with("quick: the gate is on step 3 of 6")),
+        "the landing's own gate is the quick tier: {under:?}"
+    );
+
+    // The target's run is the full one, and it says the step, the machine and how long.
+    let mut target = a_target("gating");
+    target["gate"] = json!("full");
+    let mut running = a_running_gate(3, 6, 200, "compiling");
+    running["host"] = json!("lab2x1");
+    target["running_gate"] = running;
+    feed["targets"] = json!([target]);
+    let view = view_of(&feed, &[]);
+    let line = chrome_line(&view, "main in letibot is being gated").expect("the target's line");
+    assert_eq!(line["value"], "full: running 3/6 on lab2x1 for 4m");
+
+    // Nothing said is nothing drawn: a daemon without tiers keeps the words it always had.
+    let mut target = a_target("gating");
+    target["running_gate"] = a_running_gate(2, 6, 200, "compiling");
+    feed["targets"] = json!([target]);
+    let view = view_of(&feed, &[]);
+    let line = chrome_line(&view, "main in letibot is being gated").expect("the target's line");
+    assert_eq!(line["value"], "running 2/6 on  for 4m");
+}

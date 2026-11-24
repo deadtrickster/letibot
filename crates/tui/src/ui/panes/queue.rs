@@ -852,3 +852,15 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
         (_, _, s) => format!("it is `{s}`"),
     })
 }
+
+/// Where a gate runs, in the pane's words: `this box`, a declared host's name, or either of them in
+/// a firecode VM. The snapshot's own spelling is `local` and `<name> (firecode)`; a guest that drew
+/// those raw would say `local` to a person.
+pub(crate) fn where_ran(host: &str) -> String {
+    match host.strip_suffix(" (firecode)") {
+        Some(name) => format!("{} in a VM", if name.is_empty() { "a box" } else { name }),
+        None if host.is_empty() => "an unknown machine".to_string(),
+        None if host == "local" => "this box".to_string(),
+        None => host.to_string(),
+    }
+}

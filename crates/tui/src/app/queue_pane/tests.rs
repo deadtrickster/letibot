@@ -408,3 +408,19 @@ fn live_is_the_hosts_own_rule() {
         assert!(!merge_open(done), "{done} is history");
     }
 }
+
+/// The feed tells a plugin which tier a row's gate is: the landing's is the quick one and the run on
+/// the target's tip is the full one, with the machine it is on in the pane's own words.
+#[test]
+fn a_rows_gate_carries_its_tier_and_the_machine_it_runs_on() {
+    let a = a_head();
+    let feed = a.queue_feed();
+    assert_eq!(feed["merges"][0]["gate"], "quick", "a landing's own gate");
+    assert_eq!(feed["targets"][0]["gate"], "full", "the run on main's tip");
+    // `local` is this head's own spelling of the machine it runs on; a person reads the words.
+    use crate::ui::panes::queue::where_ran;
+    assert_eq!(where_ran("local"), "this box");
+    assert_eq!(where_ran("lab2x1"), "lab2x1");
+    assert_eq!(where_ran("lab2x1 (firecode)"), "lab2x1 in a VM");
+    assert_eq!(where_ran(""), "an unknown machine");
+}

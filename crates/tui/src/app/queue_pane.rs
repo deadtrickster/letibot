@@ -173,6 +173,8 @@ impl App {
                 "repository_path": m.repository,
                 "target": m.target,
                 "branch": m.branch,
+                // The tier this row's gate is: a landing's is the quick one.
+                "gate": QUICK_TIER,
                 "owner": owner_word(&m.owner),
                 "owner_is_serving": serving_owner(&m.owner, &m.repository),
                 "approved_sha": m.approved_sha,
@@ -257,6 +259,8 @@ impl App {
                     "short_sha": short_sha(&t.sha),
                     "state": t.state,
                     "state_words": t.state.replace('_', " "),
+                    // The tier the run on this tip is: the full one.
+                    "gate": FULL_TIER,
                     "since_ms": now.saturating_sub(t.checked_ms),
                     "evidence": t.evidence,
                     "gate_steps": t
@@ -576,8 +580,8 @@ fn short_sha(sha: &str) -> String {
     sha.chars().take(10).collect()
 }
 
-/// One running gate as the feed carries it: the step's facts, the tail, and `still_ms` - how
-/// long since the tail last changed, the head's own two-snapshot fact.
+/// One running gate as the feed carries it: the step's facts, the tail, `still_ms` - how long since
+/// the tail last changed, the head's own two-snapshot fact - and the machine it runs on.
 fn gate_of(
     g: &letibot_sessionlog::event::QueueRunningGate,
     since_ms: Option<u64>,
@@ -587,12 +591,19 @@ fn gate_of(
         "command": g.command,
         "step": g.step,
         "of": g.of,
+        "host": crate::ui::panes::queue::where_ran(&g.host),
         "running_ms": now.saturating_sub(g.started_ms),
         "bytes": g.log_bytes,
         "tail": g.tail,
         "still_ms": since_ms.map_or(0, |at| now.saturating_sub(at)),
     })
 }
+
+/// Which of a project's two tiers a row's gate is: a landing's is the QUICK one and the run on the
+/// target's tip is the FULL one. A project with one `Merge gate` section has one gate that is both,
+/// and the word then names the job that run is doing rather than a tier nobody declared.
+const QUICK_TIER: &str = "quick";
+const FULL_TIER: &str = "full";
 
 /// One gate step, in the words a person reads - `"timed out"`, not `timed_out`; the outcome's
 /// own word rather than the Rust enum's serde spelling. `whole` is whether the row is live or

@@ -178,6 +178,9 @@ struct Merge {
     target: String,
     #[serde(default)]
     branch: String,
+    /// The tier this row's gate is: `quick` for a landing. Empty from a daemon that has one tier.
+    #[serde(default)]
+    gate: String,
     #[serde(default)]
     owner: String,
     #[serde(default)]
@@ -222,6 +225,10 @@ struct RunningGate {
     step: usize,
     #[serde(default)]
     of: usize,
+    /// The machine it runs on, in the host's own words (`this box`, `lab2x1`) - a guest cannot know
+    /// one machine from another, so the words travel with the row.
+    #[serde(default)]
+    host: String,
     #[serde(default)]
     running_ms: u64,
     #[serde(default)]
@@ -258,6 +265,9 @@ struct Target {
     state: String,
     #[serde(default)]
     state_words: String,
+    /// The tier the run on this tip is: `full`. Empty from a daemon that has one tier.
+    #[serde(default)]
+    gate: String,
     #[serde(default)]
     since_ms: u64,
     #[serde(default)]
@@ -516,7 +526,8 @@ fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
         // Or what its own gate is doing, when the row is the one gating.
         None => match &m.running_gate {
             Some(g) => format!(
-                "the gate is on step {} of {}{}",
+                "{}the gate is on step {} of {}{}",
+                tier_prefix(&m.gate),
                 g.step.max(1),
                 g.of.max(1),
                 written(g.bytes)
@@ -649,6 +660,15 @@ fn history_row(feed: &Feed, folded: bool) -> Out {
     }
 }
 
+/// Which tier a row's gate is, in front of a sentence: `quick: `, `full: `, or nothing at all from a
+/// daemon that does not know tiers - a pane does not invent a word for what it was not told.
+fn tier_prefix(gate: &str) -> String {
+    match gate.is_empty() {
+        true => String::new(),
+        false => format!("{gate}: "),
+    }
+}
+
 /// The chrome above the rows: the emergencies, the targets' health, whose queues these are, and who
 /// serves them. One `lines` block, so it is a few rows and never a paragraph. Every target state is
 /// drawn: red and unjudged as alarms, gating as a gate on it, green as the quiet line.
@@ -676,14 +696,25 @@ fn chrome(feed: &Feed) -> Vec<Value> {
                 "role": "attention",
             })),
             // A gate on the target tip is what every queued landing of that repository waits for,
-            // so it is said here even though no row of either queue carries it.
+            // so it is said here even though no row of either queue carries it - and it says which
+            // step of the full gate it is on, and where.
             "gating" => lines.push(json!({
                 "label": format!("{where_} is being gated"),
-                "value": format!(
-                    "the gate is running on {} for {}",
-                    t.short_sha,
-                    minutes(t.since_ms)
-                ),
+                "value": match &t.running_gate {
+                    Some(g) => format!(
+                        "{}running {}/{} on {} for {}",
+                        tier_prefix(&t.gate),
+                        g.step.max(1),
+                        g.of.max(1),
+                        g.host,
+                        minutes(t.since_ms)
+                    ),
+                    None => format!(
+                        "the gate is running on {} for {}",
+                        t.short_sha,
+                        minutes(t.since_ms)
+                    ),
+                },
                 "role": "pending",
             })),
             // Green is not an alarm, but it is where the target stands: a pane that never said it
@@ -1116,7 +1147,7 @@ fn merge_detail(m: &Merge, feed: &Feed) -> String {
         l.extend(gate_detail(g, m.running_gate.is_none(), feed));
     }
     l.push(String::new());
-    l.push("the gate's steps".to_string());
+    l.push(format!("the {}gate's steps", tier_prefix(&m.gate)));
     if m.gate_steps.is_empty() {
         l.push(if m.state == "gating" {
             "the gate is running".to_string()
