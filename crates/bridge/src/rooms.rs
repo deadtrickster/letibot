@@ -1064,9 +1064,12 @@ struct Inner {
     replayed: AtomicU64,
     /// A row the stream did not take since the last replay began, so the gap is fetched again.
     untaken: AtomicBool,
-    /// The coordinator start the last welcome named. A different one means the log restarted, so
-    /// `delivered` no longer orders anything.
+    /// The coordinator start the last welcome named. A different one is a restart, and whether the
+    /// LOG restarted with it is read off the inbox's head (`replay_the_gap`).
     instance: Mutex<Option<u64>>,
+    /// A welcome named a coordinator start other than the last one's: the gap replay decides whether
+    /// the log went backwards with it, and until then what was handed stays handed.
+    restarted: AtomicBool,
     /// A welcome has named this bridge, so its name no longer changes.
     named: Mutex<bool>,
     /// The seat THIS connection is. It starts as the process's - one `letibot-mcp` is one Claude
@@ -1128,6 +1131,7 @@ impl RoomLink {
                 replayed: AtomicU64::new(0),
                 untaken: AtomicBool::new(false),
                 instance: Mutex::new(None),
+                restarted: AtomicBool::new(false),
                 named: Mutex::new(false),
                 seat: Mutex::new(seat()),
                 protocol: Mutex::new(None),
@@ -1399,14 +1403,11 @@ impl RoomLink {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 if seen.is_some_and(|was| was != now) {
-                    // The log restarted, possibly empty: seqs below the old mark are new messages.
-                    *self
-                        .inner
-                        .delivered
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = Handed::default();
-                    self.pending_map().clear();
-                    self.inner.acked.store(0, Ordering::SeqCst);
+                    // A coordinator restarting is not the LOG restarting: one over a store keeps the
+                    // seat's cursor and the seqs, and the rows this bridge already handed over are
+                    // not its to hand again. Which of the two it was is decided where the answer is
+                    // read - `replay_the_gap`, from the head the inbox reply names.
+                    self.inner.restarted.store(true, Ordering::SeqCst);
                 }
                 *seen = Some(now);
             }
@@ -1815,6 +1816,7 @@ impl RoomLink {
             let Ok(reply) = self.inbox_after(Attention::ToMe, GAP_PAGE, after) else {
                 return;
             };
+            self.open_a_new_log(&reply);
             let rows = reply["rows"].as_array().cloned().unwrap_or_default();
             for m in &rows {
                 self.replay(m, deliver);
@@ -1830,6 +1832,36 @@ impl RoomLink {
         if !self.inner.untaken.load(Ordering::SeqCst) {
             self.inner.replayed.store(generation, Ordering::SeqCst);
         }
+    }
+
+    /// The welcome named a coordinator start other than the last one's. A coordinator that came back
+    /// over its own store keeps the seat's cursor and the seqs, and its head is above everything this
+    /// bridge wrote down - so nothing it handed over is handed over again. One that came back with no
+    /// log names a head below the mark, and every seq this bridge remembers is a different message.
+    fn open_a_new_log(&self, reply: &Value) {
+        if !self.inner.restarted.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let head = reply["head"].as_u64().unwrap_or(0);
+        let mine = self
+            .inner
+            .delivered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .top
+            .max(self.inner.acked.load(Ordering::SeqCst));
+        if head >= mine {
+            return;
+        }
+        // The log restarted, possibly empty: seqs below the old mark are new messages, and what the
+        // seat was owed there is nobody's here.
+        *self
+            .inner
+            .delivered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Handed::default();
+        self.pending_map().clear();
+        self.inner.acked.store(0, Ordering::SeqCst);
     }
 
     /// The gap of the live connection is replayed and every row since was taken.

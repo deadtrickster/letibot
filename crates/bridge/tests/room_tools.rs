@@ -239,6 +239,25 @@ impl Fake {
         m
     }
 
+    /// A coordinator that came back over its own store: it hangs up, names a new instance, and keeps
+    /// its log, its seqs and the seat's cursor - which is what `letibot rooms restart` does.
+    fn restart_keeping_the_log(
+        &self,
+        author: &str,
+        kind: &str,
+        room: &str,
+        to: Option<&str>,
+        text: &str,
+    ) -> Value {
+        let mut log = self.log.lock().unwrap();
+        self.drop_connections();
+        *self.instance.lock().unwrap() += 1;
+        let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
+            "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
+        log.push(m.clone());
+        m
+    }
+
     fn drop_connections(&self) {
         for c in self.conns.lock().unwrap().drain(..) {
             c.close();
@@ -740,6 +759,44 @@ fn a_restarted_coordinator_resets_the_delivered_mark() {
             .as_str()
             .unwrap()
             .contains("after")
+    );
+}
+
+#[test]
+fn a_restarted_coordinator_over_its_store_hands_nothing_twice() {
+    let fake = Fake::start("restart-store");
+    let link = RoomLink::at(&fake.path);
+    let taken = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let t = taken.clone();
+    link.stream(Arc::new(move |m, _names_you| {
+        t.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| link.connected());
+    fake.push("s-a", "session", "host", Some("claude-code"), "one");
+    fake.push("s-a", "session", "host", Some("claude-code"), "two");
+    wait_until(|| taken.lock().unwrap().len() == 2);
+    // The model has answered neither, so the ack stands below both - which is the seat whose
+    // channel `letibot rooms restart` wrote a dozen old rows to.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(*fake.cursor.lock().unwrap(), 0, "pushed is not seen");
+
+    fake.restart_keeping_the_log("s-a", "session", "host", Some("claude-code"), "after");
+    // A row that arrived after the restart is handed once, and the two before it are not again.
+    let until = Instant::now() + Duration::from_secs(20);
+    while taken.lock().unwrap().as_slice() != [1, 2, 3] {
+        assert!(
+            Instant::now() < until,
+            "the channel was handed {:?}, not the new row once",
+            taken.lock().unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        taken.lock().unwrap().as_slice(),
+        [1, 2, 3],
+        "a restart over the store re-handed what it had already handed"
     );
 }
 
