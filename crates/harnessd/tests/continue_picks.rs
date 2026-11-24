@@ -161,12 +161,15 @@ fn latest(store: &Path) -> (i32, String, String) {
     )
 }
 
-/// `letibot --sessions`: the listing the person reads, which the resolution must agree with.
+/// `letibot --sessions --all`: the census, which is the only listing that groups rows - a plain
+/// listing is the pick list of resumable conversations, and the group a reviewer lands in is
+/// exactly what this asserts it is not one of.
 fn listing(store: &Path) -> String {
     let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(store)
         .arg("--list-sessions")
+        .arg("--all")
         .arg("--scope")
         .arg(WS)
         .env("XDG_RUNTIME_DIR", runtime_beside(store))

@@ -127,8 +127,10 @@ fn carved_rows(fixture: &Fixture) -> Vec<String> {
         .expect("the keys")
 }
 
-/// `harnessd --store DATA --list-sessions`, as the launcher runs it: the real binary, so the answer
-/// a person gets is what this asserts.
+/// `harnessd --store DATA --list-sessions --all`, as the launcher runs it: the real binary, so the
+/// answer a person gets is what this asserts. `--all` is the census, and the census is what proves
+/// the index answers for every project - a plain listing is the pick list, which holds the
+/// conversations a person can resume and so leaves a task child out.
 fn listing(fixture: &Fixture) -> String {
     let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
@@ -136,6 +138,7 @@ fn listing(fixture: &Fixture) -> String {
         .arg("--workspace")
         .arg(ROOT_A)
         .arg("--list-sessions")
+        .arg("--all")
         // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
         .env("XDG_RUNTIME_DIR", &fixture.dir)
         .output()
