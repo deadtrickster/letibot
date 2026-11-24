@@ -60,11 +60,14 @@ pub(crate) fn step_words(out: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Output that shows a build or a test PASSING (cargo's own words).
+/// Output that shows a build or a test PASSING (cargo's own words, or nextest's).
 fn shows_a_pass(out: &str) -> bool {
     step_words(out).any(|l| {
         let t = l.trim_start();
-        t.starts_with("Finished ") || t.starts_with("test result: ok")
+        t.starts_with("Finished ")
+            || t.starts_with("test result: ok")
+            // nextest's one line for a whole run that had no failures.
+            || (t.starts_with("Summary [") && !t.contains(" failed"))
     })
 }
 
@@ -75,6 +78,9 @@ pub(crate) fn shows_code_failing(out: &str) -> bool {
         t.starts_with("error[")
             || t.starts_with("error: could not compile")
             || t.starts_with("test result: FAILED")
+            // nextest's own line per failing test, and its summary when one failed.
+            || t.starts_with("FAIL [")
+            || (t.starts_with("Summary [") && t.contains(" failed"))
             || t.contains("panicked at")
             || t.starts_with("Diff in ")
             || t.starts_with("failures:")

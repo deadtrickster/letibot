@@ -1108,6 +1108,128 @@ fn a_failure_too_big_for_the_cap_keeps_the_failure_and_says_the_end_is_gone() {
     );
 }
 
+/// A workspace run under cargo-nextest, in its own words: one `Summary` for the whole step, one
+/// `FAIL` line per failing test with that test's captured output under it - and, inside that
+/// output, libtest's `test result:` line for the ONE test, which is not a target's.
+fn a_failing_nextest_run() -> String {
+    let mut out = String::new();
+    out.push_str(
+        "────────────\n\
+         \x20Nextest run ID 6c1f4c1e-0000-0000-0000-000000000000 with nextest profile: gate\n\
+         \x20   Starting 301 tests across 1 binary\n",
+    );
+    // The failing test's block sits EARLY, as nextest prints it while the rest of the run goes on:
+    // what makes the excerpt worth having is that the panic is far above the end.
+    out.push_str(
+        "        PASS [   0.004s] (  1/301) letibot-harnessd scene::tests::case_000\n\
+         \x20       FAIL [   0.512s] (  2/301) letibot-harnessd worker::a_test\n\
+         \x20 stdout ───\n\
+         \n\
+         \x20   running 1 test\n\
+         \x20   test worker::a_test ... FAILED\n\
+         \n\
+         \x20   failures:\n\
+         \x20       worker::a_test\n\
+         \n\
+         \x20   test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 300 filtered \
+         out; finished in 0.51s\n\
+         \n\
+         \x20 stderr ───\n\
+         \n\
+         \x20   thread 'worker::a_test' (154) panicked at crates/harnessd/src/worker.rs:12:5:\n\
+         \x20   the worker never started\n\
+         \x20   note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    );
+    for i in 2..300 {
+        out.push_str(&format!(
+            "        PASS [   0.004s] ({}/301) letibot-harnessd scene::tests::case_{i:03}\n",
+            i + 1
+        ));
+    }
+    out.push_str(
+        "────────────\n\
+         \x20    Summary [   1.234s] 301 tests run: 300 passed, 1 failed, 0 skipped\n\
+         \x20       FAIL [   0.512s] (  2/301) letibot-harnessd worker::a_test\n\
+         \n\
+         error: test run failed\n",
+    );
+    out
+}
+
+/// nextest's `Summary` is the run's counts and its `FAIL` line is the failing test: the row names
+/// the test and its panic, and the one-test `test result:` inside that captured output is not read
+/// as a second target (which is what reading the stream the `cargo test` way would do).
+#[test]
+fn a_nextest_run_names_the_failing_test_its_panic_and_the_runs_counts() {
+    let text = a_failing_nextest_run();
+    // nextest names the failing test AGAIN under its summary, so the name is in the tail: what the
+    // tail cannot say is why it failed, and that is what the excerpt has to carry.
+    assert!(
+        !tail(&text, EVIDENCE_BYTES).contains("the worker never started"),
+        "the panic has to be outside the tail, or this test proves nothing"
+    );
+    let ex = excerpt(&text, EVIDENCE_BYTES);
+    for want in [
+        // The counts are the summary's, not libtest's one-test line inside the capture.
+        "1 target ran — 0 passed, 1 failed; 300 tests passed, 1 failed",
+        "first failing test `worker::a_test`",
+        "panicked at crates/harnessd/src/worker.rs:12:5",
+        "the worker never started",
+    ] {
+        assert!(ex.contains(want), "{want:?} is not in the excerpt:\n{ex}");
+    }
+    assert!(
+        ex.trim_end()
+            .ends_with("[gate excerpt: what failed is at the TOP of this row: `worker::a_test` in `letibot-harnessd`]"),
+        "the row ends by naming what failed:\n{ex}"
+    );
+    assert!(
+        ex.len() <= EVIDENCE_BYTES,
+        "the excerpt is {} bytes, over a {EVIDENCE_BYTES}-byte cap",
+        ex.len()
+    );
+}
+
+/// `(N/M)` in a status line is the run's own counter and belongs to neither the binary nor the
+/// test, and a retried test names its attempt before the status.
+#[test]
+fn a_nextest_status_line_is_read_past_its_counter() {
+    assert_eq!(
+        nextest_fail("FAIL [   0.005s] (1/4) ntshape tests::it_panics"),
+        Some(("ntshape".to_string(), "tests::it_panics".to_string()))
+    );
+    assert_eq!(
+        nextest_fail("TRY 1 FAIL [   1.005s] (2/4) letibot-harnessd a::b"),
+        Some(("letibot-harnessd".to_string(), "a::b".to_string()))
+    );
+    assert_eq!(nextest_fail("PASS [   0.005s] (3/4) ntshape tests::it_passes"), None);
+    assert_eq!(
+        nextest_summary("     Summary [   0.008s] 4 tests run: 2 passed, 2 failed, 0 skipped"),
+        Some((4, 2, 2))
+    );
+    assert_eq!(
+        nextest_summary("     Summary [ 905.012s] 1 test run: 1 passed, 0 skipped"),
+        Some((1, 1, 0))
+    );
+    assert_eq!(
+        nextest_start("    Starting 1985 tests across 1 binary"),
+        Some(1)
+    );
+}
+
+/// A nextest step whose test failed is the code's red, not a kill beside it: the gate's own words
+/// for the verdict have to include nextest's.
+#[test]
+fn a_nextest_failure_is_a_verdict() {
+    let out = "        FAIL [   0.512s] (1/1) letibot-harnessd worker::a_test\n\
+               \n\
+               error: test run failed\n";
+    assert_eq!(
+        red_cause(out, StepExit::Code(100), &measured(0), ""),
+        RedCause::Code
+    );
+}
+
 /// A `fork` that ran out of descriptors is named wherever it was printed - one line of a step's
 /// output, 9 KiB above the end here, behind a daemon holding 253 of 256 descriptors.
 #[test]

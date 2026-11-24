@@ -1912,6 +1912,11 @@ fn failing_target(seg: &[&str], clause: &str, descriptor: &str) -> Option<Failin
 /// `error
 fn failures(text: &str) -> Failures {
     let lines: Vec<&str> = text.lines().collect();
+    // nextest says it in its own words, and the libtest lines it quotes afterwards belong to ONE
+    // test each: read as a target's they would double every count. Its own reading wins.
+    if let Some(f) = nextest_failures(&lines) {
+        return f;
+    }
     let mut f = Failures::default();
     for (i, raw) in lines.iter().enumerate() {
         let s = raw.trim();
@@ -1954,16 +1959,134 @@ fn failures(text: &str) -> Failures {
             f.targets.push(t);
         }
     }
+    f.exhausted = exhausted_lines(text);
+    f
+}
+
+/// The lines that say the MACHINE refused the step something, from anywhere in its output.
+fn exhausted_lines(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     for line in text.lines() {
         let l = line.trim();
-        if f.exhausted.len() < 3
-            && !f.exhausted.iter().any(|e| e == l)
-            && EXHAUSTED.iter().any(|w| l.contains(w))
-        {
-            f.exhausted.push(clip(l, QUOTED_WIDTH));
+        if out.len() < 3 && !out.iter().any(|e| e == l) && EXHAUSTED.iter().any(|w| l.contains(w)) {
+            out.push(clip(l, QUOTED_WIDTH));
         }
     }
-    f
+    out
+}
+
+/// `        FAIL [   0.005s] (1/4) letibot-harnessd tests::a_test` → the binary's id and the test's
+/// name. nextest prints one of these per failing test, and again under its summary; `(N/M)` is the
+/// run's own counter and belongs to neither.
+fn nextest_fail(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let s = match s.strip_prefix("TRY ") {
+        // A retry names the attempt before the status: `TRY 1 FAIL [ … ]`.
+        Some(rest) => rest.split_once(' ').map(|(_, r)| r).unwrap_or(rest),
+        None => s,
+    };
+    let rest = s.strip_prefix("FAIL [")?;
+    let mut id = rest.split_once(']')?.1.trim();
+    if let Some((_, after)) = id.strip_prefix('(').and_then(|r| r.split_once(") ")) {
+        id = after;
+    }
+    let (binary, test) = id.split_once(' ')?;
+    Some((binary.to_string(), test.trim().to_string()))
+}
+
+/// `     Summary [   0.008s] 4 tests run: 2 passed, 2 failed, 0 skipped` → how many tests ran, how
+/// many passed, how many failed. One line for the whole step, where libtest writes one
+/// `test result:` per test binary.
+fn nextest_summary(s: &str) -> Option<(usize, u64, u64)> {
+    let rest = s.trim().strip_prefix("Summary [")?;
+    let after = rest.split_once(']')?.1.trim();
+    let (ran, counts) = after.split_once(" run: ")?;
+    let ran: usize = ran.split(' ').next()?.parse().ok()?;
+    Some((
+        ran,
+        number_before(counts, " passed"),
+        number_before(counts, " failed"),
+    ))
+}
+
+/// `    Starting 1985 tests across 1 binary` → how many binaries the run started, which is the
+/// count of targets a nextest step has.
+fn nextest_start(s: &str) -> Option<usize> {
+    let after = s.trim().strip_prefix("Starting ")?.split_once(" across ")?.1;
+    after.split(' ').next()?.parse().ok()
+}
+
+/// Whether a line begins nextest's per-test status output - the boundary of the captured output
+/// that follows a `FAIL` line.
+fn nextest_status_line(s: &str) -> bool {
+    s.starts_with("FAIL [")
+        || s.starts_with("PASS [")
+        || s.starts_with("SLOW [")
+        || s.starts_with("LEAK [")
+        || s.starts_with("TRY ")
+        || s.starts_with("Summary [")
+        || s.starts_with("Starting ")
+        || s.starts_with("────")
+}
+
+/// A step's output read the way nextest writes it: one summary line for the whole run, then one
+/// `FAIL` line per failing test with that test's captured output under it. `None` when the stream
+/// carries no nextest summary, so a `cargo test` log is read exactly as before.
+fn nextest_failures(lines: &[&str]) -> Option<Failures> {
+    let mut f = Failures::default();
+    let mut binaries = 0usize;
+    let mut summary = false;
+    for raw in lines {
+        let s = raw.trim();
+        if let Some((_, passed, failed)) = nextest_summary(s) {
+            summary = true;
+            f.tests_passed = passed;
+            f.tests_failed = failed;
+        }
+        if let Some(n) = nextest_start(s) {
+            binaries = binaries.max(n);
+        }
+    }
+    if !summary {
+        return None;
+    }
+    // One entry per failing test, in the order the run reported them: a test that fails while it
+    // runs is named again under the summary, and the second naming is the same failure.
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (i, raw) in lines.iter().enumerate() {
+        let Some((binary, test)) = nextest_fail(raw.trim()) else {
+            continue;
+        };
+        if seen.iter().any(|(b, t)| b == &binary && same_test(t, &test)) {
+            continue;
+        }
+        // The test's own output follows its status line, up to the next one.
+        let mut block: Vec<&str> = Vec::new();
+        for line in &lines[i + 1..] {
+            if nextest_status_line(line.trim()) {
+                break;
+            }
+            block.push(line);
+        }
+        seen.push((binary.clone(), test.clone()));
+        let panic = evidence(&block, &test);
+        let count = seen.iter().filter(|(b, _)| b == &binary).count();
+        match f.targets.iter().position(|t| t.target == binary) {
+            Some(at) => f.targets[at].failed = count,
+            None => f.targets.push(FailingTarget {
+                target: binary,
+                test: Some(test),
+                panic,
+                failed: count,
+            }),
+        }
+    }
+    let failing = f.targets.len();
+    f.targets_ran = binaries.max(failing);
+    f.targets_failed = failing;
+    f.targets_passed = f.targets_ran.saturating_sub(failing);
+    f.exhausted = exhausted_lines(&lines.join("\n"));
+    Some(f)
 }
 
 impl Failures {
