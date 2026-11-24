@@ -458,3 +458,60 @@ fn the_snapshot_scripts_list_is_the_presets_own() {
         script.display()
     );
 }
+
+/// The one test that reaches models.dev: the live check a person runs after changing the refresh. It
+/// goes through the production paths - `refresh`, then the age rule - so what it proves is the code
+/// the daemon runs. It writes where `XDG_CACHE_HOME` says, so a check is run with a scratch one:
+///
+/// `XDG_CACHE_HOME=$(mktemp -d) cargo test -p letibot-provider --lib -- --ignored --nocapture`
+#[test]
+#[ignore = "reaches models.dev: run by hand on a box with a network"]
+fn a_live_refresh_writes_a_cache_this_build_can_read() {
+    let path = crate::catalogue::cache_path().expect("a cache directory");
+    let first = refresh().expect("models.dev answers");
+    let Outcome::Written { providers, bytes } = first else {
+        panic!("a first refresh into an empty directory is a write: {first:?}");
+    };
+    println!(
+        "{providers} provider(s), {bytes} bytes at {}",
+        path.display()
+    );
+
+    let cat = crate::catalogue::Catalogue::read(&path).expect("the cache parses");
+    for id in catalogue_ids() {
+        println!("  {id}: {} model(s)", cat.model_names(id).len());
+    }
+    println!(
+        "  zai-coding-plan/glm-5.4: {:?}",
+        cat.model("zai-coding-plan", "glm-5.4")
+    );
+
+    // The age rule: what was just written is fresh, so nothing is fetched.
+    let now = SystemTime::now();
+    assert_eq!(
+        refresh_if_stale(&path, now).expect("no fetch is no failure"),
+        None,
+        "a cache written a moment ago was fetched again"
+    );
+
+    // And aged past the day, the same file comes back as a 304: the server's own word that the
+    // body is current, which leaves not one byte of it changed.
+    let body = std::fs::read(&path).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(now - Duration::from_secs(25 * 3600)))
+        .unwrap();
+    assert_eq!(
+        refresh_if_stale(&path, now).expect("models.dev answers"),
+        Some(Outcome::Unchanged),
+        "the aged pass did not come back as a 304"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        body,
+        "a 304 rewrote the cache"
+    );
+    println!("  an aged cache: one 304, the bytes untouched");
+}

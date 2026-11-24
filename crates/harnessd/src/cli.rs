@@ -1828,6 +1828,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // or whose daemon is gone has its compute ended and its row closed (`crate::reap_pass`), which
     // is what lets this daemon go when it holds nothing anybody is running.
     crate::reap_pass::spawn(cfg.store_at(), registry.clone());
+    // And the catalogue's own upkeep, from the same start: models.dev is fetched in the background
+    // when the cache is missing or a day old, so a box nobody runs a script on still plans against
+    // last month's windows. Its thread, so neither the start nor a turn waits for it. A one-shot
+    // is skipped: it is over in seconds, and the daemon that does live here refreshes the one cache
+    // this box has.
+    crate::catalogue_refresh::spawn(cfg.catalogue_refresh && !cfg.one_shot, registry.clone());
     let one_shot_store = cfg.store_at().filter(|_| cfg.one_shot);
     // The process supervisor, from the start - RH7. Its own thread, and its FIRST tick is
     // the recovery: it reads every record the last daemon left open, checks each host once

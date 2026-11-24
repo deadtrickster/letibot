@@ -1,6 +1,11 @@
 //! The model catalogue: limits and prices read from a file, never remembered.
 //! Sources, first that parses wins: `LETIBOT_MODELS_JSON`, this harness's cache, opencode's cache,
 //! the vendored snapshot floor. opencode is read as a courtesy, never depended on.
+//!
+//! The cache is [`crate::refresh`]'s to write - the daemon fetches models.dev once a day and trims
+//! it to the providers the presets name - and `scripts/refresh-models-snapshot.sh` can write it by
+//! hand for a box that wants a file now. Nothing here writes: a reader that could also write is a
+//! reader whose answer changes depending on who asked first.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -174,9 +179,9 @@ fn override_path() -> Option<PathBuf> {
     std::env::var("LETIBOT_MODELS_JSON").ok().map(PathBuf::from)
 }
 
-/// This harness's own cache, the first place `load` looks after the override: ours, kept
-/// by `scripts/refresh-models-snapshot.sh` or anything else that can write a file, so a box
-/// with no opencode still has a catalogue somebody meant to put there.
+/// This harness's own cache, the first place `load` looks after the override: ours, written by
+/// [`crate::refresh`] (or by `scripts/refresh-models-snapshot.sh`, or anything else that can write
+/// a file), so a box with no opencode still has a catalogue somebody meant to put there.
 pub fn cache_path() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CACHE_HOME") {
         Ok(x) if !x.is_empty() => PathBuf::from(x),

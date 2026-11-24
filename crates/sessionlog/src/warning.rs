@@ -395,6 +395,10 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // failed, the request is open and the round is still running. Filing it as a failure would
     // mark a session as having gone wrong for the crime of waiting.
     ("model_slow_first_byte", Class::Routine, Action::Nothing),
+    // The daemon could not fetch models.dev. Nothing the reader did, and nothing they can do:
+    // the cache that is there is what every session goes on planning against, and the task tries
+    // again within the hour. Said once a day rather than once an hour - see `catalogue_refresh`.
+    ("catalogue_refresh_failed", Class::Failure, Action::Nothing),
     // Their interrupt and their promote arrived between turns, so there was nothing to
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine, Action::Nothing),

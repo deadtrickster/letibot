@@ -118,6 +118,32 @@ GLM limits are read by their business code (`crates/http/src/zai.rs`, table from
 never park. `1308`, `1310` and `1316`-`1321` are spent windows and park on the `next_flush_time`
 the body names, which is China time (UTC+8). `1113`, `1309`, `1311`, `1313`-`1315` are refused.
 
+## Where a window and a price come from
+
+A model's context window, its output limit, its price and whether it takes pictures are read from
+models.dev, never remembered in this tree. `crates/provider/src/catalogue.rs` loads the first of
+four sources that parses: `LETIBOT_MODELS_JSON` (a file the operator names), the cache
+`$XDG_CACHE_HOME/letibot/models.json`, opencode's `~/.cache/opencode/models.json`, and the vendored
+snapshot `crates/provider/data/models-snapshot.json` as the floor. A file that carries a model the
+floor also carries keeps its own facts, and takes what it lacks from the floor, so an older cache
+cannot hide a model.
+
+**The daemon keeps the cache fresh by itself** (`crates/provider/src/refresh.rs`,
+`crates/harnessd/src/catalogue_refresh.rs`): at start and then once an hour it asks whether the
+cache is missing or older than a day, and only then fetches `https://models.dev/api.json`, trims it
+to the providers the presets name (`catalogue_id`, not a second list), checks the trim parses as a
+catalogue, and writes it with a rename. Neither a start nor a turn waits for it. A conditional GET
+keeps the ETag and Last-Modified of the body in `models.json.etag`: an unchanged catalogue is a 304
+that moves the file's date and writes nothing, and a missing or unreadable sidecar is one full GET.
+Any failure leaves the files that are there byte-identical, says one line in the daemon's log, and
+files at most one warning row a day. A refresh reaches the next request: providers read the
+catalogue through a shelf (`catalogue::Shelf`), so new windows and prices arrive without a restart.
+
+Two switches stop it. `[catalogue] refresh = false` in a `leticode.toml` (`docs/config/leticode.toml.md`),
+and `LETIBOT_MODELS_JSON`, which says the catalogue is a file of the operator's and not this box's
+to replace. `scripts/refresh-models-snapshot.sh` still regenerates the vendored snapshot for a
+release; its `WANT` list and the presets' ids are kept equal by a test.
+
 ## Four protocols
 
 A preset's `protocol` is the whole of the choice, and `harness::open::build_provider` is where it is

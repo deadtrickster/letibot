@@ -33,6 +33,7 @@ pub mod attachments;
 pub mod backfill;
 pub mod bangrun;
 pub mod calibrate;
+pub mod catalogue_refresh;
 pub mod changelog_scope;
 pub mod child_todos;
 pub mod citations;

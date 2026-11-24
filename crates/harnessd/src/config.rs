@@ -514,6 +514,11 @@ pub struct Config {
     pub sampling: Value,
     /// The `providers.toml` a provider's key, URL and profile are read from; `None` is the box's.
     pub providers_file: Option<std::path::PathBuf>,
+    /// Whether this daemon keeps the model catalogue's cache fresh by fetching models.dev itself:
+    /// `[catalogue] refresh` at both levels, and never when `LETIBOT_MODELS_JSON` pointed the
+    /// catalogue at a file of the operator's. Set HERE by `for_the_daemon`, and off in
+    /// `for_this_box`, because a fixture must not reach the network - see [`crate::catalogue_refresh`].
+    pub catalogue_refresh: bool,
     /// Where this project sits, as a named point ([`letibot_tools::mode::Mode`]). Read from
     /// the per-project store, never chosen here. A separate field from [`Config::seat`] because a
     /// role says which tools are seated and a mode says what each one costs to approve.
@@ -1859,6 +1864,9 @@ impl Config {
             // between runs cannot tell a regression from a sample.
             sampling: json!({"temperature": 0.0, "top_k": 1, "seed": 7}),
             providers_file: None,
+            // A fixture never reaches models.dev: the switch is the daemon's to turn on, in
+            // `for_the_daemon`, which reads the operator's file.
+            catalogue_refresh: false,
             // Nothing widens by default: this is exactly what an invocation got
             // before roles were reachable. `the_default_seat_is_what_shipped_before`
             // is the test that keeps it true.
@@ -1982,6 +1990,10 @@ impl Config {
         // the skills index all take them off this config afterwards, so an in-process fixture
         // cannot inherit the operator's `~/.claude` and a daemon reads it exactly as before.
         cfg.read_the_box();
+        // Whether this daemon fetches the model catalogue itself: the operator's
+        // `[catalogue] refresh`, then the pointer in `LETIBOT_MODELS_JSON`. Read HERE because the
+        // refresh task starts before any session opens, which is when `cfg.leticode` is resolved.
+        cfg.catalogue_refresh = crate::catalogue_refresh::wanted(&cfg.workspace);
         // One read of the project's file for every answer: where its reviewers and gate run, how
         // many reviewers at once, and on which machines. Two reads could disagree about the file.
         let queue = crate::mergequeue::settings::for_repository(&cfg.workspace).unwrap_or_default();

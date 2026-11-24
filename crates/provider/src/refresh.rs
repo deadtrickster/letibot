@@ -123,10 +123,10 @@ fn refresh_if_stale_with(
 pub fn refresh_at(path: &Path, fetch: &Fetcher<'_>, now: SystemTime) -> Result<Outcome, String> {
     let here = path.exists();
     // A sidecar with no body behind it describes nothing: the condition needs both files.
-    let condition = match here.then(|| read_sidecar(path)).flatten() {
-        Some(condition) => condition,
-        None => Conditional::default(),
-    };
+    let condition: Conditional = here
+        .then(|| read_sidecar(path))
+        .flatten()
+        .unwrap_or_default();
     let answer = fetch(&condition)?;
     match answer.status {
         // The body here is the body the server has. Its age is the only thing that moved, since
