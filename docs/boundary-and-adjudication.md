@@ -338,6 +338,13 @@ branch, a published package or release, data to a service the operator did not n
 and the card stands. The stage grants no more than that: `publish` reaches `external`, and the
 reviewer's allow still admits nothing on the always-ask list.
 
+A command layer A did **not** resolve reaches the reviewer too, and that is deliberate: the intents
+it did find still place the call (a loop, a variable and a subshell around an inspection are `exec`),
+and the brief carries the command as written because no reading produced its meaning. The lexical
+screens stay in front of it and need no model - a secret store, a credential file, the key store, a
+privilege escalation, and the tier rules - so an unresolved read of `~/.ssh` or of
+`~/.config/letibot/keys` is refused before the model is asked.
+
 
 `read-only` is the only point where the tools are *absent* rather than refused, so nothing is claimed
 that cannot be done. `allow-all` requires a confinement because on a bare host it is opencode's

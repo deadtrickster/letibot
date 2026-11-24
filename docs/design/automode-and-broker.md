@@ -380,9 +380,10 @@ also holds nothing real.
 ### What is built
 
 `ShadowOracle` behind `ModelAdjudicator` (`crates/harnessd/src/shadow/oracle.rs`), its scope
-from the stages in force (`stage_scope`), the stage screen (`stage_of`: the tier, the reading,
-a secret flow and the reach), and the two lexical screens `read_passes` / `allow_passes`
-(`crates/harnessd/src/shadow/guard.rs`). B3, B2, B4, B6 and R337 are on main under rebased
+from the stages in force (`stage_scope`), the stage screen (`stage_of`: the tier, the intents layer A
+read, a secret flow and the reach - a reading that did not resolve still gets a stage, because the
+reviewer judges the command's text), and the three lexical screens `read_passes` / `allow_passes` /
+`words_pass` (`crates/harnessd/src/shadow/guard.rs`). B3, B2, B4, B6 and R337 are on main under rebased
 commits. B5 (R325) is on `b5-fence`. The `TODO.md` statuses for R322, R324 and R337 say "not
 landed" and are stale.
 
