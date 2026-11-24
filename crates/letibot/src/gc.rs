@@ -21,7 +21,8 @@ letibot holds [OWNER] [--folder DIR] [--json] [--line] [--top]
   session's jobs run in (with its process count and memory, which no `ps` can give a seat in a
   sandbox), a VM, its copies, its daemon, its worktree and target. Then each project's spill
   store under the data directory, with its size, then the daemon logs, store journals and job
-  captures with the bounds `[gc.logs]` sets. `OWNER` narrows it to one session id.
+  captures with the bounds `[gc.logs]` sets, and every gate placement's build cache with its size
+  and how long ago anything wrote to it. `OWNER` narrows the owners to one session id.
 
   --folder DIR   only the owners working against DIR
   --json         the same facts as one object, for a program
@@ -304,8 +305,18 @@ fn holds(args: &[String]) -> Result<(), String> {
     let parsed = parse(args)?;
     let (store, places) = open()?;
     let now = lifecycle::now_ms();
-    let plan = lifecycle::plan(&store, &places, parsed.owner.as_deref(), now)
+    let mut plan = lifecycle::plan(&store, &places, parsed.owner.as_deref(), now)
         .map_err(|e| e.to_string())?;
+    // The gate build caches: no owner row names one, so the roots come from the box - a person
+    // reading `holds` is asking what a merge gate left on the disk, and this is where it says so.
+    plan.read_gate_caches(
+        &letibot_harnessd::mergequeue::gate_cache::roots_for(parsed.folder.as_deref()),
+        &lifecycle::autoarchive::Here {
+            host: places.box_id.clone(),
+            pid: std::process::id(),
+            proc_root: places.proc_root.clone(),
+        },
+    );
     let owners: Vec<_> = plan
         .owners
         .iter()
@@ -321,6 +332,7 @@ fn holds(args: &[String]) -> Result<(), String> {
             looks_like_ours: plan.looks_like_ours.clone(),
             spills: plan.spills.clone(),
             bounded: plan.bounded.clone(),
+            gate_caches: plan.gate_caches.clone(),
             now_ms: plan.now_ms,
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),
@@ -341,6 +353,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         );
         print_spills(&plan.spills);
         print_bounded(&plan.bounded);
+        print_gate_caches(&plan.gate_caches, now);
         print_remote(&remote);
         print_firecode(&firecode);
         return Ok(());
@@ -355,6 +368,7 @@ fn holds(args: &[String]) -> Result<(), String> {
                 looks_like_ours: Vec::new(),
                 spills: Vec::new(),
                 bounded: Vec::new(),
+                gate_caches: Vec::new(),
                 now_ms: plan.now_ms,
                 systemd: None,
                 systemd_why: None,
@@ -381,9 +395,23 @@ fn holds(args: &[String]) -> Result<(), String> {
     }
     print_spills(&plan.spills);
     print_bounded(&plan.bounded);
+    print_gate_caches(&plan.gate_caches, now);
     print_remote(&remote);
     print_firecode(&firecode);
     Ok(())
+}
+
+/// The gate build caches, one line each: the size, the path and how long since anything wrote to
+/// one. No verdict column - a cache's removal is the queue's pass, not this command's.
+fn print_gate_caches(caches: &[letibot_tools::lifecycle::gate_cache::Placement], now: i64) {
+    if caches.is_empty() {
+        return;
+    }
+    let total: u64 = caches.iter().map(|p| p.bytes).sum();
+    println!("gate build caches ({}):", bytes(total));
+    for p in caches {
+        println!("  {}", p.line(now));
+    }
 }
 
 /// What the owners shown hold on other hosts, per host, as the last remote pass measured it.
@@ -676,6 +704,17 @@ fn gc(args: &[String]) -> Result<(), String> {
     }
     let mut plan = lifecycle::plan(&store, &places, parsed.owner.as_deref(), now)
         .map_err(|e| e.to_string())?;
+    // The plan a person reads is also the answer to "what is this box's merge gate holding": the
+    // gate build caches, which no owner row names.
+    let here = lifecycle::autoarchive::Here {
+        host: places.box_id.clone(),
+        pid: std::process::id(),
+        proc_root: places.proc_root.clone(),
+    };
+    plan.read_gate_caches(
+        &letibot_harnessd::mergequeue::gate_cache::roots_for(parsed.folder.as_deref()),
+        &here,
+    );
     // The user manager's table is read HERE and not in `plan()`: `holds` builds
     // the same plan on every turn, and a plan a model reads must not shell out to `systemctl`.
     match lifecycle::Systemd.table() {
@@ -693,6 +732,7 @@ fn gc(args: &[String]) -> Result<(), String> {
             looks_like_ours: plan.looks_like_ours.clone(),
             spills: plan.spills.clone(),
             bounded: plan.bounded.clone(),
+            gate_caches: plan.gate_caches.clone(),
             now_ms: plan.now_ms,
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),

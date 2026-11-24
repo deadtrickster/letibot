@@ -891,6 +891,13 @@ pub trait GateRunner: Send + Sync {
     fn firecode(&self) -> Option<Arc<dyn GateRunner>> {
         None
     }
+    /// The disk this runner's gate is under - `[queue] gate_cache_days` and `gate_min_free`, read
+    /// with the runner's own answer because the two are one question: *where does this gate build,
+    /// and how much room must be there*. A fixture's runner answers [`Policy::default`], which is
+    /// no floor at all, so a test never depends on how full the box it runs on is.
+    fn gate_policy(&self) -> super::gate_cache::Policy {
+        super::gate_cache::Policy::default()
+    }
 }
 
 /// The daemon's gate: here, or on a declared host when `[queue] gate_host` / `--gate-host` names one.
@@ -916,6 +923,10 @@ impl GateRunner for LocalGate {
             memory: gate_memory(),
         }))
     }
+
+    fn gate_policy(&self) -> super::gate_cache::Policy {
+        super::gate_cache::policy()
+    }
 }
 
 /// The gate on one declared host - `hosts.toml`'s machine, reached over its own key and
@@ -932,6 +943,10 @@ impl GateRunner for HostGate {
 
     fn name(&self) -> String {
         self.host.clone()
+    }
+
+    fn gate_policy(&self) -> super::gate_cache::Policy {
+        super::gate_cache::policy()
     }
 }
 
@@ -1244,6 +1259,24 @@ pub fn run_gate(
     match host {
         Some(name) => super::gate_host::run_on_host(name, worktree, steps, ctl, false),
         None => run_with_memory(worktree, steps, ctl, memory),
+    }
+}
+
+/// A gate that never started: every step `not_run`, and the one sentence that says why. The row is
+/// `Infra`'s, not `Failed`'s - nothing about the branch was judged.
+pub(crate) fn not_run(steps: &[String], why: String) -> GateRun {
+    GateRun {
+        steps: steps
+            .iter()
+            .map(|s| MergeGateStep {
+                command: s.clone(),
+                outcome: MergeGateOutcome::NotRun,
+                output: String::new(),
+                started_ms: 0,
+                elapsed_ms: 0,
+            })
+            .collect(),
+        verdict: GateVerdict::Infra(why),
     }
 }
 
@@ -2227,8 +2260,13 @@ pub fn excerpt(text: &str, cap: usize) -> String {
     }
 }
 
-/// `<worktree>/target`, absolute.
+/// Where a gate's steps build: `<worktree>/target`, absolute - or, when `[queue]
+/// gate_cache_root` names a build disk, `<root>/<the tree's own name>` there instead, because the
+/// root disk a landing tree sits on is often not the one a 200 GB cache may fill.
 pub fn gate_target_dir(worktree: &Path) -> PathBuf {
+    if let Some(cache) = super::gate_cache::target_for(worktree) {
+        return std::path::absolute(&cache).unwrap_or(cache);
+    }
     std::path::absolute(worktree)
         .unwrap_or_else(|_| worktree.to_path_buf())
         .join("target")

@@ -336,6 +336,11 @@ pub struct Plan {
     pub spills: Vec<SpillHolding>,
     /// Daemon logs, store journals and job captures: the box's files that grow on their own.
     pub bounded: Vec<super::logs::BoundedHolding>,
+    /// The `target/` of every gate placement on this box: the merge gate's build caches. No owner
+    /// row names one - a gate leaves no owner - so this is the one holding read off the disk with
+    /// no stamp, and it is read only by a caller that knows where the gates build
+    /// ([`Plan::read_gate_caches`]).
+    pub gate_caches: Vec<super::gate_cache::Placement>,
     /// The instant the plan was built.
     pub now_ms: i64,
     /// What the user manager holds, when `letibot gc` asked it: the unit table is G5's, and
@@ -438,6 +443,17 @@ impl Plan {
                 out.push_str(&format!("  {}\n", b.line()));
             }
         }
+        if !self.gate_caches.is_empty() {
+            let bytes: u64 = self.gate_caches.iter().map(|p| p.bytes).sum();
+            out.push_str(&format!(
+                "\ngate build caches — one per gate placement, {} in all. A cache nothing has \
+                 written to for `[queue] gate_cache_days` is removed when the next gate starts:\n",
+                human_bytes(bytes)
+            ));
+            for p in &self.gate_caches {
+                out.push_str(&format!("  {}\n", p.line(self.now_ms)));
+            }
+        }
         if !self.looks_like_ours.is_empty() {
             out.push_str(
                 "\nunrecorded — looks like ours, and nothing here proves whose. Not reaped by \
@@ -531,6 +547,7 @@ impl Plan {
                 "legacy": sp.legacy,
             })).collect::<Vec<_>>(),
             "bounded": self.bounded.iter().map(|b| b.to_json()).collect::<Vec<_>>(),
+            "gate_caches": self.gate_caches.iter().map(|p| p.json(self.now_ms)).collect::<Vec<_>>(),
             "would_reap": { "holdings": reaping, "bytes": bytes },
             "totals": self.totals().into_iter()
                 .map(|(c, b)| (c.to_string(), b))
@@ -586,6 +603,7 @@ impl Plan {
             "looks_like_ours": self.looks_like_ours.len(),
             "spills": self.spills.len(),
             "bounded": self.bounded.len(),
+            "gate_caches": self.gate_caches.iter().map(|p| p.json(self.now_ms)).collect::<Vec<_>>(),
             "would_reap": { "holdings": reaping, "bytes": bytes },
             "totals": self.totals().into_iter()
                 .map(|(c, b)| (c.to_string(), b))
@@ -594,6 +612,14 @@ impl Plan {
             "more": "the rows themselves are `full: true` — one owner of a build folder holds \
                      tens of thousands of them and the list is megabytes",
         })
+    }
+
+    /// The gate build caches under `roots`, read off the disk - a gate leaves no owner row, so
+    /// this is the one holding the plan cannot find through the store. A read-only caller (a
+    /// person, or an agent over the bridge) says where the box's gates build; nothing here does.
+    pub fn read_gate_caches(&mut self, roots: &super::gate_cache::Roots, here: &Here) -> &mut Self {
+        self.gate_caches = super::gate_cache::placements(roots, here);
+        self
     }
 }
 
@@ -665,6 +691,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
         looks_like_ours: Vec::new(),
         spills: all_spill_holdings(&places.data_dir.join(crate::spill::SPILLS_DIR)),
         bounded: bounded_holdings(places, store, now_ms),
+        gate_caches: Vec::new(),
         now_ms,
         systemd: None,
         systemd_why: None,
@@ -1033,6 +1060,7 @@ mod tests {
             looks_like_ours: Vec::new(),
             spills: Vec::new(),
             bounded: Vec::new(),
+            gate_caches: Vec::new(),
             now_ms: 0,
             systemd: None,
             systemd_why: None,

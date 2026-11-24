@@ -4344,6 +4344,64 @@ fn a_landing_gate_that_could_not_run_goes_back_in_line_and_waits() {
     );
 }
 
+/// A gate whose filesystem is under `[queue] gate_min_free` does not start, and its row says the
+/// disk's own numbers. 2026-11-24 is what this is for: lab2x1's root was 4 GiB free behind a stale
+/// 223 GB gate cache, and a gate that had run anyway would have spent its whole budget to fail in
+/// the linker and been read as a fault in the branch.
+struct NoDiskGate {
+    ran: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl GateRunner for NoDiskGate {
+    fn run(&self, _wt: &Path, steps: &[String], _ctl: &GateControl) -> GateRun {
+        self.ran.store(true, std::sync::atomic::Ordering::Relaxed);
+        GreenGate.run(_wt, steps, _ctl)
+    }
+
+    fn name(&self) -> String {
+        "local".into()
+    }
+
+    /// A floor no filesystem meets: the refusal, without touching a real disk.
+    fn gate_policy(&self) -> crate::mergequeue::gate_cache::Policy {
+        crate::mergequeue::gate_cache::Policy {
+            min_free: u64::MAX / 2,
+            ..Default::default()
+        }
+    }
+}
+
+#[test]
+fn a_gate_under_the_disk_floor_is_not_run_and_its_row_says_the_numbers() {
+    let w = World::new("lowdisk");
+    let (wt, base, head) = branch(&w.repo, "ld", "ld.txt");
+    w.enqueue("ld", &wt, &base, &head);
+    // Approved by a queue with room, so the row under test is the LANDING's gate.
+    let green = w.worker(Arc::new(GreenGate), "a");
+    run(&green, 1);
+    let m = w.accept("ld", "test/a");
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The same owner as the queue above: the lease is this fixture's, and a second owner would be
+    // a second daemon that cannot take it.
+    let q = w.worker(Arc::new(NoDiskGate { ran: ran.clone() }), "a");
+    run(&q, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert!(
+        !ran.load(std::sync::atomic::Ordering::Relaxed),
+        "the gate ran although its filesystem is under the floor: {row:?}"
+    );
+    assert_eq!(row.state, MergeState::Queued, "{row:?}");
+    assert!(row.evidence.starts_with(UNJUDGED_RETRY), "{}", row.evidence);
+    for want in ["gate not run: ", "free on ", "needs ", "gate_min_free"] {
+        assert!(row.evidence.contains(want), "{want}: {}", row.evidence);
+    }
+    // Said once, where the repository's sessions hear it - and it is not a red target: nothing
+    // about the branch is in doubt, so nobody is sent to find what broke it.
+    let said = w.door.warnings("queue_blocked");
+    assert!(said.iter().any(|s| s.contains("gate not run")), "{said:?}");
+    assert!(w.door.warnings("merge_failed").is_empty(), "never a red");
+}
+
 /// A daemon seated ABOVE a repository is none of its session daemons - the operator's `/home/dead`
 /// daemon took letibot's lease, gated its `main`, and showed `‼ main RED` to a session about the box's
 /// RSS. Seated in the directory that holds it, it takes no lease and says nothing; the row waits.

@@ -349,6 +349,9 @@ pub const LETICODE: File = File {
                 k("reviewers_run_suites", "bool", "false", P, "reviewers may run whole test suites, not only named tests", "true"),
                 k("grant_ttl_hours", "int >= 1", "24", P, "how long a session answer on a relayed reviewer card covers the queue", "8"),
                 k("gate_deadline_minutes", "int >= 1", "30", P, "one gate run's deadline, counted from when the box's gate lock is held", "45"),
+                k("gate_cache_root", "path", "under the placement", P, "where every gate's build cache lives: `<root>/<repo>-<hex>`, on the box's build disk rather than in the placement", "\"/build/letibot-gate\""),
+                k("gate_cache_days", "int >= 1", "3", P, "a gate's build cache nothing has written to for this many days is removed", "7"),
+                k("gate_min_free", "size", "30G", P, "free space the filesystem holding a gate's target, and the landing root, must have before a gate starts", "\"50G\""),
             ],
         },
         Table {

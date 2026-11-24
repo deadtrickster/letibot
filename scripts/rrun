@@ -7,12 +7,12 @@
 # The branch's HEAD (and main, for check-fmt) goes over as a git bundle; the steps run detached on
 # the host as a transient systemd --user service (`rrun-NAME`; `systemctl --user stop rrun-NAME`
 # stops it), in ~/remote-runs/runs/NAME/tree, with a clean environment and a cargo target dir per
-# run: ~/remote-runs/target unless --target names another, and the runner locks that dir alone, so
-# runs with different targets build at once. A relative DIR is under the host's $HOME, and
-# --clean-target removes the dir when the run ends. A host is one of hosts.toml's (its hostname and
-# user; default lab2x1, the box that can build letibot: the fork's llama.cpp and the vocabularies
-# are there). ssh uses letibot's own key and known_hosts, never ~/.ssh. Status lands in
-# ~/.local/share/letibot/remote-runs/NAME.json, which the packages pane's Runs tab reads.
+# run: $RRUN_TARGET, else ~/remote-runs/target, unless --target names another. A relative DIR is
+# under the host's $HOME, and --clean-target removes the dir when the run ends. A host is one of
+# hosts.toml's (its hostname and user; default lab2x1, the box that can build letibot: the fork's
+# llama.cpp and the vocabularies are there). ssh uses letibot's own key and known_hosts, never
+# ~/.ssh. Status lands in ~/.local/share/letibot/remote-runs/NAME.json, which the packages pane's
+# Runs tab reads.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 runner="$here/rrun-runner.py"
@@ -79,7 +79,9 @@ name="$1"
 wt="$2"
 shift 2
 host=lab2x1
-target=remote-runs/target
+# `RRUN_TARGET` is the door a box whose root disk is small uses without editing this script: a
+# build cache left in the host's home is the 223 GB of 2026-11-24. `--target` still wins.
+target=${RRUN_TARGET:-remote-runs/target}
 clean_target=0
 steps=()
 # A usage error is the command line's, not the script's: without this a missing value is `$2`

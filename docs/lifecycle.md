@@ -766,6 +766,7 @@ the kill and what survived").
 | remote jobs ledger (`.letibot-jobs/<short>`, `.letibot-jobs/fanout-<call>`) and fanout work dir (`fanout-<call>`) | cache | placement, `fanout` (recorded through the process book) | owner settled, or its lease reaped there with any bundle home | the home box's remote pass: refused while a process carries the owner's mark or a ledger pid runs, or the owner is held or has an open job; `chmod -R u+w` then `rm -rf`, checked absent | none |
 | firecode run dir | record | firecode | owner settled, VM down, copy-out not pending | `firecode gc --run <id>` (a new, small firecode verb); until it exists, move to `runs-archive/<yyyy-mm>/` | console log, result, verdict kept in the archive |
 | firecode state layers of a per-owner project | cache | firecode | owner settled | firecode's own removal for that project slug; if firecode has no verb for one slug, this is a firecode row to file | none |
+| gate build cache (`<placement>/target`, or `<gate_cache_root>/<repo>-<hex>` with `[queue] gate_cache_root`) | cache | the queue's gate | a gate start and the daemon's start: unwritten for `[queue] gate_cache_days` (3 days) | `remove_dir_all` of `target/` only, refused while a step's pid is live or a process has its cwd in the placement (`mergequeue::gate_cache`); one line per removal with the size freed | none - a gate rebuilds it |
 | session rows | record | store | settle | `set_archived` with the reason (R184) | never deleted |
 | systemd units | record | launcher | - | `--collect` already; `reset-failed` for `letibot-*` only | - |
 

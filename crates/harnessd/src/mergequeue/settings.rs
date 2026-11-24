@@ -41,6 +41,17 @@
 //!                                 #   Default: refused, a reviewer runs single named tests
 //! gate_deadline_minutes = 45      # the deadline of one whole gate run, counted from when the
 //!                                 #   box's gate lock is held. Default: 30
+//! gate_cache_root = "/build/letibot-gate"  # where each gate's BUILD CACHE lives -
+//!                                 #   `<root>/<repo>-<hex>` on the box's build disk rather
+//!                                 #   than `<placement>/target` on whatever disk the placement
+//!                                 #   landed on. Default: the placement's own `target/`
+//! gate_cache_days = 3             # a gate placement's `target/` nothing has written to for
+//!                                 #   this long is removed when the next gate starts, or the
+//!                                 #   daemon does. Default: 3
+//! gate_min_free = "30G"           # free space the filesystem holding a gate's target - and
+//!                                 #   the landing root - must have before a gate starts: the
+//!                                 #   stale caches are removed first, and if that is not
+//!                                 #   enough the gate does NOT run. Default: 30G
 //! [queue.claude]                  # the reviewers are headless `claude -p` runs instead of
 //!                                 #   letibot children. The table absent is the letibot
 //!                                 #   reviewer.
@@ -201,6 +212,17 @@ pub struct QueueSettings {
     /// `[queue.claude]`, when this project's reviewers are Claude Code runs (`claude -p`) instead
     /// of letibot children. `None`, the table absent, is the letibot reviewer.
     pub claude: Option<super::review::claude::Settings>,
+    /// `[queue] gate_min_free`: free space the filesystem holding a gate's target - and the
+    /// landing root - must have before a gate starts. [`GATE_MIN_FREE`] unless the project says
+    /// otherwise.
+    pub gate_min_free: u64,
+    /// `[queue] gate_cache_root`: where every gate's build cache lives, `<root>/<repo>-<hex>` - a
+    /// directory on the box's build disk rather than under the placement. `None` keeps the
+    /// placement's own `target/`, which is every gate's directory until an operator says this.
+    pub gate_cache_root: Option<PathBuf>,
+    /// `[queue] gate_cache_days`: a gate placement's `target/` nothing has written to for this
+    /// many days is removed. [`GATE_CACHE_DAYS`] unless the project says otherwise.
+    pub gate_cache_days: u64,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -225,6 +247,9 @@ impl Default for QueueSettings {
             reviewers_run_suites: false,
             gate_deadline: None,
             grant_ttl_hours: GRANT_TTL_HOURS,
+            gate_min_free: GATE_MIN_FREE,
+            gate_cache_root: None,
+            gate_cache_days: GATE_CACHE_DAYS,
             claude: None,
             path: None,
         }
@@ -270,6 +295,17 @@ struct QueueTable {
     grant_ttl_hours: Option<i64>,
     #[serde(default)]
     gate_deadline_minutes: Option<i64>,
+    /// `[queue] gate_cache_root`: a path as the box reads it, `~` or absolute. Refused rather
+    /// than guessed when it is neither.
+    #[serde(default)]
+    gate_cache_root: Option<String>,
+    /// `i64` for the reason `gate_train` is: `0` is refused by name.
+    #[serde(default)]
+    gate_cache_days: Option<i64>,
+    /// A size as `parse_size` reads it (`30G`, `512M`). A number nothing can parse is refused by
+    /// name, never defaulted - a floor that quietly became 30 GiB is a rule nobody can read.
+    #[serde(default)]
+    gate_min_free: Option<String>,
     /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
     #[serde(default)]
     claude: Option<ClaudeTable>,
@@ -310,6 +346,16 @@ struct FileWithQueue {
 
 /// A queue grant's life when `[queue] grant_ttl_hours` is not set.
 pub const GRANT_TTL_HOURS: u64 = 24;
+
+/// A gate's build cache is removed after this many days with nothing written to it - `[queue]
+/// gate_cache_days`. Three days: a gate runs on every landing, so a cache untouched for three is
+/// one whose repository stopped landing there, not one between two runs.
+pub const GATE_CACHE_DAYS: u64 = 3;
+
+/// Free space the filesystem holding a gate's target must have before a gate starts - `[queue]
+/// gate_min_free`, and the same floor for the landing root. Thirty GiB: the incident this exists
+/// for ended with 4 GiB free and firecode refusing to boot a VM under 6.
+pub const GATE_MIN_FREE: u64 = 30 << 30;
 
 /// The settings from the nearest `leticode.toml` at or above `repo`. No file or no `[queue]` is
 /// the defaults. A `[queue]` that does not parse or names an unknown key is an `Err`, never a default.
@@ -464,6 +510,46 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             }
         }
     };
+    // Where a gate's build cache goes, and the two numbers that decide when it is given back.
+    let gate_cache_root = match q.gate_cache_root.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(p) if p.starts_with('/') || p.starts_with("~") => Some(PathBuf::from(p)),
+        Some(other) => {
+            return Err(format!(
+                "{}: [queue] gate_cache_root = \"{other}\" - it is where every gate's build \
+                 cache lives (`<root>/<repo>-<hex>`), so it is an absolute path or one starting \
+                 with `~`: a relative path would name a directory inside whichever tree a gate \
+                 happened to be gating",
+                path.display()
+            ));
+        }
+    };
+    let gate_cache_days = match q.gate_cache_days {
+        None => GATE_CACHE_DAYS,
+        Some(n) if n >= 1 => n as u64,
+        Some(other) => {
+            return Err(format!(
+                "{}: [queue] gate_cache_days = {other} - it is how many days a gate's build \
+                 cache may go unwritten before it is removed, so it is 1 or more (the default is \
+                 {GATE_CACHE_DAYS})",
+                path.display()
+            ));
+        }
+    };
+    // A size, or nothing. A word nothing can read is refused by name: this floor is the one thing
+    // between a full root disk and a gate run, and a typo must not silently mean the default.
+    let gate_min_free = match q.gate_min_free.as_deref().map(str::trim) {
+        None | Some("") => GATE_MIN_FREE,
+        Some(size) => letibot_tools::exec::diskio::parse_size(size).map_err(|e| {
+            format!(
+                "{}: [queue] gate_min_free = \"{size}\" - {e}. It is the free space the \
+                 filesystem holding a gate's target - and the landing root - must have before a \
+                 gate starts (the default is {}), written as `30G` or `512M`",
+                path.display(),
+                letibot_tools::exec::scope::human_bytes(GATE_MIN_FREE)
+            )
+        })?,
+    };
     Ok(QueueSettings {
         gate_carry,
         gate_in,
@@ -478,6 +564,9 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         reviewers_run_suites: q.reviewers_run_suites.unwrap_or(false),
         gate_deadline,
         grant_ttl_hours,
+        gate_min_free,
+        gate_cache_root,
+        gate_cache_days,
         claude: match q.claude {
             None => None,
             Some(c) => Some(claude_settings(&c, path)?),
@@ -702,6 +791,62 @@ mod tests {
         );
         std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_host = \"  \"\n").unwrap();
         assert_eq!(for_repository(&repo).unwrap().gate_host, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `[queue] gate_cache_root`, `gate_cache_days` and `gate_min_free`: the build disk a gate
+    /// writes its cache to, how long a cache may sit unwritten, and the floor below which a gate
+    /// does not start. Absent is every gate's behaviour before this key existed, and each refusal
+    /// names its own key rather than letting a typo become a default.
+    #[test]
+    fn the_gate_cache_keys_are_read_and_each_refusal_names_its_key() {
+        let (dir, repo) = file("[queue]\ntarget = \"main\"\n");
+        let s = for_repository(&repo).unwrap();
+        assert_eq!(s.gate_cache_root, None, "the placement's own `target/`");
+        assert_eq!(s.gate_cache_days, GATE_CACHE_DAYS);
+        assert_eq!(s.gate_min_free, GATE_MIN_FREE);
+
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\ngate_cache_root = \"/build/letibot-gate\"\ngate_cache_days = 7\n\
+             gate_min_free = \"50G\"\n",
+        )
+        .unwrap();
+        let s = for_repository(&repo).unwrap();
+        assert_eq!(
+            s.gate_cache_root.as_deref(),
+            Some(std::path::Path::new("/build/letibot-gate"))
+        );
+        assert_eq!(s.gate_cache_days, 7);
+        assert_eq!(s.gate_min_free, 50 << 30);
+
+        // `~` is kept as written: it is THIS box's home here and the far machine's there.
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\ngate_cache_root = \"~/build/gate\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            for_repository(&repo).unwrap().gate_cache_root.as_deref(),
+            Some(std::path::Path::new("~/build/gate"))
+        );
+
+        for (text, want) in [
+            (
+                "[queue]\ngate_cache_root = \"build/gate\"\n",
+                "gate_cache_root",
+            ),
+            ("[queue]\ngate_cache_days = 0\n", "gate_cache_days"),
+            ("[queue]\ngate_cache_days = -1\n", "gate_cache_days"),
+            (
+                "[queue]\ngate_min_free = \"thirty gigs\"\n",
+                "gate_min_free",
+            ),
+        ] {
+            std::fs::write(dir.join("leticode.toml"), text).unwrap();
+            let e = for_repository(&repo).unwrap_err();
+            assert!(e.contains(want), "{text}: {e}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

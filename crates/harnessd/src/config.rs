@@ -594,6 +594,12 @@ pub struct Config {
     /// `[queue] gate_poll_seconds`, and [`crate::mergequeue::gate::gate_poll`]. A fixture gets
     /// the default; the daemon is the one caller that reads the project file.
     pub gate_poll: std::time::Duration,
+    /// Where a gate's build cache goes and how much room its filesystem needs before a gate may
+    /// start - `[queue] gate_cache_root`, `gate_cache_days` and `gate_min_free`, read by
+    /// [`crate::mergequeue::gate_cache`]. A fixture gets [`crate::mergequeue::gate_cache::Policy::default`]:
+    /// the placement's own `target/`, three days, and no floor at all - a test's gate must not
+    /// depend on how full the box it runs on is. The daemon is the one caller that reads the file.
+    pub gate_cache: crate::mergequeue::gate_cache::Policy,
     /// The daemon's one pool of reviewer machines and what it has running on them, shared by the
     /// queue's workers and the review pool. A fixture's pool probes nothing and places nowhere.
     pub review_hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
@@ -1927,6 +1933,9 @@ impl Config {
             // A fixture polls on the production cadence, which is a constant and not a file's
             // answer - see the field, and `Config::for_the_daemon`.
             gate_poll: crate::mergequeue::gate::GATE_POLL_DEFAULT,
+            // A fixture builds beside its own tree and is under no floor: the placement's `target/`
+            // is what every gate did before `[queue] gate_cache_root` existed.
+            gate_cache: crate::mergequeue::gate_cache::Policy::default(),
             // A fixture starts no session with a skill it did not name. The reviewer's list is
             // the daemon's (`for_the_daemon` reads `[queue] reviewer_skills`), and a child's is its
             // spec's - see the fields.
@@ -2001,6 +2010,7 @@ impl Config {
         cfg.reviewer_skills = queue.reviewer_skills.clone();
         cfg.gate_host = queue.gate_host.clone();
         cfg.gate_poll = queue.gate_poll;
+        cfg.gate_cache = crate::mergequeue::gate_cache::Policy::of(&queue);
         cfg.reviewer_hosts = queue.reviewer_hosts.clone();
         // `reviewers_at_once` is not copied: the claiming pass reads it per repository.
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets

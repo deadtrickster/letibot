@@ -31,7 +31,19 @@ fn plan_of(bridge: &Bridge, only: Option<&str>) -> Result<Plan, String> {
     let store = crate::store::open_read(&store_path, "owner", None)?;
     let places = Places::here();
     let now = letibot_tools::lifecycle::now_ms();
-    lifecycle::plan(&store, &places, only, now).map_err(|e| e.to_string())
+    let mut plan = lifecycle::plan(&store, &places, only, now).map_err(|e| e.to_string())?;
+    // The gate build caches: no owner row names one, so the roots come from the box and the
+    // folder's own `[queue] gate_cache_root`.
+    let repo = std::env::current_dir().ok();
+    plan.read_gate_caches(
+        &letibot_harnessd::mergequeue::gate_cache::roots_for(repo.as_deref()),
+        &letibot_tools::lifecycle::autoarchive::Here {
+            host: places.box_id.clone(),
+            pid: std::process::id(),
+            proc_root: places.proc_root.clone(),
+        },
+    );
+    Ok(plan)
 }
 
 /// `holds`: every owner in this folder's store with what it holds. COUNTS by default - a number

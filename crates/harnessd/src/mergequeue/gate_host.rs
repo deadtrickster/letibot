@@ -313,24 +313,15 @@ pub fn run_on_host(
 
 /// Every step `not_run`, and the reason the gate could not run at all.
 fn infra(steps: &[String], why: String) -> GateRun {
-    GateRun {
-        steps: steps
-            .iter()
-            .map(|s| letibot_tokencore::store::MergeGateStep {
-                command: s.clone(),
-                outcome: MergeGateOutcome::NotRun,
-                output: String::new(),
-                started_ms: 0,
-                elapsed_ms: 0,
-            })
-            .collect(),
-        verdict: GateVerdict::Infra(format!(
+    super::gate::not_run(
+        steps,
+        format!(
             "the gate could not run on the declared host: {why}. Nothing was judged — the tip is \
              UNJUDGED, not red, and the queue is not halted by it: it is gated again on a later \
              pass. `[queue] gate_host` in the project's leticode.toml (or `--gate-host`) chooses \
              the machine, and an empty value runs the gate here."
-        )),
-    }
+        ),
+    )
 }
 
 /// One repository's gate directory on one host - where the tree, the git store and the build cache
@@ -407,18 +398,48 @@ impl Remote {
         let dir = format!("{}/gate/{}", root.trim_end_matches('/'), dir_name(worktree));
         let src = format!("{dir}/src.git");
         let tree = format!("{dir}/tree");
-        let target = format!("{dir}/target");
+        // Where this gate builds: `[queue] gate_cache_root` on THAT machine when it names one -
+        // the placement's own `target/` is on whatever disk the host's root landed on, and on a
+        // box whose root is small that is the 223 GB nobody removed.
+        let policy = super::gate_cache::policy();
+        let target = match policy.root_there() {
+            Some(cache) => format!("{}/{}", cache.trim_end_matches('/'), dir_name(worktree)),
+            None => format!("{dir}/target"),
+        };
         let run = format!("{dir}/run");
-        // The cache and the room, asked in the call that makes the directories - before `mkdir` has made
-        // `target`, so a cache this gate creates is `cold`. One round trip, not two.
+        // The stale caches on this host first, in a call of its own: a 223 GB `rm -rf` is minutes
+        // and must not spend the setup call's bound less the gate never starts. A sweep that could
+        // not answer is said and not fatal - a gate refused because a `find` timed out would be a
+        // worse fault than the disk this exists for.
+        if policy.days > 0 {
+            let gate_root = format!("{}/gate", root.trim_end_matches('/'));
+            let sweep = super::gate_cache::remote_sweep(&gate_root, policy.days);
+            match call_ok(
+                &ssh,
+                &format!("reclaiming the stale gate caches on {name}"),
+                &sweep,
+                super::gate_cache::SWEEP_BOUND,
+            ) {
+                // Said on this daemon's stderr, where a person reads what a gate start did: the
+                // host's own lines cannot log here by themselves.
+                Ok(said) => {
+                    for line in said.lines().map(str::trim) {
+                        if line.starts_with("gate cache:") {
+                            super::gate_cache::log(line);
+                        }
+                    }
+                }
+                Err(why) => eprintln!("  merge queue: {name}: no stale cache was reclaimed: {why}"),
+            }
+        }
         let said = call_ok(
             &ssh,
-            &format!("asking what `{}` already has and how much room", dir),
+            &format!("asking what `{target}` already has, and how much room {name} has"),
             &format!(
                 "if [ -d '{target}' ] && [ -n \"$(ls -A '{target}')\" ]; then echo cache=warm; \
                  else echo cache=cold; fi; \
                  mkdir -p '{dir}' '{run}' '{target}'; \
-                 echo \"free=$(df -P -k '{dir}' | tail -1 | awk '{{print $4}}')\""
+                 echo \"free=$(df -P -k '{target}' | tail -1 | awk '{{print $4}}')\""
             ),
             SETUP_BOUND,
         )?;
@@ -430,6 +451,19 @@ impl Remote {
         };
         let cold = field("cache=").as_deref() != Some("warm");
         let free_kb = field("free=").and_then(|kb| kb.parse::<u64>().ok());
+        // The floor, on the filesystem this host's target is on: a gate that has to build 200 GB
+        // of artifacts into 4 GiB free fails minutes later with a linker `Bus error`, and its row
+        // would call that a fault in the branch.
+        if let Some(kb) = free_kb
+            && kb.saturating_mul(1024) < policy.min_free
+        {
+            return Err(format!(
+                "gate not run: {} free on {name}, needs {}. `[queue] gate_min_free` is this floor; \
+                 `gate_cache_root` moves the build cache to a disk with room",
+                letibot_tools::lifecycle::human_bytes(kb.saturating_mul(1024)),
+                letibot_tools::lifecycle::human_bytes(policy.min_free)
+            ));
+        }
         let r = Remote {
             src,
             tree,

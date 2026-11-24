@@ -1038,3 +1038,36 @@ fn only_homes_ledgers_and_fanout_dirs_are_removable() {
     assert!(!remote::removable_shape("/r/fanout-"));
     assert!(!remote::removable_shape("/home/dead"));
 }
+
+/// The gate build caches a box's roots hold are in the plan a person and a bridge agent read: a
+/// gate leaves no owner row, so without this the 223 GB of 2026-11-24 is in nobody's list.
+#[test]
+fn the_plan_lists_the_gate_build_caches_with_their_size_and_age() {
+    let f = Fixture::new("gatecaches");
+    let target = f.0.join("landing/letibot-0123abcdef/target/debug");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("blob"), vec![b'x'; 8192]).unwrap();
+    let roots = gate_cache::Roots {
+        landing: Some(f.0.join("landing")),
+        ..Default::default()
+    };
+    let here = autoarchive::Here::this_process();
+    let mut plan = Plan {
+        now_ms: now_ms(),
+        ..Default::default()
+    };
+    plan.read_gate_caches(&roots, &here);
+    assert_eq!(plan.gate_caches.len(), 1, "{plan:#?}");
+    let line = plan.render();
+    assert!(
+        line.contains("gate build caches") && line.contains("letibot-0123abcdef"),
+        "{line}"
+    );
+    assert!(line.contains("8 KiB"), "the size is in the line: {line}");
+    let json = plan.to_json();
+    assert_eq!(json["gate_caches"][0]["bytes"], 8192);
+    assert_eq!(
+        json["gate_caches"][0]["dir"],
+        f.0.join("landing/letibot-0123abcdef").display().to_string()
+    );
+}

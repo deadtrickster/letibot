@@ -1040,6 +1040,13 @@ impl RepoQueue {
             .clone()
             .filter(|_| host.starts_with("local"));
         let stop = cancel.clone();
+        // What the guard's refusal names in the log: the repository the key is, moved into the
+        // thread because `self` is not `'static`.
+        let self_key = self.key.clone();
+        let local = host.starts_with("local");
+        // The disk this gate is under comes WITH the runner: it is the same question as where the
+        // steps will run, and a fixture's runner answers `Policy::default` (no floor).
+        let guard_policy = runner.gate_policy();
         let short: String = sha.chars().take(8).collect();
         let run = std::thread::Builder::new()
             .name(format!("gate-{short}"))
@@ -1060,6 +1067,23 @@ impl RepoQueue {
                     stop: &stop,
                     alive: &alive,
                 };
+                // The disk before the code: a gate that cannot build is not a verdict about the
+                // branch, and 2026-11-24's 4 GiB free is what this refusal exists for. A gate on a
+                // declared host is checked there, on the filesystem its target is on.
+                let landing = wt.parent().map(Path::to_path_buf);
+                let target = match local {
+                    true => gate::gate_target_dir(&wt),
+                    false => wt.clone(),
+                };
+                if let Err(why) = super::gate_cache::guard(
+                    &target,
+                    landing.as_deref(),
+                    &guard_policy,
+                    &super::gate_cache::roots(),
+                ) {
+                    eprintln!("  merge queue: {self_key}: {why}");
+                    return gate::not_run(&steps, why);
+                }
                 runner.run(&wt, &steps, &ctl)
             });
         let run = match run {

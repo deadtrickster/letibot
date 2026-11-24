@@ -155,6 +155,12 @@ impl GateRunner for FirecodeGate {
             None => "local (firecode)".to_string(),
         }
     }
+
+    /// The same disk answer as the gate it wraps: this form builds in the same tree, so a floor a
+    /// plain gate would refuse is not one a VM gets round.
+    fn gate_policy(&self) -> super::gate_cache::Policy {
+        super::gate_cache::policy()
+    }
 }
 
 /// The runner a gate uses for a repository: the ordinary one, or its firecode form. A runner with

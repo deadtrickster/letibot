@@ -17,6 +17,7 @@ pub mod desk;
 pub mod enqueue;
 pub mod explain;
 pub mod gate;
+pub mod gate_cache;
 pub mod gate_firecode;
 pub mod gate_host;
 pub mod gate_tick;
@@ -671,6 +672,9 @@ pub fn spawn_for(
             eprintln!("  queues: other daemons' moves will not be heard here: {e}");
         }
     }
+    // Where a gate builds and how much room it needs: read once here, so every gate of this
+    // daemon reads one `[queue]` table rather than the file again per run.
+    gate_cache::set(Some(cfg.gate_cache.clone()));
     if !cfg.serve_queues {
         // The line the daemon's log carries, which is where an operator asks why nothing lands
         // from this daemon: the cause, why it exists, and what still works here. Two causes -
@@ -692,6 +696,9 @@ pub fn spawn_for(
         );
         return None;
     }
+    // The disk this daemon's gates build on, before anything is claimed: stale gate caches go
+    // back now rather than when a gate is already out of room. One pass per start, on stderr.
+    gate_cache::gc_now(&gate_cache::roots(), cfg.gate_cache.days);
     let service = serve::QueueService::new(store_path, &cfg.workspace, env);
     match service.spawn(stop) {
         Ok(h) => {
