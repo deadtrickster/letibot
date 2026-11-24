@@ -974,6 +974,59 @@ fn the_builtin_chat_layers_window_answers_under_the_fuel_cap() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// A room longer than the layer's window keeps its history. The layer answers a window of at most
+/// 200 messages; the head holds the rest, so the pane draws them with the native adapter above the
+/// window instead of letting a guest's input budget delete a room's past.
+#[test]
+fn a_room_longer_than_the_layers_window_keeps_its_history() {
+    let now = 1_793_735_794_500;
+    let mut a = a_builtin_layer(now);
+    a.clock(now);
+    let rows: Vec<Value> = (1..=250)
+        .map(|seq| {
+            wire_msg(
+                seq,
+                "host",
+                "s-a",
+                "session",
+                &format!("message {seq} of the room"),
+            )
+        })
+        .collect();
+    reply(&mut a, super::rooms::rooms_reply(&[("host", 2, 250, 0)]));
+    reply(&mut a, history("host", rows));
+    let chan = a.rooms.selected().expect("a channel");
+    assert_eq!(
+        a.rooms.messages(&chan).len(),
+        250,
+        "the head holds the room"
+    );
+    assert!(
+        a.chat_view().is_some(),
+        "the built-in chat layer answered the window"
+    );
+
+    // Scrolled to the top of the pane, the first message of the room is on the screen: the
+    // messages the window could not carry are drawn, not dropped.
+    let mut seen = String::new();
+    for _ in 0..60 {
+        seen = super::rooms::screen(&mut a, 120).join("\n");
+        if seen.contains("message 1 of the room") {
+            break;
+        }
+        a.key(Key::PageUp);
+    }
+    assert!(
+        seen.contains("message 1 of the room"),
+        "the room's first message is reachable: {seen}"
+    );
+    assert!(
+        a.pane_len > 250,
+        "the body holds the whole room, not one window of it: {} lines",
+        a.pane_len
+    );
+}
+
 /// The module's size. A guest is embedded in the binary, so its size is the binary's: this one
 /// is a conversation's worth of policy and must not become the largest of the six.
 #[test]

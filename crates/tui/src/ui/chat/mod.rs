@@ -15,6 +15,9 @@ use rano::render::Line;
 
 pub(crate) use crate::ui::render::md_options;
 pub(crate) use colour::hue;
+/// A rule with a word in it: a stream's divider, and the head over a group of rows that is not talk
+/// under a day.
+pub(crate) use divider::rule as rule_line;
 
 /// The columns a message's time and the gutter under it take: `14:02` and two spaces.
 pub(crate) const GUTTER: usize = 7;

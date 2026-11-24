@@ -18,15 +18,21 @@ pub(super) fn lines(d: &Draw<'_>) -> Vec<Line> {
         Some(Divider::Unread) => Paint::Attention,
         _ => Paint::Faint,
     };
+    vec![rule(word, d.cols, paint)]
+}
+
+/// A rule across the column with a word in it: what a divider draws, and the row that groups rows
+/// which are not talk under a day - the pair whose dm thread begins under it.
+pub(crate) fn rule(word: &str, cols: usize, paint: Paint) -> Line {
     let head = if word.is_empty() {
         "───".to_string()
     } else {
         format!("── {word} ")
     };
-    let rest = d.cols.saturating_sub(width(&head));
+    let rest = cols.saturating_sub(width(&head));
     let row = Line::new(vec![Span::role(
         format!("{head}{}", "─".repeat(rest)),
         paint,
     )]);
-    vec![truncate(&row, d.cols)]
+    truncate(&row, cols)
 }

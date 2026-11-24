@@ -3,10 +3,12 @@
 
 use std::collections::BTreeMap;
 
+use letibot_sessionlog::pane::{Divider, Stream, StreamEntry};
+
 use crate::app::chat_adapter;
 use crate::app::rooms::{Chan, ListRow, Member, OPERATOR, RoomsView, Send, SessInfo};
 use crate::app::*;
-use crate::ui::chat::{ChatCtx, chat_blocks};
+use crate::ui::chat::{Block, ChatCtx, chat_blocks};
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
 use rano::agent::pane;
 use rano::agent::text::clean_line;
@@ -91,6 +93,7 @@ fn label(v: &RoomsView, c: &Chan) -> String {
             .iter()
             .find(|s| &s.id == id)
             .map_or_else(|| clean_line(id), |s| clean_line(&s.name)),
+        Chan::AllDms => "all dms".into(),
     }
 }
 
@@ -108,6 +111,7 @@ fn title(v: &RoomsView, c: &Chan) -> String {
         },
         Chan::Dm(p) => format!("dm with {}", peer(v, p)),
         Chan::Session(_) => "session".into(),
+        Chan::AllDms => "every dm on the box".into(),
     }
 }
 
@@ -368,6 +372,11 @@ impl RoomsView {
                 return Line::new(vec![Span::role(trim_to(&clean_line(e), rw), Role::Failure)]);
             }
             (None, false) => "asking the coordinator...".to_string(),
+            // Every dm on the box is a read: the operator is a party to almost none of those rows,
+            // so there is nothing to type here and the line says so rather than offering a box.
+            (None, true) if matches!(self.selected(), Some(Chan::AllDms)) => {
+                "every dm on the box · read-only · d on a session opens your own dm with it".into()
+            }
             (None, true) => {
                 // With a failed line in the channel the keys are the whole point: the reason
                 // sits on the line, and what can be done about it is the footer's job.
@@ -608,9 +617,10 @@ impl App {
     }
 
     /// The chat column: the selected channel as a stream of message blocks, and the sends of ours
-    /// that have not landed. The first entry's `seq` comes back with the rows because a page of
-    /// older messages arriving above must not move the reader.
-    fn rooms_body(&self, rw: usize) -> (Vec<Line>, Option<u64>) {
+    /// that have not landed. The first message entry's `seq` comes back with the rows because a page
+    /// of older messages arriving above must not move the reader, and so does the line the unread
+    /// divider is drawn on, because a channel opens there.
+    fn rooms_body(&self, rw: usize) -> Body {
         let Some(c) = self.rooms.selected() else {
             // The selected channel is gone rather than empty, and the sentence says which:
             // an empty channel draws "nothing here yet", which would be a lie here.
@@ -619,16 +629,20 @@ impl App {
                 true => format!("  {which} is archived - up or down selects a room"),
                 false => format!("  {which} is gone - up or down selects a room"),
             };
-            return (vec![pane::faint(why)], None);
+            return Body::sentence(vec![pane::faint(why)]);
         };
         if let Chan::Session(id) = &c {
-            return (self.session_card(id, rw), None);
+            return Body::sentence(self.session_card(id, rw));
         }
         // The channel as a layer sees it: what a message means is the layer's to say - a chat
         // plugin's when one answers, the adapter's when none does - and this pane draws the stream
-        // it answers without ever reading a `Msg`.
+        // it answers without ever reading a `Msg`. What the layer's window could not carry is the
+        // one exception: the head holds those messages, so it draws them itself.
         let names = self.rooms_names();
-        let stream = self.chat_stream(&c, &names);
+        let mut stream = self.chat_stream(&c, &names);
+        // Every dm on the box is many conversations in one column, so each pair gets a rule with
+        // its two names on it: the groups are the pairs, and the newest pair is the first.
+        let pairs = chat_adapter::pair_heads(&self.rooms, &c, &names);
         let blobs = chat_adapter::blobs(&self.rooms, &c);
         let picture = |blob: &str| self.room_picture(blob);
         // P4's cursor is a `seq`; an entry's id is what the renderer draws as selected.
@@ -641,7 +655,32 @@ impl App {
             selected: cursor.as_deref(),
             highlight: self.rooms_search_needle(),
         };
-        let blocks = chat_blocks(&stream, &ctx);
+        let mut blocks: Vec<Block> = Vec::new();
+        let mut place = Place::default();
+        let split = self
+            .chat_window_first()
+            .filter(|_| !stream.entries.is_empty());
+        if let Some(first) = split
+            && let Some(above) =
+                chat_adapter::stream_before(&self.rooms, &c, first, &names, OPERATOR, self.now_ms)
+        {
+            // One day is one divider: the window's own first divider is only drawn when the day
+            // turns there, and only when the rows above it did not already say it.
+            if chat_adapter::same_day_at(&self.rooms, &c, first, self.now_ms) {
+                drop_leading(&mut stream.entries, Divider::Today);
+            }
+            // The unread divider is one row: the rows above the window draw it when the first
+            // unread message is among them, and the window's own copy is then not drawn again.
+            if above
+                .entries
+                .iter()
+                .any(|e| e.divider == Some(Divider::Unread))
+            {
+                drop_leading(&mut stream.entries, Divider::Unread);
+            }
+            add_part(&above, &ctx, &mut blocks, &mut place, &pairs);
+        }
+        add_part(&stream, &ctx, &mut blocks, &mut place, &pairs);
         let mut out: Vec<Line> = Vec::new();
         if let Chan::Room(id) = &c
             && !blocks.is_empty()
@@ -653,13 +692,21 @@ impl App {
             }));
         }
         out.extend(blocks.iter().flat_map(|b| b.lines.iter().cloned()));
+        // The rows above the blocks: the sentence that says older messages may exist. A scroll is
+        // a row of the BODY, so where the divider sits is counted from the body's top - and taken
+        // before the sends below, which are not part of the channel's history.
+        let lead = out.len() - blocks.iter().map(|b| b.lines.len()).sum::<usize>();
         if blocks.is_empty() {
             // The layer's own sentence: an empty channel and one nobody has answered are two
             // facts, and only the layer knows which one this is.
             out.push(pane::faint(format!("  {}", clean_line(&stream.empty))));
         }
         out.extend(send_lines(&self.rooms.sends, &c, rw));
-        (out, blocks.first().and_then(|b| b.seq()))
+        Body {
+            lines: out,
+            first: blocks.iter().find_map(|b| b.seq()),
+            unread_at: place.unread.map(|at| at + lead),
+        }
     }
 
     pub(crate) fn rooms_lines(&mut self, w: usize, room: usize) -> Vec<String> {
@@ -734,35 +781,46 @@ impl App {
         } else {
             self.rooms_left(lw, room)
         };
-        let (body, first) = self.rooms_body(rw);
+        let body = self.rooms_body(rw);
         // The body has asked the chat layer by now: a layer that could not answer is a fallback
         // drawn here, and this is the frame that owes the reason - once, not every frame.
         self.chat_note();
 
         // Stay on the tail unless the reader scrolled back from it.
-        let max = body.len().saturating_sub(chat_room);
+        let max = body.lines.len().saturating_sub(chat_room);
         // A page of older messages landing above keeps the lines the reader was on.
         let key = self.rooms.selected().map(|c| RoomsView::key(&c));
+        let opener = key.as_deref() != self.rooms.drawn_key.as_deref();
         if let (Some((k, seq, len)), Some(key), Some(first)) =
-            (self.rooms.prev_first.clone(), key.clone(), first)
+            (self.rooms.prev_first.clone(), key.clone(), body.first)
             && k == key
             && first < seq
             && self.pane_scroll < self.rooms.prev_max
         {
-            self.pane_scroll += body.len().saturating_sub(len);
+            self.pane_scroll += body.lines.len().saturating_sub(len);
         }
-        self.rooms.prev_first = key.zip(first).map(|(k, f)| (k, f, body.len()));
+        self.rooms.prev_first = key
+            .clone()
+            .zip(body.first)
+            .map(|(k, f)| (k, f, body.lines.len()));
         if self.pane_scroll >= self.rooms.prev_max {
             self.pane_scroll = max;
         }
+        // A channel that has just been opened starts where the reader stopped reading: the news is
+        // on the screen, and the history over the divider is one scroll up.
+        if opener && let Some(at) = body.unread_at {
+            self.pane_scroll = at.min(max);
+        }
         self.pane_scroll = self.pane_scroll.min(max);
         self.rooms.prev_max = max;
+        self.rooms.drawn_key = key;
         self.rooms.at_top = self.pane_scroll == 0;
         self.rooms_page_back();
-        self.pane_len = body.len();
+        self.pane_len = body.lines.len();
         self.pane_room = chat_room;
 
         let mut shown: Vec<Line> = body
+            .lines
             .into_iter()
             .skip(self.pane_scroll)
             .take(chat_room)
@@ -814,5 +872,82 @@ impl App {
             })
             .collect();
         row_strings(&rows, palette)
+    }
+}
+
+/// What the drawing has placed so far: the row the unread divider is on (a channel opens there)
+/// once a message is already drawn above it, and the pair whose rows are being drawn.
+#[derive(Default)]
+struct Place {
+    unread: Option<usize>,
+    messages: bool,
+    pair: Option<String>,
+}
+
+/// The chat column as one frame draws it, and the two facts the scroll arithmetic needs: the first
+/// message on it, and the row the unread divider is drawn on (a channel opens there).
+struct Body {
+    lines: Vec<Line>,
+    first: Option<u64>,
+    unread_at: Option<usize>,
+}
+
+impl Body {
+    /// A body that is one sentence rather than a channel: no channel is selected, or one is a
+    /// session's card.
+    fn sentence(lines: Vec<Line>) -> Body {
+        Body {
+            lines,
+            first: None,
+            unread_at: None,
+        }
+    }
+}
+
+/// Draw one part of the body - the rows above the layer's window, or the window itself - and note
+/// where its unread divider landed, so the pane can open the channel there. `pairs` is the every-dm
+/// view's pair per message: a rule with the two names on it opens each pair's rows.
+fn add_part(
+    stream: &Stream,
+    ctx: &ChatCtx<'_>,
+    blocks: &mut Vec<Block>,
+    place: &mut Place,
+    pairs: &BTreeMap<u64, String>,
+) {
+    let mut at: usize = blocks.iter().map(|b| b.lines.len()).sum();
+    for (entry, block) in stream.entries.iter().zip(chat_blocks(stream, ctx)) {
+        // A new pair opens a group. The rule takes no id, so it is a divider to the cursor and
+        // to the click arithmetic, which is what a row between two conversations is.
+        if let Some(head) = entry
+            .id
+            .as_deref()
+            .and_then(|id| id.parse::<u64>().ok())
+            .and_then(|seq| pairs.get(&seq))
+            && place.pair.as_ref() != Some(head)
+        {
+            place.pair = Some(head.clone());
+            let rule = Block {
+                id: String::new(),
+                lines: vec![crate::ui::chat::rule_line(head, ctx.width, Role::Strong)],
+            };
+            at += rule.lines.len();
+            blocks.push(rule);
+        }
+        // A divider over the channel's FIRST message is *nothing read yet*, and that is not a place
+        // to open at: the reader who has read nothing wants the news, not the start of the log.
+        if place.unread.is_none() && entry.divider == Some(Divider::Unread) && place.messages {
+            place.unread = Some(at);
+        }
+        place.messages |= !block.id.is_empty();
+        at += block.lines.len();
+        blocks.push(block);
+    }
+}
+
+/// Take a divider off the front of a part: the rows above it already drew that day, or that unread
+/// mark, and two rules across a window's edge would be one fact drawn twice.
+fn drop_leading(entries: &mut Vec<StreamEntry>, kind: Divider) {
+    if entries.first().is_some_and(|e| e.divider == Some(kind)) {
+        entries.remove(0);
     }
 }

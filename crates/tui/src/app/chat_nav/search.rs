@@ -39,11 +39,13 @@ impl Search {
 }
 
 /// The room key the selected channel's messages live in: a room's own id, or the one dm channel.
+/// `None` for a channel the room cannot search for it: every dm on the box is the operator's view
+/// of a room whose own readers see only their half of it, so its hits are what this head holds.
 fn room_of(a: &App) -> Option<String> {
     match a.rooms.selected() {
         Some(Chan::Room(id)) => Some(id),
         Some(Chan::Dm(_) | Chan::Session(_)) => Some("dm".to_string()),
-        None => None,
+        Some(Chan::AllDms) | None => None,
     }
 }
 

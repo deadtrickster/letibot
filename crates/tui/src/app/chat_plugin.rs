@@ -37,6 +37,9 @@ struct Memo {
     fuel: Option<u64>,
     /// The generation whose `why` has already been said.
     said: Option<u64>,
+    /// The `seq` of the first message the feed's window carried, when the head held more than the
+    /// window: the pane draws the messages above it itself.
+    from: Option<u64>,
 }
 
 /// What the head keeps for the chat layer: the last answer, and the generation it answered.
@@ -95,6 +98,15 @@ impl App {
     pub(crate) fn chat_view(&self) -> Option<pv::View> {
         let feed = self.chat_feed();
         self.chat_ask(&feed)
+    }
+
+    /// The first message the layer's window carried, when it was the last question asked of a
+    /// layer: the pane draws everything above it with the native adapter. `None` when the adapter
+    /// answered the frame, or when the window held the channel's first message.
+    pub(crate) fn chat_window_first(&self) -> Option<u64> {
+        let memo = self.memo().lock().ok()?;
+        memo.held.as_ref()?;
+        memo.from
     }
 
     /// Whether a chat layer owns the composer: a view that declares an `input` surface is the
@@ -241,6 +253,7 @@ impl App {
             });
         }
         let Some(c) = &selected else {
+            self.memo_from(None);
             return feed;
         };
         let room = RoomsView::key(c);
@@ -259,7 +272,17 @@ impl App {
             }
             from += 1;
         }
+        // The pane draws the messages the window had to leave out; this is where its own rows end
+        // and the layer's begin.
+        self.memo_from(msgs.get(from).map(|m| m.seq).filter(|_| from > 0));
         feed
+    }
+
+    /// Remember where the window started, so the pane can draw the messages above it.
+    fn memo_from(&self, from: Option<u64>) {
+        if let Ok(mut memo) = self.memo().lock() {
+            memo.from = from;
+        }
     }
 
     /// Enter on the chat layer's input: the line goes to `command_chat` and its acts run as the
@@ -271,6 +294,13 @@ impl App {
         // back in the composer, so the words would be swallowed where the native view holds them.
         if self.rooms.selected().is_none() {
             self.rooms_hold_gone(text);
+            return None;
+        }
+        // Every dm on the box is read-only, and that is the head's rule rather than a layer's act:
+        // the words are held for the DM that exists.
+        if let Some(Chan::AllDms) = self.rooms.selected() {
+            self.set_composer(text.trim());
+            self.say("every dm on the box is read-only - d on a session opens your own dm with it");
             return None;
         }
         let feeds = BTreeMap::from([(pp::Feed::Chat.name().to_string(), json!(self.chat_feed()))]);
@@ -433,12 +463,12 @@ impl App {
                     .map(str::to_string)
                     .or_else(|| self.rooms.selected().map(|c| RoomsView::key(&c)))?;
                 let text = text.filter(|t| !t.trim().is_empty())?;
-                Some(self.chat_say(Chan::Room(room), text, thread))
+                self.chat_say(Chan::Room(room), text, thread)
             }
             "room_dm" => {
                 let to = args.get("to").and_then(Value::as_str).map(str::to_string)?;
                 let text = text.filter(|t| !t.trim().is_empty())?;
-                Some(self.chat_say(Chan::Dm(to), text, thread))
+                self.chat_say(Chan::Dm(to), text, thread)
             }
             "room_read" => {
                 let op = match args.get("thread").and_then(Value::as_u64) {
@@ -530,7 +560,15 @@ impl App {
 
     /// One line as a `say` or a `dm`, recorded under a request id the head answers for: the same
     /// request `rooms_say` builds, for a channel the layer named rather than the selected one.
-    fn chat_say(&mut self, chan: Chan, text: &str, thread: Option<u64>) -> Action {
+    /// `None` for a line there is nowhere to send: no send is recorded for words that never left.
+    fn chat_say(&mut self, chan: Chan, text: &str, thread: Option<u64>) -> Option<Action> {
+        if matches!(&chan, Chan::AllDms) || matches!(&chan, Chan::Room(r) if r == rooms::ALL_DMS) {
+            // The every-dm view is the box's talk and the operator is party to almost none of it:
+            // a line said there would name no pair. Held, and said once, rather than sent.
+            self.set_composer(text.trim());
+            self.say("every dm on the box is read-only - d on a session opens your own dm with it");
+            return None;
+        }
         self.rooms.said += 1;
         if self.rooms.tag.is_empty() {
             let nanos = std::time::SystemTime::now()
@@ -554,9 +592,11 @@ impl App {
             Chan::Dm(to) | Chan::Session(to) => {
                 json!({"type": "dm", "id": id, "to": to, "text": body, "thread": thread})
             }
+            // Refused above: nothing is recorded for a line that has no pair to belong to.
+            Chan::AllDms => return None,
         };
         self.rooms.next_poll_ms = 0;
-        Action::RoomChat { id: Some(id), op }
+        Some(Action::RoomChat { id: Some(id), op })
     }
 }
 

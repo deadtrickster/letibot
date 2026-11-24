@@ -8,7 +8,7 @@ use letibot_sessionlog::pane::{Cell, Divider, Mention, Role, Stream, StreamEntry
 use rano::agent::text::clean_line;
 use rano::width::text::truncate;
 
-use crate::app::rooms::{Chan, Msg, RoomsView, mentions_operator};
+use crate::app::rooms::{Chan, Msg, RoomsView, dm_pair, mentions_operator};
 use crate::ui::chat::{Blob, hue};
 
 /// How long a run of one speaker may pause before the next message opens a new one: ten minutes,
@@ -28,10 +28,25 @@ pub(crate) fn stream(
     now_ms: u64,
 ) -> Stream {
     let msgs = v.messages(c);
+    let opened = v.opened_seen.get(&RoomsView::key(c)).copied();
+    stream_of(&msgs, v.heard, opened, names, me, now_ms)
+}
+
+/// The same stream over one slice of a channel's messages. The pane draws the messages a layer's
+/// window could not carry with this, above the window's own rows: a layer's input budget must not
+/// delete a room's history.
+pub(crate) fn stream_of(
+    msgs: &[&Msg],
+    heard: bool,
+    opened: Option<u64>,
+    names: &BTreeMap<String, String>,
+    me: &str,
+    now_ms: u64,
+) -> Stream {
     let mut s = Stream::default();
     if msgs.is_empty() {
         // The two empty channels are two facts: nothing was said, or nobody has answered yet.
-        s.empty = if v.heard {
+        s.empty = if heard {
             "nothing here yet"
         } else {
             "asking the coordinator..."
@@ -39,11 +54,10 @@ pub(crate) fn stream(
         .to_string();
         return s;
     }
-    let opened = v.opened_seen.get(&RoomsView::key(c)).copied();
     let mut marked = false;
     let mut prev: Option<&Msg> = None;
     let mut prev_day: Option<Day> = None;
-    for m in &msgs {
+    for m in msgs {
         let day = local(m.ts).map(|tm| Day::of(&tm));
         let mut divided = false;
         if day.is_some() && day != prev_day {
@@ -82,7 +96,7 @@ pub(crate) fn stream(
         // above it: a row that repeated the run's own minute would say nothing.
         let same_minute = prev.is_some_and(|p| stamp(p) == stamp(m));
         s.entries
-            .push(entry(m, &msgs, names, me, runs_on, same_minute));
+            .push(entry(m, msgs, names, me, runs_on, same_minute));
         tokens(&mut s.mentions, &m.text, names, me);
         prev = Some(m);
     }
@@ -282,6 +296,65 @@ fn mentions(text: &str) -> Vec<String> {
         i = end.max(i + 1);
     }
     out
+}
+
+/// What the day divider over a message sent at `ts` would say. Two messages with the same label
+/// share a day: the pane asks before it draws a second divider for one day across a window's edge.
+pub(crate) fn day_label(ts: u64, now_ms: u64) -> Option<String> {
+    local(ts).map(|tm| Day::of(&tm).label(now_ms))
+}
+
+/// The channel's messages before `until`, as a stream: the rows a layer's window could not carry.
+/// `None` when the channel holds nothing above it, which is every room short enough to fit.
+pub(crate) fn stream_before(
+    v: &RoomsView,
+    c: &Chan,
+    until: u64,
+    names: &BTreeMap<String, String>,
+    me: &str,
+    now_ms: u64,
+) -> Option<Stream> {
+    let above: Vec<&Msg> = v
+        .messages(c)
+        .into_iter()
+        .filter(|m| m.seq < until)
+        .collect();
+    if above.is_empty() {
+        return None;
+    }
+    let opened = v.opened_seen.get(&RoomsView::key(c)).copied();
+    Some(stream_of(&above, v.heard, opened, names, me, now_ms))
+}
+
+/// Do the last message above `until` and the message at it fall on the same day? The pane drops the
+/// window's own leading day rule when they do: one day is one divider, not two at a window's edge.
+pub(crate) fn same_day_at(v: &RoomsView, c: &Chan, until: u64, now_ms: u64) -> bool {
+    let msgs = v.messages(c);
+    let above = msgs.iter().rev().find(|m| m.seq < until);
+    let at = msgs.iter().find(|m| m.seq >= until);
+    above
+        .zip(at)
+        .is_some_and(|(a, b)| day_label(a.ts, now_ms) == day_label(b.ts, now_ms))
+}
+
+/// The pair each message of the every-dm view belongs to, drawn by its two names: the rule that
+/// opens each group. Empty for every other channel, whose rows are one conversation.
+pub(crate) fn pair_heads(
+    v: &RoomsView,
+    c: &Chan,
+    names: &BTreeMap<String, String>,
+) -> BTreeMap<u64, String> {
+    if !matches!(c, Chan::AllDms) {
+        return BTreeMap::new();
+    }
+    let shown = |handle: &str| clean_line(names.get(handle).map(String::as_str).unwrap_or(handle));
+    v.messages(c)
+        .into_iter()
+        .map(|m| {
+            let pair: Vec<String> = dm_pair(m).split('|').map(shown).collect();
+            (m.seq, pair.join(" ↔ "))
+        })
+        .collect()
 }
 
 /// The time a message was sent at, as this head's clock prints it. `None` is a message the wire

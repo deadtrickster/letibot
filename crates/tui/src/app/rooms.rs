@@ -28,6 +28,16 @@ pub(crate) const SEARCH: &str = "search:";
 /// its answer fills that popup and is never merged into a channel's ring.
 pub(crate) const RECORD: &str = "record:";
 
+/// Request id prefix of the operator's read of every dm on the box, so its answer fills that one
+/// channel instead of a peer's.
+pub(crate) const DMS: &str = "dms:";
+
+/// The channel key of the every-dm view: one key, because it is one view.
+pub(crate) const ALL_DMS: &str = "alldms";
+
+/// How many dms the every-dm view asks for: the most one read returns.
+const DMS_READ: u32 = 300;
+
 /// Messages asked for per page back, the most one read returns.
 const PAGE: u32 = 200;
 
@@ -239,6 +249,9 @@ pub(crate) enum Chan {
     Dm(String),
     /// One of the operator's own top-level sessions, by session id.
     Session(String),
+    /// Every dm on the box, of every pair - the operator's own reading of what the seats say to
+    /// each other, and nobody else's. Read-only, and asked for as its own channel.
+    AllDms,
 }
 
 /// What a row of the left list stands for when it is clicked.
@@ -277,6 +290,10 @@ pub(crate) struct Send {
 pub(crate) struct RoomsView {
     pub rows: Vec<RoomRow>,
     pub msgs: BTreeMap<String, Vec<Msg>>,
+    /// Every dm on the box, of every pair, as the operator's own seat reads them. A list of its own
+    /// because most of it is other parties' talk: it fills no DM channel, counts as nobody's
+    /// unread, and moves no cursor.
+    pub dm_all: Vec<Msg>,
     /// The newest `seq` read per room (`dm` for direct messages): where the next `read` starts.
     pub read_to: BTreeMap<String, u64>,
     /// The newest `seq` shown per channel key.
@@ -327,6 +344,9 @@ pub(crate) struct RoomsView {
     /// The first seq and line count of the last draw, to keep the view in place when a page of
     /// older messages lands above it.
     pub prev_first: Option<(String, u64, usize)>,
+    /// The channel the last frame drew: a draw of a different one is a channel being opened, and a
+    /// channel opens where the reader stopped reading rather than at the newest line.
+    pub drawn_key: Option<String>,
     pub next_poll_ms: u64,
     /// The signal scorecard, once the coordinator has answered, and when to ask again (0 = at
     /// the next poll after the first).
@@ -434,6 +454,9 @@ impl RoomsView {
                 .filter(|p| !self.sessions.iter().any(|s| &s.id == p))
                 .map(Chan::Dm),
         );
+        // Last, because it is a view over the others rather than a room: every pair's dms on the
+        // box, which the operator reads and cannot speak into.
+        out.push(Chan::AllDms);
         out
     }
 
@@ -449,6 +472,7 @@ impl RoomsView {
             Chan::Room(id) => id.clone(),
             Chan::Dm(p) => format!("dm:{p}"),
             Chan::Session(id) => format!("session:{id}"),
+            Chan::AllDms => ALL_DMS.into(),
         }
     }
 
@@ -463,7 +487,27 @@ impl RoomsView {
                 .flatten()
                 .filter(|m| Self::peer_of(m).as_deref() == Some(p.as_str()))
                 .collect(),
+            Chan::AllDms => self.dm_threads(),
         }
+    }
+
+    /// Every dm the head holds, grouped by the pair that said it: the threads newest first, and
+    /// each thread's own rows oldest first, so a pair reads as the conversation it was.
+    fn dm_threads(&self) -> Vec<&Msg> {
+        let mut pairs: BTreeMap<String, Vec<&Msg>> = BTreeMap::new();
+        for m in &self.dm_all {
+            pairs.entry(dm_pair(m)).or_default().push(m);
+        }
+        let mut threads: Vec<(u64, Vec<&Msg>)> = pairs
+            .into_values()
+            .map(|mut rows| {
+                rows.sort_by_key(|m| m.seq);
+                let newest = rows.last().map_or(0, |m| m.seq);
+                (newest, rows)
+            })
+            .collect();
+        threads.sort_by(|(a, _), (b, _)| b.cmp(a));
+        threads.into_iter().flat_map(|(_, rows)| rows).collect()
     }
 
     /// Messages of `c` the operator has not been shown.
@@ -499,6 +543,9 @@ impl RoomsView {
                 .filter(|m| m.author != OPERATOR && m.seq > seen)
                 .count() as u64,
             Chan::Session(id) => self.unread(&Chan::Dm(id.clone())),
+            // Nobody's unread: these are other pairs' words, which no cursor of this head's may
+            // count or clear.
+            Chan::AllDms => 0,
         }
     }
 
@@ -566,6 +613,20 @@ impl RoomsView {
         }
     }
 
+    /// Every dm the operator's seat answers with, merged into the one list the every-dm view draws.
+    /// No cursor moves: the rows are other seats' words and nobody's unread.
+    pub(crate) fn merge_all_dms(&mut self, rows: Vec<Msg>) {
+        for m in rows {
+            if self.dm_all.iter().all(|x| x.seq != m.seq) {
+                self.dm_all.push(m);
+            }
+        }
+        self.dm_all.sort_by_key(|m| m.seq);
+        if self.dm_all.len() > KEEP * 4 {
+            self.dm_all.drain(..self.dm_all.len() - KEEP * 4);
+        }
+    }
+
     /// The page before the oldest message held, for a room that may have older ones.
     pub(crate) fn older_op(&self, room: &str) -> Option<Value> {
         if self.oldest_known.contains(room) || self.paging.contains(room) {
@@ -594,7 +655,7 @@ impl RoomsView {
                 .rows
                 .iter()
                 .any(|r| &r.id == id && r.archived_ms.is_some()),
-            Chan::Dm(_) | Chan::Session(_) => false,
+            Chan::Dm(_) | Chan::Session(_) | Chan::AllDms => false,
         }
     }
 
@@ -613,6 +674,9 @@ impl RoomsView {
                 ops.push(json!({"type": "roster", "room": id}));
             }
             Some(Chan::Dm(_) | Chan::Session(_)) => ops.push(self.read_op("dm")),
+            // The operator's own view of the box's dms: one read of every pair, which moves no
+            // seat's cursor and marks nothing seen for either end.
+            Some(Chan::AllDms) => ops.push(json!({"type": "dms", "last": DMS_READ})),
             None => {}
         }
         let selected = match self.selected() {
@@ -650,6 +714,12 @@ impl RoomsView {
     /// holds the cursor - it may not pass a message this head has not drawn anywhere.
     pub(crate) fn shown(&mut self) -> Option<u64> {
         let c = self.selected()?;
+        // Every dm on the box is read-only, and reading it is nobody's ack: most of those rows
+        // are two other seats' words, so this head neither marks them seen nor moves a cursor
+        // past them.
+        if matches!(c, Chan::AllDms) {
+            return None;
+        }
         let shown = self.messages(&c).last().map(|m| m.seq)?;
         // A queue post the room dropped is not news to read, so reading to the end passes it.
         let top = match &c {
@@ -666,7 +736,7 @@ impl RoomsView {
                     .find(|r| &r.id == id)
                     .is_some_and(|r| r.last_seq > seen),
                 Chan::Dm(_) => self.messages(c).iter().any(|m| m.seq > seen),
-                Chan::Session(_) => false,
+                Chan::Session(_) | Chan::AllDms => false,
             }
         };
         let held = self
@@ -681,6 +751,21 @@ impl RoomsView {
             frontier
         })
     }
+}
+
+/// The pair a dm is between, as one key: the two principals sorted, so both directions of one
+/// conversation are one thread. A message with no addressee (never a dm) is its own pair.
+pub(crate) fn dm_pair(m: &Msg) -> String {
+    let other = m.to.clone().unwrap_or_default();
+    if other.is_empty() || other == m.author {
+        return m.author.clone();
+    }
+    let (a, b) = if m.author <= other {
+        (m.author.as_str(), other.as_str())
+    } else {
+        (other.as_str(), m.author.as_str())
+    };
+    format!("{a}|{b}")
 }
 
 /// Does `m` name the operator: addressed to it, or `@operator` in the text.
@@ -719,6 +804,18 @@ fn split_reply(text: &str) -> (Option<u64>, &str) {
 }
 
 impl App {
+    /// One poll's requests as actions, each with the request id its answer is told apart by: an
+    /// opener and a poll go through this one door, so the two cannot disagree.
+    pub(crate) fn rooms_ops(ops: Vec<Value>) -> Vec<Action> {
+        ops.into_iter()
+            .map(|op| {
+                let id = (op.get("type").and_then(Value::as_str) == Some("dms"))
+                    .then(|| DMS.to_string());
+                Action::RoomChat { op, id }
+            })
+            .collect()
+    }
+
     /// The first requests of an open view. The rest of the first poll rides in `queued`.
     pub(crate) fn open_rooms(&mut self) -> Option<Action> {
         self.rooms.heard = false;
@@ -729,14 +826,10 @@ impl App {
         self.rooms.sel.get_or_insert(Chan::Room("host".into()));
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
         self.rooms_ask_marks();
-        let mut ops = self.rooms.poll_ops().into_iter();
+        let mut ops = Self::rooms_ops(self.rooms.poll_ops()).into_iter();
         let first = ops.next()?;
-        self.queued
-            .extend(ops.map(|op| Action::RoomChat { op, id: None }));
-        Some(Action::RoomChat {
-            op: first,
-            id: None,
-        })
+        self.queued.extend(ops);
+        Some(first)
     }
 
     /// Ask the daemon, once, how far the operator has read each channel: a head that attaches
@@ -766,8 +859,7 @@ impl App {
             // The sidebar's Sessions rows draw presence with the view closed.
             if self.sidebar.on {
                 let ops = self.rooms.presence_ops(None);
-                self.queued
-                    .extend(ops.into_iter().map(|op| Action::RoomChat { op, id: None }));
+                self.queued.extend(Self::rooms_ops(ops));
             }
             return;
         }
@@ -781,8 +873,7 @@ impl App {
             self.rooms.next_signals_ms = self.now_ms.saturating_add(SIGNALS_POLL_MS);
             ops.push(json!({"type": "signals"}));
         }
-        self.queued
-            .extend(ops.into_iter().map(|op| Action::RoomChat { op, id: None }));
+        self.queued.extend(Self::rooms_ops(ops));
     }
 
     /// `/invite NAME [ROOM]` and `/leave NAME [ROOM]`: a session in or out of another project room.
@@ -882,6 +973,15 @@ impl App {
             "history" => {
                 let room = reply.get("room").and_then(Value::as_str).unwrap_or("");
                 if let Ok(r) = serde_json::from_value::<Vec<Msg>>(rows(&reply)) {
+                    // Every dm on the box: its own list, and its own channel - a row of it is no
+                    // peer's channel, and reading it marks nothing seen.
+                    if id.starts_with(DMS) {
+                        self.rooms.merge_all_dms(r);
+                        self.rooms.heard = true;
+                        self.rooms.error = None;
+                        self.rooms_shown();
+                        return;
+                    }
                     let searched = id.starts_with(SEARCH);
                     if id.starts_with(OLDER) {
                         self.rooms.paging.remove(room);
@@ -1000,6 +1100,7 @@ impl App {
             },
             Chan::Dm(p) => format!("dm with {}", self.rooms_display_name(p)),
             Chan::Session(id) => self.session_label(id),
+            Chan::AllDms => "all dms".into(),
         }
     }
 
@@ -1034,6 +1135,13 @@ impl App {
             ));
             return None;
         }
+        // Every dm on the box is a READ: most of its rows are two other seats talking, and a line
+        // typed here would have no pair to belong to. The words are held for the DM that exists.
+        if let Some(Chan::AllDms) = self.rooms.selected() {
+            self.set_composer(text.trim());
+            self.say("every dm on the box is read-only - d on a session opens your own dm with it");
+            return None;
+        }
         let Some(chan) = self.rooms.selected() else {
             self.rooms_hold_gone(text);
             return None;
@@ -1060,6 +1168,9 @@ impl App {
             Chan::Dm(to) | Chan::Session(to) => {
                 json!({"type": "dm", "id": id, "to": to, "text": body, "thread": thread})
             }
+            // Refused above with the words kept: this arm is unreachable, and says so rather than
+            // recording a send that has no pair to belong to.
+            Chan::AllDms => return None,
         };
         self.rooms.next_poll_ms = 0;
         self.scroll_rooms_to_tail();

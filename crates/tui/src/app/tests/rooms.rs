@@ -394,6 +394,9 @@ fn switching_channel_reads_the_new_one_at_once() {
         Some(crate::app::rooms::Chan::Room("host".into()))
     );
     a.key(Key::Up);
+    // The every-dm view is the list's last channel, so the wrap lands on it.
+    assert_eq!(a.rooms.selected(), Some(crate::app::rooms::Chan::AllDms));
+    a.key(Key::Up);
     assert_eq!(
         a.rooms.selected(),
         Some(crate::app::rooms::Chan::Room(PROJECT.into()))
@@ -1719,4 +1722,198 @@ fn an_archived_room_leaves_the_list_and_the_switcher() {
     assert!(a.rooms.gone_archived, "the reason is the archive");
     let all = a.screen(100, 30).join("\n");
     assert!(all.contains("#shipyard is archived"), "{all}");
+}
+
+/// A room opens on its whole history with the unread divider INSIDE it, and a later poll adds to
+/// what is drawn: opening is not a place the rows above the divider can fall out of.
+#[test]
+fn opening_a_room_keeps_the_history_above_the_unread_divider() {
+    let mut a = opened(1_000);
+    // The marks the daemon keeps for the operator: this head read up to 3 before it attached.
+    reply(&mut a, json!({"type": "marks", "marks": {"host": 3}}));
+    reply(&mut a, rooms_reply(&[("host", 2, 6, 3)]));
+    let rows = (1..=6)
+        .map(|i| msg(i, "host", "s-a", "session", &format!("line {i}")))
+        .collect();
+    reply(&mut a, history("host", rows));
+    let all = screen(&mut a, 120).join("\n");
+    for i in 1..=6 {
+        assert!(
+            all.contains(&format!("line {i}")),
+            "line {i} was dropped:\n{all}"
+        );
+    }
+    assert!(all.contains("── unread "), "no divider:\n{all}");
+
+    // The next poll answers with the news only, as the daemon does for a `since` cursor.
+    reply(
+        &mut a,
+        history("host", vec![msg(7, "host", "s-b", "session", "line 7")]),
+    );
+    let all = screen(&mut a, 120).join("\n");
+    for i in 1..=7 {
+        assert!(
+            all.contains(&format!("line {i}")),
+            "line {i} was dropped after the news landed:\n{all}"
+        );
+    }
+    assert!(all.contains("── unread "), "no divider:\n{all}");
+}
+
+/// A channel that is opened starts where the reader stopped reading: the divider is the top row of
+/// the chat column, the news is under it, and the history is one scroll up rather than gone.
+#[test]
+fn opening_a_room_puts_the_viewport_on_the_unread_divider() {
+    let mut a = opened(1_000);
+    reply(&mut a, json!({"type": "marks", "marks": {"host": 20}}));
+    reply(&mut a, rooms_reply(&[("host", 2, 30, 10)]));
+    let rows = (1..=30)
+        .map(|i| {
+            // Two speakers, so every message is a header and a body: the room is taller than the
+            // pane, which is the only way the viewport's place can be read off the frame.
+            let who = if i % 2 == 0 { "s-a" } else { "s-b" };
+            msg(i, "host", who, "session", &format!("line {i}"))
+        })
+        .collect();
+    reply(&mut a, history("host", rows));
+    let drawn = screen(&mut a, 120);
+    let all = drawn.join("\n");
+    assert!(all.contains("── unread "), "no divider:\n{all}");
+    let at = drawn
+        .iter()
+        .position(|r| r.contains("── unread "))
+        .expect("the divider is drawn");
+    assert_eq!(
+        at, 1,
+        "the divider is the first row under the header:\n{all}"
+    );
+    // The rows under it are the first message the reader had not seen.
+    let under: String = drawn[at + 1..(at + 3).min(drawn.len())].join(" ");
+    assert!(under.contains("line 21"), "{all}");
+    // And the history is not dropped: the body is the whole room.
+    assert!(
+        a.pane_len > drawn.len(),
+        "the body is the room: {}",
+        a.pane_len
+    );
+    a.key(Key::PageUp);
+    let all = screen(&mut a, 120).join("\n");
+    assert!(
+        !all.contains("── unread ") || all.contains("line 20"),
+        "scrolling up reaches the read history:\n{all}"
+    );
+}
+
+/// One dm, as the coordinator sends it: a pair, and who said it to whom.
+fn dm(seq: u64, from: &str, to: &str, text: &str) -> Value {
+    json!({"seq": seq, "ts": 1_793_735_794_000u64 + seq * 60_000, "room": "dm",
+           "author": from, "kind": if from == "operator" { "operator" } else { "session" },
+           "to": to, "text": text})
+}
+
+/// Every dm on the box, as the operator's own seat reads it.
+fn every_dm(rows: Vec<Value>) -> Value {
+    let last = rows.last().and_then(|m| m["seq"].as_u64()).unwrap_or(0);
+    json!({"type": "history", "room": "dm", "rows": rows, "last_seq": last, "trimmed": false})
+}
+
+/// The every-dm channel is every pair's thread, grouped and newest pair first, and the pane draws a
+/// rule with both names on it over each group.
+#[test]
+fn every_dm_is_grouped_by_pair_and_newest_pair_first() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 0, 0)]));
+    reply_as(
+        &mut a,
+        "dms:",
+        every_dm(vec![
+            dm(10, "s-a", "s-b", "first between a and b"),
+            dm(11, "s-b", "s-a", "answered by b"),
+            dm(12, "cc@rano", "s-a", "another pair"),
+        ]),
+    );
+    a.rooms_go(crate::app::rooms::Chan::AllDms);
+    assert_eq!(a.rooms.messages(&crate::app::rooms::Chan::AllDms).len(), 3);
+    let all = screen(&mut a, 120).join("\n");
+    // The newest word is cc@rano's, so that pair is the first group.
+    for words in ["cc@rano ↔ s-a", "s-a ↔ s-b"] {
+        assert!(
+            all.contains(&format!("── {words} ")),
+            "no group rule for {words}:\n{all}"
+        );
+    }
+    let at_rano = all.find("── cc@rano ↔ s-a").expect("the first rule");
+    let at_ab = all.find("── s-a ↔ s-b").expect("the second rule");
+    assert!(at_rano < at_ab, "newest pair first:\n{all}");
+    assert!(all.contains("first between a and b"), "{all}");
+    assert!(all.contains("another pair"), "{all}");
+}
+
+/// The every-dm channel is read-only: a line typed there is held in the composer and nothing is
+/// sent, because the operator is a party to almost none of those rows.
+#[test]
+fn every_dm_refuses_a_line_and_keeps_the_words() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 0, 0)]));
+    a.rooms_go(crate::app::rooms::Chan::AllDms);
+    a.take_actions();
+    a.set_composer("butting in");
+    assert_eq!(a.key(Key::Enter), None, "nothing was sent");
+    assert_eq!(
+        a.editor.text(),
+        "butting in",
+        "the words are still the operator's"
+    );
+    assert!(
+        a.rooms.sends.is_empty(),
+        "no send record for a line that never left"
+    );
+    assert!(
+        !raw_ops(&mut a).iter().any(|o| o["type"] == "say"),
+        "no say reached the daemon"
+    );
+    let all = screen(&mut a, 120).join("\n");
+    assert!(
+        all.contains("read-only"),
+        "the line says it is a read:\n{all}"
+    );
+}
+
+/// Reading every dm is nobody's ack: it marks no channel seen, moves no cursor, and asks the
+/// daemon for the box's dms with a request id of its own.
+#[test]
+fn reading_every_dm_moves_no_cursor() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 9, 0)]));
+    reply(&mut a, json!({"type": "marks", "marks": {"host": 9}}));
+    a.rooms_go(crate::app::rooms::Chan::AllDms);
+    a.take_actions();
+    a.rooms.next_poll_ms = 0;
+    a.clock(4_000);
+    let asked = raw_ops(&mut a);
+    let dms = asked
+        .iter()
+        .find(|o| o["type"] == "dms")
+        .unwrap_or_else(|| panic!("the poll asks for the box's dms: {asked:?}"));
+    assert!(dms["last"].as_u64().is_some(), "{dms}");
+    reply_as(
+        &mut a,
+        "dms:",
+        every_dm(vec![dm(3, "s-a", "s-b", "private words")]),
+    );
+    let mut after = raw_ops(&mut a);
+    a.screen(120, 30);
+    after.extend(raw_ops(&mut a));
+    assert!(
+        !after
+            .iter()
+            .any(|o| o["type"] == "ack" || o["type"] == "mark"),
+        "reading every dm moved a cursor: {after:?}"
+    );
+    assert_eq!(
+        a.rooms.seen.get(crate::app::rooms::ALL_DMS).copied(),
+        None,
+        "the every-dm view is never marked seen"
+    );
+    assert_eq!(a.rooms.acked, 0, "the inbox cursor did not move");
 }

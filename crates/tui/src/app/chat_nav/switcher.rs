@@ -46,7 +46,7 @@ pub(crate) fn rows(a: &App, query: &str) -> Vec<Row> {
         // looking for X should not have to type the words this head wraps it in.
         let peer = match &c {
             Chan::Dm(p) | Chan::Session(p) => Some(p.as_str()),
-            Chan::Room(_) => None,
+            Chan::Room(_) | Chan::AllDms => None,
         };
         let Some(rank) = rank(query, &label).or_else(|| peer.and_then(|p| rank(query, p))) else {
             continue;

@@ -32,7 +32,8 @@ impl App {
             && match self.rooms.sel.as_ref() {
                 Some(Chan::Room(id)) => *id == room,
                 Some(Chan::Dm(_) | Chan::Session(_)) => room == "dm",
-                None => false,
+                // Every dm on the box is nobody's unread, so a pushed dm is not news here.
+                Some(Chan::AllDms) | None => false,
             };
         if let Some(row) = self.rooms.rows.iter_mut().find(|r| r.id == room) {
             row.last_seq = row.last_seq.max(m.seq);
