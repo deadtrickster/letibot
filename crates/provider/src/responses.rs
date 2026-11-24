@@ -13,7 +13,7 @@ use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
 use serde_json::{Value, json};
 
 use crate::keys::Credentials;
-use crate::messages::{Eyes, Withheld, not_sent_said, picture_fate};
+use crate::messages::{Eyes, Withheld, document_said, not_sent_said, picture_fate};
 use crate::presets::Preset;
 
 /// How long the provider may take to send its first byte. The headers go out with the
@@ -146,20 +146,14 @@ impl ResponsesProvider {
         self
     }
 
-    /// How this model gets pictures: a provider that already refused one, then the catalogue's
-    /// `modalities.input`, otherwise sent. Same table as chat completions, since it is a model fact.
-    fn eyes(&self) -> Eyes<'_> {
-        if crate::messages::known_text_only(self.preset.name, &self.model) {
-            return Eyes::TextOnly(&self.model);
-        }
-        match self
-            .catalogue
-            .takes_images(self.preset.catalogue_id, &self.model)
-        {
-            Some(true) => Eyes::Sees,
-            Some(false) => Eyes::TextOnly(&self.model),
-            None => Eyes::Unknown(&self.model),
-        }
+    /// Pictures and documents: the same table as chat completions, read in the one place.
+    fn senses(&self, req: &TurnRequest<'_>) -> crate::messages::Senses<'_> {
+        crate::messages::senses_for(
+            &self.catalogue,
+            self.preset,
+            &self.model,
+            crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
+        )
     }
 
     /// The reasoning records this client holds, oldest first.
@@ -183,7 +177,7 @@ impl ResponsesProvider {
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
-        self.body_for(req, self.eyes(), Withheld::nothing())
+        self.body_for(req, self.senses(req), Withheld::nothing())
     }
 
     /// The same body, with what the model gets pictures as given rather than decided: the
@@ -191,12 +185,12 @@ impl ResponsesProvider {
     fn body_for(
         &self,
         req: &TurnRequest<'_>,
-        eyes: Eyes<'_>,
+        senses: crate::messages::Senses<'_>,
         withheld: Withheld<'_>,
     ) -> Result<Value, BackendError> {
         let tools = tools(req.tools_json).map_err(BackendError::Malformed)?;
         let ledger = self.ledger();
-        let (instructions, input) = input_items(req, eyes, withheld, &ledger);
+        let (instructions, input) = input_items(req, senses, withheld, &ledger);
         let mut body = json!({
             "model": self.model,
             "input": Value::Array(input),
@@ -317,7 +311,7 @@ struct Input {
 /// does, because the prefix cache is keyed on the bytes.
 fn input_items(
     req: &TurnRequest<'_>,
-    eyes: Eyes<'_>,
+    senses: crate::messages::Senses<'_>,
     withheld: Withheld<'_>,
     ledger: &[Issued],
 ) -> (Option<String>, Vec<Value>) {
@@ -346,7 +340,7 @@ fn input_items(
                 rows.push(plain(json!({"role": "user", "content": text})));
             }
             TranscriptItem::User { parts, .. } => {
-                rows.push(plain(user_message(parts, eyes, withheld)));
+                rows.push(plain(user_message(parts, senses, withheld)));
             }
             TranscriptItem::Reasoning { text, .. } => {
                 for record in pairing(text, ledger, &mut cursor) {
@@ -399,7 +393,25 @@ fn input_items(
                 // A picture a tool read rides the output of the call that read it: this API's
                 // `function_call_output.output` takes a content list, so no extra user turn.
                 let output = match media {
-                    Some(m) => match picture_fate(&m.data_ref, eyes, withheld) {
+                    Some(m) if m.is_document() => {
+                        // This API's own file input: `input_file` with the bytes as a `data:` URL,
+                        // or the file's text where the model takes no document.
+                        match senses.pdf_why {
+                            None => json!([
+                                {"type": "input_text", "text": payload},
+                                {
+                                    "type": "input_file",
+                                    "filename": "document.pdf",
+                                    "file_data": m.data_ref,
+                                },
+                            ]),
+                            Some(why) => json!(format!(
+                                "{payload}\n\nAttached document from tool result: {}",
+                                document_said(1, &m.mime, &m.data_ref, why)
+                            )),
+                        }
+                    }
+                    Some(m) => match picture_fate(&m.data_ref, senses.eyes, withheld) {
                         None => json!([
                             {"type": "input_text", "text": payload},
                             {"type": "input_image", "image_url": m.data_ref},
@@ -457,9 +469,14 @@ fn plain(item: Value) -> Input {
 /// A user row: a string when it is words, a content list when it carries a picture (`input_image`
 /// with a `data:` URL). A picture that cannot be sent is named with its reason, by the
 /// chat-completions rules.
-fn user_message(parts: &[UserPart], eyes: Eyes<'_>, withheld: Withheld<'_>) -> Value {
+fn user_message(
+    parts: &[UserPart],
+    senses: crate::messages::Senses<'_>,
+    withheld: Withheld<'_>,
+) -> Value {
     let mut content: Vec<Value> = Vec::new();
     let mut images = 0usize;
+    let mut documents = 0usize;
     for part in parts {
         match part {
             UserPart::Text { text } => content.push(json!({"type": "input_text", "text": text})),
@@ -468,7 +485,7 @@ fn user_message(parts: &[UserPart], eyes: Eyes<'_>, withheld: Withheld<'_>) -> V
                 data_ref,
             } => {
                 images += 1;
-                match picture_fate(data_ref, eyes, withheld) {
+                match picture_fate(data_ref, senses.eyes, withheld) {
                     None => content.push(json!({"type": "input_image", "image_url": data_ref})),
                     Some(why) => content.push(json!({
                         "type": "input_text",
@@ -478,6 +495,26 @@ fn user_message(parts: &[UserPart], eyes: Eyes<'_>, withheld: Withheld<'_>) -> V
                             crate::messages::data_ref_bytes(data_ref),
                             &why,
                         ),
+                    })),
+                }
+            }
+            // The Responses API's file input: a `data:` URL under `file_data`, which is the shape
+            // `input_image` takes for a picture.
+            UserPart::Document {
+                media_type,
+                data_ref,
+                filename,
+            } => {
+                documents += 1;
+                match senses.pdf_why {
+                    None => content.push(json!({
+                        "type": "input_file",
+                        "filename": filename,
+                        "file_data": data_ref,
+                    })),
+                    Some(why) => content.push(json!({
+                        "type": "input_text",
+                        "text": document_said(documents, media_type, data_ref, why),
                     })),
                 }
             }
@@ -1123,10 +1160,11 @@ impl MessagesBackend for ResponsesProvider {
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
-        let eyes = self.eyes();
-        let first = self.round(req, on_delta, eyes, Withheld::nothing());
+        let senses = self.senses(req);
+        let eyes = senses.eyes;
+        let first = self.round(req, on_delta, senses, Withheld::nothing());
         // A refusal is read off the wire, never assumed: the status is 400 and the request
-        // ACTUALLY carried a picture. Two different refusals answer that shape and they are
+        // ACTUALLY carried a part. Two different refusals answer that shape and they are
         // two different facts, exactly as the chat-completions client reads them.
         let Err(BackendError::Refused {
             status: 400,
@@ -1136,6 +1174,30 @@ impl MessagesBackend for ResponsesProvider {
         else {
             return first;
         };
+        // A refused DOCUMENT first: the model may take pictures and no file, and the retry sends
+        // the same document's extracted text instead.
+        if senses.takes_pdfs()
+            && crate::messages::carries_documents(req.items.iter().chain(req.tail.iter()))
+            && crate::messages::document_refusal(why)
+        {
+            if crate::messages::mark_no_pdf(self.preset.name, &self.model) {
+                let said = format!(
+                    "{} refused a PDF (the provider said: {why}). Documents are now sent to it as \
+                     their extracted text, and this daemon will not send this model another \
+                     document.",
+                    self.model
+                );
+                eprintln!("  {said}");
+                if let Some(notes) = &self.notes {
+                    notes(said);
+                }
+            }
+            let text_only = crate::messages::Senses {
+                eyes,
+                pdf_why: Some("the provider refused a PDF for this model"),
+            };
+            return self.round(req, on_delta, text_only, Withheld::nothing());
+        }
         if !eyes.takes_images()
             || !crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter()))
         {
@@ -1161,7 +1223,7 @@ impl MessagesBackend for ResponsesProvider {
             return self.round(
                 req,
                 on_delta,
-                Eyes::TextOnly(&self.model),
+                crate::messages::Senses::of(Eyes::TextOnly(&self.model)),
                 Withheld::nothing(),
             );
         }
@@ -1182,7 +1244,7 @@ impl MessagesBackend for ResponsesProvider {
             .iter()
             .map(|d| (crate::messages::picture_key(d), why.clone()))
             .collect();
-        let second = self.round(req, on_delta, eyes, Withheld::trying(&trying));
+        let second = self.round(req, on_delta, senses, Withheld::trying(&trying));
         let said = match &second {
             Ok(_) => {
                 let mut fresh = 0;
@@ -1226,17 +1288,17 @@ impl MessagesBackend for ResponsesProvider {
 }
 
 impl ResponsesProvider {
-    /// One attempt at the wire: build the body for `eyes`, post it, stream the answer. A
+    /// One attempt at the wire: build the body for `senses`, post it, stream the answer. A
     /// non-2xx status returns before a byte of the body is read as a stream, which is what
     /// makes the retry safe.
     fn round(
         &self,
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
-        eyes: Eyes<'_>,
+        senses: crate::messages::Senses<'_>,
         withheld: Withheld<'_>,
     ) -> Result<Completion, BackendError> {
-        let body = self.body_for(req, eyes, withheld)?;
+        let body = self.body_for(req, senses, withheld)?;
         // Serialised once and kept, so a refusal can say how large the request was without
         // paying for a second pass over a body that may be megabytes.
         let payload = body.to_string();

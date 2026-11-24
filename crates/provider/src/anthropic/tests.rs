@@ -360,6 +360,60 @@ fn an_empty_system_prompt_is_no_field_and_two_carriers_are_two_blocks() {
     assert!(none.get("system").is_none(), "{none}");
 }
 
+/// A PDF goes as an Anthropic `document` block: the three fields apart, the payload bare, and the
+/// media type the file's own. A model the catalogue does not credit with `pdf` gets its text.
+#[test]
+fn a_pdf_is_a_document_block_or_the_files_text() {
+    let bytes = letibot_transcript::testing::pdf("the answer is 42");
+    let uri = letibot_transcript::testing::data_ref("application/pdf", &bytes);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![
+            UserPart::Text {
+                text: "read this".into(),
+            },
+            UserPart::Document {
+                media_type: "application/pdf".into(),
+                data_ref: uri,
+                filename: "memo.pdf".into(),
+            },
+        ],
+    }];
+    let taking = AnthropicProvider::new(
+        &crate::presets::ANTHROPIC,
+        Some("claude-opus-5-5"),
+        creds(None),
+    )
+    .with_catalogue(Arc::new(crate::catalogue::fixture(
+        "anthropic",
+        "claude-opus-5-5",
+        &["text", "pdf"],
+    )));
+    let body = taking.body(&request("", &items, &[])).expect("a body");
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks[1]["type"], "document", "{blocks:?}");
+    assert_eq!(blocks[1]["source"]["type"], "base64");
+    assert_eq!(blocks[1]["source"]["media_type"], "application/pdf");
+    assert!(
+        blocks[1]["source"]["data"]
+            .as_str()
+            .is_some_and(|d| !d.starts_with("data:")),
+        "the payload goes without the reference's own prefix: {}",
+        blocks[1]["source"]
+    );
+
+    // No catalogue says this model takes a PDF: the same file's text, named as such.
+    let body = provider().body(&request("", &items, &[])).expect("a body");
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks[1]["type"], "text", "{blocks:?}");
+    let said = blocks[1]["text"].as_str().unwrap_or_default();
+    assert!(said.contains("document 1"), "{said}");
+    assert!(
+        said.contains("the answer is 42") || said.contains("no `pdftotext`"),
+        "{said}"
+    );
+}
+
 /// A picture goes as a base64 source, and a model that does not take pictures is TOLD what it is
 /// missing rather than handed bytes it will refuse.
 #[test]

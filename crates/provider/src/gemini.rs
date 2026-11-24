@@ -278,37 +278,31 @@ impl GeminiProvider {
         url
     }
 
-    /// What this model gets pictures as: a provider that already refused one, then the
-    /// catalogue's `modalities.input`, and otherwise the pictures are SENT.
-    fn eyes(&self) -> Eyes<'_> {
-        if messages::known_text_only(self.preset.name, &self.model) {
-            return Eyes::TextOnly(&self.model);
-        }
-        match self
-            .catalogue
-            .takes_images(self.preset.catalogue_id, &self.model)
-        {
-            Some(true) => Eyes::Sees,
-            Some(false) => Eyes::TextOnly(&self.model),
-            _ => Eyes::Unknown(&self.model),
-        }
+    /// Pictures and documents, from the one place that reads the catalogue.
+    fn senses(&self, req: &TurnRequest<'_>) -> messages::Senses<'_> {
+        messages::senses_for(
+            &self.catalogue,
+            self.preset,
+            &self.model,
+            messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
+        )
     }
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
-        self.body_for(req, self.eyes(), Withheld::nothing())
+        self.body_for(req, self.senses(req), Withheld::nothing())
     }
 
     fn body_for(
         &self,
         req: &TurnRequest<'_>,
-        eyes: Eyes<'_>,
+        senses: messages::Senses<'_>,
         withheld: Withheld<'_>,
     ) -> Result<Value, BackendError> {
         let declarations = tools(req.tools_json).map_err(BackendError::Malformed)?;
         let contents = {
             let sigs = self.signatures.lock().unwrap_or_else(|e| e.into_inner());
-            contents(req, eyes, withheld, &sigs)
+            contents(req, senses, withheld, &sigs)
         };
         let mut body = json!({ "contents": contents });
         if let Some(s) = system_instruction(req) {
@@ -373,15 +367,15 @@ impl GeminiProvider {
         Some(Value::Object(cfg))
     }
 
-    /// One attempt at the wire: build the body for `eyes`, post it, stream the answer.
+    /// One attempt at the wire: build the body for `senses`, post it, stream the answer.
     fn round(
         &self,
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
-        eyes: Eyes<'_>,
+        senses: messages::Senses<'_>,
         withheld: Withheld<'_>,
     ) -> Result<Completion, BackendError> {
-        let body = self.body_for(req, eyes, withheld)?;
+        let body = self.body_for(req, senses, withheld)?;
         let payload = body.to_string();
         let url = self.endpoint(true);
         let started = Instant::now();
@@ -528,11 +522,12 @@ impl MessagesBackend for GeminiProvider {
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
-        let eyes = self.eyes();
-        let first = self.round(req, on_delta, eyes, Withheld::nothing());
-        // The two picture refusals are read off the wire, never assumed: the status is 400 and the
-        // request ACTUALLY carried a picture. A model that takes text only is marked for the
-        // session; bytes it will not take are marked against the bytes.
+        let senses = self.senses(req);
+        let eyes = senses.eyes;
+        let first = self.round(req, on_delta, senses, Withheld::nothing());
+        // The refusals are read off the wire, never assumed: the status is 400 and the request
+        // ACTUALLY carried the part. A model that takes text only is marked for the session; bytes
+        // it will not take are marked against the bytes.
         let Err(BackendError::Refused {
             status: 400,
             body: why,
@@ -541,6 +536,26 @@ impl MessagesBackend for GeminiProvider {
         else {
             return first;
         };
+        // A refused DOCUMENT first: the model may take pictures and no PDF, and the retry sends
+        // the same file's extracted text instead.
+        if senses.takes_pdfs()
+            && messages::carries_documents(req.items.iter().chain(req.tail.iter()))
+            && messages::document_refusal(why)
+        {
+            if messages::mark_no_pdf(self.preset.name, &self.model) {
+                self.say(format!(
+                    "{} refused a PDF (the provider said: {why}). Documents are now sent to it as \
+                     their extracted text, and this daemon will not send this model another \
+                     document.",
+                    self.model
+                ));
+            }
+            let text_only = messages::Senses {
+                eyes,
+                pdf_why: Some("the provider refused a PDF for this model"),
+            };
+            return self.round(req, on_delta, text_only, Withheld::nothing());
+        }
         let carried = messages::carries_pictures(req.items.iter().chain(req.tail.iter()));
         if !eyes.takes_images() || !carried {
             return first;
@@ -558,7 +573,7 @@ impl MessagesBackend for GeminiProvider {
             return self.round(
                 req,
                 on_delta,
-                Eyes::TextOnly(&self.model),
+                messages::Senses::of(Eyes::TextOnly(&self.model)),
                 Withheld::nothing(),
             );
         }
@@ -576,7 +591,7 @@ impl MessagesBackend for GeminiProvider {
             .iter()
             .map(|d| (messages::picture_key(d), why.clone()))
             .collect();
-        let second = self.round(req, on_delta, eyes, Withheld::trying(&trying));
+        let second = self.round(req, on_delta, senses, Withheld::trying(&trying));
         match &second {
             Ok(_) => {
                 let mut fresh = 0;
@@ -783,7 +798,7 @@ fn system_instruction(req: &TurnRequest<'_>) -> Option<Value> {
 /// operator ran them, rows between a call and its result held until the results.
 fn contents(
     req: &TurnRequest<'_>,
-    eyes: Eyes<'_>,
+    senses: messages::Senses<'_>,
     withheld: Withheld<'_>,
     sigs: &Signatures,
 ) -> Vec<Value> {
@@ -805,6 +820,7 @@ fn contents(
             TranscriptItem::User { parts, .. } => {
                 let mut said: Vec<Value> = Vec::new();
                 let mut images = 0usize;
+                let mut documents = 0usize;
                 for p in parts {
                     match p {
                         UserPart::Text { text } => said.push(json!({"text": text})),
@@ -813,13 +829,32 @@ fn contents(
                             data_ref,
                         } => {
                             images += 1;
-                            match picture_fate_part(data_ref, eyes, withheld) {
+                            match picture_fate_part(data_ref, senses.eyes, withheld) {
                                 Ok(part) => said.push(part),
                                 Err(why) => said.push(json!({"text": messages::not_sent_said(
                                     images,
                                     media_type,
                                     messages::data_ref_bytes(data_ref),
                                     &why,
+                                )})),
+                            }
+                        }
+                        // Gemini's own spelling: a PDF is an `inlineData` part with the document's
+                        // mime, exactly as a picture is - there is no separate file part.
+                        UserPart::Document {
+                            media_type,
+                            data_ref,
+                            ..
+                        } => {
+                            documents += 1;
+                            match (senses.pdf_why, inline_blob(data_ref)) {
+                                (None, Some((mime, data))) => said
+                                    .push(json!({"inlineData": {"mimeType": mime, "data": data}})),
+                                (why, _) => said.push(json!({"text": messages::document_said(
+                                    documents,
+                                    media_type,
+                                    data_ref,
+                                    why.unwrap_or(NOT_INLINE),
                                 )})),
                             }
                         }
@@ -901,19 +936,53 @@ fn contents(
                 // the function response parts"
                 // (<https://ai.google.dev/gemini-api/docs/function-calling>).
                 if let Some(m) = media {
-                    match picture_fate_part(&m.data_ref, eyes, withheld) {
-                        Ok(mut p) => {
-                            if let Some(blob) = p.get_mut("inlineData") {
-                                blob["displayName"] = Value::String(name.clone());
+                    if m.is_document() {
+                        // A document is the same `inlineData` part a picture is, and a model that
+                        // takes none gets the file's text in the response instead.
+                        match (senses.pdf_why, inline_blob(&m.data_ref)) {
+                            (None, Some((mime, data))) => {
+                                part["functionResponse"]["parts"] = json!([{
+                                    "inlineData": {
+                                        "mimeType": mime,
+                                        "data": data,
+                                        "displayName": name,
+                                    }
+                                }]);
                             }
-                            part["functionResponse"]["parts"] = json!([p]);
+                            (why, _) => {
+                                if let Some(obj) = response.as_object_mut() {
+                                    obj.insert(
+                                        "document".into(),
+                                        json!(messages::document_said(
+                                            1,
+                                            &m.mime,
+                                            &m.data_ref,
+                                            why.unwrap_or(NOT_INLINE),
+                                        )),
+                                    );
+                                }
+                            }
                         }
-                        Err(why) => {
-                            if let Some(obj) = response.as_object_mut() {
-                                obj.insert(
-                                    "media".into(),
-                                    json!(messages::not_sent_said(1, &m.mime, Some(m.bytes), &why)),
-                                );
+                    } else {
+                        match picture_fate_part(&m.data_ref, senses.eyes, withheld) {
+                            Ok(mut p) => {
+                                if let Some(blob) = p.get_mut("inlineData") {
+                                    blob["displayName"] = Value::String(name.clone());
+                                }
+                                part["functionResponse"]["parts"] = json!([p]);
+                            }
+                            Err(why) => {
+                                if let Some(obj) = response.as_object_mut() {
+                                    obj.insert(
+                                        "media".into(),
+                                        json!(messages::not_sent_said(
+                                            1,
+                                            &m.mime,
+                                            Some(m.bytes),
+                                            &why
+                                        )),
+                                    );
+                                }
                             }
                         }
                     }

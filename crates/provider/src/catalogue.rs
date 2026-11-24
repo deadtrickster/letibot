@@ -64,13 +64,15 @@ fn per_million(rate: f64) -> String {
     format!("{rate}")
 }
 
-/// One model's input modalities as models.dev publishes them. Only the two facts this
-/// harness can act on are kept: nothing here can send audio or video, so a flag for
-/// them would be a switch nothing reads.
+/// One model's input modalities as models.dev publishes them. Only the facts this harness can
+/// act on are kept: nothing here can send audio or video, so a flag for them would be a switch
+/// nothing reads. A document is one this harness CAN send, so `pdf` is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inputs {
     pub text: bool,
     pub image: bool,
+    /// The catalogue lists `pdf` among this model's input modalities.
+    pub pdf: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -303,6 +305,7 @@ impl Catalogue {
                         inputs: m.modalities.map(|mo| Inputs {
                             text: mo.input.iter().any(|i| i == "text"),
                             image: mo.input.iter().any(|i| i == "image"),
+                            pdf: mo.input.iter().any(|i| i == "pdf"),
                         }),
                         prices: m.cost.map(|c| crate::presets::Prices {
                             input: c.input,
@@ -348,6 +351,14 @@ impl Catalogue {
     /// to guess: an `image_url` sent to a text-only model refuses every later turn.
     pub fn takes_images(&self, provider: &str, model: &str) -> Option<bool> {
         self.model(provider, model)?.inputs.map(|i| i.image)
+    }
+
+    /// Whether this model takes a PDF as a document: `Some(false)` when the catalogue lists its
+    /// inputs and `pdf` is not among them, `None` when nothing here knows. Absent is NOT a yes:
+    /// a document part sent to a door that cannot take one refuses the turn, where the extracted
+    /// text of the same file is always readable.
+    pub fn takes_pdfs(&self, provider: &str, model: &str) -> Option<bool> {
+        self.model(provider, model)?.inputs.map(|i| i.pdf)
     }
 
     /// Every model name a provider carries, sorted: for a failure message that can offer
@@ -422,6 +433,36 @@ impl Catalogue {
         out.sort_by(|a, b| b.1.context.cmp(&a.1.context).then(a.0.cmp(&b.0)));
         out
     }
+}
+
+/// A catalogue of ONE model, for a test that needs a modality fact rather than the box's own
+/// catalogue. Written through the file reader because that is how a catalogue reaches a session.
+#[cfg(test)]
+pub(crate) fn fixture(provider: &str, model: &str, inputs: &[&str]) -> Catalogue {
+    let list = inputs
+        .iter()
+        .map(|i| format!("\"{i}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let text = format!(
+        r#"{{"{provider}": {{"models": {{"{model}": {{ "limit": {{"context": 1000}},
+             "modalities": {{"input": [{list}], "output": ["text"]}} }}}}}}}}"#
+    );
+    let path = std::env::temp_dir().join(format!(
+        "letibot-catalogue-{}-{}-{}.json",
+        std::process::id(),
+        // A counter: two tests of one provider would otherwise write and delete one file.
+        {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        },
+        provider
+    ));
+    std::fs::write(&path, text).expect("a catalogue file");
+    let read = Catalogue::read(&path).expect("the fixture parses");
+    let _ = std::fs::remove_file(&path);
+    read
 }
 
 #[cfg(test)]
@@ -703,6 +744,41 @@ mod tests {
         // The window and the modalities live on one row: adding the second must not
         // have cost the first.
         assert_eq!(c.model("p", "sees").unwrap().context, 1_000);
+    }
+
+    /// A model that takes PDFs says so, and a row that lists its inputs without `pdf` is a model
+    /// that does NOT take one - the fact a document part is held back by.
+    #[test]
+    fn the_catalogue_says_which_models_take_a_pdf() {
+        const FIXTURE: &str = r#"{
+          "p": {"models": {
+            "reader":  {"limit": {"context": 1000},
+                        "modalities": {"input": ["text", "pdf"], "output": ["text"]}},
+            "seer":    {"limit": {"context": 1000},
+                        "modalities": {"input": ["text", "image", "video", "pdf"],
+                                       "output": ["text"]}},
+            "blind":   {"limit": {"context": 1000},
+                        "modalities": {"input": ["text", "image"], "output": ["text"]}},
+            "silent":  {"limit": {"context": 1000}}
+          }}
+        }"#;
+        let c = read_fixture(FIXTURE);
+        assert_eq!(c.takes_pdfs("p", "reader"), Some(true));
+        assert_eq!(c.takes_pdfs("p", "seer"), Some(true));
+        assert_eq!(
+            c.takes_pdfs("p", "blind"),
+            Some(false),
+            "an input list without pdf is a model that takes no document"
+        );
+        assert_eq!(
+            c.takes_pdfs("p", "silent"),
+            None,
+            "a row with no modalities says nothing, which is not a yes"
+        );
+        assert_eq!(c.takes_pdfs("p", "not-a-model"), None);
+        // The two modality facts are independent: `blind` sees no picture and takes no pdf,
+        // `reader` takes a pdf and no picture.
+        assert_eq!(c.takes_images("p", "reader"), Some(false));
     }
 
     #[test]

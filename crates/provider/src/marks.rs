@@ -24,6 +24,10 @@ pub struct Marks {
     pictures: Vec<(String, String)>,
     /// `provider/model` for the models that refused a picture outright.
     models: Vec<String>,
+    /// `provider/model` for the models that refused a PDF, so the next turn sends its text. Absent
+    /// in every row written before documents existed, and `serde(default)` is what reads those.
+    #[serde(default)]
+    documents: Vec<String>,
 }
 
 impl Marks {
@@ -44,7 +48,29 @@ impl Marks {
 
     /// Nothing is known, so this session's requests are the ones a fresh session sends.
     pub fn is_empty(&self) -> bool {
-        self.pictures.is_empty() && self.models.is_empty()
+        self.pictures.is_empty() && self.models.is_empty() && self.documents.is_empty()
+    }
+
+    /// Record that this model refused a PDF, and `true` when it is new.
+    pub fn mark_document(&mut self, key: &str) -> bool {
+        if self.documents.iter().any(|m| m == key) {
+            return false;
+        }
+        if self.documents.len() >= MARKS_MAX {
+            self.documents.remove(0);
+        }
+        self.documents.push(key.to_string());
+        true
+    }
+
+    /// Whether this session has been refused a PDF by this model.
+    pub fn has_document(&self, key: &str) -> bool {
+        self.documents.iter().any(|m| m == key)
+    }
+
+    /// Every model that refused a PDF, oldest first.
+    pub fn documents(&self) -> &[String] {
+        &self.documents
     }
 
     /// Record that a provider refused these bytes, in the words it refused them in, and `true`

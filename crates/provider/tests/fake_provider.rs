@@ -91,6 +91,21 @@ fn provider(url: &str) -> OpenAiProvider {
     .with_catalogue(Arc::new(letibot_provider::catalogue::Catalogue::default()))
 }
 
+/// A catalogue of one model, written as a file because that is how one reaches a session.
+fn catalogue_saying(text: &str) -> letibot_provider::catalogue::Catalogue {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "fake-provider-catalogue-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&path, text).expect("the fixture is written");
+    let cat = letibot_provider::catalogue::Catalogue::read(&path).expect("the fixture parses");
+    let _ = std::fs::remove_file(&path);
+    cat
+}
+
 const SCRIPT: &str = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n\
 data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n\
@@ -488,6 +503,89 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
         "the third request forgot why it has no picture: {}",
         seen[2].1
     );
+}
+
+/// A provider that refuses a PDF is learned against the MODEL and the request is retried with the
+/// file's text: the picture marks are the wrong place, because a model that takes no document may
+/// still see.
+#[test]
+fn a_provider_that_refuses_a_pdf_is_learned_against_the_model_and_sent_as_text() {
+    let (_marks, _held) = a_session();
+    const MODEL: &str = "glm-5.3-flash-pdf-probe";
+    const REFUSAL: &str = "\"file\" is not supported for this model";
+    let f = fake_answering(|body| match body.contains("\"type\":\"file\"") {
+        true => (
+            400,
+            format!("{{\"error\":{{\"message\":{}}}}}", json_string(REFUSAL)),
+        ),
+        false => (200, SCRIPT.to_string()),
+    });
+    let notices: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = notices.clone();
+    let creds = Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(f.url.clone()),
+    };
+    // The catalogue credits this model with `pdf`, which is what puts a file part on the wire.
+    let cat = catalogue_saying(
+        &r#"{"zhipuai": {"models": {"MODEL": {"limit": {"context": 1000},
+           "modalities": {"input": ["text", "pdf"], "output": ["text"]}}}}}"#
+            .replace("MODEL", MODEL),
+    );
+    let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds)
+        .with_catalogue(Arc::new(cat))
+        .with_notes(Arc::new(move |said: String| {
+            sink.lock().unwrap().push(said)
+        }));
+    let bytes = letibot_transcript::testing::pdf("the answer is 42");
+    let reference = letibot_transcript::testing::data_ref("application/pdf", &bytes);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Document {
+            media_type: "application/pdf".into(),
+            data_ref: reference,
+            filename: "memo.pdf".into(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "be terse",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let done = p
+        .complete(&req, &mut |_| StreamFlow::Continue)
+        .expect("the retry answered, so the session is not wedged");
+    assert_eq!(done.text, "Hello");
+    {
+        let seen = f.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "exactly one retry, not a ladder");
+        assert!(seen[0].1.contains("file_data"), "{}", seen[0].1);
+        assert!(
+            !seen[1].1.contains("file_data"),
+            "the retry sent the document again: {}",
+            seen[1].1
+        );
+        assert!(
+            seen[1].1.contains("document 1") && seen[1].1.contains("refused a PDF"),
+            "the retry does not say why the document became text: {}",
+            seen[1].1
+        );
+    }
+    assert!(
+        letibot_provider::messages::known_no_pdf("glm", MODEL),
+        "the refusal was not learned against the model"
+    );
+    assert!(
+        !letibot_provider::messages::known_text_only("glm", MODEL),
+        "a refused document marked the model text-only, which would withhold every picture"
+    );
+    assert_eq!(notices.lock().unwrap().len(), 1, "told once");
 }
 
 /// One session's refusal is not another session's lesson. The picture is in BOTH sessions'

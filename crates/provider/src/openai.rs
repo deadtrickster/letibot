@@ -156,26 +156,21 @@ impl OpenAiProvider {
         self
     }
 
-    /// What this model gets pictures as: a provider that already refused one (a measurement, and
-    /// it outranks a table), then the catalogue's `modalities.input`, and otherwise the pictures are
-    /// SENT, because withholding them turns every chart into a sentence about a chart.
-    fn eyes(&self) -> crate::messages::Eyes<'_> {
-        if crate::messages::known_text_only(self.preset.name, &self.model) {
-            return crate::messages::Eyes::TextOnly(&self.model);
-        }
-        match self
-            .catalogue
-            .takes_images(self.preset.catalogue_id, &self.model)
-        {
-            Some(true) => crate::messages::Eyes::Sees,
-            Some(false) => crate::messages::Eyes::TextOnly(&self.model),
-            None => crate::messages::Eyes::Unknown(&self.model),
-        }
+    /// Pictures as the catalogue says, and a PDF as a document only when it lists `pdf` input for
+    /// this model and no provider has refused one. Absent is a NO: a `file` part a door cannot take
+    /// refuses the turn, where the document's text is always readable.
+    fn senses(&self, req: &TurnRequest<'_>) -> crate::messages::Senses<'_> {
+        crate::messages::senses_for(
+            &self.catalogue,
+            self.preset,
+            &self.model,
+            crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
+        )
     }
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
-        self.body_for(req, self.eyes(), crate::messages::Withheld::nothing())
+        self.body_for(req, self.senses(req), crate::messages::Withheld::nothing())
     }
 
     /// The same body, with what the model gets pictures as given rather than decided: the retry
@@ -184,7 +179,7 @@ impl OpenAiProvider {
     fn body_for(
         &self,
         req: &TurnRequest<'_>,
-        eyes: crate::messages::Eyes<'_>,
+        senses: crate::messages::Senses<'_>,
         withheld: crate::messages::Withheld<'_>,
     ) -> Result<Value, BackendError> {
         // `tools` is built first because it is part of the request, NOT because it decides whether
@@ -207,7 +202,7 @@ impl OpenAiProvider {
                 req.items,
                 req.tail,
                 echo,
-                eyes,
+                senses,
                 withheld,
             ),
             "stream": true,
@@ -410,8 +405,9 @@ impl MessagesBackend for OpenAiProvider {
                 notes(note.clone());
             }
         }
-        let eyes = self.eyes();
-        let first = self.round(req, on_delta, eyes, crate::messages::Withheld::nothing());
+        let senses = self.senses(req);
+        let eyes = senses.eyes;
+        let first = self.round(req, on_delta, senses, crate::messages::Withheld::nothing());
         // A refusal is read off the wire, never assumed: the status is 400 and the request ACTUALLY
         // carried a picture. Two different refusals answer that shape and they are two different
         // facts. The compaction takes these paths too, which is why they exist.
@@ -423,6 +419,37 @@ impl MessagesBackend for OpenAiProvider {
         else {
             return first;
         };
+        // A refused DOCUMENT is its own fact and comes first: the model may see perfectly well and
+        // simply take no PDF, and the retry that answers it sends the same file's text instead.
+        if senses.takes_pdfs()
+            && crate::messages::carries_documents(req.items.iter().chain(req.tail.iter()))
+            && crate::messages::document_refusal(why)
+        {
+            if crate::messages::mark_no_pdf(self.preset.name, &self.model) {
+                let said = format!(
+                    "{} refused a PDF (the provider said: {why}). Documents are now sent to it as \
+                     their extracted text, and this daemon will not send this model another \
+                     document.",
+                    self.model
+                );
+                eprintln!("  {said}");
+                if let Some(notes) = &self.notes {
+                    notes(said);
+                }
+            }
+            // One retry, never a ladder: a second refusal is the answer, and it comes back from
+            // this call as the first one did.
+            let text_only = crate::messages::Senses {
+                eyes,
+                pdf_why: Some("the provider refused a PDF for this model"),
+            };
+            return self.round(
+                req,
+                on_delta,
+                text_only,
+                crate::messages::Withheld::nothing(),
+            );
+        }
         let carried = crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter()));
         if !eyes.takes_images() || !carried {
             return first;
@@ -448,7 +475,7 @@ impl MessagesBackend for OpenAiProvider {
             return self.round(
                 req,
                 on_delta,
-                crate::messages::Eyes::TextOnly(&self.model),
+                crate::messages::Senses::of(crate::messages::Eyes::TextOnly(&self.model)),
                 crate::messages::Withheld::nothing(),
             );
         }
@@ -473,7 +500,7 @@ impl MessagesBackend for OpenAiProvider {
         let second = self.round(
             req,
             on_delta,
-            eyes,
+            senses,
             crate::messages::Withheld::trying(&trying),
         );
         let said = match &second {
@@ -531,10 +558,10 @@ impl OpenAiProvider {
         &self,
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
-        eyes: crate::messages::Eyes<'_>,
+        senses: crate::messages::Senses<'_>,
         withheld: crate::messages::Withheld<'_>,
     ) -> Result<Completion, BackendError> {
-        let body = self.body_for(req, eyes, withheld)?;
+        let body = self.body_for(req, senses, withheld)?;
         // Serialised once and kept, so a refusal can say how large the request was
         // without paying for a second pass over a body that may be megabytes.
         let payload = body.to_string();

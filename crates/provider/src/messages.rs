@@ -37,9 +37,83 @@ impl Eyes<'_> {
     }
 }
 
+/// What one request may carry besides words: the pictures ([`Eyes`]) and whether a PDF goes as a
+/// DOCUMENT. Two facts rather than one, because they are independent - most models see and take no
+/// document - and because a document is the one part that has a text fallback worth using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Senses<'a> {
+    pub eyes: Eyes<'a>,
+    /// `Some(why)` when a PDF part is sent as its EXTRACTED TEXT instead of as a document: the
+    /// catalogue lists no `pdf` input for this model, a provider refused one, or this door cannot
+    /// carry a file part beside a picture. `None` is the catalogue's yes, and nothing else is.
+    /// Deterministic, like [`Eyes::why_not`], because it is prompt prefix too.
+    pub pdf_why: Option<&'a str>,
+}
+
+impl<'a> Senses<'a> {
+    /// Pictures as `eyes` says, and no documents: the shape every caller that has no catalogue
+    /// answer starts from. Absent is a no, so a document falls back to its text rather than to a
+    /// 400 that refuses every later turn.
+    pub fn of(eyes: Eyes<'a>) -> Self {
+        Senses {
+            eyes,
+            pdf_why: Some("the catalogue lists no pdf input for this model"),
+        }
+    }
+
+    /// Pictures as `eyes` says, and the catalogue says PDFs are taken.
+    pub fn taking_pdfs(eyes: Eyes<'a>) -> Self {
+        Senses {
+            eyes,
+            pdf_why: None,
+        }
+    }
+
+    /// Whether a PDF part becomes a document at this door.
+    pub fn takes_pdfs(&self) -> bool {
+        self.pdf_why.is_none()
+    }
+}
+
 /// The most of a provider's refusal a placeholder carries: a placeholder is prompt text, and a
 /// refusal a page long is truncated rather than pasted into every turn of the conversation.
 const REFUSAL_SAID_MAX: usize = 200;
+
+/// What one door may carry for one model, read from the catalogue in ONE place: four protocols
+/// deciding it four ways is four chances to send a part a door refuses, and the refusal costs every
+/// later turn of the conversation.
+///
+/// Pictures follow [`Eyes`]; a PDF needs the catalogue to list `pdf` and no provider to have refused
+/// one, and `carries_picture` is what keeps this door's own rule about mixing the two (Z.ai's GLM
+/// sends file parts OR image parts, never both).
+pub fn senses_for<'a>(
+    catalogue: &crate::catalogue::Catalogue,
+    preset: &crate::presets::Preset,
+    model: &'a str,
+    carries_picture: bool,
+) -> Senses<'a> {
+    let eyes = if known_text_only(preset.name, model) {
+        Eyes::TextOnly(model)
+    } else {
+        match catalogue.takes_images(preset.catalogue_id, model) {
+            Some(true) => Eyes::Sees,
+            Some(false) => Eyes::TextOnly(model),
+            None => Eyes::Unknown(model),
+        }
+    };
+    let pdf_why = if known_no_pdf(preset.name, model) {
+        Some("the provider refused a PDF for this model")
+    } else if !preset.compat.pdf_beside_images && carries_picture {
+        Some("this door sends a PDF or an image, never both in one request")
+    } else {
+        match catalogue.takes_pdfs(preset.catalogue_id, model) {
+            Some(true) => None,
+            Some(false) => Some("the catalogue lists no pdf input for this model"),
+            None => Some("no catalogue carries this model, so a PDF goes as its text"),
+        }
+    };
+    Senses { eyes, pdf_why }
+}
 
 /// The key a picture's refusal is recorded against: a hash of the reference, so two reads of the
 /// same file are one picture and one lesson. FNV-1a and not a digest, because a collision costs a
@@ -178,6 +252,19 @@ pub fn known_text_only(provider: &str, model: &str) -> bool {
     crate::marks::read(|m| m.has_model(&key)).unwrap_or(false)
 }
 
+/// Record that this model refused a PDF. Its own set, because a model that sees fine and takes no
+/// document is the common case, and marking it text-only would withhold every picture too.
+pub fn mark_no_pdf(provider: &str, model: &str) -> bool {
+    let key = text_only_key(provider, model);
+    crate::marks::update(|m| m.mark_document(&key)).unwrap_or(false)
+}
+
+/// Whether this session has already been refused a PDF by this model.
+pub fn known_no_pdf(provider: &str, model: &str) -> bool {
+    let key = text_only_key(provider, model);
+    crate::marks::read(|m| m.has_document(&key)).unwrap_or(false)
+}
+
 /// Whether this refusal means "not this kind of content". Vendors word it differently, so it
 /// matches `image_url` anywhere or a content type complaint naming text, and is consulted only for
 /// a 400 on a request that carried a picture.
@@ -237,6 +324,58 @@ pub(crate) fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, why: &
     format!("[image {nth} · {mime} · {size} — not sent: {why}]")
 }
 
+/// The one line a PDF gets when it is not sent as a document. The text comes from the row's own
+/// bytes at send time, so nothing about the stored row changes and a second turn reads the same
+/// words: a placeholder whose text moved would re-prefill every cached turn.
+pub(crate) fn document_said(nth: usize, mime: &str, data_ref: &str, why: &str) -> String {
+    let bytes = data_ref_bytes(data_ref);
+    let size = match bytes {
+        Some(n) => size_said(n),
+        None => "size unknown".to_string(),
+    };
+    let payload =
+        letibot_transcript::media::decode_base64(letibot_transcript::media::wire_payload(data_ref));
+    match letibot_transcript::media::pdf_text(&payload) {
+        Some(text) => format!("[document {nth} · {mime} · {size} — sent as text: {why}]\n{text}"),
+        // No extractor on this box: the model is told what it did not get, which is the one thing
+        // it can act on. A file's name alone would read as the document's contents.
+        None => format!(
+            "[document {nth} · {mime} · {size} — not sent: {why}, and this box has no `pdftotext` \
+             to extract it with, so the document's contents were not read]"
+        ),
+    }
+}
+
+/// Does this refusal name a DOCUMENT rather than the model or a picture? Consulted only for a 400
+/// on a request that carried a PDF, so it can afford to be generous: a refusal that names the file
+/// part at all is the document's.
+pub fn document_refusal(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    [
+        "pdf",
+        "document",
+        "file_data",
+        "file_data",
+        "file_url",
+        "file part",
+        "\"file\"",
+    ]
+    .iter()
+    .any(|w| b.contains(w))
+}
+
+/// Does this request carry a PDF at all? The guard on the document retry, for the same reason
+/// [`carries_pictures`] is the guard on the picture one.
+pub fn carries_documents<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>) -> bool {
+    items.into_iter().any(|item| match item {
+        TranscriptItem::User { parts, .. } => {
+            parts.iter().any(|p| matches!(p, UserPart::Document { .. }))
+        }
+        TranscriptItem::ToolResult { media, .. } => media.as_ref().is_some_and(|m| m.is_document()),
+        _ => false,
+    })
+}
+
 /// The decoded length of a `data:<mime>;base64,<payload>` reference.
 pub(crate) fn data_ref_bytes(data_ref: &str) -> Option<usize> {
     let payload = data_ref.split_once(";base64,")?.1;
@@ -267,10 +406,10 @@ pub fn convert(
     system: &str,
     items: &[TranscriptItem],
     echo_reasoning: bool,
-    eyes: Eyes<'_>,
+    senses: Senses<'_>,
     withheld: Withheld<'_>,
 ) -> Vec<Value> {
-    convert_with_tail(system, items, &[], echo_reasoning, eyes, withheld)
+    convert_with_tail(system, items, &[], echo_reasoning, senses, withheld)
 }
 
 /// The same conversion, with items the request carries and the transcript does not
@@ -281,7 +420,7 @@ pub fn convert_with_tail(
     items: &[TranscriptItem],
     tail: &[TranscriptItem],
     echo_reasoning: bool,
-    eyes: Eyes<'_>,
+    senses: Senses<'_>,
     withheld: Withheld<'_>,
 ) -> Vec<Value> {
     let mut out = Vec::with_capacity(items.len() + tail.len() + 1);
@@ -314,6 +453,7 @@ pub fn convert_with_tail(
                 // the plain string, because an array where a string was re-prefills the cache.
                 let mut content: Vec<Value> = Vec::new();
                 let mut images = 0usize;
+                let mut documents = 0usize;
                 for p in parts {
                     match p {
                         UserPart::Text { text } => {
@@ -327,7 +467,7 @@ pub fn convert_with_tail(
                             // A picture that will not be sent is NAMED instead, with the reason
                             // [`picture_fate`] gives: the model takes text only, the bytes are not
                             // an image, or a provider refused these bytes.
-                            match picture_fate(data_ref, eyes, withheld) {
+                            match picture_fate(data_ref, senses.eyes, withheld) {
                                 None => content.push(
                                     json!({"type": "image_url", "image_url": {"url": data_ref}}),
                                 ),
@@ -339,6 +479,24 @@ pub fn convert_with_tail(
                                         data_ref_bytes(data_ref),
                                         &why,
                                     ),
+                                })),
+                            }
+                        }
+                        // A document is a `file` part where the door takes one (Z.ai's shape for
+                        // GLM, which is the chat-completions file part), and its own text where it
+                        // does not: the whole point of the fallback is that a model which cannot
+                        // take a file still reads what is in it.
+                        UserPart::Document {
+                            media_type,
+                            data_ref,
+                            filename,
+                        } => {
+                            documents += 1;
+                            match senses.pdf_why {
+                                None => content.push(file_part(filename, data_ref)),
+                                Some(why) => content.push(json!({
+                                    "type": "text",
+                                    "text": document_said(documents, media_type, data_ref, why),
                                 })),
                             }
                         }
@@ -437,29 +595,57 @@ pub fn convert_with_tail(
                 // shape every vision API accepts. A model that does not see gets the words and one
                 // plain string instead, so the prefix is not an array where a string was.
                 if let Some(m) = media {
-                    // The same predicate as a head's own picture: the row carrying the bytes that
-                    // were refused is history, so the renderer is where it stops being sent.
-                    match picture_fate(&m.data_ref, eyes, withheld) {
-                        None => out.push(json!({
+                    // A document a call read rides the same channel, with its own part shape: the
+                    // request that carried it is the one that names the file.
+                    if m.is_document() {
+                        out.push(json!({
                             "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Attached media from tool result:"},
-                                {"type": "image_url", "image_url": {"url": m.data_ref}},
-                            ]
-                        })),
-                        Some(why) => out.push(json!({
-                            "role": "user",
-                            "content": format!(
-                                "Attached media from tool result: {}",
-                                not_sent_said(1, &m.mime, Some(m.bytes), &why)
-                            ),
-                        })),
+                            "content": match senses.pdf_why {
+                                None => json!([
+                                    {"type": "text", "text": "Attached document from tool result:"},
+                                    file_part("document.pdf", &m.data_ref),
+                                ]),
+                                Some(why) => json!(format!(
+                                    "Attached document from tool result: {}",
+                                    document_said(1, &m.mime, &m.data_ref, why)
+                                )),
+                            },
+                        }));
+                    } else {
+                        // The same predicate as a head's own picture: the row carrying the bytes that
+                        // were refused is history, so the renderer is where it stops being sent.
+                        match picture_fate(&m.data_ref, senses.eyes, withheld) {
+                            None => out.push(json!({
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Attached media from tool result:"},
+                                    {"type": "image_url", "image_url": {"url": m.data_ref}},
+                                ]
+                            })),
+                            Some(why) => out.push(json!({
+                                "role": "user",
+                                "content": format!(
+                                    "Attached media from tool result: {}",
+                                    not_sent_said(1, &m.mime, Some(m.bytes), &why)
+                                ),
+                            })),
+                        }
                     }
                 }
             }
         }
     }
     pair_tool_calls(out, &own_author)
+}
+
+/// The chat-completions `file` part a PDF rides: the bytes inline with the name beside them, which
+/// is Z.ai's documented shape (`file_data`, `filename`) and the one every OpenAI-compatible door
+/// that takes a document reads - <https://docs.z.ai/api-reference/llm/chat-completion.md>.
+pub(crate) fn file_part(filename: &str, data_ref: &str) -> Value {
+    json!({
+        "type": "file",
+        "file": {"filename": filename, "file_data": data_ref},
+    })
 }
 
 /// Every `tool_calls` gets its `tool` message, or the provider refuses the conversation. A missing
@@ -632,7 +818,7 @@ mod pairing_tests {
             system,
             items,
             echo_reasoning,
-            Eyes::Sees,
+            Senses::of(Eyes::Sees),
             Withheld::nothing(),
         )
     }

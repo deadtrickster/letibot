@@ -9,7 +9,7 @@ fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<
         system,
         items,
         echo_reasoning,
-        Eyes::Sees,
+        Senses::of(Eyes::Sees),
         Withheld::nothing(),
     )
 }
@@ -43,7 +43,7 @@ fn the_tail_is_the_last_message_and_is_not_the_transcript() {
         &items,
         &tail,
         true,
-        Eyes::Sees,
+        Senses::of(Eyes::Sees),
         Withheld::nothing(),
     );
     assert_eq!(msgs.len(), 3, "system, the prompt, the offer");
@@ -473,7 +473,7 @@ fn an_unknown_model_is_sent_the_picture() {
         "be terse",
         &items,
         false,
-        Eyes::Unknown("some-new-model"),
+        Senses::of(Eyes::Unknown("some-new-model")),
         Withheld::nothing(),
     );
     // Both carriers: the operator's own part, and the picture a call read.
@@ -553,7 +553,7 @@ fn a_text_only_model_gets_a_placeholder_and_plain_string_content() {
         "be terse",
         &items,
         false,
-        Eyes::TextOnly("glm-5.3"),
+        Senses::of(Eyes::TextOnly("glm-5.3")),
         Withheld::nothing(),
     );
     let user = m
@@ -585,7 +585,7 @@ fn a_text_only_model_gets_a_placeholder_and_plain_string_content() {
             "be terse",
             &items,
             false,
-            Eyes::TextOnly("glm-5.3"),
+            Senses::of(Eyes::TextOnly("glm-5.3")),
             Withheld::nothing(),
         )
     );
@@ -628,7 +628,7 @@ fn a_tool_results_image_becomes_a_placeholder_message_for_a_text_only_model() {
         "be terse",
         &items,
         false,
-        Eyes::TextOnly("glm-5.3"),
+        Senses::of(Eyes::TextOnly("glm-5.3")),
         Withheld::nothing(),
     );
     let att = m
@@ -753,7 +753,7 @@ fn a_retry_withholds_a_picture_it_is_only_trying_and_records_nothing() {
         "be terse",
         &items,
         false,
-        Eyes::Sees,
+        Senses::of(Eyes::Sees),
         super::Withheld::trying(&trying),
     );
     assert!(
@@ -777,6 +777,167 @@ fn a_retry_withholds_a_picture_it_is_only_trying_and_records_nothing() {
             .any(|x| x.to_string().contains("image_url")),
         "the picture stopped going out although nothing was recorded"
     );
+}
+
+/// A document is a `file` part on this protocol - Z.ai's shape for GLM and the one every
+/// OpenAI-compatible door that takes a document reads.
+#[test]
+fn a_pdf_on_a_chat_completions_door_is_a_file_part() {
+    let bytes = letibot_transcript::testing::pdf("the answer is 42");
+    let uri = letibot_transcript::testing::data_ref("application/pdf", &bytes);
+    let items = vec![TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![
+            UserPart::Text {
+                text: "what does it say?".into(),
+            },
+            UserPart::Document {
+                media_type: "application/pdf".into(),
+                data_ref: uri.clone(),
+                filename: "memo.pdf".into(),
+            },
+        ],
+    }];
+    let m = super::convert(
+        "be terse",
+        &items,
+        false,
+        Senses::taking_pdfs(Eyes::Sees),
+        Withheld::nothing(),
+    );
+    let user = m.iter().find(|x| x["role"] == "user").expect("a user turn");
+    assert_eq!(user["content"][0]["text"], "what does it say?");
+    assert_eq!(user["content"][1]["type"], "file", "{user}");
+    assert_eq!(user["content"][1]["file"]["filename"], "memo.pdf");
+    assert_eq!(user["content"][1]["file"]["file_data"], uri);
+}
+
+/// A door that takes no PDF sends the same file's TEXT instead, and says so: the fallback is the
+/// whole point - a model that cannot take a file still reads what is in it.
+#[test]
+fn a_pdf_a_door_cannot_take_is_its_text_with_the_reason() {
+    let bytes = letibot_transcript::testing::pdf("the answer is 42");
+    let uri = letibot_transcript::testing::data_ref("application/pdf", &bytes);
+    let items = vec![TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![UserPart::Document {
+            media_type: "application/pdf".into(),
+            data_ref: uri,
+            filename: "memo.pdf".into(),
+        }],
+    }];
+    let m = super::convert(
+        "be terse",
+        &items,
+        false,
+        Senses::of(Eyes::Sees),
+        Withheld::nothing(),
+    );
+    let said = m
+        .iter()
+        .find(|x| x["role"] == "user")
+        .map(|x| x["content"].to_string())
+        .expect("the user turn");
+    assert!(
+        !said.contains("\"file\""),
+        "a file part went out anyway: {said}"
+    );
+    assert!(said.contains("document 1"), "{said}");
+    assert!(
+        said.contains("the answer is 42") || said.contains("no `pdftotext`"),
+        "neither the text nor the reason it is missing: {said}"
+    );
+}
+
+/// A tool result that read a PDF puts the document on the wire the same way a picture's bytes
+/// ride the result that read them.
+#[test]
+fn a_tool_result_that_read_a_pdf_attaches_the_document() {
+    let bytes = letibot_transcript::testing::pdf("eleven");
+    let media = letibot_transcript::media::Media::document("a.pdf", &bytes).expect("a pdf");
+    let items = vec![
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        },
+        TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "a.pdf — document application/pdf · 1 KiB".into(),
+            edits: Vec::new(),
+            origin: None,
+            media: Some(media),
+            ran_ms: None,
+            decision: None,
+        },
+    ];
+    let m = super::convert(
+        "be terse",
+        &items,
+        false,
+        Senses::taking_pdfs(Eyes::Sees),
+        Withheld::nothing(),
+    );
+    let attached = m
+        .iter()
+        .find(|x| x["content"].is_array())
+        .expect("the attachment turn");
+    assert_eq!(attached["content"][1]["type"], "file", "{attached}");
+    assert_eq!(attached["content"][1]["file"]["filename"], "document.pdf");
+}
+
+/// What a door may carry comes from the catalogue, and a PDF is a NO unless the catalogue says
+/// yes: an absent answer is not a licence, because a `file` part a door cannot take refuses the
+/// turn where the document's text is always readable.
+#[test]
+fn a_pdf_goes_as_a_document_only_where_the_catalogue_says_so() {
+    let preset = crate::presets::GLM;
+    let id = preset.catalogue_id;
+    let takes = crate::catalogue::fixture(id, "reader", &["text", "pdf"]);
+    let no_pdf = crate::catalogue::fixture(id, "blind", &["text", "image"]);
+    // The catalogue's yes, and no picture in the request.
+    let senses = super::senses_for(&takes, &preset, "reader", false);
+    assert!(senses.takes_pdfs(), "{:?}", senses.pdf_why);
+    // A model the catalogue lists without pdf: its text.
+    let senses = super::senses_for(&no_pdf, &preset, "blind", false);
+    assert!(!senses.takes_pdfs());
+    // A model nothing carries: also its text, never a guess.
+    let senses = super::senses_for(&takes, &preset, "unknown-model", false);
+    assert!(!senses.takes_pdfs(), "an absent row became a yes");
+}
+
+/// Z.ai documents that a GLM request carries file parts OR image/video parts and never both, so a
+/// GLM request holding a picture sends its PDF as text. A door that allows the mix keeps the
+/// document.
+#[test]
+fn a_glm_request_with_a_picture_in_it_sends_the_pdf_as_text() {
+    let takes = crate::catalogue::fixture("zhipuai", "glm-5.3-flash", &["text", "image", "pdf"]);
+    let glm = crate::presets::GLM;
+    assert!(
+        super::senses_for(&takes, &glm, "glm-5.3-flash", false).takes_pdfs(),
+        "a GLM request with no picture can carry the file"
+    );
+    let mixed = super::senses_for(&takes, &glm, "glm-5.3-flash", true);
+    assert!(
+        !mixed.takes_pdfs(),
+        "a GLM request sent a file beside a picture"
+    );
+    assert!(
+        mixed.pdf_why.unwrap_or_default().contains("never both"),
+        "the placeholder must say why: {:?}",
+        mixed.pdf_why
+    );
+    // A door that does not forbid the mix - Anthropic's, and every plain chat door - keeps it.
+    let plain = crate::presets::DEEPSEEK;
+    let deepseek =
+        crate::catalogue::fixture("deepseek", "deepseek-chat", &["text", "image", "pdf"]);
+    assert!(super::senses_for(&deepseek, &plain, "deepseek-chat", true).takes_pdfs());
 }
 
 /// The refusal that is about the BYTES, and the ones that are not. Answering it with a

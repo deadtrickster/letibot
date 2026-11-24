@@ -124,6 +124,10 @@ pub struct Compat {
     pub client_gate: bool,
     /// Models (by substring of the id) that refuse `thinking: disabled`: the field is left out.
     pub thinking_locked: &'static [&'static str],
+    /// This door carries a document and a picture in one request. Z.ai documents the opposite for
+    /// GLM - file parts are not mixed with image/video parts - so a GLM door sets this false and a
+    /// request holding a picture sends its PDF as text.
+    pub pdf_beside_images: bool,
 }
 
 impl Compat {
@@ -136,6 +140,7 @@ impl Compat {
         cache_key: false,
         client_gate: false,
         thinking_locked: &[],
+        pdf_beside_images: true,
     };
 
     /// Whether `model` may be sent `thinking: disabled` on this door.
@@ -146,6 +151,15 @@ impl Compat {
 
 const JSON_COMPAT: Compat = Compat {
     json_object: true,
+    ..Compat::PLAIN
+};
+
+/// Zhipu's doors, which say so themselves: "File parts are only supported for the GLM-5.3-Flash
+/// series ... and must not be mixed with image_url or video_url in the same request"
+/// (<https://docs.z.ai/api-reference/llm/chat-completion.md>).
+const GLM_COMPAT: Compat = Compat {
+    json_object: true,
+    pdf_beside_images: false,
     ..Compat::PLAIN
 };
 
@@ -236,7 +250,7 @@ pub const GLM: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
-    compat: JSON_COMPAT,
+    compat: GLM_COMPAT,
 };
 
 /// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own model list and
@@ -259,7 +273,7 @@ pub const GLM_CODING: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(crate::usage::ZAI_QUOTA),
-    compat: JSON_COMPAT,
+    compat: GLM_COMPAT,
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -278,7 +292,7 @@ pub const GLM_CODING_CN: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(crate::usage::ZAI_QUOTA),
-    compat: JSON_COMPAT,
+    compat: GLM_COMPAT,
 };
 
 pub const GROK: Preset = Preset {

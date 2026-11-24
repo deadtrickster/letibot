@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::catalogue::Catalogue;
 use crate::keys::Credentials;
-use crate::messages::{Eyes, Withheld};
+use crate::messages::Withheld;
 use crate::openai::{DEFAULT_ANSWER_TIMEOUT, DEFAULT_FIRST_BYTE, Notes};
 use crate::presets::Preset;
 
@@ -152,21 +152,14 @@ impl AnthropicProvider {
         self
     }
 
-    /// What this model gets pictures as: a provider that already refused one, then the catalogue's
-    /// `modalities.input`, and otherwise the pictures are sent - the same three answers, from the
-    /// same table, as the OpenAI client.
-    fn eyes(&self) -> Eyes<'_> {
-        if crate::messages::known_text_only(self.preset.name, &self.model) {
-            return Eyes::TextOnly(&self.model);
-        }
-        match self
-            .catalogue
-            .takes_images(self.preset.catalogue_id, &self.model)
-        {
-            Some(true) => Eyes::Sees,
-            Some(false) => Eyes::TextOnly(&self.model),
-            None => Eyes::Unknown(&self.model),
-        }
+    /// What one request may carry, from the one place that reads the catalogue.
+    fn senses(&self, req: &TurnRequest<'_>) -> crate::messages::Senses<'_> {
+        crate::messages::senses_for(
+            &self.catalogue,
+            self.preset,
+            &self.model,
+            crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
+        )
     }
 
     /// The request body, for a test to look at.
@@ -174,7 +167,7 @@ impl AnthropicProvider {
         self.body_for(
             req,
             request::Policy {
-                eyes: self.eyes(),
+                senses: self.senses(req),
                 withheld: Withheld::nothing(),
                 replay_thoughts: true,
             },
@@ -551,14 +544,15 @@ impl MessagesBackend for AnthropicProvider {
         {
             self.note(note.clone());
         }
-        let eyes = self.eyes();
+        let mut senses = self.senses(req);
         let mut thinking = self.thinking_mode(req);
         let mut replay_thoughts = true;
         let mut tried_manual = thinking != Thinking::Adaptive;
         let mut tried_without_thoughts = false;
+        let mut tried_without_documents = false;
         loop {
             let policy = request::Policy {
-                eyes,
+                senses,
                 withheld: Withheld::nothing(),
                 replay_thoughts,
             };
@@ -569,8 +563,27 @@ impl MessagesBackend for AnthropicProvider {
             else {
                 return outcome;
             };
-            // One retry each, never a ladder: a second refusal is the answer. Both are 400s, so
+            // One retry each, never a ladder: a second refusal is the answer. All are 400s, so
             // nothing of an answer has been read and the same bytes may go again.
+            // A refused DOCUMENT first: the model may be fine with everything else and take no PDF,
+            // and the retry sends the same file's extracted text instead.
+            if !tried_without_documents
+                && senses.takes_pdfs()
+                && crate::messages::carries_documents(req.items.iter().chain(req.tail.iter()))
+                && crate::messages::document_refusal(body)
+            {
+                tried_without_documents = true;
+                if crate::messages::mark_no_pdf(self.preset.name, &self.model) {
+                    self.note(format!(
+                        "{} refused a PDF (the provider said: {body}). Documents are now sent to it \
+                         as their extracted text, and this daemon will not send this model another \
+                         document.",
+                        self.model
+                    ));
+                }
+                senses.pdf_why = Some("the provider refused a PDF for this model");
+                continue;
+            }
             if !tried_manual && Self::adaptive_refused(body) {
                 tried_manual = true;
                 thinking = Thinking::Manual;

@@ -580,6 +580,63 @@ fn a_picture_is_sent_to_a_model_that_sees_and_named_to_one_that_does_not() {
     assert!(content.starts_with("what is this"), "{named:#?}");
 }
 
+/// A PDF goes as `input_file` with the bytes as a `data:` URL - this API's shape for a document,
+/// the same way `input_image` carries a picture - and as its text where nothing says `pdf`.
+#[test]
+fn a_pdf_is_an_input_file_or_the_files_text() {
+    let bytes = letibot_transcript::testing::pdf("the answer is 42");
+    let uri = letibot_transcript::testing::data_ref("application/pdf", &bytes);
+    let items = vec![letibot_transcript::TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![
+            letibot_transcript::UserPart::Text {
+                text: "read this".into(),
+            },
+            letibot_transcript::UserPart::Document {
+                media_type: "application/pdf".into(),
+                data_ref: uri.clone(),
+                filename: "memo.pdf".into(),
+            },
+        ],
+    }];
+    let req = |p: &ResponsesProvider| {
+        p.body(&TurnRequest {
+            system: "",
+            tools_json: &[],
+            items: &items,
+            tail: &[],
+            max_output_tokens: None,
+            thinking: None,
+            json: false,
+        })
+        .expect("a body")
+    };
+    let cat = catalogue_saying(
+        r#"{"openai": {"models": {"gpt-6-astra": {
+            "limit": {"context": 1000}, "modalities": {"input": ["text", "pdf"],
+                                             "output": ["text"]}}}}}"#,
+    );
+    let taking = provider(Some("gpt-6-astra")).with_catalogue(std::sync::Arc::new(cat));
+    let seen = req(&taking);
+    assert_eq!(
+        seen["input"][0]["content"][1]["type"], "input_file",
+        "{seen:#?}"
+    );
+    assert_eq!(seen["input"][0]["content"][1]["filename"], "memo.pdf");
+    assert_eq!(seen["input"][0]["content"][1]["file_data"], uri);
+
+    // The box's own empty catalogue: the same file's text, named as such.
+    let named = req(&provider(Some("gpt-6-astra")));
+    let content = named["input"][0]["content"]
+        .as_str()
+        .expect("a message of words only is a string");
+    assert!(content.contains("document 1"), "{named:#?}");
+    assert!(
+        content.contains("the answer is 42") || content.contains("no `pdftotext`"),
+        "{named:#?}"
+    );
+}
+
 /// The stream: text deltas, a summary delta, a call's name from the item and its arguments
 /// from the fragments, and the usage off the terminal event.
 #[test]

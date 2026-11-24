@@ -683,6 +683,72 @@ fn a_leading_system_item_joins_the_instruction_and_a_later_one_is_a_user_turn() 
     assert_eq!(contents[1]["parts"][0]["text"], "an update");
 }
 
+/// A PDF goes as an `inlineData` part with the document's mime - this protocol has no separate
+/// file part - and a model the catalogue does not credit with `pdf` gets its text.
+#[test]
+fn a_pdf_is_an_inline_data_part_or_the_files_text() {
+    let bytes = letibot_transcript::testing::pdf("the answer is 42");
+    let uri = letibot_transcript::testing::data_ref("application/pdf", &bytes);
+    let items = vec![TranscriptItem::User {
+        speaker: Speaker::default(),
+        parts: vec![
+            UserPart::Text {
+                text: "read this".into(),
+            },
+            UserPart::Document {
+                media_type: "application/pdf".into(),
+                data_ref: uri,
+                filename: "memo.pdf".into(),
+            },
+        ],
+    }];
+    let taking = GeminiProvider::new(
+        &crate::presets::GEMINI,
+        Some("gemini-4-hydrogen"),
+        Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        },
+    )
+    .with_catalogue(Arc::new(crate::catalogue::fixture(
+        crate::presets::GEMINI.catalogue_id,
+        "gemini-4-hydrogen",
+        &["text", "pdf"],
+    )));
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let b = taking.body(&req).expect("a body");
+    let parts = b["contents"][0]["parts"].as_array().expect("parts");
+    assert_eq!(parts[1]["inlineData"]["mimeType"], "application/pdf", "{b}");
+    assert!(
+        parts[1]["inlineData"]["data"]
+            .as_str()
+            .is_some_and(|d| !d.starts_with("data:")),
+        "{b}"
+    );
+
+    // The box's own empty catalogue: the same file's text, named as such.
+    let b = body(&items, &[], "");
+    let said = b["contents"][0]["parts"][1]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(said.contains("document 1"), "{said}");
+    assert!(
+        said.contains("the answer is 42") || said.contains("no `pdftotext`"),
+        "{said}"
+    );
+}
+
 /// A picture that cannot be sent is NAMED, with the reason, rather than sent to be refused: one
 /// bad picture refuses every turn after it, and the transcript is append-only.
 #[test]

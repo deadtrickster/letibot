@@ -5,7 +5,7 @@
 use letibot_transcript::{CallOrigin, ToolOutcome, TranscriptItem, UserPart};
 use serde_json::{Value, json};
 
-use crate::messages::{Eyes, Withheld, not_sent_said, picture_fate};
+use crate::messages::{Senses, Withheld, document_said, not_sent_said, picture_fate};
 
 /// Which side of the conversation a message is on. The API has exactly two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,12 +62,12 @@ fn open(out: &mut Vec<Message>, role: Role) -> &mut Message {
     out.last_mut().expect("just pushed")
 }
 
-/// What one turn of the walk is handed: the picture policy and whether signed thinking may be
-/// replayed. `replay_thoughts` is false for the one retry the API itself asks for - see
+/// What one turn of the walk is handed: the picture and document policy, and whether signed thinking
+/// may be replayed. `replay_thoughts` is false for the one retry the API itself asks for - see
 /// `crate::anthropic`'s refusal handling.
 #[derive(Clone, Copy)]
 pub(super) struct Policy<'a> {
-    pub eyes: Eyes<'a>,
+    pub senses: Senses<'a>,
     pub withheld: Withheld<'a>,
     pub replay_thoughts: bool,
 }
@@ -146,6 +146,7 @@ pub(super) fn messages(
             TranscriptItem::User { parts, .. } => {
                 let m = open(&mut out, Role::User);
                 let mut images = 0usize;
+                let mut documents = 0usize;
                 for part in parts {
                     match part {
                         UserPart::Text { text } if text.trim().is_empty() => {}
@@ -157,7 +158,7 @@ pub(super) fn messages(
                             data_ref,
                         } => {
                             images += 1;
-                            match picture_fate(data_ref, policy.eyes, policy.withheld) {
+                            match picture_fate(data_ref, policy.senses.eyes, policy.withheld) {
                                 None => push(m, image_block(media_type, data_ref), false),
                                 Some(why) => push(
                                     m,
@@ -166,6 +167,28 @@ pub(super) fn messages(
                                         media_type,
                                         crate::messages::data_ref_bytes(data_ref),
                                         &why,
+                                    )}),
+                                    false,
+                                ),
+                            }
+                        }
+                        // Anthropic's own document block: the bytes base64 in a `source`, with the
+                        // media type beside them - not the chat-completions `file` part.
+                        UserPart::Document {
+                            media_type,
+                            data_ref,
+                            ..
+                        } => {
+                            documents += 1;
+                            match policy.senses.pdf_why {
+                                None => push(m, document_block(media_type, data_ref), false),
+                                Some(why) => push(
+                                    m,
+                                    json!({"type": "text", "text": document_said(
+                                        documents,
+                                        media_type,
+                                        data_ref,
+                                        why,
                                     )}),
                                     false,
                                 ),
@@ -241,18 +264,33 @@ pub(super) fn messages(
                 };
                 let mut content: Vec<Value> = vec![json!({"type": "text", "text": said})];
                 if let Some(m) = media {
-                    // A picture the call read rides the result that read it: the API takes an
-                    // image block inside `tool_result.content`, and a model that does not get
-                    // pictures is told what it is missing instead.
-                    match picture_fate(&m.data_ref, policy.eyes, policy.withheld) {
-                        None => content.push(image_block(&m.mime, &m.data_ref)),
-                        Some(why) => content.push(json!({
-                            "type": "text",
-                            "text": format!(
-                                "Attached media from tool result: {}",
-                                not_sent_said(1, &m.mime, Some(m.bytes), &why)
-                            ),
-                        })),
+                    // A document a call read rides the result that read it, as a document block; a
+                    // model that takes none gets the file's text in the same block's place.
+                    if m.is_document() {
+                        content.push(match policy.senses.pdf_why {
+                            None => document_block(&m.mime, &m.data_ref),
+                            Some(why) => json!({
+                                "type": "text",
+                                "text": format!(
+                                    "Attached document from tool result: {}",
+                                    document_said(1, &m.mime, &m.data_ref, why)
+                                ),
+                            }),
+                        });
+                    } else {
+                        // A picture the call read rides the result that read it: the API takes an
+                        // image block inside `tool_result.content`, and a model that does not get
+                        // pictures is told what it is missing instead.
+                        match picture_fate(&m.data_ref, policy.senses.eyes, policy.withheld) {
+                            None => content.push(image_block(&m.mime, &m.data_ref)),
+                            Some(why) => content.push(json!({
+                                "type": "text",
+                                "text": format!(
+                                    "Attached media from tool result: {}",
+                                    not_sent_said(1, &m.mime, Some(m.bytes), &why)
+                                ),
+                            })),
+                        }
                     }
                 }
                 let mut block = json!({
@@ -278,7 +316,10 @@ pub(super) fn messages(
 fn mark_cache(message: &mut Message) {
     for block in message.blocks.iter_mut().rev() {
         let kind = block["type"].as_str().unwrap_or_default();
-        if matches!(kind, "text" | "image" | "tool_use" | "tool_result") {
+        if matches!(
+            kind,
+            "text" | "image" | "document" | "tool_use" | "tool_result"
+        ) {
             block["cache_control"] = json!({"type": "ephemeral"});
             return;
         }
@@ -290,6 +331,19 @@ fn mark_cache(message: &mut Message) {
 fn image_block(mime: &str, data_ref: &str) -> Value {
     json!({
         "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": mime,
+            "data": letibot_transcript::media::wire_payload(data_ref),
+        },
+    })
+}
+
+/// A `document` block from a `data:` reference: a PDF the API is handed directly, with the three
+/// fields apart - <https://platform.claude.com/docs/en/api/messages>.
+fn document_block(mime: &str, data_ref: &str) -> Value {
+    json!({
+        "type": "document",
         "source": {
             "type": "base64",
             "media_type": mime,
