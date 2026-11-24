@@ -1264,3 +1264,46 @@ fn a_close_waits_one_deadline_for_every_hub() {
          holding more sessions than that passes its exit grace"
     );
 }
+
+/// A one-shot waits for a job's end on the bell - the same ring the daemon's worker answers - so
+/// the wait takes ITS OWN session's entry and leaves every other one where it was: taking another
+/// session's would run a turn for a session this thread is not holding, and taking the queue's head
+/// would swallow a wake the worker owns.
+///
+/// It takes a wake of any kind on purpose. The queue holds one entry per session, so a settlement's
+/// ring is dropped while another kind sits there - the settlement itself is in the harness's queue,
+/// and the turn a wake opens reads that queue.
+#[test]
+fn a_wake_wait_takes_its_own_session_and_leaves_the_rest() {
+    let bell = Bell::new();
+    let soon = || Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
+    bell.ring_wake_for("s-other", Wake::Settlement);
+    bell.ring_wake_for("s-queued", Wake::Other);
+    // s-idle was rung for nothing: this is the deadline answering, not a wait finding work.
+    assert!(
+        !bell.wait_wake("s-idle", soon()),
+        "a session nobody rung answered as though it had been"
+    );
+    assert!(
+        bell.wait_wake("s-other", soon()),
+        "another session's settlement is still a wake for its own wait"
+    );
+    // The dedupe that made this door take any kind: a settlement rung while an `Other` entry sits
+    // there adds nothing to the queue, so a wait that only ever looked for settlements would block
+    // to its deadline with a finished job in hand.
+    bell.ring_settlement_wake("s-queued");
+    {
+        let g = bell.lock();
+        assert_eq!(
+            g.wakes.iter().filter(|(w, _)| w == "s-queued").count(),
+            1,
+            "the queue now holds one entry per session"
+        );
+    }
+    assert!(
+        bell.wait_wake("s-queued", soon()),
+        "the entry a settlement was deduped into was not taken"
+    );
+    // Taken, not repeated.
+    assert!(!bell.wait_wake("s-queued", soon()));
+}

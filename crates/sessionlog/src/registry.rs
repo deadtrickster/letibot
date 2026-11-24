@@ -152,6 +152,45 @@ impl Bell {
         self.lock().closed
     }
 
+    /// Block until `session_id` has a wake queued, or until `deadline` passes: `false` at the
+    /// deadline, and `true` when one was taken off the queue for the caller.
+    ///
+    /// Any kind of wake for that session is taken, not only a settlement's, because the queue holds
+    /// one entry per session and a later settlement's ring is dropped while another kind sits there
+    /// (`ring_wake_for`'s dedupe). Nothing is lost by taking it: the settlement behind a wake is in
+    /// the harness's own queue, and the turn a wake opens reads that queue. The one caller is a
+    /// one-shot's own loop - it has no worker to leave the other kinds for and nothing else to do
+    /// while a job it started runs - so a condvar wait here is a wake ARRIVING, never a poll.
+    pub fn wait_wake(&self, session_id: &str, deadline: Option<Instant>) -> bool {
+        let mut g = self.lock();
+        loop {
+            if let Some(i) = g.wakes.iter().position(|(w, _)| w == session_id) {
+                g.wakes.remove(i);
+                return true;
+            }
+            if g.closed {
+                return false;
+            }
+            let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if left == Some(std::time::Duration::ZERO) {
+                return false;
+            }
+            g = match left {
+                Some(d) => {
+                    let (guard, out) = self
+                        .cv
+                        .wait_timeout(g, d)
+                        .unwrap_or_else(|e| e.into_inner());
+                    if out.timed_out() {
+                        return false;
+                    }
+                    guard
+                }
+                None => self.cv.wait(g).unwrap_or_else(|e| e.into_inner()),
+            };
+        }
+    }
+
     /// Block until some session has been rung. `None` once the bell is closed and drained: a
     /// shutdown does not discard a command already accepted and announced on the log, because a
     /// head was told `Accepted` and the announcement is in the transcript.
