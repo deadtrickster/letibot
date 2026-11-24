@@ -42,6 +42,21 @@ install step.
 A branch is gated when it is ready to land, not on every save. `queue status` says where a row is,
 and a green line names the commit and the machine that judged it.
 
+A session that asked for a gate is woken with its answer instead of polling for it. Putting a
+branch up (`enqueue`), putting a parked row back in line (`restart`) and re-gating a target
+(`regate`) all write down the asking session; when that gate reaches a verdict the session gets one
+row, through the same door a finished job uses, so an idle session starts a turn and a busy one
+reads it at its next boundary:
+
+```text
+[queue] the gate of row `r-abc` at 1a2b3c4 is failed: <the first line of the why>; queue status for the evidence
+```
+
+One row per verdict: a `restart` is what asks for the next one. A session that has ended is
+skipped, and a verdict nobody is waiting on is the pane's alone. A Claude Code seat needs no wait
+of its own: the bridge pushes every move of the queue it follows to its channel
+([claude-code-bridge.md](claude-code-bridge.md), *The queue, from the orchestrator's side*).
+
 ## Where it runs
 
 On this machine, or on a host named in the project's `leticode.toml`:

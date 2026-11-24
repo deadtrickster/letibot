@@ -129,6 +129,9 @@ pub(crate) struct Door {
     pub(crate) live: Mutex<Vec<String>>,
     /// `(repository, text)` of every message this door put on a session.
     pub(crate) delivered: Mutex<Vec<(String, String)>>,
+    /// `(session, text)` of every message it put on ONE session - the verdict a session asked
+    /// for (`QueueDoor::deliver_session`).
+    pub(crate) told: Mutex<Vec<(String, String)>>,
     /// Whether [`QueueDoor::delivers`] answers true - off by default, so every existing test keeps
     /// the card-only path exactly.
     pub(crate) delivers: Mutex<bool>,
@@ -173,6 +176,13 @@ impl QueueDoor for Door {
             .unwrap()
             .push((repository.to_string(), text.to_string()));
         Ok(format!("told the roots of {repository}"))
+    }
+    fn deliver_session(&self, session_id: &str, text: &str) -> Result<String, String> {
+        self.told
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), text.to_string()));
+        Ok(format!("`{session_id}` was told"))
     }
     fn session_live(&self, session_id: &str) -> bool {
         self.live.lock().unwrap().iter().any(|s| s == session_id)
@@ -6793,4 +6803,149 @@ fn a_firecode_only_step_is_found_through_its_script() {
     );
     let wrapped = vec!["sh build.sh".to_string()];
     assert!(firecode_only_step(&dir.0, &wrapped).is_some());
+}
+
+// ===== The session that asked for a gate is woken with its verdict =====
+
+/// The whole of what a session that enqueued a branch needed: instead of polling `queue status`
+/// for its verdict, one row arrives - once, in the session that asked.
+#[test]
+fn a_verdict_on_an_enqueued_branch_wakes_its_session_once() {
+    let w = World::new("wake-enqueue");
+    branch(&w.repo, "one", "one.txt");
+    let row = crate::mergequeue::enqueue::enqueue_branch(
+        &w.store(),
+        &w.repo,
+        "agent/one",
+        None,
+        "wire the thing",
+        "s-one",
+        gate::now_ms(),
+    )
+    .expect("queued");
+    *w.door.live.lock().unwrap() = vec!["s-one".to_string()];
+
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept(&row.id, "test/a");
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Landed
+    );
+
+    let told = w.door.told.lock().unwrap().clone();
+    assert_eq!(told.len(), 1, "one verdict, one row: {told:?}");
+    assert_eq!(told[0].0, "s-one");
+    assert!(
+        told[0].1.starts_with("[queue] the gate of row `"),
+        "{}",
+        told[0].1
+    );
+    assert!(told[0].1.contains(" is landed: "), "{}", told[0].1);
+    assert!(
+        told[0].1.ends_with("; queue status for the evidence"),
+        "{}",
+        told[0].1
+    );
+    assert!(told[0].1.contains(" at "), "the sha judged: {}", told[0].1);
+
+    // The row is gone from the wait, so the passes that keep reading the same records say nothing.
+    run(&q, 2);
+    assert_eq!(
+        w.door.told.lock().unwrap().len(),
+        1,
+        "a verdict already taken is not woken twice"
+    );
+}
+
+/// A re-gate is asked for BY a session, and only that session is woken - the daemon's other
+/// sessions waited on nothing.
+#[test]
+fn a_regate_wakes_the_session_that_asked_for_it_and_no_other() {
+    let w = World::new("wake-regate");
+    *w.door.live.lock().unwrap() = vec!["s-a".to_string(), "s-b".to_string()];
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-a", &|_| {})
+        .expect("re-gated");
+
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+
+    let told = w.door.told.lock().unwrap().clone();
+    assert_eq!(told.len(), 1, "only the asker: {told:?}");
+    assert_eq!(told[0].0, "s-a");
+    assert!(
+        told[0]
+            .1
+            .starts_with("[queue] the gate of target `main` at "),
+        "{}",
+        told[0].1
+    );
+    assert!(told[0].1.contains(" is green: "), "{}", told[0].1);
+}
+
+/// A session that is gone is skipped: the wake is not a message in a queue nobody drains, and the
+/// verdict is still the row a person reads in the pane.
+#[test]
+fn a_waiting_session_that_is_gone_is_skipped() {
+    let w = World::new("wake-gone");
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-gone", &|_| {})
+        .expect("re-gated");
+
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+
+    assert!(
+        w.door.told.lock().unwrap().is_empty(),
+        "a closed session is skipped, not woken"
+    );
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.state, HealthState::Green, "the pane still shows it");
+}
+
+/// A verdict is woken once PER VERDICT: a column that fails, is restarted, and fails again is two
+/// rows - the restart is what asks for the second.
+#[test]
+fn a_restart_asks_again_so_the_next_verdict_wakes_again() {
+    let w = World::new("wake-restart");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    let _ = (base, head);
+    // The branch's own work breaks the target's gate, so the landing's verdict is `failed`.
+    commit(&wt, "broken", "x\n", "break it");
+    let row = crate::mergequeue::enqueue::enqueue_branch(
+        &w.store(),
+        &w.repo,
+        "agent/one",
+        None,
+        "wire the thing",
+        "s-one",
+        gate::now_ms(),
+    )
+    .expect("queued");
+    *w.door.live.lock().unwrap() = vec!["s-one".to_string()];
+
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept(&row.id, "test/a");
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Failed
+    );
+    assert_eq!(w.door.told.lock().unwrap().len(), 1, "the first verdict");
+
+    crate::mergequeue::verbs::restart(&w.store(), &m, "s-one", &|_| {}).expect("restarted");
+    run(&q, 2);
+    let told = w.door.told.lock().unwrap().clone();
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Failed,
+        "the same gate, the same verdict"
+    );
+    assert_eq!(
+        told.len(),
+        2,
+        "a restart asks again, so the same verdict wakes again: {told:?}"
+    );
+    assert!(told[1].1.contains(" is failed: "), "{}", told[1].1);
 }
