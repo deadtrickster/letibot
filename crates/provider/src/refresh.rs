@@ -95,7 +95,8 @@ fn wanted_with(configured: bool, pointed_at: Option<&str>) -> bool {
     configured && pointed_at.is_none_or(str::is_empty)
 }
 
-/// Refresh the cache this box reads, if there is one to refresh. The one caller is the daemon.
+/// Refresh the cache this box reads, if there is one. The daemon's task is the caller
+/// (`harnessd::catalogue_refresh`), and the live check in the tests below.
 pub fn refresh() -> Result<Outcome, String> {
     let path = crate::catalogue::cache_path().ok_or("this box has no cache directory")?;
     refresh_at(&path, &fetch_live, SystemTime::now())
