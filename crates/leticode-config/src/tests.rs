@@ -2383,3 +2383,52 @@ fn parallel_is_off_only_when_a_file_says_so() {
     let why = LeticodeConfig::load(&bad).unwrap_err();
     assert!(why.contains("[tools]"), "{why}");
 }
+
+/// `[seat] default`: the word the file wrote, the default when no level wrote one, the project's
+/// over the user's, and a word that is neither refused by name and line.
+#[test]
+fn the_seat_default_is_read_at_both_levels_and_refused_by_name() {
+    let dir = project_dir("seat_default");
+    let quiet = write_file(&dir, "");
+    let none = LeticodeConfig::load(&quiet).unwrap();
+    assert_eq!(
+        none.seat.default, None,
+        "a box that said nothing set nothing"
+    );
+    assert_eq!(
+        SeatDefault::default(),
+        SeatDefault::Vm,
+        "a headless seat is a VM unless a file says otherwise"
+    );
+    assert_eq!(seat_default(&none, &dir, false), (SeatDefault::Vm, None));
+
+    let host = write_file(&dir, "[seat]\ndefault = \"host\"\n");
+    let project = LeticodeConfig::load(&host).unwrap();
+    assert_eq!(project.seat.default, Some(SeatDefault::Host));
+    // The project's word wins over a user file, and a project that said nothing leaves it.
+    let mut user = LeticodeConfig::default();
+    user.seat.default = Some(SeatDefault::Vm);
+    assert_eq!(
+        user.overridden_by(&project).seat.default,
+        Some(SeatDefault::Host)
+    );
+    assert_eq!(
+        user.overridden_by(&none).seat.default,
+        Some(SeatDefault::Vm),
+        "a project that said nothing must not undo the user's word"
+    );
+
+    let bad = write_file(&dir, "[seat]\ndefault = \"firecracker\"\n");
+    let why = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(
+        why.contains("[seat] default") && why.contains("vm") && why.contains("host"),
+        "{why}"
+    );
+    assert!(why.contains(":2:"), "the refusal names the line: {why}");
+    let bad = write_file(&dir, "[seat]\ndefault = true\n");
+    let why = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(why.contains("yes/no"), "{why}");
+    let bad = write_file(&dir, "[seat]\ndefualt = \"vm\"\n");
+    let why = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(why.contains("is not a key"), "{why}");
+}

@@ -386,6 +386,12 @@ pub const LETICODE: File = File {
             )],
         },
         Table {
+            path: "seat",
+            note: "Where a session with NO HEAD runs its tools: a package, a subagent, a queue gate. An interactive top-level session is the host whatever this says, and `vm`/`--vm`/`--host` on a start is honoured over it. A machine that cannot start a VM (`firecode doctor`) starts the seat on the host and says why, in one warning.",
+            needs: "",
+            keys: &[k("default", "\"vm\" | \"host\"", "\"vm\"", PW, "placement a headless seat gets: a firecode VM, or this machine", "\"host\"")],
+        },
+        Table {
             path: "subagents",
             note: "A spawn over a cap waits for a running child to answer, or is refused. A spawn with the objective of a running child is refused, naming it. Review-queue reviewers are outside these caps.",
             needs: "",

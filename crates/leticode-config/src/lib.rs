@@ -495,6 +495,9 @@ pub struct LeticodeConfig {
     pub ui: UiKeys,
     /// The `[sessions]` table. See [`SessionKeys`].
     pub sessions: SessionKeys,
+    /// The `[seat]` table: where a session with no head runs its tools. See [`SeatKeys`] and
+    /// [`seat_default`].
+    pub seat: SeatKeys,
     /// The `[subagents]` table: how many children run at once. See [`SubagentKeys`].
     pub subagents: SubagentKeys,
     /// The `[warnings]` table: what the head files and never draws. Read by the head, in
@@ -1678,6 +1681,30 @@ pub fn output_cap(
     cap
 }
 
+/// `[seat] default` as a session is placed: the project file's word, else the user's, else
+/// [`SeatDefault::Vm`]. Read where a HEADLESS seat is about to be started - a package, a
+/// subagent, a queue gate - and never for an interactive session, which stays on the host.
+///
+/// A file that will not parse is not a refusal here: the placement is a preference with a
+/// fallback, so the level below is used and the reason is said once, as the open says it.
+pub fn seat_default(
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+) -> (SeatDefault, Option<String>) {
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => {
+                if let Some(word) = project.seat.default {
+                    return (word, None);
+                }
+            }
+            Err(why) => return (user.seat.default.unwrap_or_default(), Some(why)),
+        }
+    }
+    (user.seat.default.unwrap_or_default(), None)
+}
+
 /// Thirty minutes of neither output nor CPU: what a wedged job costs before the harness calls it
 /// dead. The number the operator's `[exec]` overrides, and the one every sentence about the dead
 /// check quotes when no file set another.
@@ -2615,6 +2642,70 @@ pub const DEFAULT_MAX_RUNNING: usize = 8;
 /// Children the whole daemon may run at once when the user file does not say, as grok and omp cap them.
 pub const DEFAULT_DAEMON_MAX_RUNNING: usize = 32;
 
+/// `[seat]` in a `leticode.toml`: where a session with no head runs its tools. See
+/// [`SeatDefault`] for the two words and what each means.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeatKeys {
+    pub default: Option<SeatDefault>,
+}
+
+/// `[seat] default`: the placement a HEADLESS seat gets - a package, a subagent, a queue gate,
+/// anything nobody sits in front of. An interactive top-level session is the host whatever this
+/// says, and a caller that asks for a placement (`vm`, `--vm`, `--host`) gets what it asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SeatDefault {
+    /// A firecode VM. The default: the VM is the boundary, so nothing inside it can reach this
+    /// box, and a fallback to the host when this machine cannot start one is named.
+    #[default]
+    Vm,
+    /// This machine, with the boundary its perimeter asks for.
+    Host,
+}
+
+impl SeatDefault {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeatDefault::Vm => "vm",
+            SeatDefault::Host => "host",
+        }
+    }
+
+    /// The word back, or a refusal naming the two the file may say.
+    pub fn parse(s: &str) -> Result<SeatDefault, String> {
+        match s.trim() {
+            "vm" | "firecode" => Ok(SeatDefault::Vm),
+            "host" | "here" => Ok(SeatDefault::Host),
+            other => Err(format!(
+                "[seat] default is \"vm\" (a firecode VM: the VM is the boundary, and a session \
+                 with no head runs there) or \"host\" (this machine, as it is) - not \"{other}\""
+            )),
+        }
+    }
+}
+
+fn seat_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<SeatKeys, String> {
+    let keys = "the key is `default` (\"vm\" or \"host\")";
+    let table = table_at(value, path, text, "seat", keys)?;
+    let mut out = SeatKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "default" => {
+                let word = v.as_str().ok_or_else(|| {
+                    format!(
+                        "{from}: [seat] default is \"vm\" or \"host\", not {}",
+                        kind_of(v)
+                    )
+                })?;
+                out.default =
+                    Some(SeatDefault::parse(word).map_err(|why| format!("{from}: {why}"))?);
+            }
+            other => return Err(format!("{from}: [seat] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
 /// `[subagents]` in a `leticode.toml`. `daemon_max_running` is read from the user file only: a
 /// project file is writable by the sessions it governs, and the daemon's cap is not theirs to lift.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3340,6 +3431,10 @@ impl LeticodeConfig {
                 Some(v) => session_keys(v, path, text, level == Level::User)?,
                 None => SessionKeys::default(),
             },
+            seat: match &file.seat {
+                Some(v) => seat_keys(v, path, text, level == Level::User)?,
+                None => SeatKeys::default(),
+            },
             subagents: match &file.subagents {
                 Some(v) => subagent_keys(v, path, text, level == Level::User)?,
                 None => SubagentKeys::default(),
@@ -3661,6 +3756,11 @@ impl LeticodeConfig {
             sessions: SessionKeys {
                 auto_reseat: other.sessions.auto_reseat.or(self.sessions.auto_reseat),
             },
+            // The project's word wins: a repository whose seats are the ones being placed is
+            // the one that knows whether a VM suits it.
+            seat: SeatKeys {
+                default: other.seat.default.or(self.seat.default),
+            },
             subagents: SubagentKeys {
                 max_running: other.subagents.max_running.or(self.subagents.max_running),
                 daemon_max_running: other
@@ -3974,6 +4074,9 @@ struct LeticodeConfigFile {
     /// The `[sessions]` table, see [`SessionKeys`].
     #[serde(default)]
     sessions: Option<toml::Value>,
+    /// The `[seat]` table, see [`SeatKeys`].
+    #[serde(default)]
+    seat: Option<toml::Value>,
     /// The `[subagents]` table, see [`SubagentKeys`].
     #[serde(default)]
     subagents: Option<toml::Value>,
