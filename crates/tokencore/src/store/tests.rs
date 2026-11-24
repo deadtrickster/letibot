@@ -207,6 +207,145 @@ fn a_split_sets_session_carries_its_project_files_history() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Write one named session with `rows` rows through a set's handle, so the index records the
+/// handle's key for it and the rows land in that key's project file.
+fn seeded_in(s: &Store, id: &str, rows: u32) {
+    let p = prefix();
+    let prefix_id = s.put_stable_prefix(&p).unwrap();
+    s.put_session(&SessionRecord {
+        id: id.into(),
+        title: Some(id.into()),
+        model_id: "qwen".into(),
+        dialect_sha: p.dialect_sha.clone(),
+        workspace_root: format!("/w/{id}"),
+        owner: "deadtrickster".into(),
+        role: None,
+        approvers: vec![],
+        parent_session_id: None,
+    })
+    .unwrap();
+    let tr = format!("{id}#t0");
+    s.put_transcript(&tr, id, &prefix_id).unwrap();
+    let mut ledger = TokenLedger::new(&tr, &p.tokens).unwrap();
+    for seq in 0..rows {
+        let item = TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![letibot_transcript::UserPart::Text {
+                text: format!("row {seq} of {id}"),
+            }],
+        };
+        let toks = vec![10 + seq];
+        let row = ledger
+            .append(&format!("{tr}.{seq}"), &toks)
+            .unwrap()
+            .clone();
+        s.append_item(&tr, seq, &item, &row, &toks).unwrap();
+    }
+}
+
+/// A data directory holds one project file per folder, and a listing over the DIRECTORY is what
+/// `letibot session list` and `letibot --continue` both read. Each row's history has to come from
+/// the file its own index row names - not from the one file the listing's handle happens to have
+/// open, which is another project's and answers zero rows for every session but its own.
+#[test]
+fn a_split_listing_reads_every_sessions_history_from_its_own_project_file() {
+    let dir = std::env::temp_dir().join(format!(
+        "store-split-listing-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (
+        crate::migrate_split::project_key("/w/s-a"),
+        crate::migrate_split::project_key("/w/s-b"),
+    );
+    {
+        // Two daemons' worth of store: each opens its own key and writes its own session.
+        let mine = Store::open_set(&dir, &a).expect("a set's handle");
+        seeded_in(&mine, "s-a", 3);
+        seeded_in(&mine, "s-a-empty", 0);
+        let other = Store::open_set(&dir, &b).expect("the other project's handle");
+        seeded_in(&other, "s-b", 5);
+    }
+
+    // Opened the way a command line opens a data directory: one key, and every project's rows.
+    let from_a = Store::open_set(&dir, &a).expect("a set's handle");
+    let listed = from_a.list_sessions().expect("the listing");
+    let row = |id: &str| {
+        listed
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the listing: {listed:?}"))
+    };
+    assert_eq!(row("s-a").items, 3, "this handle's own project file");
+    assert_eq!(
+        row("s-b").items,
+        5,
+        "another project's history is in the listing's own count"
+    );
+    assert_eq!(
+        row("s-a-empty").items,
+        0,
+        "a session nobody said anything in"
+    );
+    assert_eq!(
+        row("s-b").transcript_id.as_deref(),
+        Some("s-b#t0"),
+        "the current transcript comes from the same file as the count"
+    );
+    assert!(
+        row("s-b").last_activity_ms > row("s-a-empty").last_activity_ms,
+        "a session with rows is newer than one that never had any"
+    );
+    // The same query keyed to one session: `Store::session` is the listing's SQL, so it had the
+    // same hole when the session belonged to another project.
+    let keyed = from_a.session("s-b").expect("held").expect("there");
+    assert_eq!(keyed.items, 5, "the keyed lookup reads the same file");
+    // And from the other side, so this is a property of the LISTING and not of which handle opened
+    // first: b's handle sees a's rows too.
+    let from_b = Store::open_set(&dir, &b).expect("the other project's handle");
+    assert_eq!(
+        from_b.session("s-a").expect("held").expect("there").items,
+        3
+    );
+    drop((from_a, from_b));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A project file that is gone is not a listing that fails: the index's empty columns are what a
+/// session whose history was renamed away answers, and the row is still there.
+#[test]
+fn a_split_listing_answers_when_a_project_file_is_gone() {
+    let dir = std::env::temp_dir().join(format!(
+        "store-split-gone-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (
+        crate::migrate_split::project_key("/w/s-a"),
+        crate::migrate_split::project_key("/w/s-b"),
+    );
+    {
+        let mine = Store::open_set(&dir, &a).expect("a set's handle");
+        seeded_in(&mine, "s-a", 2);
+        let other = Store::open_set(&dir, &b).expect("the other project's handle");
+        seeded_in(&other, "s-b", 4);
+    }
+    let gone = dir.join("projects").join(format!("{b}.db"));
+    std::fs::rename(&gone, gone.with_extension("db.away")).expect("renamed away");
+
+    let listed = Store::open_set(&dir, &a).expect("a set's handle");
+    let rows = listed.list_sessions().expect("the listing answers anyway");
+    let by = |id: &str| rows.iter().find(|s| s.id == id).expect("held").items;
+    assert_eq!(by("s-a"), 2, "the file that is there is still read");
+    assert_eq!(by("s-b"), 0, "the one that is gone keeps the index's count");
+    drop(listed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// one row, by ordinal, without loading the transcript it is in. The read behind
 /// `FetchRow` for a row the daemon's bounded view has trimmed. It is one indexed lookup -
 /// the primary key is `(transcript_id, seq)` - and an ordinal is relative to the current transcript.

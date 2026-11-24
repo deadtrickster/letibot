@@ -1594,8 +1594,8 @@ pub(crate) fn sessions_sql(filter: &str) -> String {
 }
 
 /// One session's four history columns - current transcript, row count, last activity and last
-/// item - read from the file that holds its transcript: what a set's listing fills from its own
-/// project file, so a resume and `--continue` see the rows the index cannot.
+/// item - read from the file that holds its transcript, by the session id. A set fills them from
+/// each row's OWN project file, so a resume and `--continue` see the rows the index cannot.
 pub(crate) const HISTORY_SQL: &str = "SELECT
         (SELECT t.id FROM transcript t
           WHERE t.session_id = ?1
@@ -1616,7 +1616,9 @@ pub(crate) const HISTORY_SQL: &str = "SELECT
           ORDER BY i.seq DESC LIMIT 1)";
 
 /// The session list for a split set: same columns and order, with the four transcript columns
-/// `NULL`/`0` because the index cannot read a project file; [`HISTORY_SQL`] fills them afterwards.
+/// `NULL`/`0` because the index cannot read a project file, and `project` last - the key of the
+/// file [`HISTORY_SQL`] fills them from. Appended like every column before it, because the row is
+/// read BY POSITION.
 pub(crate) fn sessions_index_sql(filter: &str) -> String {
     format!(
         "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
@@ -1640,9 +1642,100 @@ pub(crate) fn sessions_index_sql(filter: &str) -> String {
                     s.moved_ms,
                     s.origin,
                     s.archived_ms,
-                    s.archived_reason
+                    s.archived_reason,
+                    s.project
                FROM session s{filter}"
     )
+}
+
+/// One row of a listing, read BY POSITION - the one place the 27 columns are spelled, so a
+/// column appended to [`sessions_sql`] or [`sessions_index_sql`] is appended here and nowhere
+/// else.
+fn stored_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
+    let created_ms: i64 = r.get(6)?;
+    let last: Option<i64> = r.get(9)?;
+    Ok(StoredSession {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        model_id: r.get(2)?,
+        dialect_sha: r.get(3)?,
+        workspace_root: r.get(4)?,
+        owner: r.get(5)?,
+        created_ms,
+        transcript_id: r.get(7)?,
+        items: r.get::<_, i64>(8)? as u32,
+        last_activity_ms: last.unwrap_or(created_ms),
+        role: r.get(10)?,
+        parent_session_id: r.get(11)?,
+        context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
+        context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
+        context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+        provider_choice: r.get(15)?,
+        context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+        auto_compact_stood_down: match (r.get::<_, Option<i64>>(17)?, r.get::<_, Option<i64>>(18)?)
+        {
+            // Half a pair is a store this file never wrote; reading it as
+            // `Some` would invent the other number, so it reads as no pair.
+            (Some(resident), Some(after)) => Some((resident as u64, after as u64)),
+            _ => None,
+        },
+        // Index 19, after the stood-down pair at 17 and 18. This list is read BY POSITION and
+        // both changes appended to it; the pair comes first because it is the older change.
+        last_item: r
+            .get::<_, Option<String>>(19)?
+            .and_then(|j| serde_json::from_str(&j).ok()),
+        // Index 20, appended for the same reason 19 was. The list is read BY
+        // POSITION and this is the newest fact on the row; the fingerprint goes
+        // last so nothing above it shifts.
+        prefix_fingerprint: r.get(20)?,
+        // Index 21, appended last for the reason 20 was.
+        nags_paused_until: r.get(21)?,
+        // Index 22 and 23, the two columns a migration writes. Appended
+        // for the reason every index above was: the list is read BY POSITION.
+        lives_on: r.get(22)?,
+        moved_ms: r.get(23)?,
+        // Index 24, appended for the reason 22 and 23 were, and read as a string because the
+        // vocabulary is `letibot_sessionlog::SessionOrigin`'s and this crate does not depend
+        // on it. A value this build does not know reads as unknown.
+        origin: r.get(24)?,
+        // Index 25 and 26, the archive. Appended for the reason every index above
+        // was: the list is read BY POSITION. Index 27, the project key, is read by
+        // `sessions_matching` alone - it says which file filled these four columns.
+        archived_ms: r.get(25)?,
+        archived_reason: r.get(26)?,
+    })
+}
+
+/// Fill `rows` from one project file, by [`HISTORY_SQL`]: a session the file has no transcript
+/// for keeps what the index said. One prepared statement, one query per row.
+fn history_into(conn: &Connection, rows: &mut [StoredSession], idxs: &[usize]) -> Result<()> {
+    busy::retry_store(|| {
+        let mut hist = conn.prepare_cached(HISTORY_SQL)?;
+        for &at in idxs {
+            let (tid, items, last, item): (Option<String>, i64, Option<i64>, Option<String>) = hist
+                .query_row([&rows[at].id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?;
+            if tid.is_none() {
+                continue;
+            }
+            rows[at].transcript_id = tid;
+            rows[at].items = items as u32;
+            rows[at].last_activity_ms = last.unwrap_or(rows[at].created_ms);
+            rows[at].last_item = item.and_then(|j| serde_json::from_str(&j).ok());
+        }
+        Ok(())
+    })
+}
+
+/// Does this file hold a history at all? The shared file of a finished split set holds none, and
+/// only a directory mid-carve keeps the old `sessions.db`'s project tables under that name.
+fn holds_history(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'transcript'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0)
 }
 
 /// The table a statement is about, from its own text: the word after `INSERT [OR x] INTO`,
@@ -3597,7 +3690,7 @@ impl Store {
     }
 
     /// The one query behind both [`Store::list_sessions`] and [`Store::session`], with an optional
-    /// `WHERE` appended, so the 20-column positional reader exists once: two copies read BY
+    /// `WHERE` appended, so the 27-column positional reader exists once: two copies read BY
     /// POSITION would drift the first time a column was added.
     fn sessions_matching(
         &self,
@@ -3606,104 +3699,78 @@ impl Store {
     ) -> Result<Vec<StoredSession>> {
         // `seq` is dense from 0 and written in time order, so count and last activity need no scan.
         // The current-transcript subquery breaks ties on `rowid` because a fork shares its parent's
-        // millisecond. On a split set the history columns come from the project file below.
-        let sql = match self.project.is_some() {
+        // millisecond. On a split set the history columns come from the project files below.
+        let set = self.project.is_some();
+        let sql = match set {
             true => sessions_index_sql(filter),
             false => sessions_sql(filter),
         };
         let conn = self.conn();
+        let mut kept: Vec<Option<String>> = Vec::new();
         let mut out = busy::retry_store(|| {
             let mut stmt = conn.prepare(&sql)?;
-            let mut out: Vec<StoredSession> = stmt
-                .query_map(args, |r| {
-                    let created_ms: i64 = r.get(6)?;
-                    let last: Option<i64> = r.get(9)?;
-                    Ok(StoredSession {
-                        id: r.get(0)?,
-                        title: r.get(1)?,
-                        model_id: r.get(2)?,
-                        dialect_sha: r.get(3)?,
-                        workspace_root: r.get(4)?,
-                        owner: r.get(5)?,
-                        created_ms,
-                        transcript_id: r.get(7)?,
-                        items: r.get::<_, i64>(8)? as u32,
-                        last_activity_ms: last.unwrap_or(created_ms),
-                        role: r.get(10)?,
-                        parent_session_id: r.get(11)?,
-                        context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
-                        context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
-                        context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
-                        provider_choice: r.get(15)?,
-                        context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
-                        auto_compact_stood_down: match (
-                            r.get::<_, Option<i64>>(17)?,
-                            r.get::<_, Option<i64>>(18)?,
-                        ) {
-                            // Half a pair is a store this file never wrote; reading it as
-                            // `Some` would invent the other number, so it reads as no pair.
-                            (Some(resident), Some(after)) => Some((resident as u64, after as u64)),
-                            _ => None,
-                        },
-                        // Index 19, after the stood-down pair at 17 and 18. This list is read BY POSITION and
-                        // both changes appended to it; the pair comes first because it is the older change.
-                        last_item: r
-                            .get::<_, Option<String>>(19)?
-                            .and_then(|j| serde_json::from_str(&j).ok()),
-                        // Index 20, appended for the same reason 19 was. The list is read BY
-                        // POSITION and this is the newest fact on the row; the fingerprint goes
-                        // last so nothing above it shifts.
-                        prefix_fingerprint: r.get(20)?,
-                        // Index 21, appended last for the reason 20 was.
-                        nags_paused_until: r.get(21)?,
-                        // Index 22 and 23, the two columns a migration writes. Appended
-                        // for the reason every index above was: the list is read BY POSITION.
-                        lives_on: r.get(22)?,
-                        moved_ms: r.get(23)?,
-                        // Index 24, appended for the reason 22 and 23 were, and read as a string because the
-                        // vocabulary is `letibot_sessionlog::SessionOrigin`'s and this crate does not depend
-                        // on it. A value this build does not know reads as unknown.
-                        origin: r.get(24)?,
-                        // Index 25 and 26, the archive. Appended for the reason every index above
-                        // was: the list is read BY POSITION.
-                        archived_ms: r.get(25)?,
-                        archived_reason: r.get(26)?,
-                    })
-                })?
-                .collect::<std::result::Result<_, _>>()?;
-            out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
+            let mut rows = stmt.query(args)?;
+            let mut out: Vec<StoredSession> = Vec::new();
+            while let Some(r) = rows.next()? {
+                out.push(stored_session(r)?);
+                // The file this row's history is in, from the row itself: a listing over a data
+                // directory spans every project, and one handle's file is one of them.
+                if set {
+                    kept.push(r.get::<_, Option<String>>(27)?);
+                }
+            }
             Ok(out)
         })?;
         drop(conn);
-        // A set's own project file holds these sessions' history; one in another project's file,
-        // or a set whose file is gone, keeps the index's empty columns. Read after the index's
-        // lock is let go, so this call never holds both files' locks.
-        if let Some(Some(project)) = &self.project {
-            let pconn = project.conn();
-            busy::retry_store(|| {
-                let mut hist = pconn.prepare_cached(HISTORY_SQL)?;
-                for s in out.iter_mut() {
-                    let (tid, items, last, item): (
-                        Option<String>,
-                        i64,
-                        Option<i64>,
-                        Option<String>,
-                    ) = hist.query_row([&s.id], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                    })?;
-                    if tid.is_none() {
-                        continue;
-                    }
-                    s.transcript_id = tid;
-                    s.items = items as u32;
-                    s.last_activity_ms = last.unwrap_or(s.created_ms);
-                    s.last_item = item.and_then(|j| serde_json::from_str(&j).ok());
-                }
-                Ok(())
-            })?;
-            out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
+        // Read after the index's lock is let go, so this call never holds two files' locks at once.
+        if set {
+            self.fill_history(&mut out, &kept)?;
         }
+        // Newest activity first, and only once the fill is done: `kept` is in the QUERY's order,
+        // so sorting before it would pair each key with another session's rows.
+        out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
         Ok(out)
+    }
+
+    /// Fill a set's listing from the project file each row names, one open per project. A file
+    /// that is gone, or that will not open, leaves the index's empty columns: a listing over a
+    /// whole data directory must not answer nothing because one project is unreadable.
+    fn fill_history(&self, rows: &mut [StoredSession], keys: &[Option<String>]) -> Result<()> {
+        let Some(dir) = self.shared.path.as_deref().and_then(Path::parent) else {
+            return Ok(());
+        };
+        let mut groups: BTreeMap<Option<&str>, Vec<usize>> = BTreeMap::new();
+        for (at, key) in keys.iter().enumerate() {
+            let key = key.as_deref().filter(|k| !k.is_empty());
+            groups.entry(key).or_default().push(at);
+        }
+        for (key, idxs) in groups {
+            // An unkeyed row's history is in the shared file only while a directory is mid-carve,
+            // where that file is the old `sessions.db`; `file_of` says which file a key is in.
+            let path = match key {
+                Some(k) => split::file_of(dir, k, "transcript"),
+                None => split::shared_path(dir),
+            };
+            if self.shared.path.as_deref() == Some(path.as_path()) {
+                let conn = self.conn();
+                if !holds_history(&conn)? {
+                    continue;
+                }
+                history_into(&conn, rows, &idxs)?;
+            } else if let Some(open) = self.project.as_ref().and_then(|p| p.as_ref())
+                && open.path.as_deref() == Some(path.as_path())
+            {
+                let conn = open.conn();
+                history_into(&conn, rows, &idxs)?;
+            } else if path.is_file() {
+                // Read-only: a listing is not a writer, and another project's file is another
+                // daemon's. A file that will not open leaves its rows as the index has them.
+                if let Ok(reader) = Store::open_reader(&path) {
+                    history_into(&reader.conn(), rows, &idxs)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The name on disk right now, or `None` for a session nobody has named. Read rather than
