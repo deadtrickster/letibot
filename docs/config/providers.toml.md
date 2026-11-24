@@ -67,6 +67,7 @@ One per built-in preset, by canonical name (deepseek, glm, glm-coding, grok, ant
 |---|---|---|---|
 | `key` | string | env variable, then opencode's auth.json | API key |
 | `url` | URL | the preset's | endpoint the client posts to |
+| `model` | string | the catalogue's rule | what a bare `--model <preset>` sends: the door's default model |
 
 ## `[provider.<name>]`
 

@@ -10,6 +10,7 @@ pub mod keys;
 pub mod kimi;
 pub mod marks;
 pub mod messages;
+pub mod name;
 pub mod openai;
 pub mod presets;
 pub mod refresh;

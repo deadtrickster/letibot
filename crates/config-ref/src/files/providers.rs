@@ -80,6 +80,7 @@ pub const PROVIDERS: File = File {
             keys: &[
                 k("key", "string", "env variable, then opencode's auth.json", "", "API key", "\"sk-probe\""),
                 k("url", "URL", "the preset's", "", "endpoint the client posts to", "\"https://example.invalid/v1\""),
+                k("model", "string", "the catalogue's rule", "", "what a bare `--model <preset>` sends: the door's default model", "\"deepseek-v4-pro\""),
             ],
         },
         Table {

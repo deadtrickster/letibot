@@ -200,6 +200,19 @@ pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
     }
 }
 
+/// The model a door's own `[<preset>]` table names, when it names one: the operator's word for
+/// what a bare `--model <preset>` sends, over the catalogue's rule and over the door's fallback.
+pub fn preset_model(preset: &str, file: Option<&Path>) -> Option<String> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let parsed = parse_file(&file).ok()?;
+    parsed
+        .sections
+        .get(preset)?
+        .get("model")
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+}
+
 /// `letibot_paths::config_dir()`'s providers.toml. With no home at all the path is under `/`,
 /// never relative: a cwd-relative file is one the workspace chooses.
 pub fn config_file() -> PathBuf {
