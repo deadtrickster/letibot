@@ -1456,6 +1456,7 @@ dependencies = [
  "letibot-harnessd",
  "letibot-metrics",
  "letibot-paths",
+ "letibot-provider",
  "letibot-room",
  "letibot-sessionlog",
  "letibot-testenv",
