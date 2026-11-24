@@ -338,9 +338,12 @@ pub(crate) fn attachment_of(path: &Path) -> Result<Attachment, String> {
         .unwrap_or_else(|| path_s.clone());
     let media = letibot_transcript::media::sniff_mime(&path_s, &head);
     Ok(Attachment {
+        // The kind is which CHANNEL the daemon will hand the model, so only a picture is `Image`: a
+        // document (`application/pdf`) is a file chip whose bytes the daemon reads into a document
+        // part, and a chip that called it an image would promise the model something it cannot take.
         kind: match media {
-            Some(_) => AttachmentKind::Image,
-            None => AttachmentKind::File,
+            Some(m) if m.starts_with("image/") => AttachmentKind::Image,
+            _ => AttachmentKind::File,
         },
         path: path_s,
         media_type: match media {
@@ -816,6 +819,38 @@ mod tests {
         let b = attachment_of(&std::fs::canonicalize(&text).unwrap()).unwrap();
         assert_eq!(b.kind, AttachmentKind::File);
         assert_eq!(b.media_type, "text/plain");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A PDF is a DOCUMENT, and the chip says so. Every sniffed type used to become `Image`, which
+    /// promised the model a picture of a file the daemon hands over as bytes - and the document card
+    /// the conversation draws for it never got the part it is drawn from.
+    #[test]
+    fn a_pdf_is_a_file_chip_and_not_an_image() {
+        let d = dir("document");
+        let memo = d.join("memo.pdf");
+        std::fs::write(&memo, letibot_transcript::testing::pdf("the answer is 42")).unwrap();
+        let a = attachment_of(&std::fs::canonicalize(&memo).unwrap()).unwrap();
+        assert_eq!(
+            a.kind,
+            AttachmentKind::File,
+            "a pdf was announced as an image"
+        );
+        assert_eq!(
+            a.media_type, "application/pdf",
+            "the chip states the type the daemon will read the bytes as"
+        );
+        // And the chip's words are the file's name, which is what a person recognises.
+        assert_eq!(
+            chip_text(1, &a),
+            format!("[file 1 · memo.pdf · {}]", size_said(a.bytes_len))
+        );
+        // A picture under a `.pdf` name is still a picture: the bytes decide, as everywhere else.
+        let lying = d.join("shot.pdf");
+        std::fs::write(&lying, png()).unwrap();
+        let b = attachment_of(&std::fs::canonicalize(&lying).unwrap()).unwrap();
+        assert_eq!(b.kind, AttachmentKind::Image);
+        assert_eq!(b.media_type, "image/png");
         let _ = std::fs::remove_dir_all(&d);
     }
 
