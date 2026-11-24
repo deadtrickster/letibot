@@ -276,6 +276,9 @@ pub fn run(args: &[String]) -> i32 {
 
 /// [`run`], with a reader of the other daemons' packages for the sessions list.
 pub fn run_with(args: &[String], fleet: Option<letibot_sessionlog::FleetReader>) -> i32 {
+    // The head renders a document's pages in its own process - a page is drawn here, unlike a model's
+    // copy of it, which the daemon renders - so the renderer is registered before any frame.
+    letibot_plugins_rano::pdf::install();
     let args = match parse(args) {
         Ok(a) => a,
         Err(e) => {

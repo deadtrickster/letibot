@@ -1,6 +1,9 @@
 //! The production door for plugin modules: one `Loader`, and one compiled module per distinct
 //! module in the process, keyed by the SHA-256 of its bytes. This crate is the wasm engine behind
 //! `letibot_plugins`' `Loader` seam, so that crate stays free of one.
+//!
+//! It is also where a host registers rano's PDF renderers ([`pdf`]), for the same reason: rano is
+//! here, both the daemon and the head need it, and `letibot_transcript` cannot name it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,6 +12,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use letibot_plugins::{Capability, HOOK_PREFIXES, Loader, Module};
 use sha2::{Digest, Sha256};
+
+pub mod pdf;
 
 /// How many compiled modules this process keeps. A built-in is `include_bytes!`d and cannot change,
 /// and a placed layer is recompiled only when its bytes move, so the count of distinct modules a
