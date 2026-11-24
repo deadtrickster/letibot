@@ -138,6 +138,9 @@ impl Tool for Read {
         // is broken. Over the cap the SAME bytes are extracted to text here, never stored again.
         let mut doc_note: Option<String> = None;
         if let Some(m) = crate::media::Media::document(path, &bytes) {
+            if let Some(spec) = args.get("pages").and_then(|v| v.as_str()) {
+                return pages_text(path, &bytes, spec);
+            }
             if (m.bytes as u64) <= ctx.limits.max_document_bytes {
                 return Invocation {
                     outcome: letibot_transcript::ToolOutcome::Ok,
@@ -481,6 +484,38 @@ fn directory(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
     ))
 }
 
+/// The most pages one `pages` call returns: past it the slice is a whole document again.
+const MAX_PAGES_PER_CALL: u32 = 50;
+
+/// The text of a PDF's `pages` slice, one heading per page, read through the registered renderer.
+fn pages_text(path: &str, bytes: &[u8], spec: &str) -> Invocation {
+    let Some((from, to)) = parse_pages(spec) else {
+        return Invocation::failed(
+            "`pages` is not a page or a range",
+            format!("`pages` was {spec:?}; give one page (`3`) or a range (`1-5`), 1-based."),
+        );
+    };
+    let to = to.min(from.saturating_add(MAX_PAGES_PER_CALL - 1));
+    let mut out = String::new();
+    for page in from..=to {
+        match letibot_transcript::pdf::page_text(bytes, page - 1) {
+            Some(text) => out.push_str(&format!("## page {page}\n\n{}\n\n", text.trim_end())),
+            None if page == from => {
+                return Invocation::not_run(
+                    "no page text",
+                    format!(
+                        "{path}: page {page} could not be read as text here (no PDF renderer, or \
+                         the document has no such page). Read it without `pages` to get the \
+                         document itself."
+                    ),
+                );
+            }
+            None => break,
+        }
+    }
+    Invocation::ok(format!("{path}, pages {from}-{to}:\n\n{out}"))
+}
+
 /// A `pages` argument: one page (`3`) or a range (`1-5`), one-based, as a reader counts them.
 /// `None` for anything else, which is a refusal rather than a guess at what was meant.
 fn parse_pages(spec: &str) -> Option<(u32, u32)> {
@@ -676,6 +711,25 @@ mod tests {
             assert!(d.contains(needle), "{needle:?} missing from: {d}");
         }
         assert_eq!(crate::schema::lint_description(&d), vec![]);
+    }
+
+    #[test]
+    fn pages_takes_a_page_or_a_range_and_refuses_anything_else() {
+        assert_eq!(super::parse_pages("3"), Some((3, 3)));
+        assert_eq!(super::parse_pages(" 1-5 "), Some((1, 5)));
+        assert_eq!(super::parse_pages("0"), None);
+        assert_eq!(super::parse_pages("5-1"), None);
+        assert_eq!(super::parse_pages("all"), None);
+        let mut h = crate::testing::harness();
+        let pdf = letibot_transcript::testing::pdf("a word on page one");
+        std::fs::write(h.root().join("p.pdf"), &pdf).expect("fixture write");
+        let bad = h.call("read", r#"{"path":"p.pdf","pages":"x"}"#);
+        assert!(bad.payload.contains("`pages`"), "{}", bad.payload);
+        let got = h.call("read", r#"{"path":"p.pdf","pages":"1"}"#);
+        assert!(
+            got.media.is_none(),
+            "a pages slice is text, not the document"
+        );
     }
 
     #[test]

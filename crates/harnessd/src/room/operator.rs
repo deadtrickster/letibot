@@ -471,11 +471,8 @@ mod tests {
         let _ = &two;
         // Two seats talking privately, and neither end is the operator: the daemon's whitelist is
         // what lets the head's `dms` frame through at all. A `say` with a `to` is the dm door.
-        one.call(
-            "say",
-            &json!({"to": "s-two", "text": "only the two of us"}),
-        )
-        .expect("the dm lands");
+        one.call("say", &json!({"to": "s-two", "text": "only the two of us"}))
+            .expect("the dm lands");
         let all = seat.ask("h1", json!({"type": "dms", "last": 50}));
         assert_eq!(all["type"], "history", "{all}");
         assert!(
