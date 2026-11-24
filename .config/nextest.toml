@@ -1,15 +1,13 @@
-# cargo-nextest's configuration. `gate` is the profile AGENTS.md's test step runs; `default` is
-# what a bare `cargo nextest run` gets, and `gate` inherits from it.
+# cargo-nextest's configuration. `gate` is the profile AGENTS.md's test step runs, `default` is what
+# a bare `cargo nextest run` gets.
 #
-# nextest runs each test in a process of its own, several at once, where the gate used to run one
-# test binary at a time with `--nocapture` (which is libtest's serial mode). A test that cannot
-# share the box with another test process is in the `serial` group, which runs one at a time
-# across the whole run; the filters below are the tests that only passed because nothing else was
-# ever running beside them.
+# nextest runs each test in a process of its own, several at once. A test that cannot share the box
+# with another test process goes in the `serial` group, which runs one at a time across the whole
+# run.
 
 [profile.default]
-# A test still going after 600 s is a hang, not a slow test: it is reported slow at 60 s and
-# killed at ten periods.
+# A test still going after 600 s is a hang, not a slow test: it is reported slow at 60 s and killed
+# at ten periods. retries = 0 because a flaky test is a defect to fix, not to paper over.
 slow-timeout = { period = "60s", terminate-after = 10 }
 retries = 0
 
@@ -25,6 +23,13 @@ serial = { max-threads = 1 }
 # One at a time across the whole run: these drive the model server this box serves real work with,
 # or a cgroup-scoped process whose cost is the box's. Each held a `Mutex` to say "one at a time",
 # which nextest's process-per-test makes a no-op - the lock was the binary's, not the box's.
+#
+# The override is written under BOTH profiles rather than relying on `gate` inheriting `default`'s:
+# a gate run that quietly lost the group would run these 24 at once against one model server.
 [[profile.default.overrides]]
+filter = "binary(loop_closes) + binary(live_qwen) + binary(term_pane_live)"
+test-group = "serial"
+
+[[profile.gate.overrides]]
 filter = "binary(loop_closes) + binary(live_qwen) + binary(term_pane_live)"
 test-group = "serial"
