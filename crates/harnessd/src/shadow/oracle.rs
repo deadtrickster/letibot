@@ -90,9 +90,15 @@ pub fn stage_scope(stages: &BTreeSet<Stage>) -> OracleScope {
 
 /// The stage a call belongs to, or why no stage answers it. A call is one stage's: the narrowest
 /// that covers every intent it carries, and a stage the operator promoted is checked by the caller.
-/// Tier, resolution, a secret flow and a path that leaves the reach are refusals here, so the
-/// person is asked without the model being consulted. `granted` is the writable half of the
-/// session's view, so a denylist check treats a granted folder as the workspace it was made into.
+/// Tier, a secret flow and a path that leaves the reach are refusals here, so the person is asked
+/// without the model being consulted. `granted` is the writable half of the session's view, so a
+/// denylist check treats a granted folder as the workspace it was made into.
+///
+/// A reading that did not resolve is NOT one of those refusals: the intents layer A did find still
+/// place the call, the constructs it could not place already widened the reach, and the reviewer
+/// judges the command's text where no parser produced its meaning. Refusing it here sent an
+/// inspection under a `for` loop and a variable to the operator while the model that exists to
+/// judge exactly that was never asked.
 pub fn stage_of(
     req: &AdjudicationRequest,
     home: &Path,
@@ -117,19 +123,20 @@ pub fn stage_of(
         .reading
         .as_ref()
         .ok_or("layer A's reading did not travel with the ask")?;
-    if !reading.resolved {
-        return Err("layer A could not read the call".into());
-    }
+    // Whether or not the rest of the line was read: a secret store is no stage's, and this
+    // refusal is the one that cannot be left to the model.
     if let Some(flow) = reading.flows.first() {
         return Err(format!(
             "it moves a secret out of {} - credentials are never a stage's",
             flow.store
         ));
     }
-    if reading.intents.is_empty() {
-        return Err("layer A found no intent, so there is nothing to answer".into());
-    }
-    let stage = stage_for(&reading.intents)?;
+    let stage = if reading.intents.is_empty() {
+        // Nothing was found to place the call by, so the access the tool declared is all there is.
+        stage_of_access(req.class.access)
+    } else {
+        stage_for(&reading.intents)?
+    };
     // Reach is per call because a scope carries one reach for every intent it holds. Only the
     // intents decide it: `Region::Device` is a place inside the host, so `/sys`, `ip neigh` and
     // `networkctl status` land at `host_other`, while a class reaches `external` only through the
@@ -169,6 +176,15 @@ pub fn stage_of(
         granted: granted.to_vec(),
         temp: super::guard::temp_roots(home),
     };
+    // Before either screen below: a command this build could not read has not shown which of its
+    // words are places, so every one of them is asked the question a resolved target is asked.
+    // This is the screen that keeps an unresolved read of `~/.ssh` or of the key store a
+    // refusal, and it runs at every stage because no stage was promoted knowing that.
+    if !reading.resolved
+        && let Some(cmd) = req.arguments.get("command").and_then(|c| c.as_str())
+    {
+        super::guard::words_pass(cmd, &call)?;
+    }
     if stage != Stage::Reads && !always_ask {
         // The lexical screen a shadow allow meets anyway: privilege, a write, a redirect or a
         // file-tool path outside the workspace, and the key store. A push is the publish stage's
@@ -183,10 +199,15 @@ pub fn stage_of(
     for s in &reading.scoped {
         let t = s.target.trim();
         if t.is_empty() || t == letibot_tools::intent::UNRESOLVED_TARGET {
-            return Err(format!(
-                "{} names no path this build can place",
-                s.intent.as_str()
-            ));
+            // A target nobody could name is not a place to check: layer A widened the reach for
+            // it, and whatever the target is, it is not a literal this build can place.
+            if reading.resolved {
+                return Err(format!(
+                    "{} names no path this build can place",
+                    s.intent.as_str()
+                ));
+            }
+            continue;
         }
         let p = Path::new(t);
         let abs = if p.is_absolute() {
@@ -252,6 +273,18 @@ fn stage_for(intents: &BTreeSet<Intent>) -> Result<Stage, String> {
             .collect::<Vec<_>>()
             .join(" ")
     ))
+}
+
+/// The stage of a call layer A found no intent for: the access the tool declared, which is the
+/// same reach the stages name. Only a call whose tier no person and no model may decide reaches
+/// it, so this is the last resort rather than a way round the reading.
+fn stage_of_access(access: letibot_tools::Access) -> Stage {
+    match access {
+        letibot_tools::Access::Read => Stage::Reads,
+        letibot_tools::Access::Write | letibot_tools::Access::Session => Stage::WorkspaceWrites,
+        letibot_tools::Access::Exec => Stage::Exec,
+        letibot_tools::Access::Network => Stage::Publish,
+    }
 }
 
 /// `shadow:<judge>`: who a shadow decision is by, so the ledger and the corpus tell it apart.

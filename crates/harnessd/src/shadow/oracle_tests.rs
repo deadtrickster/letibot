@@ -776,3 +776,179 @@ fn without_the_publish_stage_a_push_is_still_the_persons() {
     assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
     assert_eq!(stage_of_the_audit(&g, &[]), Stage::Publish);
 }
+
+/// The operator's own card, verbatim: an inspection under a variable, a `for` loop and a subshell.
+/// Layer A cannot resolve it - five constructs it cannot place - and it is nobody's to block, so
+/// sending it to the person was the shadow refusing to judge the one call it exists for.
+const UNRESOLVED_INSPECTION: &str = r#"L=/home/dead/.local/share/letibot/landing/firecode-f7eb51674b04
+echo "=== landing tree tip ==="; git -C "$L" log --oneline -1
+echo "=== are the artifacts there? ==="
+for f in images/agent-firecode.ext4 images/initrd.gz vendor/bin/firecracker vendor/bin/jailer; do
+  printf '%-30s ' "$f"; if [ -e "$L/$f" ]; then echo "present ($(du -h "$L/$f" 2>/dev/null | cut -f1))"; else echo "ABSENT"; fi
+done
+echo "=== kernel ==="; ls -la "$L"/images/vmlinux-* 2>&1 | head -3
+echo "=== stamp vs recomputed guest/ ==="
+echo "stamp: $(cat "$L/images/.guest-inputs.sha256" 2>/dev/null)"
+printf 'now:   '; ( cd "$L" && find guest -type f -print0 | sort -z | xargs -0 sha256sum ) 2>/dev/null | sha256sum | cut -d' ' -f1"#;
+
+/// An unresolved reading is layer A's best attempt, not a closed door: the intents it did find
+/// place the call at `exec`, and the reviewer is asked about the command itself.
+#[test]
+fn an_unresolved_inspection_reaches_the_reviewer_at_exec() {
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    let args = serde_json::json!({ "command": UNRESOLVED_INSPECTION });
+    assert!(
+        matches!(g.admit(&call(&args)), GateDecision::Admit),
+        "reading files, listing, hashing and `git log` under a loop is ordinary work"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer judged it");
+    assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Exec);
+
+    // And the brief carries the text: a model asked about a command no parser read is asked about
+    // the command, not about layer A's attempt at it.
+    let adj = adjudicator(&all_stages());
+    let d = adj.decide(&crate::guard_via::tests::request_for(UNRESOLVED_INSPECTION));
+    assert!(
+        matches!(
+            d.outcome,
+            letibot_tools::adjudicate::DecisionOutcome::Selected { .. }
+        ),
+        "the reviewer's allow is the decision at exec: {:?}",
+        d.outcome
+    );
+    let brief = adj.last_brief().expect("the reviewer was shown a brief");
+    assert!(
+        brief.contains("unresolved: layer A could not read this call ("),
+        "the brief does not say the reading failed:\n{brief}"
+    );
+    assert!(brief.contains("as written"), "\n{brief}");
+    assert!(
+        brief.contains("for f in images/agent-firecode.ext4"),
+        "the command itself is not in the brief:\n{brief}"
+    );
+}
+
+/// A reading that DID resolve still shows the model the structure and not the string: the raw
+/// text is where a second meaning, one the shell never produces, would hide.
+#[test]
+fn a_resolved_call_shows_the_reviewer_no_raw_text() {
+    let adj = adjudicator(&all_stages());
+    let _ = adj.decide(&crate::guard_via::tests::request_for(
+        "/usr/bin/cat /etc/hostname",
+    ));
+    let brief = adj.last_brief().expect("the reviewer was shown a brief");
+    assert!(!brief.contains("as written"), "\n{brief}");
+    assert!(
+        !brief.contains("/usr/bin/cat /etc/hostname"),
+        "the command as written reached the reviewer:\n{brief}"
+    );
+}
+
+/// The lexical screen stays in front of the model: a command nobody could read whose own words
+/// name a secret store is refused by the harness's own rules, with no model asked at all.
+#[test]
+fn an_unresolved_read_of_a_key_store_is_refused_without_the_model() {
+    for command in [
+        r#"X=~/.ssh/id_ed25519; cat "$X" $(date)"#,
+        r#"X=$HOME/.aws/credentials; cat "$X" $(date)"#,
+    ] {
+        let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+        let args = serde_json::json!({ "command": command });
+        assert!(
+            !matches!(g.admit(&call(&args)), GateDecision::Admit),
+            "{command} was admitted"
+        );
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "{command}: the reviewer was asked about a key store"
+        );
+        assert_eq!(*person.0.lock().unwrap(), 0, "{command}: nobody was asked");
+        let row = g.log.last().expect("the decision is a row");
+        assert!(
+            row.decision.by.starts_with("boundary:"),
+            "{command}: {} — {}",
+            row.decision.by,
+            row.decision.basis
+        );
+    }
+}
+
+/// The key store is the one place layer A cannot see as a flow when it is spelled as a relative
+/// path, so the shadow's own screen answers it - still without a model, and the card says so.
+#[test]
+fn an_unresolved_command_naming_the_key_store_is_refused_at_the_shadow() {
+    let command = "cat .config/letibot/keys/anthropic.key $(date)";
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    let args = serde_json::json!({ "command": command });
+    assert!(!matches!(g.admit(&call(&args)), GateDecision::Admit));
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "the reviewer was asked about the key store"
+    );
+    assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
+
+    let adj = adjudicator(&all_stages());
+    let d = adj.decide(&crate::guard_via::tests::request_for(command));
+    assert!(
+        d.basis.contains(".config/letibot/keys"),
+        "the refusal does not name the key store: {}",
+        d.basis
+    );
+}
+
+/// Privilege is the same: the reading could not be finished, the intent it did find is on the
+/// always-ask list, and no stage answers that without the person.
+#[test]
+fn an_unresolved_sudo_is_still_refused_without_the_model() {
+    let command = "/usr/bin/sudo -n /usr/bin/id $(date)";
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    let args = serde_json::json!({ "command": command });
+    assert!(!matches!(g.admit(&call(&args)), GateDecision::Admit));
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the reviewer was asked");
+    assert_eq!(*person.0.lock().unwrap(), 1, "the person decides");
+
+    let adj = adjudicator(&all_stages());
+    let d = adj.decide(&crate::guard_via::tests::request_for(command));
+    assert!(d.basis.contains("privilege_escalation"), "{}", d.basis);
+}
+
+/// The reviewer's answer when it blocks a delete: the category `rm -rf` outside the task is one of.
+const BLOCK_DESTROY: &str = r#"{"block":true,"category":"destroying_data_outside_the_task",
+    "reason":"it deletes a directory tree the task never mentions"}"#;
+
+/// An always-ask call whose reading did not resolve reaches the reviewer as every other one does:
+/// its allow is not an admission, so the person still decides, and its block is the decision.
+#[test]
+fn an_unresolved_always_ask_call_is_the_reviewers_to_block() {
+    let command = "/usr/bin/rm -rf /usr/share/doc $(date)";
+    let args = serde_json::json!({ "command": command });
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    assert!(!matches!(g.admit(&call(&args)), GateDecision::Admit));
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer looked");
+    assert_eq!(
+        *person.0.lock().unwrap(),
+        1,
+        "an allow here admits nothing, so the card stands"
+    );
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Exec);
+
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), BLOCK_DESTROY);
+    assert!(!matches!(g.admit(&call(&args)), GateDecision::Admit));
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer judged it");
+    assert_eq!(
+        *person.0.lock().unwrap(),
+        0,
+        "a block is the answer, not a card"
+    );
+    let row = g.log.last().expect("the decision is a row");
+    assert!(
+        row.decision
+            .basis
+            .contains("destroying_data_outside_the_task"),
+        "{}",
+        row.decision.basis
+    );
+}

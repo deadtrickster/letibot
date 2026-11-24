@@ -103,6 +103,59 @@ fn is_write_tool(tool: &str) -> bool {
     )
 }
 
+/// `Ok` when no word of a command layer A could NOT read names a secret store, a `keys`
+/// directory or a credential file. A resolved reading screens the OPERANDS it placed; one that did
+/// not resolve has not shown which of its words are places at all, so each word is asked the
+/// question a resolved target is asked. No model is involved and nothing on the ladder can
+/// overrule it, which is what keeps `X=~/.ssh/id_ed25519; cat "$X"` a refusal rather than a
+/// reviewer's allow.
+///
+/// Only the DISCLOSURE half of [`read_passes`]: its review list refuses a place a granted READ must
+/// not reach - the session's own data directory among them - and an inspection of that is ordinary
+/// work, not a secret.
+pub fn words_pass(command: &str, call: &Call) -> Result<(), String> {
+    if command.contains(".config/letibot/keys") {
+        return Err("it touches ~/.config/letibot/keys".into());
+    }
+    for word in words_of(command) {
+        // `$HOME` is the home the way `~` is; a variable this build cannot expand would be placed
+        // at `/`, which names no store and would read as harmless.
+        let spelled = match word
+            .strip_prefix("${HOME}")
+            .or_else(|| word.strip_prefix("$HOME"))
+        {
+            Some(rest) => format!("~{rest}"),
+            None => word.to_string(),
+        };
+        let place = resolve(&spelled, call);
+        if let Some(store) = letibot_tools::intent::Surroundings::secret_store_of(
+            &place.to_string_lossy(),
+            call.home.to_str(),
+        ) {
+            return Err(format!("`{word}` is in the secret store `{store}`"));
+        }
+        // Only under the home: a project's own `keys/` directory is its source, and the store this
+        // rule is about is the operator's.
+        if place.starts_with(&call.home)
+            && place
+                .components()
+                .any(|c| c.as_os_str().to_string_lossy() == "keys")
+        {
+            return Err(format!("`{word}` names a keys directory"));
+        }
+    }
+    Ok(())
+}
+
+/// The words of a command that could be a place: split on shell punctuation, with an assignment's
+/// `NAME=` and an option's leading dashes taken off.
+fn words_of(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(|c: char| c.is_whitespace() || "'\"=:;|&()<>`$".contains(c))
+        .map(|w| w.trim_start_matches('-'))
+        .filter(|w| !w.is_empty())
+}
+
 /// `/usr/bin/sudo` is `sudo`.
 fn base(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
