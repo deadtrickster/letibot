@@ -1051,6 +1051,17 @@ impl Server {
         self.inner.chat.lock().expect("the chat lock").held()
     }
 
+    /// Whether the store has kept what `host` said its seats are - the fact a restart reads, which
+    /// lands a moment after the mesh holds the seat, because the store is written off the link.
+    pub fn remembers_seats_of(&self, host: &str) -> bool {
+        self.inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .peer_seats(host)
+            .is_some()
+    }
+
     /// The token the operator's seat is granted by, as this server minted it - what a test (and a
     /// daemon that wants its own head to speak as the person) reads instead of the file.
     pub fn operator_token(&self) -> String {

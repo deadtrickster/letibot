@@ -1053,6 +1053,10 @@ fn a_seat_announced_before_a_restart_is_still_held_with_its_box_away() {
     wait_until("the far box's seat to arrive", || {
         first_peer.holds("lab2/s-b1")
     });
+    // The mesh holds it first; the store, which is what the restart reads, a moment later.
+    wait_until("the store to keep the far box's seat", || {
+        first.remembers_seats_of("lab2")
+    });
     drop(far);
     wait_until("the far box to go away", || !first_peer.alive("lab2"));
     first.stop();
