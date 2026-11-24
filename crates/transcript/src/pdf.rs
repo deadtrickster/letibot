@@ -97,6 +97,14 @@ pub fn page_text(bytes: &[u8], page: u32) -> Option<String> {
     with_path(bytes, |p| r.page_text(p, page)).and_then(Result::ok)
 }
 
+/// One page as a PNG, `page` zero-based, at `dpi`, or `None` when no renderer is registered or the
+/// renderer refused it. The picture a reader is shown one page at a time - [`pages_as_png`] is the
+/// model's ten, and a card that turns pages asks for the one it is about to draw.
+pub fn page_png(bytes: &[u8], page: u32, dpi: u32) -> Option<Vec<u8>> {
+    let r = renderer()?;
+    with_path(bytes, |p| r.page_png(p, page, dpi)).and_then(Result::ok)
+}
+
 /// Up to [`MAX_PAGES_AS_IMAGES`] pages as PNGs, in order, with the count of pages the document has.
 /// The renderer's, or nothing: a picture this module could not render is not one a provider may
 /// describe as sent.

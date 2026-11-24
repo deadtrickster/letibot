@@ -23,6 +23,13 @@ pub fn size_of_data_ref(data_ref: &str) -> (Option<u32>, Option<u32>) {
     dimensions(mime, &bytes)
 }
 
+/// A picture's pixel size from the bytes themselves, for a caller that holds them - a rendered page,
+/// where [`size_of_data_ref`] has no reference to read. Absent for a format this does not parse,
+/// because absent is not 0x0.
+pub fn picture_size(mime: &str, bytes: &[u8]) -> (Option<u32>, Option<u32>) {
+    dimensions(mime, bytes)
+}
+
 /// Standard base64, decoded - [`encode_base64`] backwards. Tolerant on purpose: a payload
 /// cut mid-quantum, or written by another version, must not turn an image into no image at
 /// all. It does not guess - a character outside the alphabet ends the decode.
