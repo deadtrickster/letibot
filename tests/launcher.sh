@@ -150,7 +150,7 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 # `firecode.layer`. `+=` on an array is bash 3.1 and allowed; an empty-array expansion under
 # `set -u` no grep can see, so the `--help` run below covers it.
 BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/migrate-notes.sh scripts/rrun scripts/wire-skew.sh tests/launcher.sh tests/rrun.sh tests/claude-plugin.sh tests/install-gate-build.sh"
-POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/gate-at.sh scripts/gate-env.sh scripts/gate-steps.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
+POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/gate-at.sh scripts/gate-env.sh scripts/gate-steps.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/quick-tests.sh scripts/refresh-models-snapshot.sh install.sh"
 # The bash-4 spellings as one ERE: `-A`/`-n`/`-g` declarations, `mapfile`, `readarray`,
 # `coproc`, `wait -n`, `[[ -v ]]`, `;;&`, `;&`, `&>>`, `|&`, `${x,,}`, `${x^^}`. Literals are
 # written with a character class (`map[f]ile`) because this file greps itself.
