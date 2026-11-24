@@ -1567,6 +1567,15 @@ expect "session list --tsv hands --tsv on to the listing" "$out" \
   "^letibot-multi session list --tsv --store \S+$"
 refuse "  ...and starts no daemon for it" "$out" "^harnessd "
 
+# `--all` IS THE CENSUS: every session there is, not only the conversations a person can
+# reopen. It is the listing's flag, so it is handed on like `--tsv`.
+out="$(run "$DEFAULT_ONLY" session list --all)"
+expect "session list --all hands --all on to the census" "$out" \
+  "^letibot-multi session list --all --store \S+$"
+refuse "  ...and starts no daemon for it" "$out" "^harnessd "
+out="$(run "$DEFAULT_ONLY" --sessions --all)"
+expect "--sessions --all runs the same line" "$out" "^letibot-multi session list --all --store \S+$"
+
 # EACH SESSION VERB, AND EACH OLD FLAG RUNS THE SAME LINE: the alias adds one
 # note on stderr and nothing else.
 for spec in "session list|--sessions" "session list|--list" "session list --archived|--sessions --archived" \

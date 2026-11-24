@@ -1191,6 +1191,65 @@ fn continue_skips_the_queues_own_session_by_id() {
     assert_eq!(latest.hidden, 1, "the queue's session is counted as hidden");
 }
 
+/// `session list` is the conversations a person picks from: this folder's first - its own
+/// workspace ahead of the worktrees below it - then one block per other folder, newest first, and
+/// never a task child or a package's own conversation.
+#[test]
+fn a_plain_listing_is_this_folders_conversations_then_one_block_per_other_folder() {
+    let (store, _d) = store_with(&[]);
+    // Written oldest first, so the store's own order is the reverse of this list.
+    session_row(&store, "s-far", "/p/far", Some("far"), None, None);
+    let far = rows_for(&store, "s-far", 1, 0);
+    session_row(
+        &store,
+        "s-wt",
+        "/p/here/worktrees/x",
+        Some("a worktree"),
+        None,
+        None,
+    );
+    let wt = rows_for(&store, "s-wt", 1, far);
+    session_row(&store, "s-here", "/p/here", Some("here"), None, None);
+    let here = rows_for(&store, "s-here", 1, wt);
+    session_row(&store, "s-new", "/p/new", Some("new"), None, None);
+    rows_for(&store, "s-new", 1, here);
+    // Neither of these two is a conversation a person picks from, though both are sessions in
+    // this folder and one of them is the newest row in the store.
+    session_row(
+        &store,
+        "s-child",
+        "/p/here",
+        Some("child"),
+        None,
+        Some("s-here"),
+    );
+    rows_for(&store, "s-child", 2, here + 1);
+    session_row(&store, "s-pkg", "/p/here", Some("pkg"), None, None);
+    store.set_session_origin("s-pkg", "package").unwrap();
+
+    let all = store.list_sessions().expect("listing");
+    let (mine, others) = conversation_blocks(&all, std::path::Path::new("/p/here"));
+    let ids = |rows: &[&letibot_tokencore::store::StoredSession]| -> Vec<String> {
+        rows.iter().map(|s| s.id.clone()).collect()
+    };
+    assert_eq!(
+        ids(&mine),
+        ["s-here", "s-wt"],
+        "this folder's own conversation, then the one in its worktree"
+    );
+    assert_eq!(
+        others
+            .iter()
+            .map(|(ws, members)| (*ws, ids(members)))
+            .collect::<Vec<_>>(),
+        [
+            ("/p/new", vec!["s-new".to_string()]),
+            ("/p/far", vec!["s-far".to_string()]),
+        ],
+        "one block per other folder, the folder used most recently first"
+    );
+}
+
 /// The help is one line per flag, and a line fits a terminal. A continuation that loses its
 /// `\n` welds two flags onto one line: `--room`'s sentence ran into `--reviewers`' for as long as it
 /// took somebody to read it.

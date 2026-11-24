@@ -193,3 +193,47 @@ fn the_listing_carries_each_projects_real_row_count() {
     assert_eq!(count("s-a"), Some("3".to_string()), "in {listed}");
     assert_eq!(count("s-b"), Some("5".to_string()), "in {listed}");
 }
+
+/// The plain listing is the pick list - this folder's block first, then one block per other
+/// folder - and `--all` is the census behind it, grouped by what each session is.
+#[test]
+fn the_plain_listing_is_this_folder_first_and_all_is_the_census() {
+    let fixture = Fixture::new();
+    let (ka, kb) = (project_key(&fixture.a), project_key(&fixture.b));
+    {
+        let a = Store::open_set(&fixture.data, &ka).expect("the first project's handle");
+        seed(&a, "s-a", &fixture.a, "the first folder", 3);
+        let b = Store::open_set(&fixture.data, &kb).expect("the second project's handle");
+        seed(&b, "s-b", &fixture.b, "the second folder", 5);
+    }
+    // The daemon's own `--workspace`, which is the folder this command was run in.
+    let out = harnessd(&fixture, &["--list-sessions", "--workspace", &fixture.a]);
+    assert!(
+        out.status.success(),
+        "the listing refused: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listed = String::from_utf8_lossy(&out.stdout).to_string();
+    let here = listed
+        .find(&format!("{} (1)", fixture.a))
+        .unwrap_or_else(|| panic!("this folder's block is first:\n{listed}"));
+    let there = listed
+        .find(&format!("{} (1)", fixture.b))
+        .unwrap_or_else(|| panic!("the other folder has a block of its own:\n{listed}"));
+    assert!(here < there, "this folder comes first:\n{listed}");
+    assert!(
+        listed.contains("s-a  ") && listed.contains("s-b  "),
+        "both conversations are in it:\n{listed}"
+    );
+    // `--all` is the census: grouped by what each session is, which is where a conversation that
+    // knows nothing about folders goes.
+    let census = harnessd(
+        &fixture,
+        &["--list-sessions", "--all", "--workspace", &fixture.a],
+    );
+    let said = String::from_utf8_lossy(&census.stdout).to_string();
+    assert!(
+        said.contains("mine (2)"),
+        "the census groups every session by what it is:\n{said}"
+    );
+}

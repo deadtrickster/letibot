@@ -8,7 +8,9 @@ const USAGE: &str = "\
 letibot session VERB [ARGS] [--store DIR]
   The stored sessions: what is on disk, and naming, archiving or removing one.
 
-  list [--tsv] [--archived|--archived-only]   what is on disk, grouped: yours first
+  list [--tsv] [--all] [--archived|--archived-only]
+                                              this folder's conversations first, then one
+                                              block per other folder; --all is every session
   show ID                                     one session's stored facts, one per line
   rename ID [TITLE]                           name it; an empty title clears the name
   archive ID [REASON]                         put it out of sight and KEEP it
@@ -51,12 +53,14 @@ pub fn translate(args: &[String]) -> Result<Vec<String>, String> {
     }
     match verb.as_str() {
         "list" => {
-            if let Some(bad) = rest
-                .iter()
-                .find(|a| !matches!(a.as_str(), "--tsv" | "--archived" | "--archived-only"))
-            {
+            if let Some(bad) = rest.iter().find(|a| {
+                !matches!(
+                    a.as_str(),
+                    "--tsv" | "--all" | "--archived" | "--archived-only"
+                )
+            }) {
                 return Err(format!(
-                    "session list takes --tsv, --archived, --archived-only, not {bad}"
+                    "session list takes --tsv, --all, --archived, --archived-only, not {bad}"
                 ));
             }
             out.push("--list-sessions".into());
@@ -122,6 +126,11 @@ mod tests {
             (
                 &["list", "--tsv", "--store", "D"],
                 &["--store", "D", "--list-sessions", "--tsv"],
+            ),
+            // The census is the listing's other shape, and the flag is handed on like `--tsv`.
+            (
+                &["list", "--all", "--store", "D"],
+                &["--store", "D", "--list-sessions", "--all"],
             ),
             (&["show", "s-1"], &["--show-session", "s-1"]),
             (&["rename", "s-1", "gate"], &["--rename", "s-1", "gate"]),

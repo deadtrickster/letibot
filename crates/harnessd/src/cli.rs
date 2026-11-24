@@ -631,6 +631,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     let mut query: Option<Query> = None;
     let mut tsv = false;
+    // `--all` asks the listing for every session there is, not just the conversations: the census,
+    // grouped by what each one is, which is what a plain listing drew before it could tell them
+    // apart.
+    let mut list_all = false;
     // How many answered calls a replay reads. A corpus on a working box is thousands of rows and a
     // model arm is one call per row, so a measurement needs a cap it can be trusted to finish
     // inside: `--limit 300` is a sample, and the table says how many rows it actually is.
@@ -705,6 +709,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--resolve-session" => query = Some(Query::Resolve(next()?)),
             "--find-session" => query = Some(Query::Find(next()?)),
             "--tsv" => tsv = true,
+            "--all" => list_all = true,
             "--rename" => {
                 let id = next()?;
                 let title = it.next().unwrap_or_default();
@@ -1229,7 +1234,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // Before the vocabulary, before the socket, before the model. See the module
     // header for why that ordering is load-bearing rather than tidy.
     if let Some(q) = query {
-        return run_query(&cfg, q, scope.as_deref(), tsv, show_archived, limit);
+        return run_query(
+            &cfg,
+            q,
+            scope.as_deref(),
+            tsv,
+            list_all,
+            show_archived,
+            limit,
+        );
     }
 
     // A bad `[provider.NAME]` entry refuses the daemon by name, before a turn finds it.
@@ -2749,6 +2762,7 @@ fn run_query(
     q: Query,
     scope: Option<&std::path::Path>,
     tsv: bool,
+    list_all: bool,
     show_archived: letibot_tokencore::store::Archived,
     limit: usize,
 ) -> Result<i32, String> {
@@ -3182,7 +3196,6 @@ fn run_query(
             // The listing is grouped, the operator's sessions apart from automatic ones. A session
             // put out of sight is not listed: `--archived` adds those, `--archived-only` lists them alone.
             let all = scoped_archived(&store, scope, show_archived)?;
-            let groups = grouped(&all);
             if tsv {
                 // TSV is a data format and it does not change. Five fields, tab-separated, one
                 // conversation per line: that is what a script cuts, and a sixth column or a group header
@@ -3218,43 +3231,24 @@ fn run_query(
                 .unwrap_or(0);
             // The name leads: it is what a person types for `--session`. An unnamed session leads
             // with its id, which is its only handle; a named one keeps the id on the line below.
-            let label = |s: &letibot_tokencore::store::StoredSession| -> String {
-                match s.title.as_deref() {
-                    Some(t) if !t.is_empty() => t.to_string(),
-                    _ => s.id.clone(),
-                }
-            };
             let wid = all
                 .iter()
-                .map(|s| label(s).chars().count() + 2)
+                .map(|s| list_label(s).chars().count() + 2)
                 .max()
                 .unwrap_or(8);
-            // The one row per session the listing draws, as a closure so the two groups that
-            // are not plain rows (a child under its parent, everything else) share it.
-            let row = |s: &letibot_tokencore::store::StoredSession, indent: &str| {
-                println!(
-                    "{:<wid$}  {:>5}  {:>7}{}{}",
-                    format!("{indent}{}", label(s)),
-                    s.items,
-                    age(now - s.last_activity_ms),
-                    // Where it LIVES, when that is not here. A row whose live copy is on a host is not a
-                    // session this box is appending to, and a listing that offered it unmarked would be
-                    // offering a conversation that stopped the day it moved (`docs/remote-hosts.md` RH4).
-                    match &s.lives_on {
-                        Some(on) => format!("  [lives on {on}]"),
-                        None => String::new(),
-                    },
-                    // Out of sight, when the listing was asked for those: the word is what says why
-                    // this row is here at all, under a flag that also drew the ones still in mind.
-                    match (s.archived_ms, s.archived_reason.as_deref()) {
-                        (Some(_), Some(why)) if !why.is_empty() => format!("  [archived: {why}]"),
-                        (Some(_), _) => "  [archived]".to_string(),
-                        (None, _) => String::new(),
-                    },
-                );
-                // Details: the id (the handle `--session` also takes) and the workspace.
-                println!("{indent}  {}  {}", s.id, s.workspace_root);
-            };
+            println!(
+                "{:<wid$}  {:>5}  {:>7}  (ID / WORKSPACE below)",
+                "NAME", "ROWS", "AGE"
+            );
+            // The plain list is the conversations this folder's person can pick from: this
+            // folder first, then one block per other folder. `--all` is the census, grouped by
+            // what each session is, and it is what this used to draw for every listing.
+            if !list_all {
+                let here = scope.unwrap_or(&cfg.workspace);
+                list_conversations(&all, here, wid, now);
+                return Ok(0);
+            }
+            let groups = grouped(&all);
             // The same rows `grouped()` built, for the one question the printing asks that the
             // grouping does not
             let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all
@@ -3271,10 +3265,6 @@ fn run_query(
                     title: s.title.as_deref().unwrap_or(""),
                 })
                 .collect();
-            println!(
-                "{:<wid$}  {:>5}  {:>7}  (ID / WORKSPACE below)",
-                "NAME", "ROWS", "AGE"
-            );
             for (group, members) in &groups {
                 // No empty group line, for the reason the picker draws none: a header saying
                 // `(0)` teaches a reader to skip headers.
@@ -3304,12 +3294,126 @@ fn run_query(
                     } else {
                         ""
                     };
-                    row(s, indent);
+                    list_row(s, indent, wid, now);
                 }
             }
             Ok(0)
         }
     }
+}
+
+/// The name a listing row leads with: the session's own, or its id when nobody named it.
+fn list_label(s: &letibot_tokencore::store::StoredSession) -> String {
+    match s.title.as_deref() {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => s.id.clone(),
+    }
+}
+
+/// One session as the listing draws it: a line of facts, and under it the id and the folder.
+fn list_row(s: &letibot_tokencore::store::StoredSession, indent: &str, wid: usize, now: i64) {
+    println!(
+        "{:<wid$}  {:>5}  {:>7}{}{}",
+        format!("{indent}{}", list_label(s)),
+        s.items,
+        age(now - s.last_activity_ms),
+        // Where it LIVES, when that is not here. A row whose live copy is on a host is not a
+        // session this box is appending to, and a listing that offered it unmarked would be
+        // offering a conversation that stopped the day it moved (`docs/remote-hosts.md` RH4).
+        match &s.lives_on {
+            Some(on) => format!("  [lives on {on}]"),
+            None => String::new(),
+        },
+        // Out of sight, when the listing was asked for those: the word is what says why
+        // this row is here at all, under a flag that also drew the ones still in mind.
+        match (s.archived_ms, s.archived_reason.as_deref()) {
+            (Some(_), Some(why)) if !why.is_empty() => format!("  [archived: {why}]"),
+            (Some(_), _) => "  [archived]".to_string(),
+            (None, _) => String::new(),
+        },
+    );
+    // Details: the id (the handle `--session` also takes) and the workspace.
+    println!("{indent}  {}  {}", s.id, s.workspace_root);
+}
+
+/// Is this session's folder the one asked about, or below it? `Path::starts_with` compares whole
+/// components, so `/p/a2` is not under `/p/a`.
+fn under(workspace: &str, here: &std::path::Path) -> bool {
+    std::path::Path::new(workspace).starts_with(here)
+}
+
+/// `session list`: the conversations a person can pick from, this folder's first - its own
+/// workspace ahead of the worktrees below it - then one block per other folder, newest first.
+fn list_conversations(
+    all: &[letibot_tokencore::store::StoredSession],
+    here: &std::path::Path,
+    wid: usize,
+    now: i64,
+) {
+    let (mine, others) = conversation_blocks(all, here);
+    println!();
+    println!("{:<wid$}  {}", "", folder_head(here, mine.len()));
+    if mine.is_empty() {
+        println!("{:<wid$}  nothing here yet", "");
+    }
+    for s in &mine {
+        list_row(s, "", wid, now);
+    }
+    for (workspace, members) in &others {
+        println!();
+        println!(
+            "{:<wid$}  {}",
+            "",
+            folder_head(std::path::Path::new(*workspace), members.len())
+        );
+        for s in members {
+            list_row(s, "", wid, now);
+        }
+    }
+}
+
+/// What a plain listing draws, as the two lists it prints: this folder's conversations (its own
+/// workspace, then whatever is below it) and one block per other folder. Pure, because a printer
+/// cannot be read back and the ORDER is the whole of this rule.
+#[allow(clippy::type_complexity)]
+fn conversation_blocks<'a>(
+    all: &'a [letibot_tokencore::store::StoredSession],
+    here: &std::path::Path,
+) -> (
+    Vec<&'a letibot_tokencore::store::StoredSession>,
+    Vec<(&'a str, Vec<&'a letibot_tokencore::store::StoredSession>)>,
+) {
+    let rows: Vec<&letibot_tokencore::store::StoredSession> = all
+        .iter()
+        .filter(|s| is_conversation(s) && is_operators(s))
+        .collect();
+    let mut mine: Vec<&letibot_tokencore::store::StoredSession> = rows
+        .iter()
+        .copied()
+        .filter(|s| under(&s.workspace_root, here))
+        .collect();
+    // Exact workspace first, then the ones below it. The store's own order is newest activity
+    // first and the sort is stable, so each half keeps it.
+    mine.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != here);
+    let mut others: Vec<(&str, Vec<&letibot_tokencore::store::StoredSession>)> = Vec::new();
+    for s in rows
+        .iter()
+        .copied()
+        .filter(|s| !under(&s.workspace_root, here))
+    {
+        match others.iter_mut().find(|(ws, _)| *ws == s.workspace_root) {
+            Some((_, members)) => members.push(s),
+            None => others.push((s.workspace_root.as_str(), vec![s])),
+        }
+    }
+    // The folder somebody was last in comes first: its newest member's activity is its recency.
+    others.sort_by_key(|(_, members)| std::cmp::Reverse(members[0].last_activity_ms));
+    (mine, others)
+}
+
+/// A folder's header line: which folder, and how many conversations are in it.
+fn folder_head(here: &std::path::Path, n: usize) -> String {
+    format!("{} ({n})", here.display())
 }
 
 /// Every stored session, optionally only those rooted at `scope` - a path prefix, so a session in

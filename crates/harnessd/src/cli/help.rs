@@ -400,6 +400,12 @@ pub(super) const FLAGS: &[Flag] = &[
         None,
     ),
     flag(
+        &["--all"],
+        None,
+        "a listing of every session, not only the conversations",
+        None,
+    ),
+    flag(
         &["--latest-session"],
         None,
         "the id of the newest session, scoped by --workspace",

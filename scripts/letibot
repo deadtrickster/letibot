@@ -596,11 +596,15 @@ EOF
     --sessions | --list)
       cat <<'EOF'
 letibot session list
-  What is on disk, grouped: your conversations first, then the harness's own work
-  (subagents, the review queue, packages, one-shots), one line each with a count.
-  `--sessions` is its old spelling.
+  The conversations you can reopen: this folder's first - its own workspace, then the
+  worktrees below it - then one block per other folder, newest first in each, with a
+  row count on every line. `--sessions` is its old spelling.
 
-  `--tsv` is the plain five-column form; `--archived`, `--archived-only` the archived ones
+  --all           every session there is, grouped by what it is: yours, then subagents,
+                  the review queue, packages and one-shots - the census, not the pick list
+  --tsv           the plain five-column form, one conversation per line, for scripts
+  --archived      the ones put out of sight, beside the rest
+  --archived-only only those
 
   example:
     letibot session list
