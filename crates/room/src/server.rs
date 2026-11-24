@@ -121,18 +121,21 @@ impl Conn {
         }
     }
     /// Hand a frame to this connection's writer thread. Never blocks: the room's clock, its
-    /// router and every author go on to the next connection whatever this one is doing.
-    fn send(&self, response: Response) {
+    /// router and every author go on to the next connection whatever this one is doing. `false` for
+    /// a frame this connection will never write, which is what a reader's seen mark is judged on.
+    fn send(&self, response: Response) -> bool {
         if self.gone.load(Ordering::SeqCst) {
-            return;
+            return false;
         }
         match self.outbox.try_send(response) {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                self.give_up(&format!("{OUTBOX} frames were waiting and it took none"))
+                self.give_up(&format!("{OUTBOX} frames were waiting and it took none"));
+                false
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                self.give_up("its writer thread had already gone")
+                self.give_up("its writer thread had already gone");
+                false
             }
         }
     }
@@ -2349,7 +2352,11 @@ impl Server {
             });
         }
         // A session acks the digest when its model takes it; until then a reconnect says it again.
-        if conn.seat != Seat::Session {
+        // An external is marked by nothing here: a seat's mark is a WATERMARK - every row of its own
+        // up to it was written to its channel - and a digest stands for rows that were never written
+        // (the addressed ones the cap left out, and the rest folded into one text), so marking at the
+        // head would take them out of the bridge's replay and the model would never see them.
+        if conn.seat == Seat::Session {
             let mut chat = self.inner.chat.lock().expect("the chat lock");
             chat.mark_seen(&id, head);
             chat.keep_seen(&id);
@@ -3891,6 +3898,7 @@ impl Server {
                     skipped,
                     cursor: chat.cursor(&id),
                     head: chat.head(),
+                    seen: chat.seen(&id),
                 }
             }
             Request::Invite { room, session } => {
@@ -3957,6 +3965,19 @@ impl Server {
                 chat.keep_seen(&id);
                 Response::Acked {
                     cursor: chat.ack(&id, *seq),
+                }
+            }
+            // A reader that is not the model - a bridge's channel - has the row without the cursor
+            // moving: the cursor is what the MODEL was told, and a restarted bridge resumes at this
+            // mark rather than handing the row over a second time. `Acked` answers it because the
+            // caller reads nothing of the reply, and the cursor it names is where it still stands.
+            Request::Seen { seq } => {
+                let id = self.principal_of(name);
+                let mut chat = self.inner.chat.lock().expect("the chat lock");
+                chat.mark_seen(&id, *seq);
+                chat.keep_seen(&id);
+                Response::Acked {
+                    cursor: chat.cursor(&id),
                 }
             }
             Request::Nick { id, nick } => self.take_nick(project, seat, name, id, nick, now),
@@ -4901,7 +4922,7 @@ impl Server {
                 continue;
             }
             let family = c.family.as_deref();
-            c.send(Response::Chat {
+            let took = c.send(Response::Chat {
                 names_you: message.names(name)
                     || family.is_some_and(|f| message.names(f) || answered.as_deref() == Some(f))
                     || answered.as_deref() == Some(name)
@@ -4911,8 +4932,9 @@ impl Server {
             // A session's daemon marks what its model took, with `Ack`: a push it dropped, or held
             // across its own restart, was not seen, and the join digest must still tell it. An
             // external's reader is the channel the row went to, so the push IS the delivery - and
-            // the mark is the SEAT's, the key `Ack` and `deliver_pending` read it under.
-            if c.seat != Seat::Session {
+            // the mark is the SEAT's, the key `Ack`, `Seen` and `deliver_pending` read it under. A
+            // connection that took no frame was no reader: its mark waits for the reconnect.
+            if took && c.seat != Seat::Session {
                 let id = self.principal_of(name);
                 self.inner
                     .chat
@@ -6297,6 +6319,7 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::MayPrompt { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Seen { .. }
             | Request::Nick { .. }
             | Request::Signals
             | Request::Acted { .. }
@@ -6842,8 +6865,8 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_fourteen() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 14);
+    fn the_room_speaks_protocol_fifteen() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 15);
         // And the refusal names which side is older, in both directions.
         assert_eq!(
             crate::wire::protocol_refusal(11),
@@ -6852,7 +6875,7 @@ mod tests {
         );
         let old = crate::wire::protocol_refusal(10).expect("10 is too old");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(15).expect("15 is not 14");
+        let new = crate::wire::protocol_refusal(16).expect("16 is not 15");
         assert!(new.contains("this room is the older"), "{new}");
         assert_eq!(crate::wire::protocol_refusal(12), None, "12 is served too");
         assert!(

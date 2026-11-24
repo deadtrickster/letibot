@@ -311,6 +311,7 @@ fn dms_mentions_threads_and_the_inbox() {
             skipped,
             cursor,
             head,
+            ..
         } => {
             assert_eq!(rows.len(), 1, "only the mention: {rows:?}");
             assert!(skipped >= 1);

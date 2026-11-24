@@ -344,3 +344,89 @@ fn a_store_with_no_mark_for_the_seat_resumes_at_its_cursor() {
     again.silent();
     second.stop();
 }
+
+/// What a bridge resumes from: a seat whose reader is the channel the row was written to. The push
+/// moves the seat's mark, an inbox answer names it, and the cursor stays where the MODEL is - so the
+/// row is still owed to a model that never read it.
+#[test]
+fn an_inbox_answer_names_the_mark_the_channel_was_written_to() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let session = seat(&server, "s-a", "", Seat::Session);
+    let bridge = seat(&server, "cc@app", SEAT, Seat::External);
+    let one = said(session.dm("d1", "cc@app", "written to the channel"));
+    assert_eq!(bridge.next().0.seq, one.seq);
+
+    match bridge.call(Request::Inbox {
+        attention: Attention::All,
+        limit: None,
+        after: None,
+    }) {
+        Response::Inbox {
+            rows, cursor, seen, ..
+        } => {
+            assert_eq!(seen, Some(one.seq), "the push is the delivery");
+            assert_eq!(cursor, 0, "a push moves no cursor");
+            assert_eq!(
+                rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                vec![one.seq],
+                "the model still has it to read"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    server.stop();
+}
+
+/// The mark a bridge writes for rows it took out of the INBOX (they were said while it was down, so
+/// no push ever moved it): a watermark, like an ack, and not a cursor. It outlives the coordinator,
+/// which is what a bridge that restarts resumes from.
+#[test]
+fn a_seen_frame_writes_the_mark_and_a_restart_resumes_there() {
+    let dir = Scratch::new();
+    let first = coordinator(&dir);
+    let session = seat(&first, "s-a", "", Seat::Session);
+    let bridge = seat(&first, "cc@app", SEAT, Seat::External);
+    let one = said(session.dm("d1", "cc@app", "handed over from the inbox"));
+    assert_eq!(bridge.next().0.seq, one.seq);
+    // A row that is not this seat's at all (a dm between two others), above the one it was handed:
+    // what a bridge says when it has drained the log up to there.
+    let _sibling = seat(&first, "s-b", "", Seat::Session);
+    let two = said(session.dm("d2", "s-b", "somebody else's"));
+    match bridge.call(Request::Seen { seq: two.seq }) {
+        Response::Acked { cursor } => assert_eq!(cursor, 0, "a mark is not a cursor"),
+        other => panic!("{other:?}"),
+    }
+    wait_until("the mark to be written", || {
+        store_says_the_seat_saw(&dir) >= two.seq
+    });
+    drop(bridge);
+    first.stop();
+    drop(session);
+    wait_socket_gone(&dir.0.join("room.sock"));
+
+    // The coordinator over its store, and a bridge that starts now: the mark says the channel has
+    // what it has, and the row is still the seat's to read.
+    let second = coordinator(&dir);
+    let _session = seat(&second, "s-a", "", Seat::Session);
+    let again = seat(&second, "cc@app", SEAT, Seat::External);
+    again.silent();
+    match again.call(Request::Inbox {
+        attention: Attention::All,
+        limit: None,
+        after: None,
+    }) {
+        Response::Inbox {
+            rows, cursor, seen, ..
+        } => {
+            assert_eq!(seen, Some(two.seq), "the mark came back with the store");
+            assert_eq!(cursor, 0);
+            assert_eq!(
+                rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                vec![one.seq]
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    second.stop();
+}

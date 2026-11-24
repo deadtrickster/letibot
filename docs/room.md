@@ -659,6 +659,17 @@ record of what happened, so it is filed rather than dropped. The blobs messages 
 in `room-<host key>.blobs/`: `<id>` is the bytes and `<id>.json` what they are. A read says
 `trimmed: true` when messages after the asked-for `seq` were dropped.
 
+**A seat has two marks, and they answer two questions.** Its CURSOR is where the model stands: it moves
+when the model shows it read a row (`ack`), and a bridge keeps it below anything the model has not
+answered. Its SEEN mark is where the seat's reader was written to - a push to an external seat is a
+delivery, an ack writes it too, and a bridge says `seen` for the rows it handed over from the log. An
+`inbox` answer names the mark (`seen`) beside the cursor, so a bridge process that restarts resumes
+where its channel reached instead of handing Claude Code every row above the cursor again (`/mcp`
+reconnect did exactly that, ~18 old dms and ask answers, until the mark existed). A row said while no
+bridge was connected was written to no channel: it is above the mark and is handed over once, when the
+next one connects. The digest at the `Hello` reads the same mark, so a seat that reconnects is told
+what happened after its channel, not after its model.
+
 A blob no kept message names is deleted when the chat store is rewritten, and an upload nothing has said
 is deleted an hour after it was started. The hour is the point: a picture is uploaded and then said a
 moment later, so a collection that ran between the two would delete the bytes the message is about to
@@ -682,8 +693,9 @@ The whole text of a message filed as a record is kept beside the ring, up to **1
 | `roster {room}` | `roster {room, rows}` | `name`, `id`, `kind`, `connected`, `project`, `label`, and `seat` for a session (see **Presence**) |
 | `own {id, scope, ttl_ms?, thread?}`, `hand {id, scope, to, note}`, `accept {id, scope}`, `release {id, scope}` | `owned {id, claim, said}` | see **Ownership**; a refusal is `refused {why: ownership}` naming the holder |
 | `seat {facts}` | `seated {owns}` | a session's daemon, every tick: the facts its presence is derived from. Kept under the connection's own name, never stored |
-| `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head}` | what was missed since the cursor. Moves nothing |
-| `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head |
+| `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head, seen}` | what was missed since the cursor, and where the seat's channel was last written (`seen`, `null` for a seat nothing was handed). Moves nothing |
+| `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head. It writes the seat's mark too: an ack says the reader has the row |
+| `seen {seq}` | `acked {cursor}` | says `seq` reached this seat's READER - a bridge wrote it to its channel - and writes the mark without moving the cursor, so a bridge that restarts resumes there instead of handing the row over twice |
 | `ask {id, room, to?, path?, topic?, question}` | `asked {id, ask}`, or `said` when nothing owns the scope | posts the question as a `say` addressed to the owner with a ref `{"kind": "ask", "id": <seq>}` and holds the ask. A `path` or a `topic` is resolved to its owner (see **Asking another session a question**); `to` names one outright. `room` empty is the project room, and a scope is resolved in that room's project. A session or a `cc@` seat; the same asker, target and question already open answers the SAME ask |
 | `reply {id, ask, text}` | `asked {id, ask}` | the target's answer: a thread reply in the ask's room addressed to the asker, and the ask becomes `answered`. Only the target may send it, and only while the ask is open |
 | `decline {id, ask, text}` | `asked {id, ask}` | the target will not answer. Posted like a `reply`; the ask becomes `declined` |
@@ -906,9 +918,10 @@ chatted. `message` is the room `Message` as JSON. A head merges it as though a `
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 13, the room's own number, and the coordinator serves clients from
-`OLDEST_CLIENT` (11) up to it; anything else gets `Bye` with `protocol_refusal`'s sentence. 13 is 12
-with the frames that rode 12 mid-series counted, so a coordinator at 13 is known to read them. 12
+`ROOM_PROTOCOL_VERSION` is 15, the room's own number, and the coordinator serves clients from
+`OLDEST_CLIENT` (11) up to it; anything else gets `Bye` with `protocol_refusal`'s sentence. 15 added
+`seen` and the `seen` an `inbox` answer carries (a bridge resumes at the seat's mark), 14 `nick`, 13 is
+12 with the frames that rode 12 mid-series counted, so a coordinator at 13 is known to read them. 12
 added the room archive (`archive_room`, `unarchive_room`, `archived`, `archived_ms` on `rooms`
 rows), 11 the ask by scope (`path`, `topic`, `why`), 10 the ask itself (`ask`, `reply`, `decline`,
 `withdraw`, `retire`, `asks`), 9 the blob store and `attachments` on a `say`. The number moves at

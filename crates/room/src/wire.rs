@@ -13,8 +13,9 @@ use crate::room::{
 /// added mid-series rides the next number. 10 added `Ask`, 11 the ask by scope (`path`, `topic`),
 /// 12 `ArchiveRoom` and - under an unchanged number - `MayPrompt` and `Hello.share`/`family`; 13 is
 /// 12 with those counted, so only a 13 coordinator is known to read `may_prompt`; 14 adds `Nick`
-/// (`Hello.id`/`nick` ride an unknown field, which a 13 coordinator ignores).
-pub const ROOM_PROTOCOL_VERSION: u16 = 14;
+/// (`Hello.id`/`nick` ride an unknown field, which a 13 coordinator ignores); 15 adds `Seen` and the
+/// `seen` an inbox answer carries, which is how a bridge resumes where its channel already reached.
+pub const ROOM_PROTOCOL_VERSION: u16 = 15;
 
 /// The oldest client this coordinator still serves. Only a bump that changes what an old client
 /// is sent unasked raises it. `may_prompt` does not, since a client chooses to send it.
@@ -26,6 +27,7 @@ pub fn frame_since(frame: &str) -> Option<u16> {
     match frame {
         "may_prompt" => Some(13),
         "nick" => Some(14),
+        "seen" => Some(15),
         _ => None,
     }
 }
@@ -341,6 +343,10 @@ pub enum Request {
     },
     /// Move this principal's inbox cursor to `seq`.
     Ack { seq: u64 },
+    /// `seq` reached this seat's reader - a bridge wrote it to its channel - without moving the
+    /// cursor, which stands where the MODEL is. A bridge that restarts resumes at the mark, so the
+    /// rows it already wrote to the channel are not written to it again.
+    Seen { seq: u64 },
     /// Take `nick` as the label this seat is drawn by. Refused when a live seat already answers to
     /// it, naming the holder and the next counter (`db-fuzz-fable-2`); granted, it is said once in
     /// every room the seat is in. `id` must be the caller's own seat or empty for *the one I am*.
@@ -516,6 +522,7 @@ impl Request {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Seen { .. }
             | Request::Nick { .. }
             | Request::Signals
             | Request::Acted { .. }
@@ -754,6 +761,11 @@ pub enum Response {
         skipped: u64,
         cursor: u64,
         head: u64,
+        /// The newest seq this seat's reader was written up to - a push, or a bridge's
+        /// [`Request::Seen`]. `None` for a seat nothing was ever handed: the floor a bridge resumes
+        /// from, so a restart hands over what the seat never got and nothing it already got.
+        #[serde(default)]
+        seen: Option<u64>,
     },
     Acked {
         cursor: u64,
@@ -992,6 +1004,7 @@ impl Room {
             | Request::MayPrompt { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Seen { .. }
             | Request::Nick { .. }
             | Request::Signals
             | Request::Acted { .. }
@@ -1067,27 +1080,27 @@ mod tests {
     use super::*;
 
     /// The number is the contract: a version-11 coordinator knows no `ArchiveRoom` and would take a
-    /// room put away for one it cannot see, a version-12 one may have shipped before `MayPrompt`,
-    /// and a version-13 one reads no `Nick`.
+    /// room put away for one it cannot see, a version-12 one may have shipped before `MayPrompt`, a
+    /// version-13 one reads no `Nick`, and a version-14 one reads no `Seen`.
     #[test]
-    fn the_protocol_is_fourteen() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 14);
-        assert_eq!(crate::server::protocol(), 14);
+    fn the_protocol_is_fifteen() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 15);
+        assert_eq!(crate::server::protocol(), 15);
         assert_eq!(
-            protocol_refusal(14),
+            protocol_refusal(15),
             None,
             "the same build speaks to itself"
         );
         assert_eq!(
             protocol_refusal(11),
             None,
-            "an 11 client sends nothing 12, 13 or 14 changed"
+            "an 11 client sends nothing 12, 13, 14 or 15 changed"
         );
         let older = protocol_refusal(10).expect("a version-10 client is told");
-        assert!(older.contains("this room speaks protocol 14"), "{older}");
+        assert!(older.contains("this room speaks protocol 15"), "{older}");
         assert!(older.contains("the client is the older"), "{older}");
         assert!(older.contains(CLIENT_UPGRADE), "{older}");
-        let newer = protocol_refusal(15).expect("a newer client is told");
+        let newer = protocol_refusal(16).expect("a newer client is told");
         assert!(newer.contains(ROOM_UPGRADE), "{newer}");
         // And the frames only a newer coordinator is known to read are refused below it by name.
         assert!(frame_refusal(12, "may_prompt").is_some());
@@ -1097,6 +1110,11 @@ mod tests {
             "a 13 coordinator has no `Nick`"
         );
         assert_eq!(frame_refusal(14, "nick"), None);
+        assert!(
+            frame_refusal(14, "seen").is_some(),
+            "a 14 coordinator has no `Seen`"
+        );
+        assert_eq!(frame_refusal(15, "seen"), None);
         assert_eq!(frame_refusal(11, "say"), None, "nothing else is gated");
         // And the frame's own word is the one `frame_since` knows it by.
         assert_eq!(
