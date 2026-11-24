@@ -399,6 +399,16 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // the cache that is there is what every session goes on planning against, and the task tries
     // again within the hour. Said once a day rather than once an hour - see `catalogue_refresh`.
     ("catalogue_refresh_failed", Class::Failure, Action::Nothing),
+    // A refresh moved a provider's default to a newer model: news, not a fault, and nothing to do
+    // unless the person wants the old one back with a `model =` line.
+    ("catalogue_default_moved", Class::Routine, Action::Nothing),
+    // The provider refused a model it does not carry: the turn did not run, and the person picks
+    // one the message lists or sets a `model =` line.
+    (
+        "model_not_carried",
+        Class::Failure,
+        Action::Do("pick a model the provider carries (/models)"),
+    ),
     // Their interrupt and their promote arrived between turns, so there was nothing to
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine, Action::Nothing),
@@ -1863,17 +1873,17 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_104_routine_16_refused_and_119_failures() {
+    fn the_table_is_105_routine_16_refused_and_120_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 239, "the table's size");
+        assert_eq!(TABLE.len(), 241, "the table's size");
         // 101, plus the shadow's two: a job that stopped answering, and the one that says it is
         // back.
-        assert_eq!(count(Class::Routine), 104, "the seven limits are routine");
+        assert_eq!(count(Class::Routine), 105, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 16, "the sixteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 119);
+        assert_eq!(count(Class::Failure), 120);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
