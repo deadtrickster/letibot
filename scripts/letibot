@@ -26,7 +26,7 @@
 #   letibot --migrate ID --to HOST   move this session's whole daemon to a host, or back
 #                               with `--to local` (docs/remote-hosts.md RH4). The session's
 #                               socket is forwarded back here, so --session attaches to it
-#   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
+#   letibot "some prompt"       one-shot: run it, print, exit (no TUI); 0 = nothing left running
 #   letibot --glm               GLM's dialect+vocab; providers.toml names the address
 #   letibot --listen WORDS      mute or unmute a folder project's repositories before the start:
 #                               -REPO, +REPO, only REPO|this, all (then the usual command runs)
@@ -915,6 +915,7 @@ flags_table() {
 --glm                  |more  |       |GLM's dialect, vocabulary and endpoint, when the daemon STARTS
 --dense                |more  |       |the Qwen 27B dense model, when the daemon STARTS
 --session -s           |more  |ID/NAME |reopen a particular session; `--session host` is the box's own agent
+--one-shot-budget       |more  |SPAN   |a one-shot's whole wall clock, its running jobs included: `6h` unless set; past it, exit 75 naming them
 --provider             |config|NAME   |`[default] provider` in ~/.config/letibot/providers.toml
 --model                |config|NAME   |`[default] model` in ~/.config/letibot/providers.toml
 --effort               |config|LEVEL  |off, low, medium, high, max: `effort = "high"` in that model's `[model._]` block, providers.toml
@@ -996,7 +997,7 @@ already up, then attaches the TUI head to it.
 
   letibot                     attach to this folder's daemon, starting one on a NEW session
                               if none is up; it never resumes by itself
-  letibot "some prompt"       one-shot: run it, print, exit (no TUI)
+  letibot "some prompt"       one-shot: run it, print, exit (no TUI); 0 = nothing left running
   letibot -c                  reopen the newest session in THIS workspace
   letibot --stop [N|DIR]      stop this folder's daemon (`--force`, `--all`)
   letibot --restart           restart it on a new build, keeping its background jobs
@@ -1022,7 +1023,7 @@ usage_all() {
 letibot — every flag this command takes, and the file each setting can live in.
 
   letibot                     attach to this folder's daemon, starting one on a NEW session
-  letibot "some prompt"       one-shot: run it, print, exit (no TUI)
+  letibot "some prompt"       one-shot: run it, print, exit (no TUI); 0 = nothing left running
 
 WHAT YOU TYPE EVERY DAY
 EOF
@@ -1440,6 +1441,13 @@ while [ $# -gt 0 ]; do
     --brave-key)
       [ $# -ge 2 ] || die "--brave-key KEY"
       EXTRA_ARGS+=(--brave-key "$2")
+      shift 2
+      ;;
+    # The one-shot's own bound. It reaches harnessd, which is what counts it - the launcher only
+    # has to make sure it is not read as part of the prompt.
+    --one-shot-budget)
+      [ $# -ge 2 ] || die "--one-shot-budget SPAN"
+      EXTRA_ARGS+=(--one-shot-budget "$2")
       shift 2
       ;;
     --model)

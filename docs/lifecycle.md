@@ -646,7 +646,7 @@ it, and opening it by id takes it back into the list.
 | A review queue reviewer whose verdict the queue took | `verdict delivered` |
 | A reviewer a later reviewer of the same row replaced | `superseded by <id>` |
 | A reviewer whose row moved on with no verdict and no successor, after 10 min | `review abandoned` |
-| A `--prompt` run whose steps are over | `one-shot ended` |
+| A `--prompt` run whose steps are over, and whose jobs have ended | `one-shot ended` |
 | A subagent whose answer reached its parent (`subagent_run.delivered`) | `result collected` |
 | A package owner `settled` or `swept` | `landed <sha>` or `abandoned` |
 
@@ -654,7 +654,10 @@ Never archived: the operator's own top-level session (no parent, origin `operato
 automatic owner), and any session a head, a turn in flight, an open card, an open job (any
 project file) or a board ask holds, or that another live process holds as writer. The daemon's
 reaper pass applies the rules to facts newer than the daemon and writes only the row, so an idle
-session it serves stays served. A one-shot archives its own session before it exits. Older facts
+session it serves stays served. A one-shot archives its own session before it exits - after it
+has waited out the jobs it started (`docs/cookbook.md` §4a), because a settlement nobody reads
+is the work half done. A run that runs out of its budget first keeps the session (`a job is
+open`), says which handles and how to resume it, and exits 75. Older facts
 are the backfill's: `letibot gc --archive-settled` lists them, and with `--now` archives them.
 
 ### d.4 How ownership is proved

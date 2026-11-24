@@ -177,6 +177,39 @@ layer on the project is in every child's guest.
 Two one-shots side by side need their own sockets: the launcher gives each
 `$XDG_RUNTIME_DIR/letibot/oneshot-<pid>.sock`.
 
+### A one-shot and the jobs it starts
+
+A one-shot with no worker has one thing to do about work it left running: wait for it. A
+foreground command that passes `[exec] foreground_seconds` (60 s by default) is **promoted to a
+background job** instead of being killed, and the turn that started it then ends - so the run
+waits for that job's end on the same bell the daemon's worker answers, runs the turn the
+settlement owes (the model is handed the harness's own `[job] … has ended` notice), and repeats
+until no job of this session is open. `jobs` reads the open handles back from the store's
+`process` rows, which is exactly the fact the archive guard calls `a job is open`.
+
+The waiting is bounded, and the bound is the whole run:
+
+```
+--one-shot-budget SPAN       6h unless set (`90s`, `1h30m`); jobs keep their own deadlines
+```
+
+| exit | meaning |
+|---|---|
+| 0 | the last turn ended with **no job open** - the only pass |
+| 1 | a step failed (a refused slash verb, a turn's error) |
+| 2 | the command line was refused |
+| 75 | the budget ran out with a job still open (`EX_TEMPFAIL`: nothing is lost) |
+
+On 75 the last line names the handles still running and the session to resume:
+
+```
+  ! the one-shot's budget of 30s ran out with `j51` still open - the work is not lost:
+    `letibot --session s-…` resumes the session and delivers each job's result
+```
+
+That session is resumed, not a new one: its transcript, its job rows and the settlement each job
+still owes are in the store, and the daemon that opens it says what it is still waiting on.
+
 ## 4b. Paths in a leticode session
 
 The backend is rooted at `/` (opencode parity: `read` reaches the whole host and the ruleset,
