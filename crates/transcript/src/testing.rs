@@ -108,6 +108,45 @@ pub fn data_ref(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", crate::media::encode_base64(bytes))
 }
 
+/// A real one-page PDF whose single line of text is `line`, built by hand: the smallest file a
+/// conforming reader accepts, with an uncompressed content stream so the words are visible in the
+/// bytes. Every test that needs a document needs one, and a second copy would drift from this.
+pub fn pdf(line: &str) -> Vec<u8> {
+    // The text stays ASCII here; a caller wanting a non-ASCII word writes its own stream.
+    let stream = format!("BT /F1 24 Tf 72 720 Td ({line}) Tj ET");
+    // Offsets are computed from the parts as they are laid down, because the xref table is what
+    // makes a PDF a file rather than a page of PostScript.
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets: Vec<usize> = Vec::new();
+    let objects: [String; 5] = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+         /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_string(),
+        format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for (n, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", n + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for at in &offsets {
+        out.extend_from_slice(format!("{at:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
 fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());
     out.extend_from_slice(kind);

@@ -267,6 +267,8 @@ impl TranscriptItem {
                     // not a pointer. Counting 32 for it left the census blind to the largest row a
                     // session can hold, and the hub's byte bound blind in the same place.
                     UserPart::Image { data_ref, .. } => data_ref.len(),
+                    // A document's bytes are on the row for the same reason, and the same count.
+                    UserPart::Document { data_ref, .. } => data_ref.len(),
                     UserPart::FileRef { .. } => 32,
                 })
                 .sum()
@@ -520,6 +522,14 @@ pub enum UserPart {
     Image {
         media_type: String,
         data_ref: String,
+    },
+    /// A file the person attached or a tool read that the model is given as a DOCUMENT: the bytes,
+    /// the type, and the name the door's request carries. The same channel as a picture, because the
+    /// store row, the replay and the `data:` reference are one mechanism.
+    Document {
+        media_type: String,
+        data_ref: String,
+        filename: String,
     },
     FileRef {
         path: String,
@@ -963,6 +973,57 @@ mod tests {
             }],
         };
         assert_eq!(referenced.bytes(), 32);
+    }
+
+    /// A document part is a row the store keeps like a picture's: bytes inline, a count that sees
+    /// them, and a round trip that keeps the file's name (a door's request needs it).
+    #[test]
+    fn a_document_part_round_trips_with_its_filename_and_counts_its_bytes() {
+        let base64 = media::encode_base64(&crate::testing::pdf("a known word"));
+        let row = TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![
+                UserPart::Text {
+                    text: "what does it say".into(),
+                },
+                UserPart::Document {
+                    media_type: "application/pdf".into(),
+                    data_ref: format!("data:application/pdf;base64,{base64}"),
+                    filename: "report.pdf".into(),
+                },
+            ],
+        };
+        let wire = serde_json::to_string(&row).unwrap();
+        assert!(wire.contains(r#""kind":"document""#), "{wire}");
+        assert_eq!(serde_json::from_str::<TranscriptItem>(&wire).unwrap(), row);
+        assert_eq!(
+            row.bytes(),
+            "what does it say".len() + "data:application/pdf;base64,".len() + base64.len()
+        );
+    }
+
+    /// Every row written before documents existed still reads: a picture part, a file reference and
+    /// a tool result whose media is a picture. The new variant is an addition, not a version.
+    #[test]
+    fn a_row_written_before_documents_existed_still_reads() {
+        let old = r#"{"type":"user","parts":[{"kind":"image","media_type":"image/png",
+            "data_ref":"data:image/png;base64,AAAA"}],"speaker":"operator"}"#;
+        let read: TranscriptItem = serde_json::from_str(old).expect("an old user row");
+        assert!(matches!(
+            read,
+            TranscriptItem::User { parts, .. } if matches!(&parts[0], UserPart::Image { .. })
+        ));
+        let old = r#"{"type":"tool_result","call_id":"c1","name":"read",
+            "outcome":{"outcome":"ok"},"payload":"a picture",
+            "media":{"mime":"image/png","bytes":8,
+            "width":null,"height":null,"data_ref":"data:image/png;base64,AAAA"}}"#;
+        let read: TranscriptItem = serde_json::from_str(old).expect("an old tool result");
+        let TranscriptItem::ToolResult { media, .. } = read else {
+            panic!("a tool result");
+        };
+        let media = media.expect("the media an old row carries");
+        assert_eq!(media.mime, "image/png");
+        assert!(!media.is_document());
     }
 
     /// The one decision, pinned: every kind answers, and exactly the operator's card and the

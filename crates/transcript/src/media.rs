@@ -86,6 +86,11 @@ pub fn encode_base64(bytes: &[u8]) -> String {
 /// image, and `read` shows it the way it shows any other bytes.
 pub const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
+/// The document types this tree hands a model as a DOCUMENT rather than as text: one, because a
+/// PDF is what every door whose catalogue says `pdf` takes, and guessing at the rest is how a
+/// request earns a 400.
+pub const SUPPORTED_DOCUMENT_MIMES: [&str; 1] = ["application/pdf"];
+
 /// Bytes a call produced that are not text, with the metadata a row needs to describe them.
 /// `media_type` alone answers the wrong question - a reader wants to know how big and what
 /// shape - and `bytes` is the file's size, a number a person can compare with `ls`.
@@ -111,12 +116,37 @@ pub struct Media {
 }
 
 impl Media {
+    /// A document this call read, or `None` when the bytes are not one of the supported
+    /// documents. The same shape as an image, deliberately: the row field, the replay and the
+    /// `data:` reference are one mechanism, and a document is that mechanism with another mime.
+    pub fn document(path: &str, bytes: &[u8]) -> Option<Media> {
+        let mime = sniff_mime(path, bytes)?;
+        if !complete_document(mime, bytes) {
+            return None;
+        }
+        Some(Media {
+            mime: mime.to_string(),
+            bytes: bytes.len(),
+            // A PDF's pages are not pixels, and a number here would be read as a picture's size.
+            width: None,
+            height: None,
+            data_ref: format!("data:{mime};base64,{}", encode_base64(bytes)),
+            delivered: false,
+        })
+    }
+
+    /// Whether these bytes ride the document channel rather than the picture one. The one place
+    /// the question is asked, so a protocol cannot answer it differently.
+    pub fn is_document(&self) -> bool {
+        SUPPORTED_DOCUMENT_MIMES.contains(&self.mime.as_str())
+    }
+
     /// A picture this call read, or `None` when the bytes are not one of the supported
     /// images. The mime comes from the bytes first and the path only as a fallback, because a
     /// file's name is a claim and its magic number is not. See [`complete_image`].
     pub fn of(path: &str, bytes: &[u8]) -> Option<Media> {
         let mime = sniff_mime(path, bytes)?;
-        if !complete_image(mime, bytes) {
+        if !mime.starts_with("image/") || !complete_image(mime, bytes) {
             return None;
         }
         let (width, height) = dimensions(mime, bytes);
@@ -150,19 +180,28 @@ impl Media {
     /// payload that inlined the base64 would put a megabyte of it through every renderer,
     /// every `grep` over the log, and every scrollback.
     pub fn summary(&self) -> String {
+        let word = if self.is_document() {
+            "document"
+        } else {
+            "image"
+        };
         match (self.width, self.height) {
             (Some(w), Some(h)) => {
-                format!("image {} {w}×{h} · {} KiB", self.mime, self.bytes / 1024)
+                format!("{word} {} {w}×{h} · {} KiB", self.mime, self.bytes / 1024)
             }
-            _ => format!("image {} · {} KiB", self.mime, self.bytes / 1024),
+            _ => format!("{word} {} · {} KiB", self.mime, self.bytes / 1024),
         }
     }
 }
 
-/// The image type of these bytes, by magic number, with the path as a fallback - a name is
-/// a claim and a magic number is not. `None` means not an image this tree will hand a model,
-/// which includes a PDF: there is no PDF path to put one on.
+/// The type of these bytes, by magic number, with the path as a fallback - a name is a claim
+/// and a magic number is not. `None` means neither a picture nor a document this tree will hand
+/// a model, and `read` then shows the bytes the way it shows any other file.
 pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
+    // A PDF's header is at byte 0 of every conforming file, whatever its name says.
+    if bytes.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
     // Magic first. Every one of these is a fixed prefix, and none is ambiguous with another.
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
@@ -182,6 +221,7 @@ pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
     // authority on what it can read and a refusal from it names the file.
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
+        "pdf" => Some("application/pdf"),
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "gif" => Some("image/gif"),
@@ -206,6 +246,56 @@ pub fn complete_image(mime: &str, bytes: &[u8]) -> bool {
         "image/webp" => webp_complete(bytes),
         _ => false,
     }
+}
+
+/// Is this a COMPLETE document of the type it claims? A PDF is judged on its two ends: the header
+/// every conforming file starts with, and the `%%EOF` a written one ends with. A file that lost its
+/// tail is a truncated download, and sending it earns a refusal that reads like a model's fault.
+pub fn complete_document(mime: &str, bytes: &[u8]) -> bool {
+    match mime {
+        "application/pdf" => {
+            // The trailer may be followed by junk a linearising writer left, so only the tail is
+            // searched - and only the last kilobyte of it, which is where the trailer lives.
+            bytes.starts_with(b"%PDF-")
+                && bytes.len() > 8
+                && bytes[bytes.len().saturating_sub(1024)..]
+                    .windows(5)
+                    .any(|w| w == b"%%EOF")
+        }
+        _ => false,
+    }
+}
+
+/// The text of a PDF, from an outside extractor, because this tree has no PDF parser: a page's
+/// content stream can be compressed, encrypted or behind an object stream, and a hand-rolled
+/// reader would be a second, wrong answer to what `pdftotext` already answers. `None` when the box
+/// has no `pdftotext`, or it produced nothing.
+pub fn pdf_text(bytes: &[u8]) -> Option<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    // `pdftotext - -` is stdin to stdout: no temporary file, so no cleanup and no path a
+    // concurrent session could take.
+    let mut child = Command::new("pdftotext")
+        .args(["-", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    // Fed from a thread: a document larger than a pipe buffer blocks the writer, and doing that
+    // before reading the extractor's own output deadlocks as soon as that pipe fills too.
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let _ = stdin.write_all(bytes);
+        });
+        child.wait_with_output().ok()
+    })
+    .filter(|o| o.status.success())
+    .and_then(|out| {
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!text.is_empty()).then_some(text)
+    })
 }
 
 /// The same predicate for a picture a row already carries - a `data:` reference, decoded
@@ -649,5 +739,49 @@ mod tests {
         // And a reference that is not one decodes to nothing and answers `false`.
         assert!(!data_ref_is_image("not a reference"));
         assert!(!data_ref_is_image("data:image/png;base64,"));
+    }
+
+    /// A document is recognised the same way an image is - by its bytes, not its name - and it is
+    /// NOT a picture: the two channels are decided by the mime, so a pdf can never be handed to a
+    /// door as an `image_url`.
+    #[test]
+    fn a_pdf_is_a_document_by_its_magic_number_and_never_an_image() {
+        let bytes = crate::testing::pdf("the answer is 42");
+        // Named as text, and still a document: the header is the claim and the name is not.
+        assert_eq!(sniff_mime("notes.txt", &bytes), Some("application/pdf"));
+        assert_eq!(sniff_mime("no-extension", &bytes), Some("application/pdf"));
+        let m = Media::document("notes.txt", &bytes).expect("a complete pdf");
+        assert_eq!(m.mime, "application/pdf");
+        assert!(m.is_document());
+        assert_eq!((m.width, m.height), (None, None), "a page is not a pixel size");
+        assert!(m.summary().starts_with("document application/pdf"), "{}", m.summary());
+        assert_eq!(m.data_ref, crate::testing::data_ref("application/pdf", &bytes));
+        // The picture channel refuses it, in both spellings a caller might try.
+        assert!(Media::of("a.pdf", &bytes).is_none(), "a pdf went out as an image");
+        assert!(!data_ref_is_image(&m.data_ref), "a pdf was called an image");
+        assert!(!complete_image("application/pdf", &bytes));
+    }
+
+    /// A file named `.pdf` whose bytes are text is not a document, and a PDF that lost its tail - a
+    /// download cut short - is not one either: the door would 400 and every later turn would carry
+    /// the same bytes.
+    #[test]
+    fn a_name_alone_is_not_a_document_and_neither_is_a_truncated_one() {
+        let text = b"this is a memo, not a pdf\n";
+        assert_eq!(sniff_mime("memo.pdf", text), Some("application/pdf"));
+        assert!(
+            Media::document("memo.pdf", text).is_none(),
+            "a text file with a pdf name was taken as a document"
+        );
+        let full = crate::testing::pdf("hello");
+        let cut = &full[..full.len() - 8];
+        assert!(
+            !complete_document("application/pdf", cut),
+            "a pdf with no trailer passed"
+        );
+        assert!(Media::document("a.pdf", cut).is_none());
+        // And the header rule: bytes without `%PDF-` are not a pdf however the tail reads.
+        assert!(!complete_document("application/pdf", b"%%EOF"));
+        assert!(!complete_document("image/png", &full));
     }
 }
