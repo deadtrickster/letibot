@@ -1741,6 +1741,7 @@ version = "0.7.2"
 dependencies = [
  "letibot-builtins",
  "letibot-plugins",
+ "letibot-transcript",
  "rano",
  "sha2",
 ]
