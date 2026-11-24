@@ -478,6 +478,14 @@ pub struct QueueRunningGate {
     /// tell *the tail has not moved* from *the step is quiet between two lines*.
     #[serde(default)]
     pub log_bytes: u64,
+    /// The machine the gate runs on: `local`, or a declared host's name (with ` (firecode)` when
+    /// the steps run in a VM there). Empty for a daemon that did not publish where it runs.
+    #[serde(default)]
+    pub host: String,
+    /// When the RUN started, Unix ms - `started_ms` is only the step's own clock. The age of a gate
+    /// is what tells a slow suite from a forgotten one: the incident's said `6866m32s so far`.
+    #[serde(default)]
+    pub run_ms: u64,
 }
 
 /// One move of one row - the transition history.

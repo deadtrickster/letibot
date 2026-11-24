@@ -112,6 +112,7 @@ fn snapshot() -> letibot_sessionlog::event::QueueSnapshot {
         started_ms: 0,
         tail: "test result: FAILED. 3 passed; 1 failed".into(),
         log_bytes: 4_096,
+        ..Default::default()
     });
 
     let red = letibot_sessionlog::event::TargetHealthView {

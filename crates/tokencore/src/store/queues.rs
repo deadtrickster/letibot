@@ -1749,6 +1749,37 @@ impl Store {
         Ok(())
     }
 
+    /// Every repository's running gate, oldest first - what a pane lists beside the rows, so a gate
+    /// on another machine is a thing a person can see rather than a sentence in a log.
+    pub fn live_gates(&self) -> Result<Vec<LiveGate>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT repository, run_id, kind, target, entry, sha, host, dir, step, of_step,
+                    command, step_ms, started_ms, stop_by, stop_why
+               FROM gate_live ORDER BY started_ms, repository",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(LiveGate {
+                repository: r.get(0)?,
+                run_id: r.get(1)?,
+                kind: r.get(2)?,
+                target: r.get(3)?,
+                entry: r.get(4)?,
+                sha: r.get(5)?,
+                host: r.get(6)?,
+                dir: r.get(7)?,
+                step: ms(r.get(8)?) as usize,
+                of_step: ms(r.get(9)?) as usize,
+                command: r.get(10)?,
+                step_ms: ms(r.get(11)?),
+                started_ms: ms(r.get(12)?),
+                stop_by: r.get(13)?,
+                stop_why: r.get(14)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// The gate this repository is running, as its worker published it.
     pub fn live_gate(&self, repository: &str) -> Result<Option<LiveGate>> {
         Ok(self

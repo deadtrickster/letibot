@@ -882,6 +882,7 @@ fn gating_with_a_step(id: &str, tail: &str) -> letibot_sessionlog::event::QueueM
         started_ms: 3_602_000,
         tail: tail.into(),
         log_bytes: 12_345,
+        ..Default::default()
     });
     m
 }
@@ -1021,6 +1022,7 @@ fn a_queued_landing_shows_the_step_of_the_gate_it_waits_on() {
             started_ms: 3_602_000,
             tail: "test result: ok. 18 passed".into(),
             log_bytes: 900,
+            ..Default::default()
         }),
     }];
     a.apply(queue_frame(snap));

@@ -14,6 +14,18 @@ pub(crate) enum Health {
     Unjudged,
 }
 
+/// Is `repo_name` in the sidebar list. An age as the queue row says it - `42m`, `3h 05m`, `4d 18h`:
+/// hours and days because a gate nobody looked at ran for four days before anybody saw it.
+fn gate_age(ms: u64) -> String {
+    let mins = ms / 60_000;
+    match mins {
+        0 => "under a minute".to_string(),
+        m if m < 60 => format!("{m}m"),
+        m if m < 60 * 24 => format!("{}h {:02}m", m / 60, m % 60),
+        m => format!("{}d {}h", m / (60 * 24), (m % (60 * 24)) / 60),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueueRepo {
     pub repo: String,
@@ -25,6 +37,10 @@ pub(crate) struct QueueRepo {
     pub person: usize,
     pub unread: usize,
     pub muted: bool,
+    /// The gate this repository is running, in the words the row draws - `4/6 on lab2x1, 42m`. A
+    /// row that says only *gating* hides the two facts that make a bad gate obvious: WHICH machine
+    /// it is on, and how long it has been there.
+    pub gate: Option<String>,
 }
 
 impl App {
@@ -99,6 +115,7 @@ impl App {
                     gating,
                     person,
                     unread,
+                    gate: self.running_gate_words(repo),
                 }
             })
             .collect()
@@ -110,6 +127,31 @@ impl App {
         self.settings
             .iter()
             .any(|r| r.key == key && r.value.starts_with("[x]"))
+    }
+
+    /// The gate `repo` is running, as the row draws it: which step, on which machine, and for how
+    /// long - `None` when nothing is gated there. The age is taken at the snapshot's own clock, so
+    /// the row says the same thing twice in one frame.
+    fn running_gate_words(&self, repo: &str) -> Option<String> {
+        let q = &self.queues_all;
+        let t = q
+            .targets
+            .iter()
+            .find(|t| t.repository == repo && t.state == "gating" && t.running_gate.is_some())?;
+        let g = t.running_gate.as_ref()?;
+        let step = match (g.step, g.of) {
+            (n, of) if n > 0 && of > 0 => format!("{n}/{of}"),
+            _ => "a step".to_string(),
+        };
+        let host = match g.host.split(" (firecode)").next().unwrap_or_default() {
+            "" => String::new(),
+            h => format!(" on {h}"),
+        };
+        let age = match g.run_ms {
+            0 => String::new(),
+            ms => format!(", {}", gate_age(q.at_ms.saturating_sub(ms))),
+        };
+        Some(format!("{step}{host}{age}"))
     }
 
     /// A repository seen for the first time starts at the snapshot's clock, so the moves already in

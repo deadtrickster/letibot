@@ -24,6 +24,7 @@ fn files(dir: &Path, tick: Tick) -> crate::mergequeue::gate_host::Files {
         out: format!("{run}/step-0.out"),
         exit: format!("{run}/step-0.exit"),
         beat: format!("{run}/step-0.beat"),
+        run_beat: format!("{run}/beat"),
         tick,
     }
 }

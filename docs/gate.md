@@ -130,6 +130,36 @@ sh scripts/check-dist-names.sh --built
 The `queue` tool's `restart` puts a parked row back in line, and `regate` gates the target's tip
 again once the cause of a red is gone. Neither is a way past a red.
 
+## A red tip's automatic re-gates are a budget: `[queue] gate_regates`
+
+A daemon that takes a repository's queue used to gate a red tip again at once, so a lease that
+flapped (a laptop sleeping, a restart, a lapsed heartbeat) ran the whole suite over and over on a
+`main` nobody had fixed, and the gate machines ended up fighting each other. Now:
+
+- A tip whose last verdict was `red` or `timed_out` is gated again at most `gate_regates` times
+  (default 2), each after a growing wait (ten minutes, doubled, at most four hours).
+- Then the tip is PARKED: its row keeps the verdict it earned (a red tip still halts its review
+  queue) and says a person has to act. One warning, once per tip.
+- A new tip is a new question and is gated as usual, and `regate` restarts the budget - the person
+  who fixed the cause owns the next two automatic gates.
+
+## One gate per repository per machine
+
+A run directory is `<gate root>/gate/<repo>-<hex>/run` on the machine the steps run on. It holds a
+`lock/` (one atomic `mkdir`, taken by whoever starts a gate there), a `lock/owner` record (who
+started it, which tip, which step) and a `beat` file every poll rewrites. A daemon that wants the
+directory either
+
+- takes it, and records itself before the first step and again as each step starts;
+- WAITS for the run already there and applies ITS verdict, read off the step files it leaves - one
+gate, one verdict, however many daemons wanted to run it; or
+- takes it from an owner that is gone: the beat older than 90 s is a daemon that is not there, and
+  the step group it left is ended first.
+
+`scripts/gate-at.sh` writes the same `key=value` record (owner `hand`) under the box's gate lock,
+`$LETIBOT_GATE_RUN_DIR` (default `$(dirname /build/gate.lock)/gate-runs`), and removes it on the
+way out.
+
 ## Batched landings: `[queue] gate_train`
 
 Review stays per branch; the gate batches. With `gate_train = N` in `leticode.toml`, the queue takes

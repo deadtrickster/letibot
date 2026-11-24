@@ -481,7 +481,8 @@ fn run(q: &RepoQueue, passes: usize) {
 /// A daemon taking the queue, as `serve.rs` asks it - at an instant the caller names and under the
 /// project's `[queue]`, so a test can walk hours of lease takes without sleeping through them.
 fn at_start(w: &World, settings: &QueueSettings, now: u64) -> crate::mergequeue::verbs::AtStart {
-    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a", settings, now).unwrap()
+    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a", settings, now)
+        .unwrap()
 }
 
 // ===== How many reviewers at once =====
@@ -2274,7 +2275,10 @@ fn a_red_tip_is_re_gated_at_most_the_budget_then_waits_for_a_person() {
     w.store()
         .set_target_health(&a_red_tip(&w, &sha), "test")
         .unwrap();
-    assert_eq!(at_start(&w, &settings, t0).regated, vec!["main".to_string()]);
+    assert_eq!(
+        at_start(&w, &settings, t0).regated,
+        vec!["main".to_string()]
+    );
     w.store()
         .set_target_health(&a_red_tip(&w, &sha), "test")
         .unwrap();
@@ -2306,7 +2310,10 @@ fn a_red_tip_is_re_gated_at_most_the_budget_then_waits_for_a_person() {
     );
     let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
     assert_eq!(h.state, HealthState::Red, "the verdict it earned is kept");
-    assert!(halts_reviews(&h), "and a red tip still halts its review queue");
+    assert!(
+        halts_reviews(&h),
+        "and a red tip still halts its review queue"
+    );
     assert!(h.evidence.contains("a person has to act"), "{}", h.evidence);
 
     // A later take is silent: nothing gated, nothing said twice.

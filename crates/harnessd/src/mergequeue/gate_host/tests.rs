@@ -87,6 +87,7 @@ fn files(tick: Tick) -> Files {
         out: "/h/gate/x/run/step-0.out".to_string(),
         exit: "/h/gate/x/run/step-0.exit".to_string(),
         beat: "/h/gate/x/run/step-0.beat".to_string(),
+        run_beat: "/h/gate/x/run/beat".to_string(),
         tick,
     }
 }
@@ -355,6 +356,7 @@ fn the_poll_reads_the_status_before_the_pid_and_leads_with_its_marker() {
         out: "/h/run/step-0.out".to_string(),
         exit: "/h/run/step-0.exit".to_string(),
         beat: "/h/run/step-0.beat".to_string(),
+        run_beat: "/h/run/beat".to_string(),
         tick: Tick::default(),
     };
     let poll = poll_script("@@letibot-gate-1-0@@", &polled, 4096);

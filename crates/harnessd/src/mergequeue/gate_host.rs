@@ -15,6 +15,10 @@ use super::gate::{
 use super::gate_tick::{self, Tick};
 use super::git;
 
+pub mod run;
+
+pub use run::{Claim, Owner};
+
 /// How long one poll may take - and this is the HEALTH question, not the step's deadline. It is
 /// shorter than the tick's window on purpose: a poll that is still in flight is a daemon that is
 /// here, and one that outlived the window would be read by the step's watchdog as a dead one.
@@ -201,6 +205,50 @@ pub fn run_on_host(
         Ok(r) => r,
         Err(why) => return infra(steps, why),
     };
+    // One repository runs ONE gate at a time on one host, whoever started it: the run directory
+    // carries a lock and a record, so a daemon that takes the queue joins the run already there
+    // (one gate, one verdict) or takes the directory from an owner that is gone.
+    let mut mine = Owner {
+        daemon: this_daemon_words(),
+        run_id: String::new(),
+        repository: dir_name(worktree),
+        target: String::new(),
+        sha: git::rev_parse(&remote.local, "HEAD").unwrap_or_default(),
+        step: 0,
+        of_step: steps.len(),
+        command: String::new(),
+        started_ms: now_ms(),
+        beat_ms: now_ms(),
+    };
+    mine.run_id = format!("{}-{}", mine.sha, mine.started_ms);
+    match remote.claim_run() {
+        Ok(Claim::Wait(waited)) => return remote.join(&waited, steps, ctl),
+        Ok(Claim::Stale(waited)) => {
+            // A run nobody drives: its step group ends first, then the directory is taken.
+            remote.end_stale(&waited);
+            match remote.claim_run() {
+                Ok(Claim::Ours) => {}
+                Ok(Claim::Wait(waited)) => return remote.join(&waited, steps, ctl),
+                Ok(Claim::Stale(_)) => {
+                    return infra(
+                        steps,
+                        format!(
+                            "the gate directory on {name} could not be taken from a run nobody drives"
+                        ),
+                    );
+                }
+                Err(why) => return infra(steps, why),
+            }
+        }
+        Ok(Claim::Ours) => {}
+        Err(why) => return infra(steps, why),
+    }
+    // Held from here: every return path, a panic included, gives the directory back.
+    let _held = Held(&remote);
+    remote.beat();
+    if let Err(why) = remote.own(&mine) {
+        return infra(steps, why);
+    }
     let mut cost = Cost::default();
     if let Err(why) = remote.prepare(ctl, &mut cost) {
         return infra(steps, format!("{why}{}", cost.said(&remote, ctl.budget)));
@@ -255,6 +303,10 @@ pub fn run_on_host(
             break;
         }
         wrapped |= plan.own_scope;
+        // The record says which step this run is on, so a reader - a pane on the gate host, a daemon
+        // that wants this directory - knows without asking the daemon that started it.
+        mine = mine.at_step(i + 1, step, now_ms());
+        let _ = remote.own(&mine);
         let started = now_ms();
         let wrapped;
         let command = if in_firecode {
@@ -324,6 +376,77 @@ fn infra(steps: &[String], why: String) -> GateRun {
     )
 }
 
+/// Every step `not_run`, for a run that judged nothing.
+fn not_run(steps: &[String]) -> Vec<letibot_tokencore::store::MergeGateStep> {
+    steps
+        .iter()
+        .map(|s| letibot_tokencore::store::MergeGateStep {
+            command: s.clone(),
+            outcome: MergeGateOutcome::NotRun,
+            output: String::new(),
+            started_ms: 0,
+            elapsed_ms: 0,
+        })
+        .collect()
+}
+
+/// A wait for another run's verdict that outlived the gate's own deadline: TIMED OUT, and said so -
+/// the tip is not green because somebody else's gate was slow.
+fn timed_out_waiting(steps: &[String], waited: &Owner, host: &str, ctl: &GateControl) -> GateRun {
+    GateRun {
+        steps: not_run(steps),
+        verdict: GateVerdict::TimedOut(format!(
+            "the gate's deadline ({}) passed while this daemon waited for `{}` to finish on {host}; \
+             nothing here was judged",
+            clause_of(ctl.budget),
+            waited.words()
+        )),
+    }
+}
+
+/// A wait for another run's verdict that this daemon ended: nothing was judged about the code, so
+/// the tip keeps its retry rather than becoming a verdict.
+fn stopped_waiting(steps: &[String], why: &str) -> GateRun {
+    GateRun {
+        steps: not_run(steps),
+        verdict: GateVerdict::Stopped(format!("the wait for another run's verdict ended: {why}")),
+    }
+}
+
+/// The `age_ms=` a run script answered with.
+fn age_of(said: &str) -> Option<u64> {
+    said.lines()
+        .find_map(|l| l.trim().strip_prefix("age_ms="))
+        .and_then(|n| n.trim().parse().ok())
+}
+
+/// The record between the age line and `record-end`, as the run script printed it.
+fn record_of(said: &str) -> &str {
+    let Some((_, after)) = said.split_once("age_ms=") else {
+        return "";
+    };
+    let Some((_, rest)) = after.split_once('\n') else {
+        return "";
+    };
+    rest.split("record-end").next().unwrap_or("")
+}
+
+/// The run directory this gate holds - given back however the run ends. A killed or panicked gate
+/// that left its lock behind would make every later gate on this host wait for a run that is gone.
+struct Held<'a>(&'a Remote);
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// Who is running this gate, as a person reads it: `<host>/<owner>`, the daemon's own lease claim.
+fn this_daemon_words() -> String {
+    let me = super::lease::this_daemon();
+    format!("{}/{}", me.host, me.owner)
+}
+
 /// One repository's gate directory on one host - where the tree, the git store and the build cache
 /// live, and the connection they are reached through.
 struct Remote {
@@ -367,6 +490,9 @@ pub struct Files {
     pub exit: String,
     /// Where the daemon's pokes land, and what the step's watchdog reads them from.
     pub beat: String,
+    /// The run directory's own heartbeat ([`run::BEAT`]): the run's liveness, where `beat` is the
+    /// step's.
+    pub run_beat: String,
     pub tick: Tick,
 }
 
@@ -491,6 +617,187 @@ impl Remote {
         self.seq.fetch_add(1, Ordering::Relaxed) as usize
     }
 
+    // -- one run per repository per host ------------------------------------------------------
+
+    /// The run's lock directory, its record and the file every poll pokes.
+    fn lock_path(&self) -> String {
+        format!("{}/{}", self.run, run::LOCK)
+    }
+
+    fn owner_path(&self) -> String {
+        format!("{}/{}", self.lock_path(), run::OWNER)
+    }
+
+    fn beat_path(&self) -> String {
+        format!("{}/{}", self.run, run::BEAT)
+    }
+
+    /// Take this repository's run directory, or say what is already in it: one `mkdir`, and - when
+    /// it is somebody else's - the record and how long ago the host last heard from them, in the
+    /// host's own clock.
+    fn claim_run(&self) -> Result<Claim, String> {
+        let said = self.call(
+            &format!(
+                "asking who is gating {} on {}",
+                run::dir_tail(&self.dir),
+                self.name
+            ),
+            &run::claim_script(&self.lock_path(), &self.beat_path()),
+            SETUP_BOUND,
+        )?;
+        if said.contains("claim=mine") {
+            return Ok(Claim::Ours);
+        }
+        let age = age_of(&said).unwrap_or(u64::MAX);
+        Ok(run::claim_of(
+            Some(Owner::parse(record_of(&said)).unwrap_or_default()),
+            age,
+        ))
+    }
+
+    /// Write the record - before the first step, and again as each step starts, so a reader knows
+    /// which step it is on without asking the daemon that started it.
+    fn own(&self, o: &Owner) -> Result<(), String> {
+        self.feed(
+            &format!("recording the gate on {}", self.name),
+            &format!("cat > '{}'", self.owner_path()),
+            SETUP_BOUND,
+            o.render().as_bytes(),
+        )
+    }
+
+    /// Give the run directory back: the lock and its record go with it.
+    fn release(&self) {
+        let _ = self.call(
+            &format!("releasing the gate directory on {}", self.name),
+            &run::release_script(&self.lock_path()),
+            KILL_BOUND,
+        );
+    }
+
+    /// Say the run is alive. The transfer of a cold tree can be fifteen minutes of silence, so the
+    /// daemon says so before and after it - a silence of [`run::STALE_MS`] is then a daemon that is
+    /// gone, not a transfer that is slow.
+    fn beat(&self) {
+        let _ = self.call(
+            &format!("hearing the gate on {} still runs", self.name),
+            &run::beat_line(&self.beat_path()),
+            POLL_BOUND,
+        );
+    }
+
+    /// Is the run in the directory still going? The lock's own existence is the answer.
+    fn locked(&self) -> bool {
+        self.call(
+            &format!("asking whether a gate is still running on {}", self.name),
+            &format!("[ -d '{}' ] && echo held || echo free", self.lock_path()),
+            POLL_BOUND,
+        )
+        .map(|said| said.contains("held"))
+        // A host that cannot be asked is not a host to start a second suite on.
+        .unwrap_or(true)
+    }
+
+    /// Wait for the run holding the directory to end, then read what IT judged - one gate on one
+    /// repository gives one verdict, however many daemons wanted to run it.
+    fn join(&self, waited: &Owner, steps: &[String], ctl: &GateControl) -> GateRun {
+        let mut rng = letibot_http::retry::fresh_seed();
+        while self.locked() {
+            if Instant::now() >= ctl.deadline {
+                return timed_out_waiting(steps, waited, &self.name, ctl);
+            }
+            if ctl.stop.load(Ordering::Relaxed) {
+                return stopped_waiting(steps, "the daemon is stopping");
+            }
+            if !(ctl.alive)() {
+                return stopped_waiting(steps, "this daemon lost the repository's lease");
+            }
+            super::sleep_unless_stopped(jittered(self.poll, &mut rng), ctl.stop);
+        }
+        match self.verdict_of(steps, ctl) {
+            Ok(run) => run,
+            Err(why) => infra(
+                steps,
+                format!(
+                    "another run was gating this repository on {} ({}) and ended, and its verdict \
+                     could not be read: {why}",
+                    self.name,
+                    waited.words()
+                ),
+            ),
+        }
+    }
+
+    /// The verdict the run in the directory came to, from the step files it left: its output and
+    /// its exit status, judged by the same rule a local gate judges by. The times are that run's,
+    /// and this daemon does not know them.
+    fn verdict_of(&self, steps: &[String], ctl: &GateControl) -> Result<GateRun, String> {
+        let mut done: Vec<Done> = Vec::new();
+        for (i, step) in steps.iter().enumerate() {
+            let files = self.files(i);
+            let Some(code) = self.read_file(&files.exit)? else {
+                break;
+            };
+            let code: i32 = code
+                .trim()
+                .parse()
+                .map_err(|_| format!("`{}`'s exit was {code:?}", files.exit))?;
+            let out = self.read_file(&files.out)?.unwrap_or_default();
+            let judged = judge(
+                step,
+                ended(code, super::gate::text_excerpt(&out)),
+                StepMemory::Elsewhere(self.name.clone()),
+                0,
+                ctl.budget,
+                "",
+            );
+            let last = judged.verdict.is_some();
+            done.push(Done {
+                command: step.clone(),
+                started_ms: 0,
+                elapsed_ms: 0,
+                judged,
+            });
+            if last {
+                break;
+            }
+        }
+        if done.is_empty() {
+            return Err("it left no step of its own behind".into());
+        }
+        Ok(assemble(steps, done))
+    }
+
+    /// One file's whole text on the host - `None` when it is not there.
+    fn read_file(&self, path: &str) -> Result<Option<String>, String> {
+        let said = self.call(
+            &format!("reading `{path}` on {}", self.name),
+            &format!("if [ -f '{path}' ]; then echo file=yes; cat '{path}'; else echo file=no; fi"),
+            SETUP_BOUND,
+        )?;
+        match said.contains("file=yes") {
+            true => Ok(Some(
+                said.split_once('\n')
+                    .map(|(_, rest)| rest)
+                    .unwrap_or("")
+                    .to_string(),
+            )),
+            false => Ok(None),
+        }
+    }
+
+    /// End what a run nobody drives left behind, so the tree and the build cache are not two runs'
+    /// at once - its step group first, then the directory itself.
+    fn end_stale(&self, o: &Owner) {
+        let at = o.step.saturating_sub(1);
+        let _ = self.call(
+            &format!("ending a gate nobody drives on {}", self.name),
+            &kill_script(&self.files(at).pid),
+            KILL_BOUND,
+        );
+        self.release();
+    }
+
     // -- the far side's file names, one per step ------------------------------------------------
 
     fn files(&self, n: usize) -> Files {
@@ -501,6 +808,7 @@ impl Remote {
             out: format!("{run}/step-{n}.out"),
             exit: format!("{run}/step-{n}.exit"),
             beat: format!("{run}/step-{n}.beat"),
+            run_beat: self.beat_path(),
             tick: self.tick,
         }
     }
@@ -599,7 +907,9 @@ impl Remote {
         cost.checkout_ms = Some(began.elapsed().as_millis() as u64);
         self.check(ctl)?;
         let began = Instant::now();
+        self.beat();
         self.rsync(ctl)?;
+        self.beat();
         cost.tree_ms = Some(began.elapsed().as_millis() as u64);
         Ok(())
     }
@@ -1190,16 +1500,18 @@ pub fn poll_script(tag: &str, files: &Files, offset: u64) -> String {
         out,
         exit,
         beat,
+        run_beat,
         ..
     } = files;
     format!(
-        "{}; \
+        "{}; {}; \
          e=; if [ -f '{exit}' ]; then e=$(cat '{exit}' 2>/dev/null); fi; \
          a=no; if [ -f '{pid}' ]; then p=$(cat '{pid}' 2>/dev/null); \
          [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null && a=yes; fi; \
          printf '{tag} %s %s\\n' \"$a\" \"$e\"; \
          tail -c +{} '{out}' 2>/dev/null",
         gate_tick::poke_script(beat),
+        run::beat_line(run_beat),
         offset + 1
     )
 }

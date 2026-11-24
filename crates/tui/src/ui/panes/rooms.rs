@@ -440,7 +440,10 @@ impl App {
             at.push((lines.len(), ListRow::Queue(r.repo.clone())));
             let held = self.rooms.queue_sel.as_deref() == Some(r.repo.as_str());
             lines.push(if held { pane::picked(l, true) } else { l });
-            let facts = format!("  {}w {}g {}p", r.waiting, r.gating, r.person);
+            let facts = match &r.gate {
+                Some(gate) => format!("  {}w {}g {}p · {gate}", r.waiting, r.gating, r.person),
+                None => format!("  {}w {}g {}p", r.waiting, r.gating, r.person),
+            };
             let check = if r.muted { "[x]" } else { "[ ]" };
             let mut l2 = Line::new(vec![Span::role(
                 trim_to(&facts, lw.saturating_sub(4)),

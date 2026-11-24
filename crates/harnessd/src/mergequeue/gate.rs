@@ -1552,6 +1552,12 @@ pub(crate) fn read_excerpt(log: &Path) -> String {
     excerpt(&String::from_utf8_lossy(&bytes), EXCERPT_BYTES)
 }
 
+/// [`read_excerpt`]'s rule over text this box already has - the output of a step another daemon ran,
+/// read back from the machine that ran it.
+pub(crate) fn text_excerpt(text: &str) -> String {
+    excerpt(text, EXCERPT_BYTES)
+}
+
 /// The end of `text`, at most `cap` bytes in all - the line that says what was left out is inside the
 /// cap and not added to it, and it names the byte count it actually dropped. `what` names the bytes
 /// the reader is missing.

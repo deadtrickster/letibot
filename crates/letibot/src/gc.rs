@@ -326,6 +326,9 @@ fn holds(args: &[String]) -> Result<(), String> {
     // Item 6: the VMs firecode holds for this box, whatever the owner rows say - a VM whose owner
     // is gone is exactly what a person is looking for here.
     let firecode = firecode_vms(&store);
+    // The gates this box is running, queue and hand: a gate is work no owner row records, which is
+    // how one ran for days without appearing here.
+    let gates = gate_runs();
     if parsed.json {
         let filtered = Plan {
             owners: owners.iter().map(|o| (*o).clone()).collect(),
@@ -340,6 +343,22 @@ fn holds(args: &[String]) -> Result<(), String> {
         let mut json = filtered.to_json();
         json["remote"] = remote_json(&remote);
         json["firecode"] = firecode_json(&firecode);
+        json["gates"] = gates
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "repository": g.owner.repository,
+                    "target": g.owner.target,
+                    "sha": g.owner.sha,
+                    "step": g.owner.step,
+                    "of_step": g.owner.of_step,
+                    "daemon": g.owner.daemon,
+                    "started_ms": g.owner.started_ms,
+                    "beat_ago_ms": g.ago_ms,
+                    "stale": g.stale(),
+                })
+            })
+            .collect();
         println!("{json}");
         return Ok(());
     }
@@ -356,6 +375,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         print_gate_caches(&plan.gate_caches, now);
         print_remote(&remote);
         print_firecode(&firecode);
+        print_gates(&gates);
         return Ok(());
     }
     if parsed.top {
@@ -398,6 +418,7 @@ fn holds(args: &[String]) -> Result<(), String> {
     print_gate_caches(&plan.gate_caches, now);
     print_remote(&remote);
     print_firecode(&firecode);
+    print_gates(&gates);
     Ok(())
 }
 
@@ -496,6 +517,115 @@ fn firecode_vms(store: &Store) -> FirecodeVms {
         .map(|s| s.pool)
         .unwrap_or_default();
     out
+}
+
+/// One gate run recorded on this machine, and how long ago the machine last heard from it.
+struct GateRun {
+    owner: letibot_harnessd::mergequeue::gate_host::Owner,
+    /// `None` when the run never beat - a run that died before its first step.
+    ago_ms: Option<u64>,
+}
+
+impl GateRun {
+    fn stale(&self) -> bool {
+        match self.ago_ms {
+            None => true,
+            Some(ms) => ms >= letibot_harnessd::mergequeue::gate_host::run::STALE_MS,
+        }
+    }
+
+    /// One line: `letibot-1f2a@e74362d9ae · step 4 of 6 · lab2x1/gate-3 · 42m so far`.
+    fn line(&self) -> String {
+        let age = match self.ago_ms {
+            None => "STALE: it never beat".to_string(),
+            Some(ms) if self.stale() => {
+                format!("STALE: no beat for {} - nobody is driving it", minutes(ms))
+            }
+            Some(ms) => format!("{} so far", minutes(ms)),
+        };
+        format!("{} · {age}", self.owner.words())
+    }
+}
+
+fn minutes(ms: u64) -> String {
+    let m = ms / 60_000;
+    match m {
+        0 => "under a minute".to_string(),
+        m if m < 60 => format!("{m}m"),
+        m if m < 60 * 24 => format!("{}h {:02}m", m / 60, m % 60),
+        m => format!("{}d {}h", m / (60 * 24), (m % (60 * 24)) / 60),
+    }
+}
+
+/// The gate runs recorded on THIS machine, queue gates and hand gates: each holds an owner record
+/// in its run directory while it runs, so a gate nobody's session is attached to is still visible.
+/// Read-only, and a missing root is a machine that runs no gates rather than an error.
+fn gate_runs() -> Vec<GateRun> {
+    let mut owners: Vec<PathBuf> = Vec::new();
+    let root = std::env::var_os("LETIBOT_GATE_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("letibot-remote")))
+        .map(|r| r.join("gate"));
+    if let Some(root) = root {
+        owners.extend(owner_records(&root));
+    }
+    // The hand gates, which write beside the box's gate lock rather than under a host root.
+    let lock = std::env::var_os("LETIBOT_GATE_LOCK")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/build/gate.lock"));
+    let hand = std::env::var_os("LETIBOT_GATE_RUN_DIR")
+        .map(PathBuf::from)
+        .or_else(|| lock.parent().map(|d| d.join("gate-runs")));
+    if let Some(hand) = hand {
+        owners.extend(owner_records(&hand));
+    }
+    let now = std::time::SystemTime::now();
+    let mut runs: Vec<GateRun> = owners
+        .into_iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(&path).ok()?;
+            let owner = letibot_harnessd::mergequeue::gate_host::Owner::parse(&text)?;
+            // The beat sits beside the record's directory: `…/run/lock/owner` -> `…/run/beat`.
+            let beat = path.parent()?.parent()?.join("beat");
+            let ago_ms = std::fs::metadata(&beat).ok().and_then(|m| {
+                m.modified()
+                    .ok()
+                    .and_then(|t| now.duration_since(t).ok())
+                    .map(|d| d.as_millis() as u64)
+            });
+            Some(GateRun { owner, ago_ms })
+        })
+        .collect();
+    runs.sort_by_key(|r| r.owner.started_ms);
+    runs
+}
+
+/// Every `*/owner` under `root`: a queue gate's `run/lock/owner` and a hand gate's `owner` sit at
+/// different depths, so both are looked for.
+fn owner_records(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in dir.flatten() {
+        let at = entry.path();
+        for candidate in [at.join("run").join("lock").join("owner"), at.join("owner")] {
+            if candidate.is_file() {
+                out.push(candidate);
+            }
+        }
+    }
+    out
+}
+
+fn print_gates(runs: &[GateRun]) {
+    if runs.is_empty() {
+        return;
+    }
+    println!("gates on this box:");
+    for r in runs {
+        println!("  {}", r.line());
+    }
 }
 
 fn print_firecode(vms: &FirecodeVms) {

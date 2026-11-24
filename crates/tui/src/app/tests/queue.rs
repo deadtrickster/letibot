@@ -904,6 +904,7 @@ fn gating_target(
         started_ms: 1_000,
         tail: "building\n".into(),
         log_bytes: 36 * 1024,
+        ..Default::default()
     });
     t
 }

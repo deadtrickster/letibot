@@ -192,6 +192,15 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
         ..Default::default()
     };
     let mut unread: Vec<String> = Vec::new();
+    // The gate each repository is running, as its worker published it: the machine it is on and
+    // when the RUN started are facts only that row has, and they are what a head needs to show a
+    // gate at all.
+    let running: std::collections::HashMap<String, letibot_tokencore::store::LiveGate> = store
+        .live_gates()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| (g.repository.clone(), g))
+        .collect();
     // The rows still in a queue, so the moves below can keep each one's own - collected where the
     // rows are read, because that is the only place their states are known as states.
     let mut live: Vec<(&'static str, String)> = Vec::new();
@@ -262,7 +271,7 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     running_gate: (m.state == letibot_tokencore::store::MergeState::Gating)
                         .then(|| gate::running(&m.repository))
                         .flatten()
-                        .map(wire_running_gate),
+                        .map(|g| wire_running_gate(g, running.get(&m.repository))),
                     created_ms: m.created_ms,
                     state_ms: m.state_ms,
                 })
@@ -314,7 +323,7 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     running_gate: (h.state == letibot_tokencore::store::HealthState::Gating)
                         .then(|| gate::running(&h.repository))
                         .flatten()
-                        .map(wire_running_gate),
+                        .map(|g| wire_running_gate(g, running.get(&h.repository))),
                 });
             }
             not_queued.sort();
@@ -370,8 +379,13 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     out
 }
 
-/// One running step, as the wire spells it.
-pub fn wire_running_gate(g: gate::RunningGate) -> letibot_sessionlog::event::QueueRunningGate {
+/// One running step, as the wire spells it - and the run it belongs to: the machine it is on and
+/// when the RUN started. A gate whose machine and age a head cannot see is a gate nobody can tell
+/// from a stuck one, which is how one ran for four days unseen.
+pub fn wire_running_gate(
+    g: gate::RunningGate,
+    live: Option<&letibot_tokencore::store::LiveGate>,
+) -> letibot_sessionlog::event::QueueRunningGate {
     letibot_sessionlog::event::QueueRunningGate {
         command: g.command,
         step: g.step,
@@ -379,6 +393,8 @@ pub fn wire_running_gate(g: gate::RunningGate) -> letibot_sessionlog::event::Que
         started_ms: g.started_ms,
         tail: g.tail,
         log_bytes: g.log_bytes,
+        host: live.map(|l| l.host.clone()).unwrap_or_default(),
+        run_ms: live.map(|l| l.started_ms).unwrap_or(0),
     }
 }
 

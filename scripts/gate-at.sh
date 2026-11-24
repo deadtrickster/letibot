@@ -15,6 +15,30 @@ L=${LETIBOT_GATE_LOGS:-${TMPDIR:-/tmp}/letibot-gate}
 N=$(basename "$W")
 mkdir -p "$L" || exit 2
 cd "$W" || exit 2
+# The record a hand gate leaves while it runs - the same `key=value` shape a queue gate's run
+# directory holds, so a reader on this box lists the hand gate beside the queue's: who (`hand`),
+# which tip, which step. It sits under the box's gate lock, where hand and queue gates already
+# agree to take turns.
+RD=${LETIBOT_GATE_RUN_DIR:-$(dirname "$LOCK")/gate-runs}/$N
+mkdir -p "$RD" || exit 2
+SHA=$(git rev-parse HEAD 2>/dev/null) || SHA=
+START=$(($(date +%s) * 1000))
+# $1 is the step, $2 its text: rewritten as each step starts, so a pane's `step N` is true.
+note() {
+  {
+    echo 'daemon=hand'
+    echo "run_id=hand-$SHA"
+    echo "repository=$N"
+    echo "target=$B"
+    echo "sha=$SHA"
+    echo "step=$1"
+    echo 'of_step='
+    echo "command=$2"
+    echo "started_ms=$START"
+    echo "beat_ms=$(($(date +%s) * 1000))"
+  } >"$RD/owner"
+}
+note 0 ''
 # Read from BASE, as the queue reads it from the target: a stack cannot change its own gate.
 steps=$(git show "$B:AGENTS.md" | sh scripts/gate-steps.sh) || {
   echo "gate: $B:AGENTS.md declares no merge gate" >&2
@@ -41,7 +65,7 @@ rm -rf "$G"
 # Socket paths have a 108-byte limit, so the runtime dir is short.
 R=$(mktemp -d "${TMPDIR:-/tmp}/g.XXXX") || exit 2
 chmod 700 "$R"
-trap 'rm -rf "$R"' EXIT
+trap 'rm -rf "$R" "$RD"' EXIT
 # One full workspace run at a time on this box: parallel gates choke it. Later callers wait here.
 # Steps run with fd 9 closed, so a process a test leaks cannot hold the lock after the gate.
 exec 9>"$LOCK"
@@ -64,6 +88,7 @@ while IFS= read -r step <&3; do
   refused="$L/$N.step$i.refusals"
   rm -f "$refused"
   echo "gate: step $i: $step"
+  note "$i" "$step"
   # A skip is not a pass: a test whose apparatus is missing fails instead of skipping.
   sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
     LETIBOT_APPARATUS_REFUSALS="$refused" sh -c "$step" >"$log" 2>&1 </dev/null 9>&-
