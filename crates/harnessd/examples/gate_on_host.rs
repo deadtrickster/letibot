@@ -47,7 +47,11 @@ fn main() {
             .unwrap_or_else(|e| panic!("reading the gate from {}: {e}", tree.display()));
         match target {
             // The full tier: the longest gate a project declares, which is what a hand run wants.
-            Some(declared) => steps = declared.steps(letibot_tools::gatekeeper::Tier::Full).to_vec(),
+            Some(declared) => {
+                steps = declared
+                    .steps(letibot_tools::gatekeeper::Tier::Full)
+                    .to_vec()
+            }
             None => {
                 eprintln!(
                     "{} declares no gate section (`Merge gate`, `Quick gate` or `Full gate`) on main",

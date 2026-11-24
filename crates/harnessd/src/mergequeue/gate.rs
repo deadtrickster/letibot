@@ -554,7 +554,12 @@ struct StepEnv {
 
 impl StepEnv {
     /// One step's environment, for a run whose scratch is already made ([`GateScratch`]).
-    fn for_run(worktree: &Path, scratch: &Path, cap: Option<u64>, subject: &GateSubject) -> StepEnv {
+    fn for_run(
+        worktree: &Path,
+        scratch: &Path,
+        cap: Option<u64>,
+        subject: &GateSubject,
+    ) -> StepEnv {
         StepEnv {
             target: gate_target_dir(worktree),
             tmp: scratch.to_path_buf(),
@@ -647,10 +652,7 @@ impl GateSubject {
             out.push_str(&format!(" '{p}'"));
         }
         out.push_str(&format!(" > '{changed_at}'\n"));
-        out.push_str(&format!(
-            "export {}='{changed_at}'\n",
-            GATE_CHANGED_ENV
-        ));
+        out.push_str(&format!("export {}='{changed_at}'\n", GATE_CHANGED_ENV));
         out
     }
 }
@@ -1142,7 +1144,14 @@ pub fn run_with_launcher(
     memory: Ask,
     launch: &dyn Fn(&str) -> String,
 ) -> GateRun {
-    run_with_launcher_subject(worktree, steps, ctl, memory, launch, &GateSubject::default())
+    run_with_launcher_subject(
+        worktree,
+        steps,
+        ctl,
+        memory,
+        launch,
+        &GateSubject::default(),
+    )
 }
 
 /// [`run_with_launcher`] for a run that carries a subject. The launcher is the boundary, so the two
@@ -1443,9 +1452,7 @@ pub fn run_gate_for(
     subject: &GateSubject,
 ) -> GateRun {
     match host {
-        Some(name) => {
-            super::gate_host::run_on_host_for(name, worktree, steps, ctl, false, subject)
-        }
+        Some(name) => super::gate_host::run_on_host_for(name, worktree, steps, ctl, false, subject),
         None => run_with_subject(worktree, steps, ctl, memory, subject),
     }
 }
@@ -2591,11 +2598,13 @@ pub fn declared_gate(repo: &Path, at: &str) -> Result<Option<DeclaredGate>, Stri
             .into_iter()
             .partition(|s: &String| !s.contains(INSTALL_MARK))
     };
-    Ok(letibot_tools::gatekeeper::parse_gates(&text).map(|g| DeclaredGate {
-        quick: split(g.quick),
-        full: split(g.full),
-        two_tiers: g.two_tiers,
-    }))
+    Ok(
+        letibot_tools::gatekeeper::parse_gates(&text).map(|g| DeclaredGate {
+            quick: split(g.quick),
+            full: split(g.full),
+            two_tiers: g.two_tiers,
+        }),
+    )
 }
 
 /// The one row a target with no gate records - not an empty list, which reads *nothing ran*.

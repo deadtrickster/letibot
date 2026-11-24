@@ -7260,7 +7260,6 @@ fn a_restart_asks_again_so_the_next_verdict_wakes_again() {
     assert!(told[1].1.contains(" is failed: "), "{}", told[1].1);
 }
 
-
 // ===== Two tiers: a quick gate before the landing, a full one after =====
 
 /// A gate that runs the real steps and remembers what each run was asked for, in order - the only
@@ -7435,15 +7434,14 @@ fn the_full_gate_covers_two_landings_in_one_run() {
         gate.runs()
     );
     let owed = w.store().target_health(&w.key(), "main").unwrap().unwrap();
-    assert_eq!(owed.state, HealthState::Green, "nothing about the tip halts");
+    assert_eq!(
+        owed.state,
+        HealthState::Green,
+        "nothing about the tip halts"
+    );
     assert_eq!(
         full_owed_base(&owed.evidence),
-        w.store()
-            .merge_row(&m1)
-            .unwrap()
-            .unwrap()
-            .onto_sha
-            .clone(),
+        w.store().merge_row(&m1).unwrap().unwrap().onto_sha.clone(),
         "the batch starts at the tip the first landing went onto: {}",
         owed.evidence
     );

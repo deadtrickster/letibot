@@ -12,10 +12,8 @@ fn root() -> PathBuf {
 
 /// What the script would run for these changed paths - as it prints it, `--print`.
 fn planned(tag: &str, paths: &[&str]) -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "letibot-quick-tests-{tag}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("letibot-quick-tests-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let changed = dir.join("changed.txt");
@@ -73,8 +71,14 @@ fn a_path_in_a_crate_selects_that_crate_and_its_dependents() {
     );
     // The shell suites are a crate's tests: `scripts/` and the root `tests/` are carried by
     // `crates/tools/tests/shell_suites.rs`.
-    assert_eq!(planned("scripts", &["scripts/letibot"]), "rdeps(letibot-tools)");
-    assert_eq!(planned("tests", &["tests/launcher.sh"]), "rdeps(letibot-tools)");
+    assert_eq!(
+        planned("scripts", &["scripts/letibot"]),
+        "rdeps(letibot-tools)"
+    );
+    assert_eq!(
+        planned("tests", &["tests/launcher.sh"]),
+        "rdeps(letibot-tools)"
+    );
     // The built-in guests are compiled by the harnessd build script, so they are harnessd's.
     assert_eq!(
         planned("guests", &["plugins/builtin/queue/src/lib.rs"]),
@@ -112,10 +116,7 @@ fn a_run_with_no_list_is_refused() {
     std::fs::create_dir_all(&dir).unwrap();
     let empty = dir.join("empty.txt");
     std::fs::write(&empty, "").unwrap();
-    for (what, path) in [
-        ("missing", dir.join("nothing-here.txt")),
-        ("empty", empty),
-    ] {
+    for (what, path) in [("missing", dir.join("nothing-here.txt")), ("empty", empty)] {
         let out = std::process::Command::new("sh")
             .arg(root().join("scripts/quick-tests.sh"))
             .arg("--print")

@@ -949,7 +949,11 @@ mod merge_gate_section {
                           make fast\n```\n";
         let g = parse_gates(with_merge).unwrap();
         assert_eq!(g.quick, vec!["make fast".to_string()]);
-        assert_eq!(g.full, vec!["make test".to_string()], "the merge gate is main's");
+        assert_eq!(
+            g.full,
+            vec!["make test".to_string()],
+            "the merge gate is main's"
+        );
 
         let full_only = "## Full gate\n\n```sh\nmake slow\n```\n";
         let g = parse_gates(full_only).unwrap();
@@ -961,6 +965,9 @@ mod merge_gate_section {
     #[test]
     fn a_file_with_no_gate_has_no_tiers_either() {
         assert_eq!(parse_gates("# Project\n\nHello.\n"), None);
-        assert_eq!(parse_gates("## Quick gate\n\n```sh\n# nothing\n```\n"), None);
+        assert_eq!(
+            parse_gates("## Quick gate\n\n```sh\n# nothing\n```\n"),
+            None
+        );
     }
 }

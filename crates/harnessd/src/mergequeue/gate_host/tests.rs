@@ -734,7 +734,10 @@ fn the_wait_between_polls_is_the_projects_number_moved_by_a_tenth() {
 fn a_host_step_is_told_the_base_and_the_changed_paths() {
     let subject = crate::mergequeue::gate::GateSubject {
         base: "abc123".to_string(),
-        changed: vec!["crates/tools/src/lib.rs".to_string(), "docs/gate.md".to_string()],
+        changed: vec![
+            "crates/tools/src/lib.rs".to_string(),
+            "docs/gate.md".to_string(),
+        ],
     };
     let script = launcher_script_for(
         "cargo test",

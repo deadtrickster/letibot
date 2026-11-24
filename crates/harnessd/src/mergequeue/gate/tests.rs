@@ -2031,7 +2031,10 @@ fn a_step_is_told_the_base_it_is_compared_against_and_what_changed() {
     ];
     let subject = GateSubject {
         base: "1111111111111111111111111111111111111111".to_string(),
-        changed: vec!["crates/tools/src/lib.rs".to_string(), "scripts/a.sh".to_string()],
+        changed: vec![
+            "crates/tools/src/lib.rs".to_string(),
+            "scripts/a.sh".to_string(),
+        ],
     };
     let stop = AtomicBool::new(false);
     let alive = || true;
@@ -2044,7 +2047,9 @@ fn a_step_is_told_the_base_it_is_compared_against_and_what_changed() {
     let run = run_with_subject(&dir, &steps, &ctl, Ask::Default, &subject);
     assert_eq!(run.verdict, GateVerdict::Passed, "{:?}", run.verdict);
     assert_eq!(
-        std::fs::read_to_string(dir.join("base.txt")).unwrap().trim(),
+        std::fs::read_to_string(dir.join("base.txt"))
+            .unwrap()
+            .trim(),
         subject.base
     );
     assert_eq!(
@@ -2069,7 +2074,10 @@ fn a_subject_is_the_paths_two_commits_differ_by() {
     let dir = std::env::temp_dir().join(format!("letibot-gate-subjset-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    letibot_tools::testing::git(&dir).args(["init", "-q"]).output().unwrap();
+    letibot_tools::testing::git(&dir)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
     letibot_tools::testing::repo_config(&dir);
     std::fs::write(dir.join("a.txt"), "one\n").unwrap();
     letibot_tools::testing::git(&dir)

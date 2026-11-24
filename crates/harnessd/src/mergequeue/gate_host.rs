@@ -1150,14 +1150,8 @@ impl Remote {
         subject: &super::gate::GateSubject,
     ) -> StepEnd {
         let files = self.files(n);
-        let launcher = launcher_script_for(
-            step,
-            &self.tree,
-            &self.target,
-            &files,
-            own_scope,
-            subject,
-        );
+        let launcher =
+            launcher_script_for(step, &self.tree, &self.target, &files, own_scope, subject);
         let script = files.launcher.clone();
         if let Err(why) = self.feed(
             &format!("writing `{step}`'s launcher on {}", self.name),

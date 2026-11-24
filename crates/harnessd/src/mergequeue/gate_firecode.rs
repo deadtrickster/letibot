@@ -151,10 +151,14 @@ impl FirecodeGate {
         };
         let dir = worktree.display().to_string();
         let bin_s = bin.display().to_string();
-        let run =
-            super::gate::run_with_launcher_subject(worktree, steps, ctl, self.memory, &|s| {
-                launch_line_subject(&bin_s, s, &dir, subject)
-            }, subject);
+        let run = super::gate::run_with_launcher_subject(
+            worktree,
+            steps,
+            ctl,
+            self.memory,
+            &|s| launch_line_subject(&bin_s, s, &dir, subject),
+            subject,
+        );
         // `run` leaves its VM up for the next call; the gate has no next call.
         if cfg!(not(target_os = "macos")) {
             let _ = run_bounded(
@@ -175,7 +179,9 @@ impl FirecodeGate {
     ) -> GateRun {
         match &self.host {
             Some(name) => match super::gate_host::firecode_ready(name, worktree) {
-                Ok(()) => super::gate_host::run_on_host_for(name, worktree, steps, ctl, true, subject),
+                Ok(()) => {
+                    super::gate_host::run_on_host_for(name, worktree, steps, ctl, true, subject)
+                }
                 // The VM is the same Linux on either machine, so a host without firecode hands
                 // the steps to this machine's VM rather than leaving the tip unjudged.
                 Err(why) => {
