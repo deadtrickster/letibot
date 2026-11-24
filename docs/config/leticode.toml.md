@@ -335,6 +335,14 @@ Read by the head.
 |---|---|---|---|---|
 | `auto_reseat` | bool | true | both, project wins | daemon-run sessions move to the current prompt, notes and skill pins included, before a turn; false asks |
 
+## `[seat]`
+
+Where a session with NO HEAD runs its tools: a package, a subagent, a queue gate. An interactive top-level session is the host whatever this says, and `vm`/`--vm`/`--host` on a start is honoured over it. A machine that cannot start a VM (`firecode doctor`) starts the seat on the host and says why, in one warning.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `default` | "vm" \| "host" | "vm" | both, project wins | placement a headless seat gets: a firecode VM, or this machine |
+
 ## `[subagents]`
 
 A spawn over a cap waits for a running child to answer, or is refused. A spawn with the objective of a running child is refused, naming it. Review-queue reviewers are outside these caps.
