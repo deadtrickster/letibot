@@ -899,6 +899,45 @@ fn an_unresolved_command_naming_the_key_store_is_refused_at_the_shadow() {
     );
 }
 
+/// The shadow's own screen on an unread command's words, with no gate in front of it: what layer A
+/// could not place is asked the question a resolved target is asked, and nothing is asked of the
+/// person or the model.
+#[test]
+fn the_words_of_an_unread_command_are_screened_as_places() {
+    let at = |workspace: &str, home: &str| super::guard::Call {
+        tool: "bash".into(),
+        args: serde_json::json!({}),
+        cwd: workspace.into(),
+        workspace: workspace.into(),
+        home: home.into(),
+        granted: Vec::new(),
+        temp: Vec::new(),
+    };
+    let call = at("/w", "/home/op");
+    for (command, want) in [
+        (r#"X=$HOME/.aws/credentials; cat "$X""#, "credentials"),
+        (r#"X=${HOME}/.ssh/id_ed25519; cat "$X""#, ".ssh"),
+        (r#"X=~/.ssh/id_ed25519; cat "$X""#, ".ssh"),
+        ("cat .config/letibot/keys/anthropic.key", "letibot/keys"),
+        ("ls ~/keys", "keys directory"),
+        ("cat backup.pem", ".pem"),
+    ] {
+        let why = super::guard::words_pass(command, &call).expect_err(command);
+        assert!(why.contains(want), "{command}: {why}");
+    }
+    // And the work it must not touch: a session's own data directory, a project's `keys/`
+    // directory, a device, and the inspection that started all of this.
+    for ok in [
+        UNRESOLVED_INSPECTION,
+        "ls keys/",
+        "sha256sum /w/x.iso",
+        "cat /home/dead/.local/share/letibot/landing/tip",
+        "du -h /dev/null",
+    ] {
+        assert!(super::guard::words_pass(ok, &call).is_ok(), "{ok}");
+    }
+}
+
 /// Privilege is the same: the reading could not be finished, the intent it did find is on the
 /// always-ask list, and no stage answers that without the person.
 #[test]

@@ -148,10 +148,11 @@ pub fn words_pass(command: &str, call: &Call) -> Result<(), String> {
 }
 
 /// The words of a command that could be a place: split on shell punctuation, with an assignment's
-/// `NAME=` and an option's leading dashes taken off.
+/// `NAME=` and an option's leading dashes taken off. `$` is not a separator, or `$HOME/.ssh` would
+/// arrive as `HOME` and a path at `/`, which names no store.
 fn words_of(command: &str) -> impl Iterator<Item = &str> {
     command
-        .split(|c: char| c.is_whitespace() || "'\"=:;|&()<>`$".contains(c))
+        .split(|c: char| c.is_whitespace() || "'\"=:;|&()<>`".contains(c))
         .map(|w| w.trim_start_matches('-'))
         .filter(|w| !w.is_empty())
 }
