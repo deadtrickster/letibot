@@ -383,6 +383,9 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
             let allowed: usize = [
                 "letibot_room::ROOM_PROTOCOL_VERSION",
                 "letibot_room::wire::upgrade_hint",
+                // The frame-version table, which a bridge asks before it sends a frame: the
+                // `seen` mark's number is what decides whether a coordinator can read it.
+                "letibot_room::wire::frame_since(",
                 "letibot_room::wire::frame_refusal(",
                 "letibot_room::wire::protocol_refusal(",
                 "letibot_room::EVIDENCE",
@@ -414,10 +417,10 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
             assert_eq!(
                 named, allowed,
                 "`bridge` may name only the room crate's wire types and pure helpers: the protocol \
-                 number, upgrade hint and frame refusal, the message, its reach and a refusal's \
-                 type, the operator's name, the peer-text checks, the digest's author and page \
-                 size, the room-naming helpers, the host key and socket path, the seat id and nick helpers, and the \
-                 row kinds and the drawn name"
+                 number, upgrade hint, frame refusal and the frame-version table, the message, its \
+                 reach and a refusal's type, the operator's name, the peer-text checks, the digest's \
+                 author and page size, the room-naming helpers, the host key and socket path, the \
+                 seat id and nick helpers, and the row kinds and the drawn name"
             );
             continue;
         }
