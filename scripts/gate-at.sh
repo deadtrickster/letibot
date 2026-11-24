@@ -21,6 +21,9 @@ cd "$W" || exit 2
 # agree to take turns.
 RD=${LETIBOT_GATE_RUN_DIR:-$(dirname "$LOCK")/gate-runs}/$N
 mkdir -p "$RD" || exit 2
+# Set here, and replaced below once the scratch dir exists: a refusal between the two must not leave a
+# record saying a hand gate is running.
+trap 'rm -rf "$RD"' EXIT
 SHA=$(git rev-parse HEAD 2>/dev/null) || SHA=
 START=$(($(date +%s) * 1000))
 # $1 is the step, $2 its text: rewritten as each step starts, so a pane's `step N` is true.

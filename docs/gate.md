@@ -160,6 +160,18 @@ gate, one verdict, however many daemons wanted to run it; or
 `$LETIBOT_GATE_RUN_DIR` (default `$(dirname /build/gate.lock)/gate-runs`), and removes it on the
 way out.
 
+## A run's own life: its deadline, its row, and the tip it judges
+
+- One deadline covers the WHOLE run - the arranging, every step and any re-launch - and the worker's
+  clock keeps it as well as the runner's: a gate whose thread is stuck inside one call is still ended
+  when the budget passes, and its verdict is `timed_out` whatever the runner had got to.
+- The published row is the run's: a pass that finds no row, or another run's, puts its own back, and
+  a daemon holding the lease clears a row no run is behind. A head counts `so far` from that row, so
+  a row nobody is running cannot say a gate has been going for days.
+- A target's run judges ONE tip. Each pass (one fetch per 30 s) asks the target's remote where it is;
+  if the tip moved - another machine landed - the run is stopped as `superseded: the target moved to
+  <sha>` and the new head is gated as usual.
+
 ## Batched landings: `[queue] gate_train`
 
 Review stays per branch; the gate batches. With `gate_train = N` in `leticode.toml`, the queue takes

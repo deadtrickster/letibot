@@ -268,6 +268,9 @@ pub struct RepoQueue {
     lease_ok: Arc<AtomicBool>,
     /// When each target last fetched `origin`, so a waiting row does not fetch on every pass.
     fetched: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// When the gate in flight last asked origin where the target is. Its own clock, not
+    /// [`Self::fetched`]: a gate must not spend the window the lanes and the landings read.
+    gate_fetched: std::sync::Mutex<Option<std::time::Instant>>,
     /// The process table the in-use rules read: `/proc` in a daemon, a fixture in a test. Whether
     /// a tree is in use must not depend on what another program on the box is doing.
     proc_root: PathBuf,
@@ -337,6 +340,16 @@ struct InFlight {
     /// This run's name in the store's `gate_live` row, so a stop names the run it was asked about.
     run_id: String,
     started: Instant,
+    /// The row this run published. Kept, not re-derived, so a pass can put it back when a reader's
+    /// copy has gone - a run that published nothing is measured from its predecessor's start.
+    row: letibot_tokencore::store::LiveGate,
+    /// When the run began and how long it may have, in the store's clock: the deadline covers the
+    /// arranging, every step and any re-launch, so a gate stuck inside one call is still ended.
+    started_ms: u64,
+    budget: Duration,
+    /// The worker ended this run at its deadline. Its verdict is `timed_out`, whatever the runner's
+    /// own last words were - a suite that never came back is a deadline's, not a step's.
+    late: bool,
     /// Set to kill the gate - the daemon is stopping, or somebody asked this run to stop.
     cancel: Arc<AtomicBool>,
     /// The words a stop asked for this run carries - `None` for the daemon's own stop, whose
@@ -494,6 +507,7 @@ impl RepoQueue {
             gate: Default::default(),
             lease_ok: Arc::new(AtomicBool::new(true)),
             fetched: Default::default(),
+            gate_fetched: Default::default(),
             proc_root: PathBuf::from("/proc"),
             proven: Default::default(),
             proofs: Default::default(),
@@ -856,6 +870,9 @@ impl RepoQueue {
         // The verdict of a gate that ended, applied once - before the upkeep, so the review of a
         // tip that just went red is claimed in this pass, first, as soon as a reviewer is free.
         let mut worked = self.reap_gate()?;
+        // A row nobody is running goes before a new gate is started under it: a reader counting from
+        // it would say a gate has run for days.
+        self.reap_stray_gate()?;
         worked |= self.mind_gate()?;
         worked |= self.adopt_orphans()?;
         worked |= self.review_upkeep(&settings)?;
@@ -1149,9 +1166,7 @@ impl RepoQueue {
         let started_ms = gate::now_ms();
         let (kind, target, entry) = gate_subject(&what);
         let run_id = format!("{sha}-{started_ms}");
-        // Published before the thread can finish: no reader sees a gate running unpublished, and no
-        // stop can name a run that is not there yet.
-        let published = self.store.gate_began(&letibot_tokencore::store::LiveGate {
+        let row = letibot_tokencore::store::LiveGate {
             repository: self.key.clone(),
             run_id: run_id.clone(),
             kind: kind.to_string(),
@@ -1167,8 +1182,10 @@ impl RepoQueue {
             started_ms,
             stop_by: String::new(),
             stop_why: String::new(),
-        });
-        if let Err(e) = published {
+        };
+        // Published before the thread can finish: no reader sees a gate running unpublished, and no
+        // stop can name a run that is not there yet.
+        if let Err(e) = self.store.gate_began(&row) {
             eprintln!(
                 "  merge queue: {}: the running gate was not published: {e}",
                 self.key
@@ -1179,6 +1196,10 @@ impl RepoQueue {
             sha: sha.to_string(),
             run_id,
             started: Instant::now(),
+            row,
+            started_ms,
+            budget,
+            late: false,
             cancel,
             stop: None,
             run,
@@ -1193,17 +1214,18 @@ impl RepoQueue {
     }
 
     /// What a gate in flight has to be told on every pass: the step it is on, so a reader in another
-    /// process can say what it is doing, and a stop somebody asked for, which kills it here and now.
+    /// process can say what it is doing; its own deadline, which ends it however far the thread has
+    /// got; whether the tip it judges is still the tip; and a stop somebody asked for.
     fn mind_gate(&self) -> Result<bool, StoreError> {
         if !self.gate_in_flight() {
             return Ok(false);
         }
-        let (run_id, asked) = {
+        let (run_id, asked, row) = {
             let slot = self.slot();
             let Some(g) = slot.as_ref() else {
                 return Ok(false);
             };
-            (g.run_id.clone(), g.stop.is_some())
+            (g.run_id.clone(), g.stop.is_some(), g.row.clone())
         };
         let worked = false;
         // The step, from the runner's own record - both machines write it as they start a step, so a
@@ -1220,9 +1242,23 @@ impl RepoQueue {
             // Published for readers, and not work: the idle loop already looks for the gate's end
             // every 100 ms, and a pass that counted this ran back to back for the whole gate.
         }
+        // The row a reader sees must be THIS run's. A pass that finds nothing, or another run's row,
+        // puts its own back: the age a head draws is then this run's, never a predecessor's.
+        match self.store.live_gate(&self.key)? {
+            Some(live) if live.run_id == run_id => {}
+            _ => self.store.gate_began(&row)?,
+        }
         if asked {
             return Ok(worked);
         }
+        // The deadline, from the worker's own clock and over the WHOLE run: the arranging, every
+        // step and any re-launch. A gate thread stuck inside one call answers nothing, so the
+        // deadline cannot be the runner's alone - the row is the runner's, and this is the worker's.
+        self.end_a_late_gate(&run_id)?;
+        // A target's gate judges ONE tip. When the target has moved - another machine landed on it -
+        // the run can only judge a tip nobody is waiting for, so it is stopped and the new head is
+        // gated as usual.
+        self.stop_a_superseded_gate(&row);
         // A stop asked for THIS run. A request that names a run which has ended is left where it is:
         // the row it is on is gone with the run, and the next gate starts with no stop at all.
         let Some(live) = self.store.live_gate(&self.key)? else {
@@ -1241,6 +1277,58 @@ impl RepoQueue {
         Ok(true)
     }
 
+    /// End the run when its deadline has passed. It is marked `late`, so the verdict applied is
+    /// `timed_out` however the runner's own sentence reads - and the kill is the runner's own stop,
+    /// so its step group and its host step are ended by the code that started them.
+    fn end_a_late_gate(&self, run_id: &str) -> Result<(), StoreError> {
+        let mut slot = self.slot();
+        let Some(g) = slot.as_mut() else {
+            return Ok(());
+        };
+        if g.late || gate::now_ms() <= g.started_ms.saturating_add(g.budget.as_millis() as u64) {
+            return Ok(());
+        }
+        g.late = true;
+        g.cancel.store(true, Ordering::Relaxed);
+        eprintln!(
+            "  merge queue: {}: the gate on {} has run past its deadline ({}); it is ended and \
+             reported timed out",
+            self.key,
+            run_id,
+            gate::clause_of(g.budget)
+        );
+        Ok(())
+    }
+
+    /// Stop a TARGET's gate whose tip has moved: the run would judge a commit the target no longer
+    /// names. One fetch per target per [`FETCH_EVERY`], so a gate does not dial origin on each pass.
+    fn stop_a_superseded_gate(&self, row: &letibot_tokencore::store::LiveGate) {
+        if row.kind != "target" || row.target.is_empty() {
+            return;
+        }
+        {
+            let mut at = self.gate_fetched.lock().unwrap_or_else(|e| e.into_inner());
+            if at.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        let moved = match git::fetch_target(&self.repo, &row.target) {
+            Ok(Some(theirs)) => theirs,
+            _ => return,
+        };
+        if moved == row.sha {
+            return;
+        }
+        let words = format!("{SUPERSEDED} to {moved}");
+        let mut slot = self.slot();
+        if let Some(g) = slot.as_mut() {
+            g.stop = Some(words.clone());
+            g.cancel.store(true, Ordering::Relaxed);
+        }
+        eprintln!("  merge queue: {}: {words}; the gate is killed", self.key);
+    }
+
     /// Apply the verdict of a gate that ended - taken out of the slot first, so it is applied
     /// once whatever the application does (including start the install's gate).
     fn reap_gate(&self) -> Result<bool, StoreError> {
@@ -1256,9 +1344,35 @@ impl RepoQueue {
             return Ok(false);
         };
         let run = g.run.wait();
+        // A run the worker ended at its deadline is `timed_out`, whatever the runner's thread had got
+        // to: a suite that never came back is the deadline's verdict, and a person reading the row
+        // must not have to tell that from a step that failed.
+        let run = match g.late {
+            true => with_deadline(run, g.budget),
+            false => run,
+        };
         self.gate_over(&g.run_id);
         self.apply_gate(g.what, with_stop(run, g.stop))?;
         Ok(true)
+    }
+
+    /// A published gate row with no run behind it is not a gate: it is what makes a reader count
+    /// from a run that ended days ago (`6866m32s so far`). One lease, one gate - so the lease holder
+    /// can judge a row it is not running, and only when it has no gate of its own in flight.
+    fn reap_stray_gate(&self) -> Result<(), StoreError> {
+        if self.gate_in_flight() {
+            return Ok(());
+        }
+        let Some(live) = self.store.live_gate(&self.key)? else {
+            return Ok(());
+        };
+        eprintln!(
+            "  merge queue: {}: the gate row on {} was published by a run that is over ({}); it is \
+             cleared",
+            self.key, live.sha, live.run_id
+        );
+        self.gate_over(&live.run_id);
+        Ok(())
     }
 
     /// Nothing is running here any more, so the published row goes - before the verdict is applied,
@@ -4175,6 +4289,24 @@ pub const STOPPED: &str = "its gate was stopped";
 /// that a stop is felt and a person can act on it, short enough that a forgotten one does not hold
 /// the queue for ever.
 pub const STOPPED_RETRY_MS: u64 = 10 * 60 * 1000;
+
+/// The verdict a run the WORKER ended at its deadline carries: `timed_out`, and the reason in a
+/// sentence - whatever the runner's thread had got to when it was killed.
+fn with_deadline(run: GateRun, budget: Duration) -> GateRun {
+    let n = run.steps.len();
+    GateRun {
+        steps: run.steps,
+        verdict: GateVerdict::TimedOut(format!(
+            "the gate passed its deadline ({}) with {n} step(s) recorded and was ended; nothing more \
+             is judged about this tip",
+            gate::clause_of(budget)
+        )),
+    }
+}
+
+/// The clause a gate's row leads with when the tip it was judging moved under it: the run can only
+/// judge a commit the target no longer names.
+pub const SUPERSEDED: &str = "superseded: the target moved";
 
 /// The verdict a stopped run carries. The runners' own sentence is about their kill (`the daemon is
 /// stopping`); a person's or a model's stop replaces it, and that sentence is what the row records.

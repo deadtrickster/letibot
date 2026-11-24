@@ -2372,6 +2372,160 @@ fn a_new_tip_and_a_persons_regate_each_start_the_budget_again() {
     );
 }
 
+// ===== A gate's own life: its deadline, its row, and the tip it judges =====
+
+/// A runner that ignores its own deadline and waits to be stopped, which is what the real one is
+/// inside a call that never returns. Nothing but the worker's clock can end it, and the verdict is
+/// the worker's to name.
+struct StuckGate;
+
+impl GateRunner for StuckGate {
+    fn run(&self, _wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        // Three seconds, not a minute: long enough that only a stop ends it in these tests, short
+        // enough that a gate they forget to end costs the suite seconds rather than a minute.
+        let until = std::time::Instant::now() + Duration::from_secs(3);
+        while !ctl.stop.load(std::sync::atomic::Ordering::Relaxed)
+            && std::time::Instant::now() < until
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        GateRun {
+            steps: steps
+                .iter()
+                .map(|s| letibot_tokencore::store::MergeGateStep {
+                    command: s.clone(),
+                    outcome: letibot_tokencore::store::MergeGateOutcome::NotRun,
+                    output: String::new(),
+                    started_ms: 0,
+                    elapsed_ms: 0,
+                })
+                .collect(),
+            verdict: GateVerdict::Stopped("the daemon is stopping".into()),
+        }
+    }
+
+    fn name(&self) -> String {
+        "local".into()
+    }
+}
+
+/// One deadline covers the whole run, and it is the WORKER's clock that keeps it: a gate whose
+/// thread is stuck inside one call still ends, and what it says is `timed_out` - not `stopped`,
+/// which is what the runner's own last words were.
+#[test]
+fn a_gate_past_its_deadline_is_ended_and_reported_timed_out_even_when_its_runner_ignores_it() {
+    let w = World::new("deadline-across");
+    let mut e = env(Arc::new(StuckGate), w.door.clone(), "a");
+    Arc::get_mut(&mut e).unwrap().gate_deadline = Duration::from_millis(300);
+    let store = w.store();
+    store
+        .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
+        .unwrap();
+    let q = RepoQueue::new(store, w.repo.clone(), e);
+    let started = std::time::Instant::now();
+    run(&q, 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "the worker ended the gate, not the runner's own clock"
+    );
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::TimedOut, "{h:?}");
+    assert!(h.evidence.contains("deadline"), "{}", h.evidence);
+}
+
+/// A published gate row with no run behind it is cleared by the daemon holding the lease - it is
+/// what a head draws `6866m32s so far` from, and the counter has to be the run's, not a dead one's.
+#[test]
+fn a_published_gate_row_nobody_is_running_is_cleared() {
+    let w = World::new("stray-row");
+    w.store()
+        .gate_began(&letibot_tokencore::store::LiveGate {
+            repository: w.key(),
+            run_id: "e74362d9-1700000000000".into(),
+            kind: "target".into(),
+            target: "main".into(),
+            entry: String::new(),
+            sha: w.tip(),
+            host: "lab2x1".into(),
+            dir: "/build/gate/x/target".into(),
+            step: 4,
+            of_step: 6,
+            command: "cargo test".into(),
+            step_ms: 1,
+            started_ms: 1,
+            stop_by: String::new(),
+            stop_why: String::new(),
+        })
+        .unwrap();
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let live = w.store().live_gate(&w.key()).unwrap();
+    let stale = live
+        .as_ref()
+        .is_some_and(|g| g.run_id == "e74362d9-1700000000000");
+    assert!(!stale, "the row of a run that is over is gone: {live:?}");
+}
+
+/// A target's gate judges ONE tip, and a tip that moved under it - another machine landing on the
+/// target - stops it: the run can only judge a commit nobody is waiting for, and the new head is
+/// gated as usual.
+#[test]
+fn a_target_gate_whose_tip_moved_is_stopped_and_the_new_head_is_gated() {
+    let w = World::new("superseded");
+    // `origin` is this repository itself, so a commit to `main` IS another machine landing.
+    let here = w.repo.display().to_string();
+    sh(&w.repo, &["remote", "add", "origin", &here]);
+    let q = w.worker(Arc::new(StuckGate), "a");
+    let stop = AtomicBool::new(false);
+    // The gate on the first tip starts and waits.
+    assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+    assert!(q.gate_in_flight(), "the premise: a gate is running");
+    let moved = commit(&w.repo, "b.txt", "theirs\n", "another machine lands");
+    // The next passes fetch origin, find the target elsewhere, and stop the run. Passes, not
+    // `settle`: a second run on the new head is what this leaves behind, and `settle` waits for
+    // every gate a pass starts.
+    for _ in 0..6 {
+        assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+        if !q.gate_in_flight() {
+            continue;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(
+        h.sha, moved,
+        "the health follows the tip the target has now: {h:?}"
+    );
+    let why: Vec<String> = w
+        .store()
+        .transitions("target", "main")
+        .unwrap()
+        .into_iter()
+        .map(|t| t.why)
+        .collect();
+    assert!(
+        why.iter().all(|w| !w.contains("TIMED OUT")),
+        "the run judged nothing about the old tip: {why:?}"
+    );
+    // What the stop said, as the queue published it: a move of the target whose words are the
+    // supersede (the health row itself is overwritten by the gate the new tip starts).
+    let said: Vec<String> = w
+        .door
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::QueueMoved { queue, why, .. } if queue == "target" => Some(why.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter().any(|w| w.contains(super::SUPERSEDED)),
+        "the run that judged the old tip was stopped as superseded: {said:?}"
+    );
+}
+
 // ===== : a gate that cannot judge, a rewritten target, a re-gate =====
 
 /// A gate whose build and tests passed and which then found no binary is UNJUDGED, not red
