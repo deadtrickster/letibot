@@ -158,7 +158,8 @@ pub(crate) struct Facts<'a> {
 }
 
 /// The one verb x actor x state rule. The operator may do anything; a bridge may not approve
-/// what a bridge enqueued; an agent may restart only its own rows; nobody but the operator undoes
+/// what a bridge enqueued; an agent may restart its own rows and the queue's own (a red main's
+/// review has no author, and the project's session is who acts on it); nobody but the operator undoes
 /// the operator's park or any withdrawal.
 pub(crate) fn may(verb: Verb, who: &str, row: &Facts) -> Result<(), String> {
     let (kind, name) = who.split_once(':').unwrap_or((who, ""));
@@ -182,10 +183,12 @@ pub(crate) fn may(verb: Verb, who: &str, row: &Facts) -> Result<(), String> {
         Verb::Restart if row.withdrawn => Err(format!(
             "a withdrawn row is restarted by the operator, not by `{who}`"
         )),
-        Verb::Restart if kind == "agent" && row.author != name => Err(format!(
-            "`{who}` may restart only its own rows; this one is `{}`'s",
-            row.author
-        )),
+        Verb::Restart if kind == "agent" && !row.author.is_empty() && row.author != name => {
+            Err(format!(
+                "`{who}` may restart only its own rows; this one is `{}`'s",
+                row.author
+            ))
+        }
         Verb::Restart => Ok(()),
         // A stop is the model's answer to a gate that is going nowhere, and it is its OWN gate's:
         // an agent or a bridge stops the gate of a row it enqueued, or one its own `regate` started.
@@ -1191,6 +1194,26 @@ mod tests {
         withdraw_by(&store, &m, "agent:s-x", "stale", &|_| {}).unwrap();
         let e = restart_by(&store, &m, "agent:s-x", &|_| {}).expect_err("withdrawn");
         assert!(e.contains("a withdrawn row"), "{e}");
+    }
+
+    /// A row the queue wrote itself - a red main's review - has no author, so no session owns it;
+    /// any agent of the project may restart it, the way the operator would.
+    #[test]
+    fn an_agent_restarts_a_row_the_queue_wrote() {
+        let row = Facts {
+            author: "",
+            parked_by: "queue:d",
+            withdrawn: false,
+        };
+        assert_eq!(may(Verb::Restart, "agent:s-any", &row), Ok(()));
+        let parked = Facts {
+            parked_by: "operator:s-op",
+            ..row
+        };
+        assert!(
+            may(Verb::Restart, "agent:s-any", &parked).is_err(),
+            "the operator's park stays theirs"
+        );
     }
 
     /// `landed_local` was a dead end: the branch is on the target and the push failed, and both
