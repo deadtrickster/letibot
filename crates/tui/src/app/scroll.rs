@@ -354,6 +354,7 @@ impl App {
                     &self.items[k],
                     &ItemCtx {
                         cards: &cards,
+                        pdf: &self.pdf,
                         cfg: &row_cfg,
                         pending: &self.pending_rows,
                         think: if open_run {

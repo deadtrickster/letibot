@@ -637,6 +637,11 @@ impl App {
         // And a placeholder goes with the row that drew it: a body arriving for a row the window let
         // go leaves its entry with nothing on the screen to say it for.
         self.pending_rows.retain(|id, _| held.contains(id.as_str()));
+        // A document's card goes with the row that carries it: its page cache and the bytes it
+        // decoded are the largest things this head holds per row, and a row the window let go has
+        // nothing left to draw them in.
+        self.pdf
+            .retain_rows(&held.iter().map(|id| id.to_string()).collect());
     }
 
     /// The header's context after a fork: the new base, sized by the daemon. No round has run on it, so

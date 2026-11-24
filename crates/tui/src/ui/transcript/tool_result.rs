@@ -48,6 +48,9 @@ pub(crate) fn tool_result_row_lines(
     else {
         unreachable!("tool_result_row_lines is handed only ToolResult rows");
     };
+    // The payload's first line, kept before the payload is drawn: a document's card names the file
+    // the call read, and a row with no display target has only this to name it by.
+    let first_line = payload.lines().next().unwrap_or("").to_string();
     // The picture itself, where the terminal can draw one (kitty graphics, Unicode placeholders):
     // rows of text the terminal fills with the image the head uploaded under this row's id. PNG only,
     // because the protocol takes it as it is; every other format keeps the line the payload says.
@@ -137,6 +140,11 @@ pub(crate) fn tool_result_row_lines(
             },
         )
     });
+    // The document card's name, read before `target` moves into the row below.
+    let doc_name = media
+        .as_ref()
+        .filter(|m| m.is_document())
+        .map(|_| crate::ui::transcript::pdf::tool_name(&target, &first_line));
     // The payload's own window: `payload_view` carries *which* row, because several
     // payloads can be unfolded on one screen and a bare offset would page all of them.
     let window = payload_view
@@ -191,6 +199,21 @@ pub(crate) fn tool_result_row_lines(
     }
     if let Some(rows) = detected {
         rendered.extend(rows);
+    }
+    // A document this call read: the page card under the row's own card. The call's target names it,
+    // and the payload's first line does when the row has none - a `read` of a pdf says its path there.
+    if let (Some(document), Some(name)) = (
+        media.as_ref().filter(|m| m.is_document()),
+        doc_name.as_deref(),
+    ) {
+        let at = rendered.len();
+        rendered.extend(crate::ui::transcript::pdf::tool_card(
+            &it.item_id,
+            document,
+            name,
+            at,
+            ctx,
+        ));
     }
     (RowClass::Activity, step_in(rendered, ind))
 }

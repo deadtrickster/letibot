@@ -487,6 +487,7 @@ fn item_rendered(
     };
     let ctx = ItemCtx {
         cards: &Cards::readers_only(),
+        pdf: &crate::app::pdf::PdfCards::default(),
         cfg: &cfg,
         pending: &Default::default(),
         think: Fold::Open,
@@ -1433,6 +1434,7 @@ mod pane;
 mod panes_ux;
 mod paste;
 mod payloadwindow;
+mod pdf;
 mod pendingrow;
 mod pictures;
 mod plugin_pane;

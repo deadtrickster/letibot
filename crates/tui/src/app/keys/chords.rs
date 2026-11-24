@@ -189,6 +189,12 @@ impl App {
     /// The conversation's own scroll - a page key's or a wheel notch's, once nothing in front
     /// of the conversation took it.
     pub(crate) fn scroll_conversation(&mut self, k: &Key, up: bool, by: usize) {
+        // A document card under the reader takes the step first: a page taller than the screen is the
+        // conversation's to scroll, and at the page's last row - or its first, going up - the step
+        // turns the page rather than leaving the card. At the ends of the document it hands back.
+        if self.turn_pdf_page(up, by, None) {
+            return;
+        }
         if up {
             // Through `scroll_up`, which renders as it goes: the frame clamps against the rows
             // rendered so far, so assigning `scroll` here could never express "further up than

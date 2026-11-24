@@ -376,6 +376,14 @@ impl App {
             // A wheel over a live call's card scrolls the conversation - the card is a row of
             // it, and a notch that stopped dead over one would read as a frozen head.
             | Target::LiveCall => {
+                // A notch aimed at a document's PAGE turns it, where a key sent at no row at all would
+                // read the reader's own: the pointer says which card it was over, and at the ends of
+                // the document the notch reaches the conversation unchanged.
+                if target == Target::Conversation
+                    && self.turn_pdf_page(up, NOTCH, self.line_at(y))
+                {
+                    return ControlFlow::Break(None);
+                }
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }

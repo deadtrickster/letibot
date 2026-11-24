@@ -498,6 +498,15 @@ pub struct App {
     /// box moves with the frame. The conversation's thumbnails are one upload per row for ever, so
     /// a row that scrolls back still shows its picture.
     pub(crate) pictures: rano::term::Pictures,
+    /// The documents in the conversation, one page at a time: which page each is on, the pages
+    /// rendered so far, and where the last frame drew them. See `app::pdf`.
+    pub(crate) pdf: PdfCards,
+    /// The page render in flight. One at a time: a rasterizer runs under the renderer's own time and
+    /// memory caps, and two of them against one cache is nothing a reader can see.
+    pub(crate) pdf_job: Option<Job>,
+    /// What renders a page: `transcript::pdf` in production - rano behind it - and a fixture in a
+    /// test, so the suite can measure the card without a rasterizer on the box.
+    pub(crate) pdf_reader: PdfReader,
     /// The thumbnails the last frame drew, as `(screen row, index into picture_refs)`: what a
     /// click acts on and what `Enter` opens. Recorded by the draw, read by the key.
     pub(crate) picture_rows: Vec<(usize, usize)>,
@@ -1482,6 +1491,9 @@ impl App {
             image_uploads: Vec::new(),
             proto: rano::term::Proto::None,
             pictures: rano::term::Pictures::default(),
+            pdf: PdfCards::default(),
+            pdf_job: None,
+            pdf_reader: std::sync::Arc::new(crate::app::pdf::read_page),
             picture_rows: Vec::new(),
             picture_refs: Vec::new(),
             prompt: None,
@@ -1768,6 +1780,9 @@ impl App {
             // And a snapshot's announced rows are still arriving: the line says how many, and the
             // count moves as each body lands, so the wait has a clock even between frames.
             || self.bulk.is_some()
+            // A document's page is being rendered: the card says `rendering p N…` until the frame
+            // that collects the answer, and nothing else would wake this head to draw it.
+            || self.pdf_busy()
     }
 
     /// Tell the head what time it is. The driver calls this once a tick; nothing
@@ -1792,6 +1807,9 @@ impl App {
         self.poll_job_out();
         // The chat view polls for news only while it is on the stack.
         self.rooms_poll();
+        // A document's page is collected or asked for here, never on a frame: a rasterizer is a
+        // process that can take ten seconds. See `app::pdf`.
+        self.pump_pdf();
     }
 
     /// The session list is pull-only, and the header's `2/5` and the picker are drawn from it, so a
@@ -1913,6 +1931,7 @@ pub(crate) mod marks;
 pub(crate) mod model_card;
 mod notes;
 mod panes;
+pub(crate) mod pdf;
 mod pick;
 mod pictures;
 mod plugin;
@@ -1955,6 +1974,7 @@ pub(crate) use links::{link_path_lines, osc8_spans};
 pub(crate) use model_card::*;
 pub(crate) use notes::*;
 pub(crate) use panes::*;
+pub(crate) use pdf::*;
 pub(crate) use pick::*;
 pub(crate) use pictures::*;
 pub(crate) use plugin::*;

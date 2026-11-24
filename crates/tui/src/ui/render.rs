@@ -171,6 +171,13 @@ pub fn user_image(item_id: &str, part: usize) -> Option<(u32, Option<u32>, Optio
 /// from, absent when the upload pass could not measure them.
 pub(crate) type PlacedPicture = (u32, u32, u32, (Option<u32>, Option<u32>));
 
+/// A picture's pixel size out of the bytes themselves - the door a caller that HOLDS a picture uses,
+/// where [`user_picture_box`] reads a reference. A rendered page is the case: its box is cut from
+/// the size the rasterizer answered, which no row states.
+pub(crate) fn picture_size(png: &[u8]) -> (Option<u32>, Option<u32>) {
+    letibot_transcript::media::picture_size("image/png", png)
+}
+
 /// The cell box of a user row's picture at this width: the thumbnail, the popup, and the placement
 /// the upload pass uses, so the rows drawn always match what the terminal holds. The pixels come
 /// back with it because the popup's box is cut from them.

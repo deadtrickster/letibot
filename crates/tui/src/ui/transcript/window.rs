@@ -922,6 +922,7 @@ impl App {
                         &items[*hist_upto],
                         &ItemCtx {
                             cards: &cards,
+                            pdf: &self.pdf,
                             cfg: &row_cfg,
                             pending: &self.pending_rows,
                             think: if open_run {

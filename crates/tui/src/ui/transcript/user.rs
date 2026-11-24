@@ -36,6 +36,15 @@ pub(crate) fn user_row_lines(
             if cfg.images {
                 rows.extend(user_pictures(&it.item_id, parts, cfg));
             }
+            // A document this prompt carried: the page card, under the chip that named it and under
+            // any picture, because it is the longest thing the row holds.
+            let base = rows.len();
+            rows.extend(crate::ui::transcript::pdf::user_cards(
+                &it.item_id,
+                parts,
+                base,
+                ctx,
+            ));
             // An answer names the question it answers: a faint line under their words, which stay
             // verbatim (the trail cites them); see `asked_card`.
             if let Some(re) = replied_to.and_then(crate::ui::transcript::asked_card::replied_to) {

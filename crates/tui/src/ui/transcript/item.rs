@@ -149,6 +149,10 @@ pub(crate) struct ItemCtx<'a> {
     /// On the context for the reason every other per-row reading is - `item_lines` is a free
     /// function, and the walk that holds the head apart is the only place a `Host` can be borrowed.
     pub(crate) cards: &'a Cards<'a>,
+    /// The documents in the conversation: which page each is on, the pages rendered so far, and where
+    /// the last draw put each card. The draw READS the cards and RECORDS the geometry, which is why
+    /// the record is a `RefCell` - the same bargain `payload_max` makes with a `Cell`.
+    pub(crate) pdf: &'a crate::app::pdf::PdfCards,
 }
 
 /// The question the row at `k` answers, when the row before it is the session's question

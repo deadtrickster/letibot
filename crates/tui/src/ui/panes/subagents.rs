@@ -190,6 +190,9 @@ impl App {
                 // A child's rows are drawn with the head's own readers: this head does not hold the
                 // child's stack, and a peeked child's cards are not its session's to ask.
                 cards: &Cards::readers_only(),
+                // A child's documents are not this head's: no page has been rendered for its rows,
+                // so a card there is its header and the row that says the page is coming.
+                pdf: &self.pdf,
                 cfg: &cfg,
                 // Not this head's rows either: the maps that carry a placeholder are keyed by THIS
                 // session's item ids, so a child's bodyless row draws nothing rather than a guess.
