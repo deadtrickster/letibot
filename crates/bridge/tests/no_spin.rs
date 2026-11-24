@@ -337,7 +337,7 @@ impl World {
                 // The daemon this world builds is on this box, and its record says so
                 // (`crates/bridge/tests/end_to_end.rs`'s fixture writes one the same way).
                 None,
-                false,
+                Some(false),
                 None,
             )
             .expect("the bridge starts a session");

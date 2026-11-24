@@ -1132,6 +1132,36 @@ tight one; they commit on their branches and cannot push, so the only way their 
 the review queue and its gate. The main session keeps its credentials and can push directly - the
 operator's "manual" mode, kept on purpose for when the queue itself is what is broken.
 
+### The three seat levels: wide, tight, and the VM
+
+**Wide** and **tight** are the perimeters above ([`[perimeter.<name>]`](#the-two-seat-levels-and-every-role-as-perimeters)).
+The third is where the tools RUN, and it is decided before either is composed:
+
+```toml
+[seat]
+default = "vm"      # vm (the default) or host
+```
+
+- **A seat with no head is a VM.** A package, a subagent, a queue gate: nobody is attached to
+  answer a card, so the session gets a firecode guest. The guest IS the boundary, so the point
+  inside it is `allow-all` and nothing there asks - `sudo`, `/etc`, the never-write list included -
+  because it cannot reach this box: no host filesystem, no host processes, no host devices.
+- **An interactive top-level session stays on the host**, at wide or tight. It is already under the
+  operator's eyes, and the card is answered by the person it would be asking.
+- **An ask beats the file.** `leticode_start { vm: true | false }`, `--vm`, `--host NAME` and
+  `task { where: … }` are honoured as asked, and never second-guessed: a VM this machine cannot
+  start is refused by name at the open, because reporting `host` would say a placement nobody
+  chose.
+- **A machine that cannot start a VM runs the seat here, with one warning.** `firecode` absent,
+  `firecode doctor` failing, no `/dev/kvm`: the session still starts, on the host, and the reason
+  is one `seat_host` row - not an error and not a card, because a package that refuses to start is
+  a package somebody switches off. A daemon already holding the folder decides for a start that
+  asked for nothing, so joining one is never refused over this default.
+- **The way back is `host`**: a VM seat carries one tool that runs ONE command on this machine,
+  under a host seat's own adjudication - `automode` is that point, so the card that a host seat
+  would raise is raised. That is how "help me set up ssh" or a shell profile keeps working from
+  inside a guest. A whole session of host work is `leticode_start { vm: false }`.
+
 ### `firecode_only`: a program that runs only inside firecode
 
 It narrows what a session may run, so a project file may set it and the levels union. Two layers:

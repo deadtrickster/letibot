@@ -203,7 +203,7 @@ fn a_driving_bridge_writes_the_board_and_a_watching_one_is_refused() {
             Some("deepseek/deepseek-chat"),
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect("the bridge starts a session");

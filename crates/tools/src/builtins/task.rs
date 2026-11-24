@@ -71,9 +71,9 @@ fn placement_arg(
     args: &serde_json::Value,
     firecode: Option<&std::path::Path>,
     hosts: &crate::remote::Hosts,
-) -> Result<Placement, Invocation> {
+) -> Result<(Placement, bool), Invocation> {
     let placement = match args.get("where").and_then(|v| v.as_str()) {
-        None => return Ok(Placement::Host),
+        None => return Ok((Placement::Host, false)),
         Some(w) => Placement::parse(w).map_err(|e| {
             Invocation::failed(
                 "`where` was not understood",
@@ -110,7 +110,7 @@ fn placement_arg(
             ),
         ));
     }
-    Ok(placement)
+    Ok((placement, true))
 }
 
 /// The `verify` argument: an acceptance check firecode runs after a VM-placed child finishes
@@ -217,6 +217,11 @@ pub struct TaskSpec {
     pub role: String,
     pub downgrade: Downgrade,
     pub placement: Placement,
+    /// Whether `placement` is somebody's ASK or only the field's default. `Placement::Host` is
+    /// both an empty spec's value and the word `host`, and the two are not the same thing: a
+    /// child nobody placed gets `[seat] default` (a VM unless the file says otherwise), and a
+    /// child whose caller wrote `where: "host"` runs here whatever the file says.
+    pub placement_asked: bool,
     /// Which model the child runs on. `None` inherits the parent's, `Some("local")` is the
     /// daemon's own server, and `Some("provider/model")` a cloud preset resolved through the
     /// same door `/models` uses, so a name a person can type is a name a child can run on.
@@ -1173,7 +1178,7 @@ impl Tool for TaskTool {
                 }
             },
         };
-        let placement =
+        let (placement, placement_asked) =
             match placement_arg(args, self.firecode_bin.as_deref(), &hosts_of(&self.hosts)) {
                 Ok(p) => p,
                 Err(refused) => return refused,
@@ -1312,6 +1317,7 @@ impl Tool for TaskTool {
             role: role.to_string(),
             downgrade,
             placement,
+            placement_asked,
             perimeter,
             widen,
             widen_because,
@@ -1716,10 +1722,11 @@ impl Tool for TaskStartTool {
         };
         // Checked before the worktree is arranged: a refusal here leaves nothing behind.
         let firecode = self.firecode_bin.as_deref();
-        let placement = match placement_arg(args, firecode, &hosts_of(&self.hosts)) {
-            Ok(p) => p,
-            Err(refused) => return refused,
-        };
+        let (placement, placement_asked) =
+            match placement_arg(args, firecode, &hosts_of(&self.hosts)) {
+                Ok(p) => p,
+                Err(refused) => return refused,
+            };
         let vm_verify = match verify_arg(args, &placement) {
             Ok(v) => v,
             Err(refused) => return refused,
@@ -1923,6 +1930,7 @@ impl Tool for TaskStartTool {
             role: role.to_string(),
             downgrade,
             placement,
+            placement_asked,
             perimeter,
             widen,
             widen_because,

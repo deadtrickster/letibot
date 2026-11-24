@@ -246,6 +246,15 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
     })
 }
 
+/// Where a daemon ALREADY serving this folder says its tools run, or `None` when nothing is up
+/// there or its record is not this socket's. Asked by a start that was given no placement: a
+/// seat joining a daemon runs where that daemon's tools do, and the session's answer must say
+/// the same thing the daemon does.
+pub fn placement_here(workspace: &Path) -> Option<Placement> {
+    let d = resolve(workspace).ok()?;
+    is_up(&d.socket).then_some(d.placement)?
+}
+
 /// The store to hand the daemon: the data directory, or its `sessions.db` while the directory has
 /// not been split yet. The daemon refuses an unsplit directory but still opens the old file.
 pub(crate) fn store_in(dir: &Path) -> PathBuf {

@@ -313,7 +313,7 @@ fn a_session_this_bridge_does_not_hold_runs_a_prompt_stored_as_the_bridges_line(
             Some("deepseek/deepseek-chat"),
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect("the owner starts a session");

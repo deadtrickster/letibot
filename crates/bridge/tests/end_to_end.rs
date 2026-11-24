@@ -544,7 +544,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
             // The placement the daemon's own record names: the whole point of asking is that
             // an already-running daemon is joined only where the call asked to be.
             Some("lab2x1"),
-            false,
+            Some(false),
             None,
         )
         .expect("the bridge starts a session");

@@ -927,6 +927,10 @@ fn start_a_session(
     let mut spec = TaskSpec {
         role: "gatekeeper".into(),
         placement: p.placement.placement(),
+        // An ASK and not a default: `[queue] reviewers` is this project's own answer to where its
+        // reviewers run, and its default is `host`. `[seat] default` is what a child NOBODY placed
+        // gets, and a reviewer is placed by the queue.
+        placement_asked: true,
         // The reviewer's declared skills, from `[queue] reviewer_skills` - the one seat nobody
         // types a brief for, so its instructions are configured rather than asked for.
         skills: p.reviewer_skills.to_vec(),

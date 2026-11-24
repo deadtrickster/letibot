@@ -102,6 +102,7 @@ pub mod recall_offer;
 pub mod restart;
 pub mod room;
 pub mod seat_boards;
+pub mod seat_default;
 pub mod selfverbs;
 pub mod sessions;
 pub mod shadow;

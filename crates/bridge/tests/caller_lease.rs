@@ -21,7 +21,7 @@ fn stopping_the_caller_closes_its_sessions() {
             None,
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect("the session starts");

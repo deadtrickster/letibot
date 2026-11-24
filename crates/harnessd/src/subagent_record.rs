@@ -173,6 +173,9 @@ impl RecordedSpec {
             role: self.role.clone(),
             downgrade: self.downgrade.clone(),
             placement: Placement::parse(&self.placement)?,
+            // A record names where the child DID run, so it is an ask and not a default: a
+            // resumed host child must not be re-placed by `[seat] default` under it.
+            placement_asked: true,
             model: self.model.clone(),
             worktree: self.worktree.as_ref().map(|w| WorktreePlacement {
                 path: w.path.clone(),

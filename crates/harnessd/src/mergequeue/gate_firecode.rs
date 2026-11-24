@@ -165,7 +165,9 @@ pub fn runner_for(
 ) -> Arc<dyn GateRunner> {
     use super::settings::GateIn;
     match gate_in {
-        GateIn::Host => ordinary.clone(),
+        // The seat's default is resolved BEFORE a runner is asked for (`RepoQueue::start_gate`),
+        // and an unresolved one is this machine rather than a surprise.
+        GateIn::Host | GateIn::Seat => ordinary.clone(),
         GateIn::Firecode => ordinary
             .firecode()
             .unwrap_or_else(|| Arc::new(Refuse(ordinary.name()))),

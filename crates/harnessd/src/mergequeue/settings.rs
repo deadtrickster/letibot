@@ -117,11 +117,15 @@ impl Reviewers {
 /// Where a gate's steps run on the gate machine - `[queue] gate_in`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GateIn {
-    /// Directly on the gate machine. The default.
-    #[default]
+    /// Directly on the gate machine.
     Host,
     /// Inside a firecode VM over the gate's checkout.
     Firecode,
+    /// Nobody said: `[seat] default` decides, resolved when the gate starts - a VM where this
+    /// machine can start one, and this machine with one warning where it cannot. The default,
+    /// because a queue gate is a seat with no head.
+    #[default]
+    Seat,
 }
 
 impl GateIn {
@@ -133,6 +137,15 @@ impl GateIn {
                 "gate_in = \"{other}\" - the words are \"host\" (the steps run on the gate \
                  machine - the default) and \"firecode\" (each step runs in a firecode VM)"
             )),
+        }
+    }
+
+    /// The word a resolved gate runs under, for a row that has to say where it ran.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GateIn::Host => "host",
+            GateIn::Firecode => "firecode",
+            GateIn::Seat => "the seat's default",
         }
     }
 }
@@ -204,7 +217,9 @@ impl Default for QueueSettings {
             gate_train: 1,
             gate_host: None,
             gate_poll: super::gate::GATE_POLL_DEFAULT,
-            gate_in: GateIn::Host,
+            // A gate is a seat with no head: `[seat] default` decides, and the daemon resolves it
+            // when the gate starts. A fixture that wants this machine says `GateIn::Host`.
+            gate_in: GateIn::Seat,
             reviewer_skills: Vec::new(),
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
@@ -337,7 +352,9 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         Some(w) => Reviewers::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
     };
     let gate_in = match q.gate_in.as_deref() {
-        None => GateIn::Host,
+        // Nobody said: the seat's default decides, and a machine that cannot start a VM runs the
+        // steps here rather than leaving every tip unjudged (`serve::start_gate` resolves it).
+        None => GateIn::Seat,
         Some(w) => GateIn::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
     };
     let gate_train = match q.gate_train {

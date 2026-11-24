@@ -248,6 +248,9 @@ pub struct RepoQueue {
     /// The `[queue]` error last said - `queue_settings_unreadable` is raised when
     /// the error is new or changed, not every pass (it was every two seconds, on every hub).
     settings_said: std::sync::Mutex<Option<String>>,
+    /// The seat fallback already said, so a box that cannot start a VM says why once per queue
+    /// rather than once per gate: a warning per branch is a warning nobody reads.
+    seat_said: std::sync::Mutex<Option<String>>,
     /// The one gate this repository is running, if any. It runs on a thread of its own and the
     /// pass only looks at it, so a thirty-minute gate does not stop the review queue
     gate: std::sync::Mutex<Option<InFlight>>,
@@ -479,6 +482,7 @@ impl RepoQueue {
             env,
             rung: Default::default(),
             settings_said: Default::default(),
+            seat_said: Default::default(),
             gate: Default::default(),
             lease_ok: Arc::new(AtomicBool::new(true)),
             fetched: Default::default(),
@@ -690,6 +694,33 @@ impl RepoQueue {
         self.env
             .door
             .announce_to(&self.key, SessionEvent::warning(code, detail));
+    }
+
+    /// Where a gate nobody placed runs: `[seat] default` for this repository (a VM), resolved
+    /// against this machine - and when it cannot start one, the steps run here with ONE warning
+    /// naming why. An ASK for firecode is not this: it leaves the tip UNJUDGED instead, because
+    /// somebody meant it and a green on weaker ground would say what they did not.
+    fn seat_gate_in(&self) -> super::settings::GateIn {
+        use crate::seat_default::{self, Seat};
+        let (default, unreadable) = seat_default::default_for(&self.repo, true);
+        let decided = seat_default::decide(None, Seat::Headless, default, &seat_default::Doctor);
+        let said = decided
+            .warning
+            .or_else(|| unreadable.map(|why| (seat_default::FELL_BACK.to_string(), why)));
+        if let Some((code, words)) = said {
+            // Once per queue: the reason cannot change under a running daemon (`Doctor` answers
+            // once), and a line per branch is a line nobody reads.
+            let mut said = self.seat_said.lock().unwrap_or_else(|e| e.into_inner());
+            if said.as_deref() != Some(words.as_str()) {
+                *said = Some(words.clone());
+                drop(said);
+                self.raise(&code, words);
+            }
+        }
+        match decided.placement {
+            letibot_tools::builtins::task::Placement::Firecode => super::settings::GateIn::Firecode,
+            _ => super::settings::GateIn::Host,
+        }
     }
 
     fn review_to(&self, r: &ReviewRow, to: ReviewState, mv: Move) -> Result<bool, StoreError> {
@@ -982,6 +1013,12 @@ impl RepoQueue {
         let lease = self.lease_ok.clone();
         let settings = (self.env.settings)(&self.repo).ok();
         let mut gate_in = settings.as_ref().map(|s| s.gate_in).unwrap_or_default();
+        // A gate nobody placed is a seat with no head: `[seat] default` decides, and a machine
+        // that cannot start a VM runs the steps here with ONE warning. Never UNJUDGED, which is
+        // what an ASK for firecode gets on such a machine ([`gate_firecode::unjudged`]).
+        if gate_in == super::settings::GateIn::Seat {
+            gate_in = self.seat_gate_in();
+        }
         let budget = settings
             .as_ref()
             .and_then(|s| s.gate_deadline)

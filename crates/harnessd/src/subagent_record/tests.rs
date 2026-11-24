@@ -559,6 +559,7 @@ fn the_spec_round_trips_through_its_record() {
         role: "researcher".into(),
         downgrade: Downgrade::parse("read-only").unwrap(),
         placement: Placement::Host,
+        placement_asked: true,
         model: Some("zai/glm".into()),
         worktree: None,
         vm_source: Some("/src".into()),

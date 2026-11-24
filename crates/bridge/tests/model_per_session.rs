@@ -288,7 +288,7 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
             Some("deepseek/deepseek-chat"),
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect("the bridge starts a session on the model it was asked for");
@@ -348,7 +348,7 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
             Some("no-such-provider"),
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect_err("a provider this build does not know is refused");

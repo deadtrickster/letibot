@@ -354,7 +354,7 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
             Some("deepseek/deepseek-chat"),
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect("the bridge starts a session");

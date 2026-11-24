@@ -1703,6 +1703,13 @@ impl Config {
             .or_else(|| crate::mergequeue::repo_of_workspace(&self.workspace))
             .unwrap_or_else(|| self.workspace.clone())
     }
+
+    /// Whether this session's commands run in a guest: a firecode placement on this box or on a
+    /// declared host, or a session attached to its parent's VM. The one spelling of the question
+    /// the `host` tool, its role entry and its gate seam must all answer the same way.
+    pub fn in_a_guest(&self) -> bool {
+        self.placement.is_vm() || self.vm_attach.is_some()
+    }
 }
 
 /// Which search provider `web_search` gets, when the operator has not said. A configured key is

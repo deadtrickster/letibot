@@ -20,7 +20,7 @@ fn start_with_unknown_mode_refuses_and_sends_no_brief() {
             None,
             "read-edits",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect_err("a mode this build does not have is refused");

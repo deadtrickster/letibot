@@ -4047,24 +4047,66 @@ impl HarnessTaskRunner {
         // A VM is booted on a copy of this session's workspace by the child's own `open`, and a boot that
         // fails is a spawn that fails, named. A child of a remote session runs on the same host unless it asks
         // for another placement, since `host` in a remote session's mouth is its own boundary.
-        let placement = match (spec.placement.clone(), self.base.placement.host()) {
+        let mut placement = match (spec.placement.clone(), spec.placement_asked) {
             // A child of a session whose tools are in a guest on that host gets a guest of its
             // own there, for the reason a VM's children get their own VM.
-            (Placement::Host, Some(parent_host)) => match &self.base.placement {
-                Placement::RemoteVm(_) => Placement::RemoteVm(parent_host.to_string()),
-                _ => Placement::Remote(parent_host.to_string()),
-            },
+            (Placement::Host, false) if self.base.placement.host().is_some() => {
+                let parent_host = self.base.placement.host().unwrap_or_default().to_string();
+                match &self.base.placement {
+                    Placement::RemoteVm(_) => Placement::RemoteVm(parent_host),
+                    _ => Placement::Remote(parent_host),
+                }
+            }
+            // A child nobody placed is a seat with no head, so `[seat] default` places it: a VM
+            // unless the file says otherwise, and this box with one line when it cannot. A tool's
+            // own HELPER is not that kind of child - it is one read whose answer is used in place,
+            // and a boot per part of a digest would cost more than the work.
+            (Placement::Host, false) if !spec.helper => {
+                let (default, unreadable) = crate::seat_default::default_for(
+                    &self.base.workspace,
+                    self.base.read_project_config,
+                );
+                let decided = crate::seat_default::decide(
+                    None,
+                    crate::seat_default::Seat::Headless,
+                    default,
+                    &crate::seat_default::Doctor,
+                );
+                if let Some((code, said)) = decided.warning {
+                    self.say_here(&code, said);
+                }
+                if let Some(why) = unreadable {
+                    self.say_here(crate::seat_default::FELL_BACK, why);
+                }
+                decided.placement
+            }
             (asked, _) => asked,
         };
-        let _ = Placement::Host;
         // A VM holds one repository, and a session above several has no one tree to copy: the model names it
-        // with `repo`, and the copy is that repository or nothing.
-        let vm_copy = vm_copy_for(
+        // with `repo`, and the copy is that repository or nothing. When the DEFAULT asked for the VM and no
+        // tree can be named, the child runs here instead with a line: a seat nobody switched on must not be a
+        // spawn that refuses.
+        let copy = vm_copy_for(
             placement == Placement::Firecode,
             spec.worktree.is_some(),
             spec.vm_source.as_deref(),
             &self.base.workspace,
-        )?;
+        );
+        let vm_copy = match copy {
+            Ok(copy) => copy,
+            Err(why) if placement == Placement::Firecode && !spec.placement_asked => {
+                self.say_here(
+                    crate::seat_default::FELL_BACK,
+                    format!(
+                        "[seat] default = \"vm\" places this subagent in a firecode VM, and the \
+                         tree to copy cannot be named: {why}. Its tools run on this box instead"
+                    ),
+                );
+                placement = Placement::Host;
+                None
+            }
+            Err(why) => return Err(why),
+        };
         Ok((placement, vm_copy))
     }
 

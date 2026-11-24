@@ -60,7 +60,7 @@ fn a_stale_bridge_binary_says_so_at_attach() {
             None,
             "writes-allowed",
             None,
-            false,
+            Some(false),
             None,
         )
         .expect_err("a stale bridge does not start a session");

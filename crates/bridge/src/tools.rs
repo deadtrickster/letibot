@@ -439,7 +439,7 @@ impl Bridge {
         model: Option<&str>,
         mode: &str,
         host: Option<&str>,
-        vm: bool,
+        vm: Option<bool>,
         package: Option<&str>,
     ) -> Result<Value, String> {
         crate::exe_stamp::refuse_if_replaced()?;
@@ -472,8 +472,16 @@ impl Bridge {
         let id = prepared.as_ref().map(|p| p.id.clone());
         // The host is checked before anything is done: a name this file does not declare is
         // refused by the operator's rule, listing the names it does, and no daemon is started
-        // for it.
-        let placement = placement_arg(host, vm, &Hosts::load())?;
+        // for it. And where this session runs comes with it: a package has no head, so
+        // `[seat] default` places it - a VM unless the file says otherwise - with this machine
+        // as the fallback and one warning saying why.
+        let (placement, fell_back) = seat_placement(
+            &worktree,
+            host,
+            vm,
+            &Hosts::load(),
+            &letibot_harnessd::seat_default::Doctor,
+        )?;
         let d = daemon::ensure_with(Path::new(&worktree), model, mode, &placement, id.as_deref())?;
         // WHOSE WORK THIS IS: the session that asked for it, which is this bridge's own seat - a
         // Claude Code conversation. A daemon this call STARTED opened its own first session from its
@@ -554,6 +562,12 @@ impl Bridge {
             // move: the model, the store and the gate are this box's.
             "tools_run": tools_run(h.placement.as_ref()),
         });
+        // A placement this machine could not give is a WARNING and not a failure: the session is
+        // up and its brief is running, and what a reader is owed is which fact put it on the host.
+        if let Some((code, said)) = &fell_back {
+            eprintln!("  letibot-mcp: {said}");
+            answer["warnings"] = json!([{ "code": code, "said": said }]);
+        }
         // Each session's model is its own: the daemon's `--provider` is only the default. A session
         // whose tools run elsewhere is QUEUED, not waited for; model, mode and brief go in that
         // order, which the daemon applies in arrival order.
@@ -1570,18 +1584,27 @@ fn first_line(text: &str) -> String {
         .collect()
 }
 
-/// The `host` argument, as a placement, checked before anything is started. `None` is
-/// [`Placement::Host`] - a placement, compared against a running daemon's record like any
-/// other. A name is checked against the operator's `hosts.toml` here, with the same refusal.
-fn placement_arg(host: Option<&str>, vm: bool, hosts: &Hosts) -> Result<Placement, String> {
+/// The `host` argument, as a placement, checked before anything is started. A name is checked
+/// against the operator's `hosts.toml` here, with the same refusal.
+///
+/// The answer is `None` when NOBODY asked, which is not the same fact as `Placement::Host`: a
+/// start that named nothing is the one `[seat] default` answers. `vm` carries the same
+/// distinction - `Some(false)` is a caller who asked for this box.
+fn placement_arg(
+    host: Option<&str>,
+    vm: Option<bool>,
+    hosts: &Hosts,
+) -> Result<Option<Placement>, String> {
     let Some(name) = host.map(str::trim).filter(|n| !n.is_empty()) else {
         // `vm` with no host is a VM on this box, which is the same placement `--vm` asks
         // for and needs no name from the operator's file.
-        return Ok(if vm {
-            Placement::Firecode
-        } else {
-            Placement::Host
-        });
+        return Ok(vm.map(|want| {
+            if want {
+                Placement::Firecode
+            } else {
+                Placement::Host
+            }
+        }));
     };
     if hosts.get(name).is_none() {
         return Err(format!(
@@ -1591,11 +1614,74 @@ fn placement_arg(host: Option<&str>, vm: bool, hosts: &Hosts) -> Result<Placemen
             hosts.refusal(name)
         ));
     }
-    Ok(if vm {
+    // A host was named, so this is a placement whatever `vm` says: `host` alone is that machine
+    // and `host` with `vm: true` is a guest on it. `None` there means the plain machine.
+    Ok(Some(if vm == Some(true) {
         Placement::RemoteVm(name.to_string())
     } else {
         Placement::Remote(name.to_string())
-    })
+    }))
+}
+
+/// Where a session this bridge starts runs its tools: the caller's ask when there is one, else
+/// `[seat] default` for a seat with no head - which a package is, and a Claude Code session is,
+/// since no letibot head is attached to it and no card could be answered.
+fn seat_placement(
+    worktree: &str,
+    host: Option<&str>,
+    vm: Option<bool>,
+    hosts: &Hosts,
+    ready: &dyn letibot_harnessd::seat_default::Ready,
+) -> Result<(Placement, Option<(String, String)>), String> {
+    use letibot_harnessd::seat_default;
+    let asked = placement_arg(host, vm, hosts)?;
+    let (default, unreadable) = seat_default::default_for(Path::new(worktree), true);
+    // A daemon already holding this folder decides, when the caller did not: joining it is the
+    // only way to run here at all, and refusing would make the default a way to stop work.
+    let up = match asked {
+        Some(_) => None,
+        None => crate::daemon::placement_here(Path::new(worktree)),
+    };
+    Ok(seat_placement_with(asked, default, unreadable, up, ready))
+}
+
+/// The decision itself, with every input in hand: [`seat_placement`] reads the config and the
+/// daemon's record, and this is what both of them were read for.
+fn seat_placement_with(
+    asked: Option<Placement>,
+    default: letibot_harnessd::seat_default::SeatDefault,
+    unreadable: Option<String>,
+    up: Option<Placement>,
+    ready: &dyn letibot_harnessd::seat_default::Ready,
+) -> (Placement, Option<(String, String)>) {
+    use letibot_harnessd::seat_default::{self, Seat};
+    let decided = seat_default::decide(asked.clone(), Seat::Headless, default, ready);
+    // One warning, not three: the first fact that decided the placement, in the order a reader
+    // can act on. A file that would not parse is only worth saying when nothing else is.
+    let mut said = decided.warning;
+    if said.is_none() {
+        said = unreadable.map(|why| (seat_default::FELL_BACK.to_string(), why));
+    }
+    let mut placement = decided.placement;
+    if asked.is_none()
+        && let Some(up) = up
+        && up != placement
+    {
+        said = Some((
+            seat_default::FELL_BACK.to_string(),
+            format!(
+                "a daemon already holds this folder and its tools run on {}, so this session's \
+                 run there too. `vm: true` on the start is how you ask for the other, and it \
+                 needs that daemon stopped first",
+                match up.host() {
+                    Some(h) => format!("`{h}`"),
+                    None => "this box".to_string(),
+                },
+            ),
+        ));
+        placement = up;
+    }
+    (placement, said)
 }
 
 /// Whether this session's tools run in a VM. Two facts ride on it: the guest IS a boundary, so
@@ -1676,7 +1762,7 @@ pub fn list() -> Value {
                     "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`." },
                     "host": { "type": "string", "description": "A machine from `hosts.toml` (or the `hosts` tool), where this session's tools run. Omitted: on this box." },
                     "package": { "type": "string", "description": "A name: make this a package, a worktree of that repository on its own branch, cut from the HEAD of `worktree`. Omitted: run in `worktree` as it is." },
-                    "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. Default false." }
+                    "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. Omitted: `[seat] default`, which is a VM for a session with no head; `false` runs them on this box (or on `host`), and a machine that cannot start a VM falls back to this box with a warning saying why." }
                 },
                 "required": ["worktree", "brief"]
             }),
@@ -2092,6 +2178,16 @@ fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
     }
 }
 
+/// A yes/no the caller may leave out entirely, which is a different fact from `false`: an
+/// argument nobody wrote is the config's to answer, and one written `false` is an ask.
+fn arg_opt_bool(args: &Value, key: &str) -> Result<Option<bool>, String> {
+    match args.get(key) {
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => Err(format!("`{key}` must be a boolean")),
+    }
+}
+
 /// A whole-number argument that may be absent - a cursor, a limit.
 fn arg_count(args: &Value, key: &str) -> Result<Option<u64>, String> {
     match args.get(key) {
@@ -2144,7 +2240,7 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let model = arg_opt_str(args, "model")?;
             let mode = arg_opt_str(args, "mode")?.unwrap_or_else(|| DEFAULT_MODE.to_string());
             let host = arg_opt_str(args, "host")?;
-            let vm = arg_bool(args, "vm", false)?;
+            let vm = arg_opt_bool(args, "vm")?;
             let package = arg_opt_str(args, "package")?;
             bridge.start(
                 &worktree,
@@ -2611,20 +2707,26 @@ mod tests {
     fn an_undeclared_host_is_refused_with_the_names_this_box_has() {
         let hosts = Hosts::parse("[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("a hosts file");
         assert_eq!(
-            placement_arg(None, false, &hosts).expect("no host asked for"),
-            Placement::Host,
-            "asking for nothing is a placement, and it is this box"
+            placement_arg(None, Some(false), &hosts).expect("no host asked for"),
+            Some(Placement::Host),
+            "asking for this box is a placement, and it is this box"
         );
         assert_eq!(
-            placement_arg(Some("  "), false, &hosts).expect("an empty host is none"),
-            Placement::Host
+            placement_arg(Some("  "), Some(false), &hosts).expect("an empty host is none"),
+            Some(Placement::Host)
         );
         assert_eq!(
-            placement_arg(Some("lab2x1"), false, &hosts).expect("a declared host"),
-            Placement::Remote("lab2x1".into())
+            placement_arg(Some("lab2x1"), Some(false), &hosts).expect("a declared host"),
+            Some(Placement::Remote("lab2x1".into()))
+        );
+        // Nobody said: the placement is the config's to answer, so there is no ask to return.
+        assert_eq!(
+            placement_arg(None, None, &hosts).expect("nobody said"),
+            None,
+            "an absent `vm` is not `vm: false`"
         );
         // The typo: `lab2` is not `lab2x1`, and the refusal says so with the list.
-        let e = placement_arg(Some("lab2"), false, &hosts).expect_err("undeclared");
+        let e = placement_arg(Some("lab2"), Some(false), &hosts).expect_err("undeclared");
         assert!(e.contains("there is no host `lab2`"), "{e}");
         assert!(e.contains("it knows: lab2x1"), "{e}");
         assert!(
@@ -2641,16 +2743,86 @@ mod tests {
     fn the_vm_flag_turns_a_host_into_a_vm_on_that_host() {
         let hosts = Hosts::parse("[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("a hosts file");
         assert_eq!(
-            placement_arg(Some("lab2x1"), true, &hosts).expect("a declared host"),
-            Placement::RemoteVm("lab2x1".into())
+            placement_arg(Some("lab2x1"), Some(true), &hosts).expect("a declared host"),
+            Some(Placement::RemoteVm("lab2x1".into()))
         );
         assert_eq!(
-            placement_arg(None, true, &hosts).expect("a VM here"),
-            Placement::Firecode,
+            placement_arg(None, Some(true), &hosts).expect("a VM here"),
+            Some(Placement::Firecode),
             "`vm` without a host is a VM on this box"
         );
         // A name nobody declared is still refused, whatever `vm` says.
-        assert!(placement_arg(Some("lab2"), true, &hosts).is_err());
+        assert!(placement_arg(Some("lab2"), Some(true), &hosts).is_err());
+    }
+
+    /// A machine that can, or one that cannot, without a firecode anywhere: the placement
+    /// decision is what is under test here, and a boot is minutes.
+    struct Machine(Result<std::path::PathBuf, String>);
+
+    impl letibot_harnessd::seat_default::Ready for Machine {
+        fn ready(&self) -> Result<std::path::PathBuf, String> {
+            self.0.clone()
+        }
+    }
+
+    /// The four ways a start is placed: a headless seat is a VM, `vm: false` is this box, a
+    /// machine that cannot start one runs here and says why, and a daemon already holding the
+    /// folder decides when nobody asked.
+    #[test]
+    fn a_headless_start_is_a_vm_unless_it_says_otherwise() {
+        use letibot_harnessd::seat_default::{FELL_BACK, SeatDefault};
+        let can = Machine(Ok("/tmp/firecode".into()));
+        let cannot = Machine(Err("there is no `firecode` on this host's PATH".into()));
+        let (placement, said) = seat_placement_with(None, SeatDefault::Vm, None, None, &can);
+        assert_eq!(placement, Placement::Firecode);
+        assert_eq!(said, None, "the ask was met, so nothing is owed: {said:?}");
+
+        // `vm: false`: an ask, and it is this box whatever the file says.
+        let (placement, said) =
+            seat_placement_with(Some(Placement::Host), SeatDefault::Vm, None, None, &can);
+        assert_eq!(placement, Placement::Host);
+        assert_eq!(said, None);
+
+        // The file says host: also this box, and nothing to say about it.
+        let (placement, said) = seat_placement_with(None, SeatDefault::Host, None, None, &can);
+        assert_eq!(placement, Placement::Host);
+        assert_eq!(said, None);
+
+        // No firecode here: the seat still starts, on this box, with ONE warning naming why.
+        let (placement, said) = seat_placement_with(None, SeatDefault::Vm, None, None, &cannot);
+        assert_eq!(placement, Placement::Host);
+        let (code, why) = said.expect("a fallback is owed a sentence");
+        assert_eq!(code, FELL_BACK);
+        assert!(why.contains("cannot start one"), "{why}");
+        assert!(why.contains("PATH"), "the doctor's own words: {why}");
+    }
+
+    /// A daemon already up for the folder decides where a start it was given no placement for
+    /// runs: joining it is the only way to run there, and the answer's warning says which fact.
+    #[test]
+    fn a_folder_whose_daemon_is_already_up_runs_where_that_daemon_does() {
+        let can = Machine(Ok("/tmp/firecode".into()));
+        // The daemon is on this box and the file asks for a VM: the session joins it.
+        let (placement, said) = seat_placement_with(
+            None,
+            letibot_harnessd::seat_default::SeatDefault::Vm,
+            None,
+            Some(Placement::Host),
+            &can,
+        );
+        assert_eq!(placement, Placement::Host);
+        let (_, why) = said.expect("the join is worth a line");
+        assert!(why.contains("already holds this folder"), "{why}");
+        // An ASK is not overruled: `vm: true` on a host daemon is `placed_elsewhere`'s refusal.
+        let (placement, said) = seat_placement_with(
+            Some(Placement::Firecode),
+            letibot_harnessd::seat_default::SeatDefault::Vm,
+            None,
+            Some(Placement::Host),
+            &can,
+        );
+        assert_eq!(placement, Placement::Firecode);
+        assert_eq!(said, None);
     }
 
     /// The placement an answer carries is the spelling a caller can ask for again, and
