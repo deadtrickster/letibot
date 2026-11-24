@@ -36,7 +36,8 @@ daemon of one folder.
   transactions only.
 
 A daemon opens its project file and the shared file. A head or CLI that lists sessions reads the
-shared file and opens a project file only to load a transcript.
+shared file, and opens each project file the index names - READ-ONLY - to fill that row's history
+(`Store::fill_history`); a transcript is loaded from its own project file.
 
 While the box is being carved (§ Carving one project) the shared file is still called
 `sessions.db`: it holds the shared tables and the project tables of every project not carved yet,
@@ -465,12 +466,17 @@ there, and a set's handle holds both connections, so no caller names a file. `ex
 table out of its own SQL (57 call sites unchanged); `write_tx_at(table, ..)` names the file a
 transaction is in, and the two bodies that wrote both files - the append's context row and a
 session delete - are two commits now, because no transaction spans them. The listing runs
-`sessions_index_sql` on a set: `transcript`/`transcript_item` are the project file's and the index
-may not reach into another project's file, so its four history columns are `NULL` (P4's sweep is
-where a listing gets them back), which is also why a listing answers with the project file renamed
-away. Three cross-file JOINs lost theirs: `approved_shapes` and `shapeless_human_admits` read the
-sessions first and then the corpus, and `unrecorded_of` reads the recorded child ids and then the
-children the index names. Consumers whose tables are all in the shared file are handed that FILE -
+`sessions_index_sql` on a set: `transcript`/`transcript_item` are the project file's, so the index
+answers its four history columns as `NULL`/`0` and carries `session.project` LAST - the key of the
+file the row's history is in. `Store::fill_history` then opens one project file per key (the
+handle's own through its open connection, any other READ-ONLY, because that file is another
+daemon's) and fills the four columns from `HISTORY_SQL`, so a listing over a whole data directory
+carries every folder's real row count and last activity. A project file that is renamed away
+leaves its rows with the index's empty columns instead of failing the listing, which is also why
+a listing still answers with that file gone. Three cross-file JOINs lost theirs:
+`approved_shapes` and `shapeless_human_admits` read the sessions first and then the corpus, and
+`unrecorded_of` reads the recorded child ids and then the children the index names. Consumers
+whose tables are all in the shared file are handed that FILE -
 `StoreAt::path(<a shared table>)` for the queues and the modes, and a lease's release or a
 writer's claim, which read the handle's own `Store::path()`, which a set answers with
 `shared.db`. P1's `split::Writer` threads are still not the write path: `exec` and `write_tx_at`
