@@ -1324,3 +1324,188 @@ fn spill_lines_sets_the_line_cap_and_leaves_the_byte_cap_alone() {
     let why = super::apply_spill_flag(&mut cfg, "--spill-lines", "lots").unwrap_err();
     assert!(why.contains("--spill-lines"), "{why}");
 }
+
+/// One open job for `session` in a store - the row the archive guard reads, and therefore the one
+/// the one-shot's tail reads. No process is started: what this is about is the decision, and a box
+/// with no cgroup (this one) cannot run the command that would write the row for real.
+fn an_open_job(store: &letibot_tokencore::store::Store, session: &str, handle: &str) {
+    let mut p = letibot_tokencore::store::ProcessRecord::starting(session, handle, None, 4242);
+    p.state = letibot_tokencore::store::ProcState::Running;
+    p.command = "cargo test".into();
+    store.put_process(&p).expect("the job row");
+}
+
+fn ended(store: &letibot_tokencore::store::Store, session: &str, handle: &str) {
+    let mut p = letibot_tokencore::store::ProcessRecord::starting(session, handle, None, 4242);
+    p.state = letibot_tokencore::store::ProcState::Done;
+    p.exit = Some(0);
+    store.put_process(&p).expect("the ended row");
+}
+
+/// A store file of this test's own, answered as (its directory, the file). A record is opened on
+/// it per site rather than shared: `Store` is not `Clone`, and two `Store::open`s of one path are
+/// one connection in this process - so the row a thread writes is the row the loop reads, in the
+/// order the watcher itself writes and rings in.
+fn a_store(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = letibot_sessionlog::testing::scratch(&format!("letibot-oneshot-{tag}"));
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    (dir.clone(), dir.join("sessions.db"))
+}
+
+fn a_reply(text: &str) -> crate::Outcome {
+    crate::Outcome::Replied(Box::new(crate::harness::Reply {
+        text: text.into(),
+        metrics: Vec::new(),
+        rounds: 1,
+        tool_calls: 0,
+        truncated: false,
+    }))
+}
+
+/// A job's end is the one-shot's next turn: the loop waits on the settlement, wakes the session,
+/// and answers `Settled` only once nothing is open.
+#[test]
+fn a_job_that_ends_is_a_turn_and_the_tail_settles() {
+    let (dir, file) = a_store("settles");
+    let store = letibot_tokencore::store::Store::open(&file).expect("a store");
+    let bell = letibot_sessionlog::registry::Bell::new();
+    an_open_job(&store, "s-shot", "j51");
+    // The job's end as the watcher does it: the row settles first, then the bell is rung. A wait
+    // that starts after it must answer at once, which is the whole reason both doors are read.
+    let ring = bell.clone();
+    let settler = file.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let writer = letibot_tokencore::store::Store::open(&settler).expect("the second handle");
+        ended(&writer, "s-shot", "j51");
+        ring.ring_settlement_wake("s-shot");
+    });
+    let mut turns = 0;
+    let tail = super::oneshot::drain(
+        &store,
+        "s-shot",
+        &bell,
+        std::time::Instant::now() + std::time::Duration::from_secs(20),
+        || {
+            turns += 1;
+            a_reply("the job finished")
+        },
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    match tail {
+        super::oneshot::Tail::Settled { turns: ran } => assert_eq!(
+            ran, 1,
+            "the settlement's turn was not counted, so the run cannot say it ran one"
+        ),
+        super::oneshot::Tail::Over { jobs } => {
+            panic!("the job ended and the tail still says {jobs:?} are open")
+        }
+    }
+    assert_eq!(turns, 1, "the wake door was taken {turns} time(s)");
+}
+
+/// A job that never ends does not hang the run: the budget is the only clock, and it ends the
+/// waiting with the handle in hand.
+#[test]
+fn a_job_that_never_ends_is_given_up_at_the_budget_naming_the_handle() {
+    let (dir, file) = a_store("budget");
+    let store = letibot_tokencore::store::Store::open(&file).expect("a store");
+    let bell = letibot_sessionlog::registry::Bell::new();
+    an_open_job(&store, "s-shot", "j51");
+    let began = std::time::Instant::now();
+    let tail = super::oneshot::drain(
+        &store,
+        "s-shot",
+        &bell,
+        began + std::time::Duration::from_millis(150),
+        || panic!("nothing settled, so no turn may run"),
+    );
+    let spent = began.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    match tail {
+        super::oneshot::Tail::Over { jobs } => assert_eq!(jobs, ["j51"]),
+        super::oneshot::Tail::Settled { .. } => {
+            panic!("a job no settlement ever named was settled")
+        }
+    }
+    assert!(
+        spent < std::time::Duration::from_secs(5),
+        "the wait outlived its deadline by {spent:?}"
+    );
+    // The line a person reads: which jobs, and the door that resumes them.
+    let line = super::oneshot::over_budget_line("s-shot", &["j51".into()], super::oneshot::BUDGET);
+    assert!(line.contains("`j51`"), "{line}");
+    assert!(line.contains("`letibot --session s-shot`"), "{line}");
+    assert!(
+        line.contains("6h"),
+        "the default budget is said as a span: {line}"
+    );
+}
+
+/// The run this must not change: no jobs is no tail at all, and the wake door is never taken.
+#[test]
+fn a_run_that_started_no_job_opens_no_tail() {
+    let (dir, file) = a_store("none");
+    let store = letibot_tokencore::store::Store::open(&file).expect("a store");
+    let bell = letibot_sessionlog::registry::Bell::new();
+    // Another session's job is not this one's: the tail reads the session's own rows, or every
+    // one-shot on this box would wait for its neighbour's build.
+    an_open_job(&store, "s-other", "j7");
+    let tail = super::oneshot::drain(
+        &store,
+        "s-shot",
+        &bell,
+        std::time::Instant::now() + std::time::Duration::from_secs(20),
+        || panic!("a session with no job of its own was woken"),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    match tail {
+        super::oneshot::Tail::Settled { turns } => assert_eq!(turns, 0),
+        super::oneshot::Tail::Over { jobs } => {
+            panic!("another session's job was counted: {jobs:?}")
+        }
+    }
+}
+
+/// `--one-shot-budget` is a span, and `0` is refused rather than read as "no bound": the waiting
+/// is what the number bounds, so a run without one is a run a wedged job can hold for ever.
+#[test]
+fn the_one_shot_budget_is_a_span_and_zero_is_refused() {
+    use std::time::Duration;
+    assert_eq!(
+        super::oneshot::budget_from_flag("90s").unwrap(),
+        Duration::from_secs(90)
+    );
+    assert_eq!(
+        super::oneshot::budget_from_flag("1h30m").unwrap(),
+        Duration::from_secs(90 * 60)
+    );
+    let zero = super::oneshot::budget_from_flag("0").unwrap_err();
+    assert!(zero.contains("--one-shot-budget"), "{zero}");
+    assert!(
+        zero.contains("bound"),
+        "the refusal says what is missing: {zero}"
+    );
+    let junk = super::oneshot::budget_from_flag("6").unwrap_err();
+    assert!(junk.contains("--one-shot-budget"), "{junk}");
+    // And the parser reads the flag at all: the help is generated from that table, so a flag the
+    // table does not carry is one no operator could have found.
+    assert!(super::help::knows("--one-shot-budget"));
+}
+
+/// The exit status, which is the half of the contract a script reads: `0` only when nothing is
+/// still open, and the budget's `75` outranking a failed step.
+#[test]
+fn a_one_shot_passes_only_with_no_job_open() {
+    assert_eq!(super::oneshot::status(false, 0), 0);
+    assert_eq!(super::oneshot::status(false, 1), 1);
+    assert_eq!(
+        super::oneshot::status(true, 0),
+        super::oneshot::EXIT_STILL_OPEN
+    );
+    assert_eq!(
+        super::oneshot::status(true, 2),
+        super::oneshot::EXIT_STILL_OPEN,
+        "a job still open is the more specific fact, and it names the way back"
+    );
+}

@@ -90,6 +90,12 @@ pub(super) const FLAGS: &[Flag] = &[
         "a head's slash verb, in order with --prompt",
         None,
     ),
+    flag(
+        &["--one-shot-budget"],
+        Some("SPAN"),
+        "a --prompt run's wall clock, its jobs included: 6h, else 75",
+        None,
+    ),
     // --- the model ----------------------------------------------------------------------
     flag(
         &["--model"],

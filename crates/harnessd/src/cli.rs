@@ -41,6 +41,8 @@
 use std::path::PathBuf;
 
 mod help;
+/// The one-shot's job tail, in a file of its own: it is the only part of this loop that waits.
+mod oneshot;
 
 use help::{config_notice, knows, removed, usage};
 
@@ -579,6 +581,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // and nothing could change the session between them, so the one thing worth testing about
     // a mid-session model switch - that the turn AFTER it works - could only be done by hand
     let mut steps: Vec<Step> = Vec::new();
+    // What `--one-shot-budget` said, if it did. Read below, where a run knows it is a one-shot.
+    let mut one_shot_budget: Option<std::time::Duration> = None;
     // `--model` under `--provider` names the provider's model, not the local
     // alias; resolved after the flags, because either may come first.
     let mut model_given: Option<String> = None;
@@ -1025,6 +1029,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // opt-in, and the tool's refusal names it.
             "--web-fetch" => cfg.web_fetch = true,
             "--prompt" => steps.push(Step::Prompt(next()?)),
+            // How long a one-shot may run in TOTAL - its steps, and then the jobs it left
+            // running behind them - because a job may be wedged and the run still has to end.
+            // `0` is refused: this is the only bound on the waiting, so no bound is no run.
+            "--one-shot-budget" => one_shot_budget = Some(oneshot::budget_from_flag(&next()?)?),
             // The slash verbs a head can send, from a script: `--slash "models
             // deepseek"`, `--slash compact`, `--slash tools`. Written without the
             // leading `/`, like the wire carries them.
@@ -1112,6 +1120,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if cfg.one_shot {
         cfg.serve_queues = false;
     }
+    // The one-shot's wall budget, counted from here: the steps that follow are its first half and
+    // the jobs they leave running are the second. A `--one-shot-budget` given for a run that is
+    // NOT a one-shot does nothing, so it is refused rather than carried along quietly.
+    if one_shot_budget.is_some() && !cfg.one_shot {
+        return Err(
+            "--one-shot-budget names the wall clock of a `--prompt` run, and this line \
+                    runs no steps. Nothing was done"
+                .into(),
+        );
+    }
+    let one_shot_deadline = cfg
+        .one_shot
+        .then(|| std::time::Instant::now() + one_shot_budget.unwrap_or(oneshot::BUDGET));
 
     // The role, now that the workspace is known: a profile's file is read from it, its `seat:` is
     // what seats this session, and its overlay is message zero's role paragraph.
@@ -1960,6 +1981,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     eprintln!();
 
     let mut failed = 0;
+    // The first job left open when the budget ran out, if it did: what the exit status and its one
+    // line are about. Declared out here because the loop's `break` is not the only way to it.
+    let mut still_open: Option<Vec<String>> = None;
     if !steps.is_empty() {
         for step in &steps {
             let p = match step {
@@ -2027,11 +2051,46 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     }
                 }
             }
+            // A step's turn is not the end of the step: the jobs it STARTED are still running, and
+            // a one-shot that exits now leaves the work half done with nothing to resume it. This
+            // is the daemon's own door - the settlement the job's end rang, and `Sessions::wake` -
+            // run until no job is open. The budget is the only clock; a wedged job does not hang
+            // the run.
+            if let (Some(at), Some(deadline)) = (&one_shot_store, one_shot_deadline)
+                && let Ok(store) = at.open()
+            {
+                let tail = oneshot::drain(&store, &session_id, registry.bell(), deadline, || {
+                    sessions.wake(&session_id)
+                });
+                match tail {
+                    oneshot::Tail::Settled { turns: 0 } => {}
+                    oneshot::Tail::Settled { turns } => {
+                        eprintln!("  [{turns} turn(s) after the job(s) this step left running]")
+                    }
+                    oneshot::Tail::Over { jobs } => {
+                        still_open = Some(jobs);
+                        // No later step: the wall clock this run was given is spent, and a second
+                        // prompt would spend a budget nobody has.
+                        break;
+                    }
+                }
+            }
         }
         // The steps are over, so the one-shot's signal grace no longer applies. A turn that
         // was interrupted properly and then spends its orderly tail (up to five seconds of
         // subagent threads, a flowy seat stopping) must not be killed by its own watchdog with a
         crate::daemon::one_shot_steps_done();
+        // Nothing here may exit 0 with work still running. The loop above waits out every job a
+        // step left; this is the same question asked once more, because a step that FAILED out of
+        // the loop never reached it, and 0 means the last turn ended with no job open.
+        if still_open.is_none()
+            && let Some(store) = one_shot_store.as_ref().and_then(|at| at.open().ok())
+        {
+            let jobs = oneshot::open_jobs(&store, &session_id);
+            if !jobs.is_empty() {
+                still_open = Some(jobs);
+            }
+        }
         // Its steps are over, so its session is put away, while this process can still say
         // whether a turn or a card holds it.
         if let Some(store) = one_shot_store.as_ref().and_then(|at| at.open().ok()) {
@@ -2067,11 +2126,23 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         for said in letibot_tools::remote::guests_down() {
             eprintln!("  {said}");
         }
+        // What held the session, and why the run is not a pass: the jobs by handle, and the id
+        // that resumes them. Last of the diagnostics, so it is the line a script reads.
+        if let Some(jobs) = &still_open {
+            eprintln!(
+                "  ! {}",
+                oneshot::over_budget_line(
+                    &session_id,
+                    jobs,
+                    one_shot_budget.unwrap_or(oneshot::BUDGET)
+                )
+            );
+        }
         lifeline.stopped();
         if let Some(seat) = &seat {
             seat.stop();
         }
-        return Ok(if failed > 0 { 1 } else { 0 });
+        return Ok(oneshot::status(still_open.is_some(), failed));
     }
 
     // The HTTP head, before the worker loop takes this thread. Its own thread, its own
