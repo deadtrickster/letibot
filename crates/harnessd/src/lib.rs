@@ -88,6 +88,9 @@ pub mod offer_evidence;
 pub mod offer_rows;
 pub mod operator_ask;
 pub mod oracle;
+// rano's PDF renderers, registered with `letibot-transcript`: a document is bytes on a row, so
+// nothing above this crate can hand a renderer a path of its own.
+pub mod pdf;
 pub mod perimeter;
 pub mod plugins;
 pub mod policy_skills;

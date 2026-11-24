@@ -912,6 +912,41 @@ fn a_pdf_goes_as_a_document_only_where_the_catalogue_says_so() {
     assert!(!senses.takes_pdfs(), "an absent row became a yes");
 }
 
+/// A document a door will not take goes as PICTURES only when the model SEES and the reason is the
+/// door: a model that refused a PDF outright would earn the same refusal for its pictures, and a
+/// model with no eyes has nothing to do with them.
+#[test]
+fn a_refused_document_goes_as_pictures_only_to_a_model_that_sees_and_did_not_refuse_it() {
+    let no_pdf = Senses {
+        eyes: Eyes::Sees,
+        pdf_why: Some("the catalogue lists no pdf input for this model"),
+    };
+    assert!(
+        super::document_as_pictures(no_pdf),
+        "a seeing model got text"
+    );
+    let refused = Senses {
+        eyes: Eyes::Sees,
+        pdf_why: Some("the provider refused a PDF for this model"),
+    };
+    assert!(
+        !super::document_as_pictures(refused),
+        "a model that refused a PDF was sent it as pictures"
+    );
+    let blind = Senses {
+        eyes: Eyes::TextOnly("glm-5.3"),
+        pdf_why: Some("the catalogue lists no pdf input for this model"),
+    };
+    assert!(
+        !super::document_as_pictures(blind),
+        "a blind model got pages"
+    );
+    // And a document the door DOES take is not a picture question at all.
+    assert!(!super::document_as_pictures(Senses::taking_pdfs(
+        Eyes::Sees
+    )));
+}
+
 /// Z.ai documents that a GLM request carries file parts OR image/video parts and never both, so a
 /// GLM request holding a picture sends its PDF as text. A door that allows the mix keeps the
 /// document.

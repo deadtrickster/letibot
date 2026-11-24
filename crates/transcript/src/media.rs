@@ -266,35 +266,23 @@ pub fn complete_document(mime: &str, bytes: &[u8]) -> bool {
     }
 }
 
-/// The text of a PDF, from an outside extractor, because this tree has no PDF parser: a page's
-/// content stream can be compressed, encrypted or behind an object stream, and a hand-rolled
-/// reader would be a second, wrong answer to what `pdftotext` already answers. `None` when the box
-/// has no `pdftotext`, or it produced nothing.
-pub fn pdf_text(bytes: &[u8]) -> Option<String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    // `pdftotext - -` is stdin to stdout: no temporary file, so no cleanup and no path a
-    // concurrent session could take.
-    let mut child = Command::new("pdftotext")
-        .args(["-", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdin = child.stdin.take()?;
-    // Fed from a thread: a document larger than a pipe buffer blocks the writer, and doing that
-    // before reading the extractor's own output deadlocks as soon as that pipe fills too.
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            let _ = stdin.write_all(bytes);
-        });
-        child.wait_with_output().ok()
-    })
-    .filter(|o| o.status.success())
-    .and_then(|out| {
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!text.is_empty()).then_some(text)
+/// The text of a PDF as markdown, through [`crate::pdf`]: the daemon's renderer when one is
+/// registered, `pdftotext` on PATH otherwise. `None` when neither can read it - a hand-rolled
+/// parser here would be a second, wrong answer to what those two already answer.
+pub fn document_text(bytes: &[u8], title: &str) -> Option<String> {
+    crate::pdf::markdown(bytes, title)
+}
+
+/// A document said as PROMPT TEXT, for a carrier with no document part at all - a local dialect's
+/// chat template, a head's one-line row, an importer that has nowhere to put bytes. One spelling,
+/// because four renderers each inventing a placeholder would be four different lies about a file.
+pub fn document_as_text(data_ref: &str, filename: &str) -> String {
+    let bytes = decode_base64(wire_payload(data_ref));
+    document_text(&bytes, filename).unwrap_or_else(|| {
+        format!(
+            "[{filename}: a PDF nothing here could read - no renderer is registered and this box \
+             has no `pdftotext`]"
+        )
     })
 }
 
@@ -753,11 +741,25 @@ mod tests {
         let m = Media::document("notes.txt", &bytes).expect("a complete pdf");
         assert_eq!(m.mime, "application/pdf");
         assert!(m.is_document());
-        assert_eq!((m.width, m.height), (None, None), "a page is not a pixel size");
-        assert!(m.summary().starts_with("document application/pdf"), "{}", m.summary());
-        assert_eq!(m.data_ref, crate::testing::data_ref("application/pdf", &bytes));
+        assert_eq!(
+            (m.width, m.height),
+            (None, None),
+            "a page is not a pixel size"
+        );
+        assert!(
+            m.summary().starts_with("document application/pdf"),
+            "{}",
+            m.summary()
+        );
+        assert_eq!(
+            m.data_ref,
+            crate::testing::data_ref("application/pdf", &bytes)
+        );
         // The picture channel refuses it, in both spellings a caller might try.
-        assert!(Media::of("a.pdf", &bytes).is_none(), "a pdf went out as an image");
+        assert!(
+            Media::of("a.pdf", &bytes).is_none(),
+            "a pdf went out as an image"
+        );
         assert!(!data_ref_is_image(&m.data_ref), "a pdf was called an image");
         assert!(!complete_image("application/pdf", &bytes));
     }

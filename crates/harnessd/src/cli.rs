@@ -444,6 +444,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let _guests = GuestsDown;
     // The file this process was started from, before a rebuild can replace it.
     crate::exe_stamp::take();
+    // A PDF's page count, pages and text are rano's: registered once here, because a row keeps a
+    // document as bytes and this is the process whose PATH the renderers are found on.
+    crate::pdf::install();
     // Step into the daemon's own cgroup leaf before anything here can start a child
     // - `delegate_memory` refuses when the cgroup already holds another pid, so a
     // `git` the startup ran first would turn every tool call of this daemon's life uncapped.

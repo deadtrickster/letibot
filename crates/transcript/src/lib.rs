@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Text a head did not author, made safe for a terminal - here because both
 /// sides of the log/wire boundary need it and neither can see the other.
 pub mod media;
+// A PDF's page count, pages and text: rano's renderers, registered by the daemon, with the one
+// fallback this crate may assume on its own.
+pub mod pdf;
 pub mod sanitize;
 /// Fixtures that are real images - public for the reason `letibot_sessionlog::testing` is: the
 /// crates that need a picture in a test are not this one. See the module for what it replaced.

@@ -39,6 +39,7 @@ impl Tool for Read {
                     "limit": {"type": "integer", "description": "How many lines to return."},
                     "column_offset": {"type": "integer", "description": "Zero-based character offset into line `offset`. With it (or `columns`) the call reads that one line, from this character on, so a line too long to show whole is read in pieces and each piece can be edited."},
                     "columns": {"type": "integer", "description": "How many characters of line `offset` to return from `column_offset`; at most 32768, the default."},
+                    "pages": {"type": "string", "description": "For a PDF: the pages whose TEXT to return instead of the document, as `3` or `1-5` (1-based). Use it when the file is too big to send whole and only some of it matters."},
                     "ranges": {
                         "type": "array",
                         "description": "Several windows of THIS file in one call, instead of one `read` per window. Each is `offset` (1-based) and optional `limit`. Use it when you already know two or three places to look — it is one call and one gate decision instead of several. Overrides `offset`/`limit`.",
@@ -480,6 +481,20 @@ fn directory(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
         "`{path}` is a directory, so its listing is below rather than its text. Call \
          read again with one of these files."
     ))
+}
+
+/// A `pages` argument: one page (`3`) or a range (`1-5`), one-based, as a reader counts them.
+/// `None` for anything else, which is a refusal rather than a guess at what was meant.
+fn parse_pages(spec: &str) -> Option<(u32, u32)> {
+    let spec = spec.trim();
+    let (from, to) = match spec.split_once('-') {
+        Some((a, b)) => (a.trim().parse().ok()?, b.trim().parse().ok()?),
+        None => {
+            let n: u32 = spec.parse().ok()?;
+            (n, n)
+        }
+    };
+    (from >= 1 && to >= from).then_some((from, to))
 }
 
 #[cfg(test)]

@@ -335,15 +335,62 @@ pub(crate) fn document_said(nth: usize, mime: &str, data_ref: &str, why: &str) -
     };
     let payload =
         letibot_transcript::media::decode_base64(letibot_transcript::media::wire_payload(data_ref));
-    match letibot_transcript::media::pdf_text(&payload) {
+    // The renderer's (rano's, registered by the daemon) or `pdftotext`'s: `document_text` is the
+    // one door, because a prompt that moved between the two would re-prefill every cached turn.
+    match letibot_transcript::media::document_text(&payload, &format!("document {nth}")) {
         Some(text) => format!("[document {nth} · {mime} · {size} — sent as text: {why}]\n{text}"),
-        // No extractor on this box: the model is told what it did not get, which is the one thing
+        // Nothing here could read it: the model is told what it did not get, which is the one thing
         // it can act on. A file's name alone would read as the document's contents.
         None => format!(
-            "[document {nth} · {mime} · {size} — not sent: {why}, and this box has no `pdftotext` \
-             to extract it with, so the document's contents were not read]"
+            "[document {nth} · {mime} · {size} — not sent: {why}, and nothing on this box could \
+             read a PDF (no renderer, no `pdftotext`), so its contents were not read]"
         ),
     }
+}
+
+/// A PDF as PICTURES, for a model that sees but takes no document: the same bytes it refused as a
+/// file are what it can read page by page. The header says how many pages the document has and how
+/// many of them are here, because a silent ten of forty would read as the whole thing. The parts are
+/// the protocol's own (an `image_url`, an `inlineData`, an `input_image`), so only the references
+/// and the sentence come from here.
+pub(crate) fn document_pictures(
+    nth: usize,
+    mime: &str,
+    data_ref: &str,
+) -> Option<(String, Vec<String>)> {
+    let payload =
+        letibot_transcript::media::decode_base64(letibot_transcript::media::wire_payload(data_ref));
+    let (pages, shots) =
+        letibot_transcript::pdf::pages_as_png(&payload, letibot_transcript::pdf::PAGE_DPI)?;
+    if shots.is_empty() {
+        return None;
+    }
+    let said = format!(
+        "[document {nth} · {mime} — sent as {} page picture(s) of {pages}: this model takes no PDF, \
+         but it sees, so its pages are attached]",
+        shots.len()
+    );
+    let refs = shots
+        .into_iter()
+        .map(|png| {
+            format!(
+                "data:image/png;base64,{}",
+                letibot_transcript::media::encode_base64(&png)
+            )
+        })
+        .collect();
+    Some((said, refs))
+}
+
+/// Whether a document a door cannot take should go as page PICTURES instead of as its text.
+/// The model must SEE, and the reason the file is not sent must be the door rather than the model's
+/// own refusal of documents: a model that refused a PDF outright is one whose pictures of it would
+/// earn the same 400 again.
+pub(crate) fn document_as_pictures(senses: Senses<'_>) -> bool {
+    senses.eyes.takes_images()
+        && senses
+            .pdf_why
+            .is_some_and(|why| !why.contains("refused a PDF"))
 }
 
 /// Does this refusal name a DOCUMENT rather than the model or a picture? Consulted only for a 400
@@ -483,9 +530,9 @@ pub fn convert_with_tail(
                             }
                         }
                         // A document is a `file` part where the door takes one (Z.ai's shape for
-                        // GLM, which is the chat-completions file part), and its own text where it
-                        // does not: the whole point of the fallback is that a model which cannot
-                        // take a file still reads what is in it.
+                        // GLM, which is the chat-completions file part). A door that takes no file
+                        // gets the pages as PICTURES when the model sees, and its text otherwise:
+                        // the whole point of a fallback is that the model still reads what is in it.
                         UserPart::Document {
                             media_type,
                             data_ref,
@@ -494,10 +541,28 @@ pub fn convert_with_tail(
                             documents += 1;
                             match senses.pdf_why {
                                 None => content.push(file_part(filename, data_ref)),
-                                Some(why) => content.push(json!({
-                                    "type": "text",
-                                    "text": document_said(documents, media_type, data_ref, why),
-                                })),
+                                Some(why) => {
+                                    let pictures = document_as_pictures(senses)
+                                        .then(|| document_pictures(documents, media_type, data_ref))
+                                        .flatten();
+                                    match pictures {
+                                        Some((said, refs)) => {
+                                            content.push(json!({"type": "text", "text": said}));
+                                            for r in refs {
+                                                content.push(json!({
+                                                    "type": "image_url",
+                                                    "image_url": {"url": r},
+                                                }));
+                                            }
+                                        }
+                                        None => content.push(json!({
+                                            "type": "text",
+                                            "text": document_said(
+                                                documents, media_type, data_ref, why
+                                            ),
+                                        })),
+                                    }
+                                }
                             }
                         }
                         UserPart::FileRef { path, .. } => {
