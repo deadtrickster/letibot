@@ -459,9 +459,7 @@ fn the_snapshot_scripts_list_is_the_presets_own() {
     );
 }
 
-/// The one test that reaches models.dev: the live check a person runs after changing the refresh. It
-/// goes through the production paths - `refresh`, then the age rule - so what it proves is the code
-/// the daemon runs. It writes where `XDG_CACHE_HOME` says, so a check is run with a scratch one:
+/// The one test that reaches models.dev, through the production paths, where `XDG_CACHE_HOME` says:
 ///
 /// `XDG_CACHE_HOME=$(mktemp -d) cargo test -p letibot-provider --lib -- --ignored --nocapture`
 #[test]
