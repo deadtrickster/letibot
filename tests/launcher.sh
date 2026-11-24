@@ -780,6 +780,10 @@ if "--find-session" in sys.argv:
         print("there\ts-twin-1\ttwin-a\t" + ws + "\t3h")
         print("there\ts-twin-2\ttwin-b\t" + ws + "\t5d")
         sys.exit(0)
+    # A store query that fails without a word: `letibot --continue NAME` once answered this
+    # with an exit code and nothing else.
+    if name == "silent-name":
+        sys.exit(1)
     sys.stderr.write("no session named %r\n" % name)
     sys.exit(1)
 p = sys.argv[sys.argv.index("--socket") + 1]
@@ -973,6 +977,31 @@ PYTTY
     daemon_argv | sed 's/^/     /'
     fails=$((fails + 1))
   fi
+
+  # A LOOKUP THAT FAILS SAYING NOTHING IS STILL REFUSED IN WORDS. The store query's exit code with
+  # no message was `--continue NAME` doing nothing at all - the operator's report - so the launcher
+  # has to carry the query's own answer, or say the query gave none.
+  for verb in --continue --session; do
+    d="$T/silent${verb#--}"
+    mkdir -p "$d"
+    fresh
+    out="$(RUN_WS="$d" run "$DEFAULT_ONLY" "$verb" silent-name)"
+    rc=$?
+    expect "$verb NAME with a silent store query is refused in words" "$out" \
+      "no session named 'silent-name', and the lookup failed: it said nothing at all"
+    expect "  ...and names what to run instead" "$out" "--sessions lists what is on disk"
+    if [ "$rc" -ne 0 ]; then echo "ok   ...and exits non-zero"; else
+      echo "FAIL ...and exits non-zero: exit $rc"
+      fails=$((fails + 1))
+    fi
+    if [ -z "$(daemon_argv)" ] && [ -z "$(head_argv)" ]; then
+      echo "ok   ...and opens nothing"
+    else
+      echo "FAIL ...and opens nothing:"
+      { daemon_argv; head_argv; } | sed 's/^/     /'
+      fails=$((fails + 1))
+    fi
+  done
 
   # A NAME FROM ANOTHER FOLDER IS OFFERED, NEVER TAKEN (`--continue NAME` anywhere). The stub
   # answers `far-name` with one session in $T/farws, and `twin` with two there.

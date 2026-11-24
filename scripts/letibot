@@ -1857,7 +1857,12 @@ resolve_named() { # resolve_named NAME -- sets SESSION; may retarget WORKSPACE a
       return 0
       ;;
   esac
-  out="$("${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --find-session "$name" --scope "$WORKSPACE")" || return 1
+  # The query's own words, both streams: a failed lookup that exits non-zero saying nothing is
+  # what made `--continue NAME` do nothing at all, and a person cannot act on an exit code.
+  if ! out="$("${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --find-session "$name" --scope "$WORKSPACE" 2>&1)"; then
+    die "no session named '$name', and the lookup failed: ${out:-it said nothing at all}
+         $ME --sessions lists what is on disk here, and --session ID opens one by id"
+  fi
   while IFS=$'\t' read -r kind id title ws age; do
     [ "$kind" = here ] || [ "$kind" = there ] || continue
     if [ "$kind" = here ]; then
