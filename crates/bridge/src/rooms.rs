@@ -1059,6 +1059,15 @@ struct Inner {
     reraise_after: Mutex<Duration>,
     /// The newest seq the coordinator's cursor was acked to, so a reconnect resumes after it.
     acked: AtomicU64,
+    /// The newest seq the coordinator says this seat's CHANNEL was written to - its own pushes, and
+    /// what this bridge told it with `Seen`. A fresh process resumes here, so a restart over a
+    /// coordinator that kept its log hands nothing to Claude Code twice, and a row said while the
+    /// bridge was down is above it and is handed over once (`resume`).
+    seen: AtomicU64,
+    /// The oldest seq this process was told about and did not hand over (0 for none). The mark above
+    /// is the coordinator's word that the channel was written to, and a refusal is invisible to it:
+    /// a row the stream would not take is offered again from here up.
+    owed: AtomicU64,
     /// The connection generation whose gap was replayed, so one gap is fetched once however the
     /// connection was opened - a pass of the supervisor's loop, or a round trip that redialled.
     replayed: AtomicU64,
@@ -1128,6 +1137,8 @@ impl RoomLink {
                 pending: Mutex::new(std::collections::BTreeMap::new()),
                 reraise_after: Mutex::new(reraise_after()),
                 acked: AtomicU64::new(0),
+                seen: AtomicU64::new(0),
+                owed: AtomicU64::new(0),
                 replayed: AtomicU64::new(0),
                 untaken: AtomicBool::new(false),
                 instance: Mutex::new(None),
@@ -1624,7 +1635,13 @@ impl RoomLink {
             .delivered
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if seq == 0 || seq <= self.inner.acked.load(Ordering::SeqCst) || handed.seqs.contains(&seq)
+        // The mark is where the coordinator says the channel was written to, so a row under it is
+        // skipped - except from the oldest row THIS process refused: the room cannot see a refusal
+        // (it queued the frame), and a row the stream did not take must still be offered again.
+        let refused = self.inner.owed.load(Ordering::SeqCst);
+        if seq == 0
+            || handed.seqs.contains(&seq)
+            || (seq <= self.resume() && (refused == 0 || seq < refused))
         {
             return false;
         }
@@ -1645,8 +1662,14 @@ impl RoomLink {
             }
             return true;
         }
-        // Not taken: no ack until a fresh replay has handed it over.
+        // Not taken: no ack until a fresh replay has handed it over, and from here up the replay
+        // does not trust the coordinator's mark - this row is the proof the mark ran ahead of the
+        // channel. `handed` is held across this, so the oldest refused seq needs no CAS.
         self.inner.untaken.store(true, Ordering::SeqCst);
+        let was = self.inner.owed.load(Ordering::SeqCst);
+        self.inner
+            .owed
+            .store(if was == 0 { seq } else { was.min(seq) }, Ordering::SeqCst);
         false
     }
 
@@ -1800,6 +1823,17 @@ impl RoomLink {
         self.request(&json!({ "type": "ack", "seq": seq }))
     }
 
+    /// Where this seat's channel already reached: the cursor the model's own reading moved, and the
+    /// mark the coordinator holds for what was written to the channel. The higher, because a bridge
+    /// that restarts owes the coordinator's mark and nothing under it - a row said while it was down
+    /// is above both and is handed over once.
+    fn resume(&self) -> u64 {
+        self.inner
+            .acked
+            .load(Ordering::SeqCst)
+            .max(self.inner.seen.load(Ordering::SeqCst))
+    }
+
     /// What the cursor still holds for this seat, once per connection. Keyed to the connection, not
     /// to the call that opened it, because other round trips redial on their own retry and a gap
     /// nobody replays is a message the model never sees.
@@ -1817,6 +1851,12 @@ impl RoomLink {
                 return;
             };
             self.open_a_new_log(&reply);
+            // The coordinator's mark for this seat: what it already pushed to this channel, and what
+            // a bridge before this one told it. It is the floor of the replay, so a process started
+            // after a restart reads no old row out of an inbox whose cursor never moved.
+            self.inner
+                .seen
+                .fetch_max(reply["seen"].as_u64().unwrap_or(0), Ordering::SeqCst);
             let rows = reply["rows"].as_array().cloned().unwrap_or_default();
             for m in &rows {
                 self.replay(m, deliver);
@@ -1849,7 +1889,7 @@ impl RoomLink {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .top
-            .max(self.inner.acked.load(Ordering::SeqCst));
+            .max(self.resume());
         if head >= mine {
             return;
         }
@@ -1862,6 +1902,8 @@ impl RoomLink {
             .unwrap_or_else(|e| e.into_inner()) = Handed::default();
         self.pending_map().clear();
         self.inner.acked.store(0, Ordering::SeqCst);
+        self.inner.seen.store(0, Ordering::SeqCst);
+        self.inner.owed.store(0, Ordering::SeqCst);
     }
 
     /// The gap of the live connection is replayed and every row since was taken.
@@ -1893,6 +1935,14 @@ impl RoomLink {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .top;
+            // What the channel was WRITTEN to, which is not where the model stands: the mark tells
+            // the coordinator so a bridge that restarts resumes above this row and hands it over no
+            // second time. Written in this pass, before the cursor's ack, so a process that dies
+            // between the two comes back with the mark already made.
+            if delivered > self.inner.seen.load(Ordering::SeqCst) && !self.see_delivered(delivered)
+            {
+                return;
+            }
             // Never past a message the model has not seen: a push is a write, not a delivery.
             let upto = match self.pending_map().keys().next() {
                 Some(first) => delivered.min(first - 1),
@@ -1913,6 +1963,37 @@ impl RoomLink {
                     return;
                 }
                 Err(_) => self.drop_connection(),
+            }
+        }
+    }
+
+    /// Tell the coordinator that `upto` reached this seat's channel. Not [`RoomLink::ack`]: the cursor
+    /// is where the MODEL stands and moves only when it shows it read a row, while this mark is where
+    /// the CHANNEL was written - so a bridge that restarts resumes here and hands nothing over twice.
+    /// A round trip and not a `request`, because the caller's pass already holds the call lock.
+    fn see_delivered(&self, upto: u64) -> bool {
+        let theirs = *self
+            .inner
+            .protocol
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // A coordinator that predates the frame reads it as an unreadable line and closes the
+        // connection, so it is not sent one. The mark then lives in this process only, and the
+        // cursor's ack below still reaches it - what this build did before the frame existed.
+        if letibot_room::wire::frame_since("seen")
+            .is_some_and(|need| theirs.is_none_or(|t| t < need))
+        {
+            self.inner.seen.fetch_max(upto, Ordering::SeqCst);
+            return true;
+        }
+        match self.round_trip(&json!({ "type": "seen", "seq": upto })) {
+            Ok(_) => {
+                self.inner.seen.fetch_max(upto, Ordering::SeqCst);
+                true
+            }
+            Err(_) => {
+                self.drop_connection();
+                false
             }
         }
     }

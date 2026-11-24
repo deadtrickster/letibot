@@ -18,6 +18,10 @@ struct Fake {
     conns: Arc<Mutex<Vec<Arc<Conn>>>>,
     log: Arc<Mutex<Vec<Value>>>,
     cursor: Arc<Mutex<u64>>,
+    /// The newest seq this seat's CHANNEL was written to: the coordinator's own pushes, and what the
+    /// bridge told it with a `seen` frame. The cursor is where the MODEL stands and a push never
+    /// moves it; this is the mark a bridge resumes from.
+    seen: Arc<Mutex<u64>>,
     /// The coordinator start the welcome names; `restart` moves it.
     instance: Arc<Mutex<u64>>,
     /// The blobs a `put_blob` stored, by id: a `say` naming one gets it back, as the real store
@@ -42,6 +46,19 @@ struct Conn {
 struct Out {
     stream: UnixStream,
     greeted: bool,
+}
+
+/// What every connection of one coordinator serves: one log, one cursor, one mark, one blob store.
+/// One value because `serve_one` already takes the socket and the connection, and a fixture that
+/// spelled the rest out again was eight arguments wide.
+#[derive(Clone)]
+struct Shared {
+    frames: Arc<Mutex<Vec<Value>>>,
+    log: Arc<Mutex<Vec<Value>>>,
+    cursor: Arc<Mutex<u64>>,
+    seen: Arc<Mutex<u64>>,
+    instance: Arc<Mutex<u64>>,
+    blobs: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 
 impl Conn {
@@ -72,8 +89,10 @@ impl Conn {
     }
 
     /// A message the coordinator pushes, sent after the welcome, because a line before it is read
-    /// as the hello's answer. Bounded, so a connection nobody greets cannot hang a test.
-    fn deliver(&self, frame: &Value) {
+    /// as the hello's answer. Bounded, so a connection nobody greets cannot hang a test. `false`
+    /// when this connection wrote nothing - a socket that is gone, which the real server counts the
+    /// same way: a push a connection did not take is no delivery, so it moves no mark.
+    fn deliver(&self, frame: &Value) -> bool {
         let mut out = self.out.lock().unwrap();
         let end = Instant::now() + Duration::from_secs(20);
         while !out.greeted {
@@ -83,7 +102,7 @@ impl Conn {
             }
             out = self.greeted.wait_timeout(out, left).unwrap().0;
         }
-        let _ = writeln!(out.stream, "{frame}");
+        writeln!(out.stream, "{frame}").is_ok()
     }
 
     fn close(&self) {
@@ -127,35 +146,37 @@ impl Fake {
             conns: Arc::default(),
             log: Arc::default(),
             cursor: Arc::default(),
+            seen: Arc::default(),
             instance: Arc::new(Mutex::new(1)),
             blobs: Arc::default(),
         };
-        let (frames, conns, log, cursor, instance, blobs) = (
+        let (frames, conns, log, cursor, seen, instance, blobs) = (
             fake.frames.clone(),
             fake.conns.clone(),
             fake.log.clone(),
             fake.cursor.clone(),
+            fake.seen.clone(),
             fake.instance.clone(),
             fake.blobs.clone(),
         );
+        let shared = Shared {
+            frames,
+            log,
+            cursor,
+            seen,
+            instance,
+            blobs,
+        };
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let conn = Conn::new(
                     stream.try_clone().unwrap(),
                     greet_after,
-                    *instance.lock().unwrap(),
+                    *shared.instance.lock().unwrap(),
                 );
                 conns.lock().unwrap().push(conn.clone());
-                let (frames, log, cursor, instance, blobs) = (
-                    frames.clone(),
-                    log.clone(),
-                    cursor.clone(),
-                    instance.clone(),
-                    blobs.clone(),
-                );
-                std::thread::spawn(move || {
-                    serve_one(stream, conn, frames, log, cursor, instance, blobs)
-                });
+                let shared = shared.clone();
+                std::thread::spawn(move || serve_one(stream, conn, shared));
             }
         });
         fake
@@ -192,8 +213,16 @@ impl Fake {
         let frame = json!({"type": "chat", "message": m, "names_you": names});
         // Cloned out of the lock: a connection that has not said hello yet is waited on here.
         let conns: Vec<Arc<Conn>> = self.conns.lock().unwrap().clone();
+        let mut took = false;
         for c in &conns {
-            c.deliver(&frame);
+            took |= c.deliver(&frame);
+        }
+        // The mark is the coordinator's, as it is on the real one: a push a live connection took is
+        // a row the channel has, and a push with nobody connected is not - nothing was written.
+        if took {
+            let seq = m["seq"].as_u64().unwrap_or(0);
+            let mut seen = self.seen.lock().unwrap();
+            *seen = (*seen).max(seq);
         }
         m
     }
@@ -232,6 +261,7 @@ impl Fake {
         self.drop_connections();
         log.clear();
         *self.cursor.lock().unwrap() = 0;
+        *self.seen.lock().unwrap() = 0;
         *self.instance.lock().unwrap() += 1;
         let m = json!({"seq": 1, "ts": 0, "room": room, "author": author,
             "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
@@ -258,6 +288,11 @@ impl Fake {
         m
     }
 
+    /// The seq this seat's channel was written to, as the coordinator holds it.
+    fn seen(&self) -> u64 {
+        *self.seen.lock().unwrap()
+    }
+
     fn drop_connections(&self) {
         for c in self.conns.lock().unwrap().drain(..) {
             c.close();
@@ -275,15 +310,15 @@ impl Fake {
     }
 }
 
-fn serve_one(
-    stream: UnixStream,
-    conn: Arc<Conn>,
-    frames: Arc<Mutex<Vec<Value>>>,
-    log: Arc<Mutex<Vec<Value>>>,
-    cursor: Arc<Mutex<u64>>,
-    instance: Arc<Mutex<u64>>,
-    blobs: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
-) {
+fn serve_one(stream: UnixStream, conn: Arc<Conn>, shared: Shared) {
+    let Shared {
+        frames,
+        log,
+        cursor,
+        seen,
+        instance,
+        blobs,
+    } = shared;
     let mut seat = String::from("session");
     let mut name = String::new();
     let born = conn.born;
@@ -363,6 +398,7 @@ fn serve_one(
             "inbox" => {
                 let log = log.lock().unwrap();
                 let cur = *cursor.lock().unwrap();
+                let mark = *seen.lock().unwrap();
                 let att = f["attention"].as_str().unwrap_or("to_me");
                 let limit = f["limit"].as_u64().unwrap_or(50) as usize;
                 let rows: Vec<Value> = log
@@ -376,7 +412,8 @@ fn serve_one(
                     .take(limit)
                     .cloned()
                     .collect();
-                json!({"type": "inbox", "rows": rows, "skipped": 0, "cursor": cur, "head": log.len()})
+                json!({"type": "inbox", "rows": rows, "skipped": 0, "cursor": cur,
+                    "head": log.len(), "seen": mark})
             }
             "ack" => {
                 let mut c = cursor.lock().unwrap();
@@ -387,6 +424,15 @@ fn serve_one(
                     *c = (*c).max(f["seq"].as_u64().unwrap());
                 }
                 json!({"type": "acked", "cursor": *c})
+            }
+            // A reader that is not the model has the row without the cursor moving: what the
+            // channel was written to, which is where a bridge that restarts resumes.
+            "seen" => {
+                if born == *instance.lock().unwrap() {
+                    let mut s = seen.lock().unwrap();
+                    *s = (*s).max(f["seq"].as_u64().unwrap());
+                }
+                json!({"type": "acked", "cursor": *cursor.lock().unwrap()})
             }
             // The ask the coordinator holds for this seat: one it owes, and none it asked.
             "asks" => json!({"type": "asks", "by_me": [],
@@ -825,8 +871,9 @@ fn a_message_the_writer_did_not_take_is_offered_again() {
 }
 
 /// A push is a write to Claude Code, not a delivery: a client that drops the channel leaves no
-/// trace. The cursor waits until the model shows it saw the message, and a fresh bridge in the
-/// meantime is offered it again.
+/// trace. The cursor waits until the model shows it saw the message - and the SEEN mark moves with
+/// the write, so a fresh bridge over the same coordinator resumes at the channel's last row instead
+/// of handing the whole span above the cursor over again (the replay that reported this).
 #[test]
 fn a_pushed_message_is_acked_only_once_the_model_saw_it() {
     let fake = Fake::start("ack");
@@ -841,8 +888,11 @@ fn a_pushed_message_is_acked_only_once_the_model_saw_it() {
     fake.push("s-a", "session", "host", Some("claude-code"), "one");
     fake.push("s-a", "session", "host", Some("claude-code"), "two");
     wait_until(|| taken.lock().unwrap().len() == 2);
+    // The channel was written, so the bridge told the coordinator so - and the cursor did not move,
+    // because the model has shown nothing.
+    wait_until(|| fake.seen() == 2);
     std::thread::sleep(Duration::from_millis(2500));
-    assert_eq!(*fake.cursor.lock().unwrap(), 0, "pushed is not seen");
+    assert_eq!(*fake.cursor.lock().unwrap(), 0, "pushed is not read");
     assert_eq!(first.unseen(), vec![1, 2]);
 
     let replay = |link: &RoomLink| {
@@ -858,13 +908,108 @@ fn a_pushed_message_is_acked_only_once_the_model_saw_it() {
         drop(again);
         got
     };
-    assert_eq!(replay(&RoomLink::at(&fake.path)), vec![1, 2]);
+    // Nothing is handed over twice: the mark above is what a bridge started now resumes from.
+    assert!(replay(&RoomLink::at(&fake.path)).is_empty());
 
-    // The model read them in a tool result: now the cursor moves, and a fresh bridge owes nothing.
+    // The model read them in a tool result: now the cursor moves too, and a fresh bridge still owes
+    // nothing - the mark had already said so.
     rooms::call(&first, "room_inbox", &json!({})).unwrap();
     assert!(first.unseen().is_empty());
     wait_until(|| *fake.cursor.lock().unwrap() == 2);
     assert!(replay(&RoomLink::at(&fake.path)).is_empty());
+}
+
+/// The report: a bridge process restarted over the same coordinator hands Claude Code every row
+/// above the seat's cursor again, because a fresh process starts with an empty `delivered` and the
+/// cursor never moved - the seat's channel is what took the rows, and `room_inbox` is rarely called.
+#[test]
+fn a_restarted_bridge_hands_over_nothing_the_channel_already_took() {
+    let fake = Fake::start("bridge-restart");
+    let before = RoomLink::at(&fake.path);
+    let took = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let t = took.clone();
+    before.stream(Arc::new(move |m, _names_you| {
+        t.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| before.connected());
+    for text in ["one", "two", "three"] {
+        fake.push("s-a", "session", "host", Some("claude-code"), text);
+    }
+    wait_until(|| took.lock().unwrap().len() == 3);
+    wait_until(|| fake.seen() == 3);
+    // The seat answered none of them with `room_inbox`, so the cursor stands at nothing: this is the
+    // seat the replay was written to.
+    assert_eq!(*fake.cursor.lock().unwrap(), 0);
+
+    // A second process: a new link over the same coordinator, which is what `/mcp` reconnect starts.
+    let after = RoomLink::at(&fake.path);
+    let again = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let a = again.clone();
+    after.stream(Arc::new(move |m, _names_you| {
+        a.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| after.connected());
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        again.lock().unwrap().is_empty(),
+        "a fresh bridge was handed {:?} again",
+        again.lock().unwrap()
+    );
+
+    // And it is still live: a row said now reaches it, once.
+    fake.push("s-a", "session", "host", Some("claude-code"), "four");
+    wait_until(|| again.lock().unwrap().as_slice() == [4]);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(again.lock().unwrap().as_slice(), [4]);
+}
+
+/// The other half of the same rule: a row said while no bridge was connected was written to no
+/// channel, so it is above the mark - and the bridge that connects next is handed it exactly once,
+/// then tells the coordinator so that the one after it is handed nothing.
+#[test]
+fn a_row_said_while_the_bridge_was_down_is_handed_over_once() {
+    let fake = Fake::start("away");
+    // No connection at all: the coordinator keeps the row and moves nothing.
+    let said = fake.push(
+        "s-a",
+        "session",
+        "host",
+        Some("claude-code"),
+        "said while down",
+    );
+    assert_eq!(said["seq"], 1);
+    assert_eq!(fake.seen(), 0, "nothing was written to any channel");
+
+    let first = RoomLink::at(&fake.path);
+    let took = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let t = took.clone();
+    first.stream(Arc::new(move |m, _names_you| {
+        t.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| first.connected());
+    wait_until(|| took.lock().unwrap().as_slice() == [1]);
+    // The mark is the BRIDGE's here: no push ever moved it.
+    wait_until(|| fake.seen() == 1);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(took.lock().unwrap().as_slice(), [1], "handed over once");
+
+    let after = RoomLink::at(&fake.path);
+    let again = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let a = again.clone();
+    after.stream(Arc::new(move |m, _names_you| {
+        a.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| after.connected());
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        again.lock().unwrap().is_empty(),
+        "the row the first bridge was handed came round again: {:?}",
+        again.lock().unwrap()
+    );
 }
 
 /// A message nothing settled is pushed again after the wait, and rides the next tool result. Only one
