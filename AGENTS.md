@@ -74,8 +74,9 @@ line. It runs on this box or the host `[queue] gate_host` names, never on GitHub
 sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
 sh scripts/clippy-gate.sh --workspace --all-targets --features local -- -D warnings
-LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast --features local -- --nocapture
+LETIBOT_REQUIRE_APPARATUS=1 cargo nextest run --workspace --no-fail-fast --features local --profile gate
 # ^ also runs tests/launcher.sh and tests/rrun.sh, from crates/tools/tests/shell_suites.rs
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --doc --features local
 cargo build --release --bins --features local
 sh scripts/check-dist-names.sh --built
 sh scripts/install-gate-build.sh
@@ -95,7 +96,17 @@ sh scripts/install-gate-build.sh
   v2 subtree, no store fixture) into a failure. Without it a skipping test returns and counts as
   passed. Apparatus the platform can never have goes through `apparatus::applies` and is not
   refusable.
-- The shell suites are in the `cargo test` step. `tests/launcher.sh` and `tests/rrun.sh` run from
+- The test step runs `cargo nextest`, and `.config/nextest.toml`'s `gate` profile is what it runs:
+  each test in a process of its own, many at once, no retries, no fail-fast, and a test still going
+  after ten minutes killed as a hang. A box without nextest cannot gate: install it with
+  `cargo install cargo-nextest --locked`, and `scripts/gate-at.sh` refuses by that sentence rather
+  than letting `cargo` answer `no such command`. A test that cannot share the box with another test
+  process is in the profile's `serial` group (`max-threads = 1`); a test that only passed because
+  libtest's `--nocapture` ran the binary serially belongs there, and fixing it (its own temp dir,
+  its own port) is the better answer.
+- Doc tests are libtest's, and nextest does not run them: the `cargo test --doc` line beside the
+  nextest step is what keeps them in the gate.
+- The shell suites are in the nextest step. `tests/launcher.sh` and `tests/rrun.sh` run from
   `crates/tools/tests/shell_suites.rs`, because `scripts/letibot` and `scripts/rrun` decide a run
   before any Rust executes and no `#[test]` reaches them. Each needs `bash` and `python3`, and
   without them the test skips loudly through `apparatus`.

@@ -50,6 +50,12 @@ struct Run {
 /// A repository whose AGENTS.md declares `steps`, with `cargo` on `PATH` running `cargo_body`, and
 /// `gate-at.sh` run on it against `the-base`.
 fn gate(tag: &str, steps: &[&str], cargo_body: &str) -> Run {
+    gate_with_path(tag, steps, cargo_body, None)
+}
+
+/// The same, with the test's own `PATH` replaced outright: the one case that needs it is a box
+/// where `cargo-nextest` cannot be found, which the real `PATH` always fails to be.
+fn gate_with_path(tag: &str, steps: &[&str], cargo_body: &str, path: Option<&str>) -> Run {
     let dir = scratch(tag);
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join("scripts")).unwrap();
@@ -79,16 +85,17 @@ fn gate(tag: &str, steps: &[&str], cargo_body: &str) -> Run {
     write_exe(&bin.join("cargo"), &format!("#!/bin/sh\n{cargo_body}\n"));
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
+    let path = match path {
+        Some(own) => format!("{}:{own}", bin.display()),
+        None => format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    };
     let out = Command::new("sh")
         .arg(root().join("scripts/gate-at.sh"))
         .arg(&repo)
         .arg(dir.join("target"))
         .arg("the-base")
         .env_clear()
-        .env(
-            "PATH",
-            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-        )
+        .env("PATH", path)
         .env("HOME", &home)
         .env("TMPDIR", &dir)
         .env("LETIBOT_GATE_LOCK", dir.join("gate.lock"))
@@ -107,6 +114,32 @@ fn gate(tag: &str, steps: &[&str], cargo_body: &str) -> Run {
 }
 
 const SUITES_THEN_KILLED: &str = "i=0\nwhile [ $i -lt 150 ]; do echo 'test result: ok. 1 passed; 0 failed'; i=$((i+1)); done\nkill -KILL $$";
+
+/// A nextest step on a box without cargo-nextest is refused by name, with the command that
+/// installs it - not left for `cargo` to answer `no such command`, which reads as the branch's
+/// fault. The step is never run.
+#[test]
+fn a_nextest_step_without_nextest_is_refused_by_name() {
+    let r = gate_with_path(
+        "no-nextest",
+        &[
+            "sh scripts/check-fmt.sh main",
+            "cargo nextest run --workspace --profile gate",
+        ],
+        "echo ran >> \"$TMPDIR/ran\"",
+        Some("/usr/bin:/bin"),
+    );
+    assert!(!r.out.contains("GREEN"), "{}", r.out);
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(
+        r.out.contains("cargo install cargo-nextest --locked"),
+        "the refusal names what installs it: {}",
+        r.out
+    );
+    // The refusal is before the steps: nothing ran, not even the format check.
+    let ran = std::fs::read_to_string(r.dir.join("ran")).unwrap_or_default();
+    assert!(ran.is_empty(), "a step ran anyway: {ran:?}");
+}
 
 /// 150 suites said ok, then the run was killed: the exit status is the verdict.
 #[test]

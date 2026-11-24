@@ -78,7 +78,8 @@ The `AGENTS.md` section is the definition. By hand, on this box:
 sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
 sh scripts/clippy-gate.sh --workspace --all-targets --features local -- -D warnings
-LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast --features local -- --nocapture
+LETIBOT_REQUIRE_APPARATUS=1 cargo nextest run --workspace --no-fail-fast --features local --profile gate
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --doc --features local
 cargo build --release --bins --features local
 sh scripts/check-dist-names.sh --built
 ```
@@ -94,7 +95,19 @@ sh scripts/check-dist-names.sh --built
   `--`, so a unit built by plain clippy is fresh for `-D warnings` and nothing is linted.
 - `LETIBOT_REQUIRE_APPARATUS=1` turns a test that skips itself (no vocabulary GGUF, no delegated
   cgroup) into a failure, so a skip cannot read as a pass.
-- The shell suites `tests/launcher.sh` and `tests/rrun.sh` run inside that `cargo test`, from
+- **The test step is `cargo nextest`, and its profile is `.config/nextest.toml`'s `gate`.** Each
+  test runs in a process of its own and many at once, where libtest ran one binary at a time and
+  `--nocapture` made even that serial: the `letibot-harnessd` lib suite is a quarter of an hour that
+  way and about a minute when its tests may overlap. No fail-fast, no retries, and a test still going
+  after ten minutes is killed as a hang rather than left to hold the gate.
+- **A box without `cargo-nextest` cannot gate.** `scripts/gate-at.sh` refuses a nextest step by name,
+  with `cargo install cargo-nextest --locked`, instead of letting `cargo` answer `no such command`.
+- A test that cannot share the box with another test process - a fixed port, a fixed path, a socket
+  at a well-known name - goes in the profile's `serial` group (`max-threads = 1`). Fixing it (its own
+  temp dir, its own port) is the better answer; the group is for the ones that cannot be fixed.
+- Doc tests are libtest's and nextest does not run them, hence the `cargo test --doc` step beside it.
+  Without that line a doctest is in no gate at all.
+- The shell suites `tests/launcher.sh` and `tests/rrun.sh` run inside the nextest step, from
   `crates/tools/tests/shell_suites.rs`. They need `bash` and `python3`.
 - `check-fmt.sh` takes the ref the change started from. `main` is that ref for a branch about to
   land.

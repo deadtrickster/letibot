@@ -20,6 +20,13 @@ steps=$(git show "$B:AGENTS.md" | sh scripts/gate-steps.sh) || {
   echo "gate: $B:AGENTS.md declares no merge gate" >&2
   exit 2
 }
+# A test step that runs nextest on a box without it fails as `cargo: no such command`, which reads
+# like the branch's fault. Name the install instead, before the lock is taken.
+if printf '%s\n' "$steps" | grep -q 'cargo nextest' && ! command -v cargo-nextest >/dev/null 2>&1; then
+  echo "gate: a step runs 'cargo nextest', and cargo-nextest is not on PATH" >&2
+  echo "gate: install it with: cargo install cargo-nextest --locked" >&2
+  exit 2
+fi
 # The built-in guests' build script watches absolute paths; in a target shared across worktrees
 # it would keep another tree's wasm. Drop any whose watch list is not this tree.
 for o in "$TD"/debug/build/letibot-builtins-*/output; do
@@ -61,10 +68,13 @@ while IFS= read -r step <&3; do
   sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
     LETIBOT_APPARATUS_REFUSALS="$refused" sh -c "$step" >"$log" 2>&1 </dev/null 9>&-
   rc=$?
+  # What passed: libtest's line per test binary, or nextest's own one-line summary for the step.
   ok=$(grep -cE '^test result: ok\.' "$log")
-  [ "$ok" = 0 ] || echo "gate: suites ok=$ok; skip lines: $(grep -c 'THIS IS NOT A PASS' "$log")"
+  ran=$(sed -n 's/^ *Summary \[[^]]*\] \([0-9][0-9]*\) tests* run: \([0-9][0-9]*\) passed.*/\2/p' "$log")
+  [ -z "$ran" ] || ok=$ran
+  [ "$ok" = 0 ] || echo "gate: passed=$ok; skip lines: $(grep -c 'THIS IS NOT A PASS' "$log")"
   if [ "$rc" != 0 ]; then
-    grep -E '^test result: FAILED|^error|FAILED$|panicked' "$log" | head -20
+    grep -E '^test result: FAILED|^ *FAIL \[|^error|FAILED$|panicked' "$log" | head -20
     tail -5 "$log"
     [ -s "$refused" ] && sed 's/^/REFUSED: /' "$refused"
     echo "gate: step $i exited $rc: $step (log: $log)"
