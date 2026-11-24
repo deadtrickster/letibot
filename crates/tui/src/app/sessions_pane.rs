@@ -987,7 +987,9 @@ impl App {
     pub(crate) fn sessions_feed(&self) -> Value {
         let place = self.placements();
         let projects = self.projects(&place);
-        let now = letibot_sessionlog::registry::now_ms();
+        let now = self
+            .frozen_now_ms
+            .unwrap_or_else(letibot_sessionlog::registry::now_ms);
         let name_of = |key: &str| {
             projects
                 .iter()

@@ -62,7 +62,12 @@ fn run(store: &Path, args: &[&str]) -> (i32, String, String) {
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+        // A slow store says so on stderr; that line is about the box, not the verb.
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .filter(|l| !l.starts_with("store: a call at "))
+            .map(|l| format!("{l}\n"))
+            .collect(),
     )
 }
 

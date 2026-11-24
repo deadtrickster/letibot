@@ -251,6 +251,9 @@ pub struct App {
     /// places draw a path and a per-frame read would make the picture depend on the process's
     /// environment, which no test can pin. A test sets this field.
     pub(crate) home: String,
+    /// A fixed clock for the session list's ages, so a picture does not move with the run's
+    /// length. `None` everywhere but a test.
+    pub(crate) frozen_now_ms: Option<u64>,
     /// The head's stack: the built-in layers and whatever a project put above them. Built on
     /// the first draw of the session list or the first `/todo`, whichever asks first, and kept
     /// because discovering layers reads the disk and the modules compile.
@@ -1412,6 +1415,7 @@ impl App {
             picker_filter: String::new(),
             picker_draft: None,
             home: std::env::var("HOME").unwrap_or_default(),
+            frozen_now_ms: None,
             sessions_host: std::cell::RefCell::new(None),
             host_build: std::cell::RefCell::new(None),
             #[cfg(test)]

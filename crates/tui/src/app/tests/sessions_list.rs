@@ -24,6 +24,7 @@ fn the_daemon() -> App {
     let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
     let now = letibot_sessionlog::registry::now_ms();
     let mut a = app();
+    a.frozen_now_ms = Some(now);
     // The head's home is the FIXTURE's, not the runner's: paths are drawn as `~/…` against the home
     // the head holds (`App::home`, which production reads from the environment once), so a picture
     // is reproducible on a box whose `HOME` is `/home/dead` and on one whose is not.
@@ -722,7 +723,9 @@ fn a_busy_box(n: usize) -> App {
             b
         })
         .collect();
-    standing_in("s-00", sessions)
+    let mut a = standing_in("s-00", sessions);
+    a.frozen_now_ms = Some(now);
+    a
 }
 
 /// Thirty sessions at a hundred columns: ONE row each, and every row says how long ago it moved. A
@@ -774,6 +777,7 @@ fn a_long_name_is_cut_before_the_facts_are_dropped() {
     );
     long.moved_ms = now.saturating_sub(10 * 60_000);
     let mut a = standing_in("s-long", vec![long]);
+    a.frozen_now_ms = Some(now);
     a.picker_sel = 1;
     let (lines, spans) = a.picker_layout(60, 40);
     let row = &lines[spans[1].start];
