@@ -647,7 +647,7 @@ impl GateSubject {
     /// does not reach - a declared host's launcher, a firecode VM. `sq`-free: the caller quotes.
     pub fn prelude(&self, changed_at: &str) -> String {
         let mut out = format!("export {}='{}'\n", GATE_BASE_ENV, self.base);
-        out.push_str(&format!("printf '%s\\n'"));
+        out.push_str("printf '%s\\n'");
         for p in &self.changed {
             out.push_str(&format!(" '{p}'"));
         }
@@ -1127,10 +1127,12 @@ pub fn run_with_tick_subject(
         steps,
         ctl,
         memory,
-        &|s| s.to_string(),
-        true,
-        tick,
-        subject,
+        How {
+            launch: &|s| s.to_string(),
+            isolate: true,
+            tick: *tick,
+            subject,
+        },
     )
 }
 
@@ -1170,11 +1172,23 @@ pub fn run_with_launcher_subject(
         steps,
         ctl,
         memory,
-        launch,
-        false,
-        &Tick::default(),
-        subject,
+        How {
+            launch,
+            isolate: false,
+            tick: Tick::default(),
+            subject,
+        },
     )
+}
+
+/// How a run is carried out, gathered into one value because they are one decision: how a step becomes
+/// a command line, whether it runs under the gate's own environment script, the tick it is poked on,
+/// and what it is told it is compared against.
+struct How<'a> {
+    launch: &'a dyn Fn(&str) -> String,
+    isolate: bool,
+    tick: Tick,
+    subject: &'a GateSubject,
 }
 
 fn run_steps(
@@ -1182,11 +1196,14 @@ fn run_steps(
     steps: &[String],
     ctl: &GateControl,
     memory: Ask,
-    launch: &dyn Fn(&str) -> String,
-    isolate: bool,
-    tick: &Tick,
-    subject: &GateSubject,
+    how: How<'_>,
 ) -> GateRun {
+    let How {
+        launch,
+        isolate,
+        tick,
+        subject,
+    } = how;
     // The cap is resolved once and used twice: the cgroup the step joins is capped with it and the
     // build's parallelism is bounded by it ([`StepEnv`]), so a step is never judged by two numbers.
     let cap = intended_cap(memory);
@@ -1208,15 +1225,20 @@ fn run_steps(
         ctl,
         place: &place,
         isolate,
-        tick: *tick,
+        tick,
         subject,
     };
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
         let refusals = scratch.path().join(format!("refused-{}", i + 1));
         let _ = std::fs::remove_file(&refusals);
-        let (end, mem, leftover) =
-            run_step(&bound, step, &launch(step), (i + 1, steps.len()), &refusals);
+        let (end, mem, leftover) = run_step(
+            &bound,
+            step,
+            &(launch)(step),
+            (i + 1, steps.len()),
+            &refusals,
+        );
         let elapsed = now_ms().saturating_sub(started);
         let refused = std::fs::read_to_string(&refusals).unwrap_or_default();
         let judged = judge(step, end, mem, leftover, ctl.budget, &refused);

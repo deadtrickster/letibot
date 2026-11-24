@@ -430,9 +430,8 @@ struct Bisect {
     cands: Vec<String>,
     lo: usize,
     hi: usize,
-    /// The candidate being judged now, and the tree it runs in.
+    /// The candidate being judged now.
     at: usize,
-    wt: PathBuf,
     /// The one step each try runs: the step that failed, whole and alone.
     step: String,
     /// How many tries this search has spent, so a step that is red at random cannot bisect for ever.
@@ -2673,7 +2672,6 @@ impl RepoQueue {
             lo: 0,
             hi: 0,
             at: 0,
-            wt: PathBuf::new(),
             step: step.command.clone(),
             tries: 0,
             steps: run.steps,
@@ -2728,7 +2726,6 @@ impl RepoQueue {
         };
         b.at = at;
         b.tries += 1;
-        b.wt = wt.clone();
         self.announce_move(
             "target",
             &b.target,
