@@ -3764,9 +3764,11 @@ impl Store {
                 history_into(&conn, rows, &idxs)?;
             } else if path.is_file() {
                 // Read-only: a listing is not a writer, and another project's file is another
-                // daemon's. A file that will not open leaves its rows as the index has them.
+                // daemon's. `open_reader` cannot fail on a damaged file - sqlite reads the header
+                // at the first query - so the fill is where it is caught, and its rows stay as
+                // the index has them: one unreadable project must not answer nothing for the rest.
                 if let Ok(reader) = Store::open_reader(&path) {
-                    history_into(&reader.conn(), rows, &idxs)?;
+                    let _ = history_into(&reader.conn(), rows, &idxs);
                 }
             }
         }

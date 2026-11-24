@@ -346,6 +346,47 @@ fn a_split_listing_answers_when_a_project_file_is_gone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A project file that is not a database is the same answer as one that is gone. A half-migrated or
+/// damaged file opens read-only and fails at its first query, so the listing has to catch it there:
+/// the other project's rows still answer, and the damaged one keeps the index's columns.
+#[test]
+fn a_split_listing_answers_when_a_project_file_is_not_a_database() {
+    let dir = std::env::temp_dir().join(format!(
+        "store-split-corrupt-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (
+        crate::migrate_split::project_key("/w/s-a"),
+        crate::migrate_split::project_key("/w/s-b"),
+    );
+    {
+        let mine = Store::open_set(&dir, &a).expect("a set's handle");
+        seeded_in(&mine, "s-a", 2);
+        let other = Store::open_set(&dir, &b).expect("the other project's handle");
+        seeded_in(&other, "s-b", 4);
+    }
+    let file = dir.join("projects").join(format!("{b}.db"));
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
+    }
+    std::fs::write(&file, b"this is not a database").expect("a file that will not open");
+
+    let listed = Store::open_set(&dir, &a).expect("a set's handle");
+    let rows = listed.list_sessions().expect("the listing answers anyway");
+    let by = |id: &str| rows.iter().find(|s| s.id == id).expect("held").items;
+    assert_eq!(by("s-a"), 2, "the file that is there is still read");
+    assert_eq!(
+        by("s-b"),
+        0,
+        "and a file sqlite will not read keeps the index's count, rather than failing the listing"
+    );
+    drop(listed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// one row, by ordinal, without loading the transcript it is in. The read behind
 /// `FetchRow` for a row the daemon's bounded view has trimmed. It is one indexed lookup -
 /// the primary key is `(transcript_id, seq)` - and an ordinal is relative to the current transcript.
