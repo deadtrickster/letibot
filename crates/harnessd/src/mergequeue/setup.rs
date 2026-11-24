@@ -15,9 +15,8 @@ pub fn unjudged(evidence: &str) -> bool {
     evidence.starts_with(GATE_SETUP_FAILED) || evidence.starts_with(super::gate::GATE_KILLED)
 }
 
-/// Whether this health row is a repository that never asked for a queue: its target
-/// declares no `Merge gate` section, so the row is about a branch nobody could judge and
-/// nothing else.
+/// Whether this health row is a repository that never asked for a queue: its target declares no
+/// gate section at all, so the row is about a branch nobody could judge and nothing else.
 pub fn not_a_queue_target(h: &TargetHealth) -> bool {
     h.state == HealthState::Blocked && h.evidence.starts_with(super::WAITING_FOR_GATE)
 }

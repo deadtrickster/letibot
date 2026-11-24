@@ -770,8 +770,10 @@ fn chrome(feed: &Feed) -> Vec<Value> {
     if !feed.not_queued.is_empty() {
         lines.push(json!({
             "label": "not queued",
+            // A gate is one of three sections now, so the sentence names none of them: what the
+            // reader has to write is a section, whichever heading they choose.
             "value": format!(
-                "{} - it declares no `Merge gate` in its AGENTS.md, so it has no queue",
+                "{} - it declares no gate in its AGENTS.md, so it has no queue",
                 feed.not_queued.join(", ")
             ),
             "role": "faint",

@@ -39,6 +39,9 @@ the install steps run, and the branch is on `main`. Red: the branch is parked `f
 - **A red no landing caused is parked.** If the commit that broke `main` is not one the queue landed
   (somebody pushed it), or every landing passes the step when re-run on its own, nothing is
   reverted: the target goes `red` and says a person has to act, exactly as a red tip always has.
+  The same park follows a red that comes after a run nobody could judge (a host that did not answer,
+  a run that was stopped): the batch's base is what the last *judged* tip recorded, and a run that
+  judged nothing does not carry one.
 - **Red `main` halts nothing but new landings onto it**, which is the rule it has always been: an
   approved branch goes back to review, a fix lands alone, and reviews go on.
 
@@ -270,10 +273,12 @@ way out.
 
 ## Batched landings: `[queue] gate_train`
 
-Review stays per branch; the gate batches. With `gate_train = N` in `leticode.toml`, the queue takes
-up to N approved rows, rebases them one onto the last onto the target's tip in queue order (a branch
-cut from another in the stack goes after it), and gates the final tree once. The default, 1, is one
-branch and one gate.
+This is a different batching from the full gate's, above: a TRAIN is several branches judged by ONE
+quick gate before they land, where the full gate's batch is one run over the landings a tip already
+holds. Review stays per branch; the gate batches. With `gate_train = N` in `leticode.toml`, the
+queue takes up to N approved rows, rebases them one onto the last onto the target's tip in queue
+order (a branch cut from another in the stack goes after it), and gates the final tree once. The
+default, 1, is one branch and one gate.
 
 - Green lands every row in order, one commit each, so each row's `landed_sha` is its own commit.
   The push and the install run once.

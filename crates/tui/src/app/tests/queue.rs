@@ -143,7 +143,7 @@ fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
     let rows = a.screen(239, 61);
     let screen = rows.join("\n");
     assert!(
-        screen.contains("it declares no `Merge gate` in its AGENTS.md"),
+        screen.contains("it declares no gate in its AGENTS.md"),
         "{screen}"
     );
     assert!(
