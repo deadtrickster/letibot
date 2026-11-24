@@ -21,13 +21,16 @@ out, cache_arg = sys.argv[1], sys.argv[2]
 d = json.load(open("/tmp/models.dev.json"))
 
 # Every provider a crate::presets Preset names as its catalogue_id. Adding a preset
-# means adding its id here — the script fails loudly below if it forgets.
+# means adding its id here — the script fails loudly below if it forgets, and
+# `crates/provider/src/refresh/tests.rs` fails if the two lists disagree.
 WANT = [
     "deepseek",
     "zhipuai",
     "zai-coding-plan",
     "zhipuai-coding-plan",
     "xai",
+    "anthropic",
+    "openai",
     "google",
     "kimi-code-plan-cn",
     "kimi-code-plan-global",

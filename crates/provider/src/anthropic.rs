@@ -61,8 +61,9 @@ pub struct AnthropicProvider {
     /// `temperature` and friends, passed through where the API still has the field.
     pub sampling: Value,
     /// The catalogue this provider looks a model up in: the box's by default, and a caller's
-    /// own when a test must not read the machine's files.
-    catalogue: std::sync::Arc<Catalogue>,
+    /// own when a test must not read the machine's files. A shelf rather than the catalogue, so a
+    /// cache refreshed mid-session is what the next request reads.
+    catalogue: crate::catalogue::Shelf,
     /// Where a fact the operator must read is said: the daemon's hub, through the same closure
     /// the OpenAI client uses.
     notes: Option<Notes>,
@@ -83,7 +84,7 @@ impl AnthropicProvider {
                 .unwrap_or_else(|| preset.default_model(&catalogue)),
             url,
             creds,
-            catalogue,
+            catalogue: crate::catalogue::Shelf::Current,
             agent: Self::agent(DEFAULT_FIRST_BYTE, DEFAULT_ANSWER_TIMEOUT),
             first_byte: DEFAULT_FIRST_BYTE,
             answer: DEFAULT_ANSWER_TIMEOUT,
@@ -142,7 +143,7 @@ impl AnthropicProvider {
 
     /// The catalogue this provider reads, instead of the box's.
     pub fn with_catalogue(mut self, catalogue: std::sync::Arc<Catalogue>) -> Self {
-        self.catalogue = catalogue;
+        self.catalogue = crate::catalogue::Shelf::pinned(catalogue);
         self
     }
 
@@ -155,7 +156,7 @@ impl AnthropicProvider {
     /// What one request may carry, from the one place that reads the catalogue.
     fn senses(&self, req: &TurnRequest<'_>) -> crate::messages::Senses<'_> {
         crate::messages::senses_for(
-            &self.catalogue,
+            &self.catalogue.get(),
             self.preset,
             &self.model,
             crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
@@ -384,7 +385,7 @@ impl AnthropicProvider {
             &self.creds,
             wall_ms,
             self.preset,
-            &self.catalogue,
+            &self.catalogue.get(),
         ))
     }
 

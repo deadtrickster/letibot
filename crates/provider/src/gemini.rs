@@ -103,7 +103,9 @@ pub struct GeminiProvider {
     pub effort: Option<String>,
     /// `temperature` and friends, passed through where the GenAI body has the same name.
     pub sampling: Value,
-    catalogue: Arc<crate::catalogue::Catalogue>,
+    /// The catalogue this provider reads, as a shelf rather than the catalogue itself: a cache
+    /// refreshed mid-session is what the next request reads.
+    catalogue: crate::catalogue::Shelf,
     notes: Option<Notes>,
     /// The thought signatures this session's requests must hand back. See the module doc.
     signatures: Mutex<Signatures>,
@@ -189,7 +191,7 @@ impl GeminiProvider {
                 .unwrap_or_else(|| preset.default_model(&catalogue)),
             base,
             creds,
-            catalogue,
+            catalogue: crate::catalogue::Shelf::Current,
             agent: Self::agent(DEFAULT_FIRST_BYTE, DEFAULT_ANSWER_TIMEOUT),
             first_byte: DEFAULT_FIRST_BYTE,
             answer: DEFAULT_ANSWER_TIMEOUT,
@@ -235,7 +237,7 @@ impl GeminiProvider {
     /// The catalogue this provider reads instead of the box's, so a test's answer is about this
     /// code and not about which files the machine running it happens to have.
     pub fn with_catalogue(mut self, catalogue: Arc<crate::catalogue::Catalogue>) -> Self {
-        self.catalogue = catalogue;
+        self.catalogue = crate::catalogue::Shelf::pinned(catalogue);
         self
     }
 
@@ -281,7 +283,7 @@ impl GeminiProvider {
     /// Pictures and documents, from the one place that reads the catalogue.
     fn senses(&self, req: &TurnRequest<'_>) -> messages::Senses<'_> {
         messages::senses_for(
-            &self.catalogue,
+            &self.catalogue.get(),
             self.preset,
             &self.model,
             messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
@@ -477,7 +479,7 @@ impl GeminiProvider {
             &self.creds,
             wall_ms,
             self.preset,
-            &self.catalogue,
+            &self.catalogue.get(),
         )
     }
 

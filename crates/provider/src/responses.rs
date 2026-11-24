@@ -55,8 +55,9 @@ pub struct ResponsesProvider {
     /// `temperature` and `top_p`, passed through; see [`ResponsesProvider::body_for`].
     pub sampling: Value,
     /// The catalogue this provider looks a model up in: the box's by default, and a
-    /// caller's own when a test must not read the machine's files.
-    catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
+    /// caller's own when a test must not read the machine's files. A shelf rather than the
+    /// catalogue, so a cache refreshed mid-session is what the next request reads.
+    catalogue: crate::catalogue::Shelf,
     /// Where a fact the operator must read is said: the daemon's hub, one crate up.
     notes: Option<Notes>,
     /// The reasoning items this client issued and must carry back; see the module docs.
@@ -78,7 +79,7 @@ impl ResponsesProvider {
                 .unwrap_or_else(|| preset.default_model(&catalogue)),
             url,
             creds,
-            catalogue,
+            catalogue: crate::catalogue::Shelf::Current,
             agent: Self::agent(DEFAULT_FIRST_BYTE, DEFAULT_ANSWER_TIMEOUT),
             first_byte: DEFAULT_FIRST_BYTE,
             answer: DEFAULT_ANSWER_TIMEOUT,
@@ -136,7 +137,7 @@ impl ResponsesProvider {
         mut self,
         catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
     ) -> Self {
-        self.catalogue = catalogue;
+        self.catalogue = crate::catalogue::Shelf::pinned(catalogue);
         self
     }
 
@@ -149,7 +150,7 @@ impl ResponsesProvider {
     /// Pictures and documents: the same table as chat completions, read in the one place.
     fn senses(&self, req: &TurnRequest<'_>) -> crate::messages::Senses<'_> {
         crate::messages::senses_for(
-            &self.catalogue,
+            &self.catalogue.get(),
             self.preset,
             &self.model,
             crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
@@ -1414,7 +1415,7 @@ impl ResponsesProvider {
             &self.creds,
             wall_ms,
             self.preset,
-            &self.catalogue,
+            &self.catalogue.get(),
         );
         // Only a round that answered keeps its records: the engine commits nothing of a
         // failed one, so a record for a row that was never written would be a thought with

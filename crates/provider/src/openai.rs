@@ -35,8 +35,9 @@ pub struct OpenAiProvider {
     /// `temperature` and friends, passed through verbatim.
     pub sampling: Value,
     /// The catalogue this provider looks a model up in: the box's by default, and a
-    /// caller's own when a test must not read the machine's files.
-    catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
+    /// caller's own when a test must not read the machine's files. A shelf rather than the
+    /// catalogue, so a cache refreshed mid-session is what the next request reads.
+    catalogue: crate::catalogue::Shelf,
     /// Where a fact the operator must read is said: the daemon's hub, one crate up. A closure
     /// rather than a hub, because this crate stays below the session log and who hears it is the
     /// caller's business.
@@ -69,7 +70,9 @@ impl OpenAiProvider {
                 .unwrap_or_else(|| preset.default_model(&catalogue)),
             url,
             creds,
-            catalogue,
+            // The model above is the pick of THIS construction; the facts below are read per
+            // request, so a refreshed cache reaches a session that outlives its provider.
+            catalogue: crate::catalogue::Shelf::Current,
             agent: Self::agent(DEFAULT_FIRST_BYTE, DEFAULT_ANSWER_TIMEOUT),
             first_byte: DEFAULT_FIRST_BYTE,
             answer: DEFAULT_ANSWER_TIMEOUT,
@@ -130,7 +133,7 @@ impl OpenAiProvider {
         mut self,
         catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
     ) -> Self {
-        self.catalogue = catalogue;
+        self.catalogue = crate::catalogue::Shelf::pinned(catalogue);
         self
     }
 
@@ -161,7 +164,7 @@ impl OpenAiProvider {
     /// refuses the turn, where the document's text is always readable.
     fn senses(&self, req: &TurnRequest<'_>) -> crate::messages::Senses<'_> {
         crate::messages::senses_for(
-            &self.catalogue,
+            &self.catalogue.get(),
             self.preset,
             &self.model,
             crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter())),
@@ -699,7 +702,7 @@ impl OpenAiProvider {
             &self.creds,
             wall_ms,
             self.preset,
-            &self.catalogue,
+            &self.catalogue.get(),
         ))
     }
 }

@@ -125,6 +125,36 @@ pub struct Catalogue {
     source: Option<Origin>,
 }
 
+/// The catalogue a client plans against: the process's current one, re-read when the file behind
+/// it changes, or one a test pinned.
+///
+/// A client used to keep the `Arc` its constructor loaded, so a cache refreshed mid-session
+/// reached nothing until the session was rebuilt: windows, prices and the image question stayed
+/// the ones from the minute the provider was built. `Current` asks [`Catalogue::load`] at each
+/// request instead, which is a `stat` and a map lookup - the parse itself is cached by file.
+#[derive(Debug, Clone, Default)]
+pub enum Shelf {
+    /// Whatever [`Catalogue::load`] answers now.
+    #[default]
+    Current,
+    /// One catalogue, for a test whose answer must not depend on this box's files.
+    Pinned(std::sync::Arc<Catalogue>),
+}
+
+impl Shelf {
+    pub fn pinned(catalogue: std::sync::Arc<Catalogue>) -> Self {
+        Shelf::Pinned(catalogue)
+    }
+
+    /// The catalogue in force for this request.
+    pub fn get(&self) -> std::sync::Arc<Catalogue> {
+        match self {
+            Shelf::Current => Catalogue::load(),
+            Shelf::Pinned(c) => c.clone(),
+        }
+    }
+}
+
 /// Which of the four places a catalogue came from - the fact the disclosure names.
 #[derive(Debug)]
 enum Origin {
@@ -282,8 +312,8 @@ impl Catalogue {
 
     /// Parse a catalogue's text: the file-naming half of [`Catalogue::read`], split out so
     /// the snapshot goes through the same parse and the same filters rather than a second
-    /// reader.
-    fn read_text(text: &str) -> Result<Catalogue, String> {
+    /// reader, and so a refresh can refuse a body this build cannot read before it is written.
+    pub(crate) fn read_text(text: &str) -> Result<Catalogue, String> {
         let raw: BTreeMap<String, RawProvider> =
             serde_json::from_str(text).map_err(|e| format!("parsing the models catalogue: {e}"))?;
         let mut providers = BTreeMap::new();
@@ -906,6 +936,17 @@ mod tests {
                 .card_line(),
             "64k window · price unlisted"
         );
+    }
+
+    /// A pinned shelf answers with one catalogue every time; the current one asks the process's
+    /// loader at each use, which is what lets a refresh reach a provider built before it.
+    #[test]
+    fn a_pinned_shelf_holds_and_a_current_one_asks_every_time() {
+        let pinned = Shelf::pinned(std::sync::Arc::new(Catalogue::default()));
+        assert!(pinned.get().is_empty());
+        assert!(std::sync::Arc::ptr_eq(&pinned.get(), &pinned.get()));
+        let now = Shelf::Current;
+        assert!(std::sync::Arc::ptr_eq(&now.get(), &Catalogue::load()));
     }
 
     /// A count as a person reads it, rounded down so a window is never quoted larger than it is.
