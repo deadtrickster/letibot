@@ -17,10 +17,8 @@ impl Tool for Read {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "read",
-            "Return a file's text, with line numbers — or, for an image (PNG, \
-             JPEG, GIF, WebP), the image itself, attached for you to look at, or for a \
-             PDF, the document itself, attached for you to read. Give \
-             `path`; optionally \
+            "Return a file's text, with line numbers — or an image (PNG, JPEG, \
+             GIF, WebP) or a PDF document itself, attached. Give `path`; optionally \
              `offset` (the first line, 1-based) and `limit` (how many lines), or \
              `ranges` for SEVERAL windows of one file in a single call. Without a \
              limit, at most 200 lines and a few tens of KiB are returned per call, and \
