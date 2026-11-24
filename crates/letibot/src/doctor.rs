@@ -576,7 +576,11 @@ pub fn load(loadavg: Option<&str>, cores: usize) -> Check {
         row(Status::Ok, label, shown)
     } else {
         row(Status::Warn, label, shown)
-            .fix(["pgrep -fa 'cargo test --workspace'   # more than one full gate is too many"])
+            // The gate's test step is `cargo nextest run --workspace` now; the other spelling is a
+            // by-hand run of the shape it replaced.
+            .fix([
+                "pgrep -fa 'cargo (nextest run )?--workspace'   # more than one full gate is too many",
+            ])
     }
 }
 
