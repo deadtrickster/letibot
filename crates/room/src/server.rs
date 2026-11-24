@@ -2250,17 +2250,26 @@ impl Server {
             return;
         }
         let now = now_ms();
-        let (seen, head, rows, asks_to_me) = {
+        let (floor, head, rows, asks_to_me) = {
             let chat = self.inner.chat.lock().expect("the chat lock");
             let seen = chat.seen(&id);
+            // An external's reader is the channel it writes to, so where that channel stopped is
+            // its CURSOR - and a window of wall-clock is not a read position: it is what wrote a
+            // dozen old dms to one bridge on every restart. A session's reader is its model, which
+            // has taken nothing until it acks, so a mark it never made falls back to the window.
+            let floor = match (seen, conn.seat) {
+                (Some(seq), _) => Some(seq),
+                (None, Seat::External) => Some(chat.cursor(&id)),
+                (None, _) => None,
+            };
             let rows = chat.missed(
                 session,
-                seen,
+                floor,
                 now.saturating_sub(chat::DIGEST_WINDOW_MS),
                 |_| true,
             );
             let asks: Vec<chat::AskView> = chat.asks_of(session);
-            (seen, chat.head(), rows, asks)
+            (floor, chat.head(), rows, asks)
         };
         // Visibility reads the rooms, so it runs after the chat lock is released.
         let rows: Vec<chat::Message> = rows
@@ -2279,7 +2288,7 @@ impl Server {
                 message: self.shown(message, &handles),
             });
         }
-        let since = match seen {
+        let since = match floor {
             Some(s) => format!("#{s}"),
             None => "the last hour".to_string(),
         };
@@ -3929,11 +3938,11 @@ impl Server {
             Request::Ack { seq } => {
                 let id = self.principal_of(name);
                 let mut chat = self.inner.chat.lock().expect("the chat lock");
-                // A session's ack is also its seen mark (see `append_and_push`).
-                if seat == Seat::Session {
-                    chat.mark_seen(&id, *seq);
-                    chat.keep_seen(&id);
-                }
+                // Every seat's ack is its seen mark, because an ack says the reader HAS the row: a
+                // session's model took it, an external's channel was written to. Written, not held,
+                // so a coordinator that stops mid-session resumes the digest where the seat is.
+                chat.mark_seen(&id, *seq);
+                chat.keep_seen(&id);
                 Response::Acked {
                     cursor: chat.ack(&id, *seq),
                 }
@@ -4888,13 +4897,16 @@ impl Server {
                 message: self.shown(message.clone(), &handles),
             });
             // A session's daemon marks what its model took, with `Ack`: a push it dropped, or held
-            // across its own restart, was not seen, and the join digest must still tell it.
+            // across its own restart, was not seen, and the join digest must still tell it. An
+            // external's reader is the channel the row went to, so the push IS the delivery - and
+            // the mark is the SEAT's, the key `Ack` and `deliver_pending` read it under.
             if c.seat != Seat::Session {
+                let id = self.principal_of(name);
                 self.inner
                     .chat
                     .lock()
                     .expect("the chat lock")
-                    .mark_seen(name, message.seq);
+                    .mark_seen(&id, message.seq);
             }
         }
         // And a member with no connection is told nothing by a push. It is not lost: the message is
