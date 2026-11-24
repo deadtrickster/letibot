@@ -23,6 +23,9 @@ fn config(session: &str, ws: &Path) -> Config {
     });
     cfg.web_search = None;
     cfg.permission = Vec::new();
+    // Nobody is attached, so a card would wait out its whole budget; refusing at once is the
+    // same verdict, decided without the wait.
+    cfg.leticode.automode.unattended = Some("refuse".into());
     let scratch = letibot_sessionlog::testing::scratch_root();
     cfg.store = Some(scratch.join(format!("{session}.db")));
     cfg.socket = scratch.join(format!("{session}.sock"));
