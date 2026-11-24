@@ -46,12 +46,13 @@ pub const PROVIDERS: File = File {
         },
         Table {
             path: "shadow",
-            note: "Shadow jobs: a second model, on any provider, judging a session off the critical path. Off unless `enabled` names a job. A job with no model line runs on [default]'s provider and model.",
+            note: "Shadow jobs: a second model, on any provider, judging a session off the critical path. Off unless `enabled` names a job. A job with no model line runs on [default]'s provider and model. A persistent job is fed the watched rows once, with their authors, and only the operator's own line is the operator; past `mirror_bytes` the oldest rows are elided behind a marker that counts them, except the operator's last request. An empty reply is retried once on half the mirror, and the record says so.",
             needs: "",
             keys: &[
                 k("enabled", "list of turn_end | during | permission", "[] (no job runs)", "", "jobs that run", "[\"turn_end\"]"),
                 k("mode", "persistent | stateless", "persistent", "", "persistent: each job is one running conversation fed the watched rows once, with authors, and asked only at its trigger; stateless: one fresh call per trigger, the fallback", "\"persistent\""),
                 k("fresh_every", "count", "10", "", "every Nth persistent question is also asked of a fresh stateless call, and a disagreement is a row in the shadow session; 0 is never", "10"),
+                k("mirror_bytes", "bytes", "24576", "", "how much of the watched session a persistent job's mirror holds: the last rows as the operator and the model saw them, each under its author, oldest elided behind a marker that counts them; the operator's last request is kept whole even when it is older than the window, and the least is 2000", "12288"),
                 k("answer_reads", "bool", "false", "", "old name of `answers`: true is `answers = [\"reads\"]`. off: the permission job only observes; writes, exec, network, secret paths and any `ask`, timeout or void always go to the operator", "true"),
                 k("answers", "list of reads | workspace_writes | exec", "[] (observe-only)", "", "the stages the permission job answers for the operator, each promoted by them (R316): `reads` is a read past the shadow's read denylist, `workspace_writes` a write inside the workspace, `exec` a command whose reach is inside the workspace; never the always-ask list (destruction outside the project, credentials), never a secret path, never past the stage's reach; two disagreements (a revoke, or a later No to the same shape) turn answering off and the trip is kept in the store until `/shadow arm`", "[\"reads\"]"),
                 k("turn_end", "model", "[default]", "", "model the turn_end job runs on (asleep reminder, note capture); the `*` line of [shadow.turn_end]", "\"deepseek/deepseek-flash\""),
