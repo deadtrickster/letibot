@@ -315,15 +315,20 @@ fn user_content(parts: &[UserPart]) -> Value {
     if !has_media {
         let mut s = String::new();
         for p in parts {
+            // A local model server takes no document part: a PDF is its own text here, which is
+            // what this dialect already does for a reference it cannot resolve.
             let t = match p {
-                UserPart::Text { text } => text.as_str(),
-                UserPart::FileRef { path, .. } => path.as_str(),
+                UserPart::Text { text } => text.clone(),
+                UserPart::FileRef { path, .. } => path.clone(),
+                UserPart::Document {
+                    data_ref, filename, ..
+                } => letibot_transcript::media::document_as_text(data_ref, filename),
                 UserPart::Image { .. } => unreachable!(),
             };
             if !s.is_empty() {
                 s.push('\n');
             }
-            s.push_str(t);
+            s.push_str(&t);
         }
         return Value::String(s);
     }
@@ -333,6 +338,12 @@ fn user_content(parts: &[UserPart]) -> Value {
             .map(|p| match p {
                 UserPart::Text { text } => json!({"type": "text", "text": text}),
                 UserPart::FileRef { path, .. } => json!({"type": "text", "text": path}),
+                UserPart::Document {
+                    data_ref, filename, ..
+                } => json!({
+                    "type": "text",
+                    "text": letibot_transcript::media::document_as_text(data_ref, filename),
+                }),
                 UserPart::Image { data_ref, .. } => {
                     json!({"type": "image_url", "image_url": {"url": data_ref}})
                 }

@@ -183,6 +183,10 @@ pub struct Limits {
     /// rest. A clipped line is named in the notes, because a model that cannot
     /// see a boundary will assume there is none.
     pub max_read_line_chars: usize,
+    /// The most bytes of a PDF `read` hands over as a DOCUMENT. Above it the same bytes are
+    /// extracted to text instead, so the cap bounds the prompt rather than refusing the read: a
+    /// base64 document is 4/3 of its file in every request that carries it.
+    pub max_document_bytes: u64,
     /// The wall clock one call may spend before it stops and says so (R194). Enforced by the tools
     /// that walk and read in loops, through [`InvokeCtx::out_of_time`]: the bound travels as a fact
     /// rather than as a thread to kill, because a call borrows the session's own sink and backend.
@@ -200,6 +204,7 @@ impl Default for Limits {
             max_read_lines: 200,
             max_read_bytes: 32 * 1024,
             max_read_line_chars: 2000,
+            max_document_bytes: 20 * 1024 * 1024,
             call_timeout: std::time::Duration::from_secs(180),
         }
     }

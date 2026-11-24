@@ -461,6 +461,17 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
                 }
                 buf.push_str(path);
             }
+            // A local model server has no document part: a PDF arrives as its own text.
+            UserPart::Document {
+                data_ref, filename, ..
+            } => {
+                if !buf.is_empty() {
+                    buf.push('\n');
+                }
+                buf.push_str(&letibot_transcript::media::document_as_text(
+                    data_ref, filename,
+                ));
+            }
             UserPart::Image { .. } => media.push(buf.len()),
         }
     }

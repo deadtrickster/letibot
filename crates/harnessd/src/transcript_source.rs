@@ -302,6 +302,7 @@ fn visible_text(item: &TranscriptItem) -> String {
             .map(|p| match p {
                 UserPart::Text { text } => text.clone(),
                 UserPart::Image { media_type, .. } => format!("[image {media_type}]"),
+                UserPart::Document { filename, .. } => format!("[document {filename}]"),
                 UserPart::FileRef { path, .. } => format!("[file {path}]"),
             })
             .collect::<Vec<_>>()

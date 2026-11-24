@@ -414,6 +414,20 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
                 any_text_yet = true;
                 last_was_media = false;
             }
+            // A local model server has no document part: a PDF arrives as its own text, and the
+            // header names the file so a reader can tell where the words came from.
+            UserPart::Document {
+                data_ref, filename, ..
+            } => {
+                if !last_was_media && any_text_yet {
+                    pending.push('\n');
+                }
+                pending.push_str(&letibot_transcript::media::document_as_text(
+                    data_ref, filename,
+                ));
+                any_text_yet = true;
+                last_was_media = false;
+            }
             UserPart::Image { .. } => {
                 flush(&mut pending, out);
                 ctl(out, &tk::BEGIN_OF_IMAGE);

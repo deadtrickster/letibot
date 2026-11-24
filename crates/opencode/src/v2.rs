@@ -1231,6 +1231,11 @@ mod tests {
                 .map(|p| match p {
                     UserPart::Text { text } => text.clone(),
                     UserPart::Image { media_type, .. } => format!("<image {media_type}>"),
+                    // opencode's own storage has no document part to import one into: the file's
+                    // text is what a reader of that store can carry.
+                    UserPart::Document {
+                        data_ref, filename, ..
+                    } => letibot_transcript::media::document_as_text(data_ref, filename),
                     UserPart::FileRef { path, .. } => path.clone(),
                 })
                 .collect::<Vec<_>>()

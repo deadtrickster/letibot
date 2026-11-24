@@ -158,6 +158,9 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                     match p {
                         UserPart::Text { text: s } => text(out, s.clone()),
                         UserPart::FileRef { path, .. } => text(out, format!("[file {path}]")),
+                        UserPart::Document { filename, .. } => {
+                            text(out, format!("[document {filename}]"))
+                        }
                         UserPart::Image { media_type, .. } => {
                             text(out, format!("[image {media_type}]"))
                         }

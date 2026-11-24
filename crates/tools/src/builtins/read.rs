@@ -18,7 +18,8 @@ impl Tool for Read {
         ToolSchema::new(
             "read",
             "Return a file's text, with line numbers — or, for an image (PNG, \
-             JPEG, GIF, WebP), the image itself, attached for you to look at. Give \
+             JPEG, GIF, WebP), the image itself, attached for you to look at, or for a \
+             PDF, the document itself, attached for you to read. Give \
              `path`; optionally \
              `offset` (the first line, 1-based) and `limit` (how many lines), or \
              `ranges` for SEVERAL windows of one file in a single call. Without a \
@@ -81,7 +82,7 @@ impl Tool for Read {
             );
         }
 
-        let bytes = match ctx.backend.read(path) {
+        let mut bytes = match ctx.backend.read(path) {
             Ok(b) => b,
             Err(BackendError::IsADirectory(_)) => return directory(ctx, path),
             Err(BackendError::NotFound(_)) => return missing(ctx, path),
@@ -133,6 +134,56 @@ impl Tool for Read {
             };
         }
 
+        // A document is read as a document, for the same reason a picture is: below, a PDF is a
+        // wall of `%PDF-1.4` and compressed streams, and a model reading that concludes the file
+        // is broken. Over the cap the SAME bytes are extracted to text here, never stored again.
+        let mut doc_note: Option<String> = None;
+        if let Some(m) = crate::media::Media::document(path, &bytes) {
+            if (m.bytes as u64) <= ctx.limits.max_document_bytes {
+                return Invocation {
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: format!(
+                        "{path} — {}\nThe document is attached to this result. Read it and answer \
+                         from what is in it; if the attachment did not arrive, say so rather \
+                         than guessing at the contents.",
+                        m.summary()
+                    ),
+                    notes: Vec::new(),
+                    edits: Vec::new(),
+                    needs_in_view: Vec::new(),
+                    media: Some(m),
+                };
+            }
+            let cap = ctx.limits.max_document_bytes / (1024 * 1024);
+            match letibot_transcript::media::pdf_text(&bytes) {
+                Some(text) => {
+                    doc_note = Some(format!(
+                        "{path} is {} KiB, over the {cap} MiB a document may be sent whole, so \
+                         its text is shown here instead",
+                        bytes.len() / 1024
+                    ));
+                    bytes = text.into_bytes();
+                }
+                // No extractor on this box: say why, in the one sentence the model would
+                // otherwise have to guess, rather than showing the PDF's bytes as noise.
+                None => {
+                    return Invocation {
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!(
+                            "{path} — {} — is over the {cap} MiB a document may be sent whole, \
+                             and this box has no `pdftotext` to extract it with, so its text \
+                             cannot be read here. Say that the document was not read.",
+                            m.summary()
+                        ),
+                        notes: Vec::new(),
+                        edits: Vec::new(),
+                        needs_in_view: Vec::new(),
+                        media: None,
+                    };
+                }
+            }
+        }
+
         let (text, lossy) = text_of(&bytes);
         let lines: Vec<&str> = text.lines().collect();
         let total = lines.len();
@@ -166,6 +217,9 @@ impl Tool for Read {
         }
 
         let mut notes = Vec::new();
+        if let Some(said) = doc_note {
+            notes.push(said);
+        }
         if lossy {
             notes.push(format!(
                 "{path} is not valid UTF-8; undecodable bytes are shown as U+FFFD"
@@ -539,6 +593,76 @@ mod tests {
         std::fs::write(h.root().join("blob.bin"), &junk).expect("fixture write");
         let bin = h.call("read", r#"{"path":"blob.bin"}"#);
         assert!(bin.media.is_none(), "a non-image claimed a media channel");
+    }
+
+    /// A PDF comes back as a DOCUMENT: the same media channel a picture rides, with the file's own
+    /// type, the name a door's request needs, and a sentence instead of a wall of PDF bytes. The
+    /// file is named `.txt`, because the bytes are the claim and the name is not.
+    #[test]
+    fn a_pdf_read_returns_a_document_and_a_sentence_rather_than_its_own_bytes() {
+        let mut h = crate::testing::harness();
+        let pdf = letibot_transcript::testing::pdf("the answer is 42");
+        std::fs::write(h.root().join("memo.txt"), &pdf).expect("fixture write");
+
+        let got = h.call("read", r#"{"path":"memo.txt"}"#);
+        let media = got
+            .media
+            .as_ref()
+            .expect("the document did not reach the result at all");
+        assert_eq!(media.mime, "application/pdf");
+        assert!(media.is_document());
+        assert!(
+            media.data_ref.starts_with("data:application/pdf;base64,"),
+            "{}",
+            &media.data_ref[..40.min(media.data_ref.len())]
+        );
+        assert!(got.payload.contains("memo.txt"), "{}", got.payload);
+        assert!(
+            got.payload.contains("document application/pdf"),
+            "{}",
+            got.payload
+        );
+        assert!(got.payload.contains("attached"), "{}", got.payload);
+        assert!(
+            !got.payload.contains("%PDF-"),
+            "the payload is carrying the document's bytes: {} chars",
+            got.payload.len()
+        );
+    }
+
+    /// Over the cap the same bytes are read as text instead - never stored twice, never refused
+    /// silently: the note says the document was too big to send whole.
+    #[test]
+    fn a_document_over_the_cap_is_read_as_text_and_says_why() {
+        let mut h = crate::testing::harness();
+        let pdf = letibot_transcript::testing::pdf("a word in a small document");
+        std::fs::write(h.root().join("big.pdf"), &pdf).expect("fixture write");
+        // One byte under the fixture's size: the cap binds on the file, not on the page count.
+        h.rt.limits.max_document_bytes = pdf.len() as u64 - 1;
+
+        let got = h.call("read", r#"{"path":"big.pdf"}"#);
+        assert!(got.media.is_none(), "an over-cap document was sent anyway");
+        let notes = got.notes.join(" ");
+        assert!(notes.contains("over the"), "{notes}");
+        // With `pdftotext` on the box the words are here, and without it the sentence says so.
+        // Both are the same ruling: the model is told, and nothing pretends to be the document.
+        assert!(
+            got.payload.contains("a word in a small document")
+                || got.payload.contains("no `pdftotext`"),
+            "neither the text nor the reason: {}",
+            got.payload
+        );
+    }
+
+    /// A PDF is read as a PDF: the description has to say so, or a model with a document in front
+    /// of it never asks the tool that can hand it over.
+    #[test]
+    fn the_description_says_a_pdf_comes_back_as_a_document() {
+        let d = crate::runtime::Tool::schema(&super::Read).description;
+        for needle in ["PDF", "document", "attached"] {
+            assert!(d.contains(needle), "{needle:?} missing from: {d}");
+        }
+        assert_eq!(crate::schema::lint_description(&d), vec![]);
     }
 
     #[test]

@@ -11,6 +11,10 @@ use sha2::{Digest, Sha256};
 /// and the second is discovered by the store.
 pub const MAX_IMAGE_BYTES: u64 = letibot_tools::builtins::grep::FILE_CEILING * 16;
 
+/// A document bigger than this is refused, at the same ceiling `read` sends one as a document
+/// under: two numbers for one question is a chip and a read disagreeing about what fits.
+pub const MAX_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
+
 /// How much of a text file is inlined - 256 KiB, which is a long log, a whole source
 /// file, a large CSV. Above it the part is a [`UserPart::FileRef`] instead, and the model
 /// reads what it needs
@@ -60,6 +64,23 @@ fn one(a: &Attachment) -> Result<Option<Vec<UserPart>>, String> {
         return Ok(Some(vec![UserPart::Image {
             media_type: m.mime.clone(),
             data_ref: m.data_ref.clone(),
+        }]));
+    }
+    // A document is a chip the model is handed as a document, under the same ceiling: a `data:` URI
+    // of it is carried whole in every request that has it.
+    if let Some(m) = letibot_transcript::media::Media::document(&a.path, &bytes) {
+        if size > MAX_DOCUMENT_BYTES {
+            return Err(format!(
+                "a document this size ({} MiB) is not attached — the ceiling is {} MiB, the \
+                 same one `read` refuses above",
+                size / (1024 * 1024),
+                MAX_DOCUMENT_BYTES / (1024 * 1024)
+            ));
+        }
+        return Ok(Some(vec![UserPart::Document {
+            media_type: m.mime.clone(),
+            data_ref: m.data_ref.clone(),
+            filename: name_of(a),
         }]));
     }
     // Not a picture this tree can hand a model. Text under the cap goes in whole; anything
@@ -154,6 +175,33 @@ mod tests {
             bytes_len: 0,
             name: name.to_string(),
         }
+    }
+
+    /// A PDF chip becomes a DOCUMENT part: the bytes, the type and the name the doors need. The
+    /// mime comes from the bytes, so a chip the head called a file is still a document.
+    #[test]
+    fn a_pdf_chip_becomes_a_document_part() {
+        let d = dir("document");
+        let p = d.join("memo.txt");
+        let bytes = letibot_transcript::testing::pdf("the answer is 42");
+        std::fs::write(&p, &bytes).unwrap();
+        let (parts, refused) = parts(&[chip(AttachmentKind::File, &p, "memo.pdf")]);
+        assert!(refused.is_empty(), "{refused:?}");
+        let UserPart::Document {
+            media_type,
+            data_ref,
+            filename,
+        } = &parts[0]
+        else {
+            panic!("a pdf is not a document part: {parts:?}")
+        };
+        assert_eq!(media_type, "application/pdf");
+        assert!(
+            data_ref.starts_with("data:application/pdf;base64,"),
+            "{data_ref}"
+        );
+        assert_eq!(filename, "memo.pdf", "the door's file part needs the name");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A picture is handed over as a picture - a `data:` URI, the one form the server takes

@@ -60,6 +60,10 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
                         "type": "image",
                         "media_type": media_type,
                     })),
+                    UserPart::Document { filename, .. } => Some(json!({
+                        "type": "document",
+                        "filename": filename,
+                    })),
                     UserPart::FileRef { path, .. } => Some(json!({
                         "type": "file",
                         "path": path,

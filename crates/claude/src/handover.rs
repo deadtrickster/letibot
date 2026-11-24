@@ -201,6 +201,14 @@ fn line_for(
                         // says what was there so the conversation still reads.
                         blocks.push(json!({"type": "text", "text": "[an image]"}));
                     }
+                    UserPart::Document { filename, .. } => {
+                        // Claude's own session format has nowhere to put the bytes: the name is
+                        // carried and the words are not invented.
+                        blocks.push(json!({
+                            "type": "text",
+                            "text": format!("[a document: {filename}]"),
+                        }));
+                    }
                     UserPart::FileRef { path, .. } => {
                         blocks.push(json!({"type": "text", "text": format!("[a file: {path}]")}));
                     }
@@ -333,6 +341,9 @@ fn markdown_for(item: &TranscriptItem) -> String {
                         text.push_str(t);
                     }
                     UserPart::Image { .. } => text.push_str("[an image]"),
+                    UserPart::Document { filename, .. } => {
+                        text.push_str(&format!("[a document: {filename}]"))
+                    }
                     UserPart::FileRef { path, .. } => text.push_str(&format!("[a file: {path}]")),
                 }
             }
