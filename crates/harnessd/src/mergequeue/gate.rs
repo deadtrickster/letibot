@@ -2012,7 +2012,11 @@ fn nextest_summary(s: &str) -> Option<(usize, u64, u64)> {
 /// `    Starting 1985 tests across 1 binary` → how many binaries the run started, which is the
 /// count of targets a nextest step has.
 fn nextest_start(s: &str) -> Option<usize> {
-    let after = s.trim().strip_prefix("Starting ")?.split_once(" across ")?.1;
+    let after = s
+        .trim()
+        .strip_prefix("Starting ")?
+        .split_once(" across ")?
+        .1;
     after.split(' ').next()?.parse().ok()
 }
 
@@ -2057,7 +2061,10 @@ fn nextest_failures(lines: &[&str]) -> Option<Failures> {
         let Some((binary, test)) = nextest_fail(raw.trim()) else {
             continue;
         };
-        if seen.iter().any(|(b, t)| b == &binary && same_test(t, &test)) {
+        if seen
+            .iter()
+            .any(|(b, t)| b == &binary && same_test(t, &test))
+        {
             continue;
         }
         // The test's own output follows its status line, up to the next one.

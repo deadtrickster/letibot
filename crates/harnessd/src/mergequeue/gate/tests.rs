@@ -1202,7 +1202,10 @@ fn a_nextest_status_line_is_read_past_its_counter() {
         nextest_fail("TRY 1 FAIL [   1.005s] (2/4) letibot-harnessd a::b"),
         Some(("letibot-harnessd".to_string(), "a::b".to_string()))
     );
-    assert_eq!(nextest_fail("PASS [   0.005s] (3/4) ntshape tests::it_passes"), None);
+    assert_eq!(
+        nextest_fail("PASS [   0.005s] (3/4) ntshape tests::it_passes"),
+        None
+    );
     assert_eq!(
         nextest_summary("     Summary [   0.008s] 4 tests run: 2 passed, 2 failed, 0 skipped"),
         Some((4, 2, 2))
