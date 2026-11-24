@@ -1987,6 +1987,59 @@ fn a_bad_value_in_every_table_is_refused_with_its_file_and_line() {
     }
 }
 
+/// `[catalogue] refresh` is whether this daemon fetches models.dev itself. On when no file says
+/// otherwise, the project's answer over the user's, and a key nobody knows refused by line.
+#[test]
+fn the_catalogue_table_says_whether_the_cache_is_kept_fresh() {
+    let dir = project_dir("catalogue");
+    let none = write_file(&sub(&dir, "none"), "main_model = \"local\"\n");
+    assert!(
+        LeticodeConfig::load(&none).unwrap().catalogue_refresh(),
+        "a file that says nothing turned the refresh off"
+    );
+
+    let off = write_file(&sub(&dir, "off"), "[catalogue]\nrefresh = false\n");
+    assert!(!LeticodeConfig::load(&off).unwrap().catalogue_refresh());
+
+    // The project's answer wins, key by key, as every other table's does.
+    let user = LeticodeConfig::load_as(
+        &write_file(&sub(&dir, "user"), "[catalogue]\nrefresh = false\n"),
+        Level::User,
+    )
+    .unwrap();
+    let project = LeticodeConfig::load_as(
+        &write_file(&sub(&dir, "project"), "[catalogue]\nrefresh = true\n"),
+        Level::Project,
+    )
+    .unwrap();
+    assert!(
+        user.overridden_by(&project).catalogue_refresh(),
+        "the project's answer was not the one merged"
+    );
+    assert!(!project.overridden_by(&user).catalogue_refresh());
+
+    for (tag, body, want) in [
+        (
+            "key",
+            "\n[catalogue]\nrefersh = true\n",
+            "`refersh` is not a key",
+        ),
+        (
+            "kind",
+            "\n[catalogue]\nrefresh = \"no\"\n",
+            "refresh is true or false",
+        ),
+    ] {
+        let path = write_file(&sub(&dir, tag), body);
+        let err = LeticodeConfig::load(&path).expect_err(tag);
+        assert!(
+            err.contains("leticode.toml:3:") && err.contains("[catalogue]"),
+            "{tag}: the refusal names the file, the line and the table: {err}"
+        );
+        assert!(err.contains(want), "{tag}: {err}");
+    }
+}
+
 /// `[queue] mute` reads from both levels and unions, each name once.
 #[test]
 fn a_queue_mute_unions_across_the_levels() {

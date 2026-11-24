@@ -94,6 +94,7 @@ fn hand_read_keys_are_listed() {
         "perimeter.<name>",
         "ui",
         "sessions",
+        "catalogue",
         "warnings",
         "verbosity.<name>",
         "nag",

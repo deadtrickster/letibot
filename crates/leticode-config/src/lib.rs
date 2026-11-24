@@ -498,6 +498,9 @@ pub struct LeticodeConfig {
     /// The `[seat]` table: where a session with no head runs its tools. See [`SeatKeys`] and
     /// [`seat_default`].
     pub seat: SeatKeys,
+    /// The `[catalogue]` table: whether this daemon keeps the model catalogue's cache fresh by
+    /// itself. See [`CatalogueKeys`].
+    pub catalogue: CatalogueKeys,
     /// The `[subagents]` table: how many children run at once. See [`SubagentKeys`].
     pub subagents: SubagentKeys,
     /// The `[warnings]` table: what the head files and never draws. Read by the head, in
@@ -2587,6 +2590,18 @@ pub struct SessionKeys {
     pub auto_reseat: Option<bool>,
 }
 
+/// `[catalogue]` in a `leticode.toml`. `refresh: None` is on: the daemon fetches models.dev when
+/// the cache is a day old, in the background, and asks nobody.
+///
+/// `false` is for a box whose network is metered, or one that pins its own catalogue where
+/// nothing may overwrite it. `LETIBOT_MODELS_JSON` says the same thing more sharply - a file the
+/// operator named is not one this box may replace - and is read by
+/// `letibot_provider::refresh::wanted`, not here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CatalogueKeys {
+    pub refresh: Option<bool>,
+}
+
 /// `[peering]` in a `leticode.toml`: whether this box's room coordinator links to the other boxes
 /// on its LAN, and what a project of this box does about being introduced to the same repository
 /// elsewhere.
@@ -2803,6 +2818,39 @@ fn session_keys(
                 })?);
             }
             other => return Err(format!("{from}: [sessions] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
+/// `[catalogue]` in a `leticode.toml`: whether this box keeps the model catalogue's cache fresh
+/// by fetching models.dev itself. On when no level says otherwise.
+fn catalogue_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<CatalogueKeys, String> {
+    let keys = "the key is `refresh` (true or false): whether this daemon fetches models.dev \
+                itself, in the background, when the catalogue's cache is a day old";
+    let table = table_at(value, path, text, "catalogue", keys)?;
+    let mut out = CatalogueKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "refresh" => {
+                out.refresh = Some(v.as_bool().ok_or_else(|| {
+                    format!(
+                        "{from}: [catalogue] refresh is true or false, not {}",
+                        kind_of(v)
+                    )
+                })?);
+            }
+            other => {
+                return Err(format!(
+                    "{from}: [catalogue] `{other}` is not a key; {keys}"
+                ));
+            }
         }
     }
     Ok(out)
@@ -3411,6 +3459,10 @@ impl LeticodeConfig {
                 Some(v) => automode_keys(v, path, text, level == Level::User)?,
                 None => AutomodeKeys::default(),
             },
+            catalogue: match &file.catalogue {
+                Some(v) => catalogue_keys(v, path, text, level == Level::User)?,
+                None => CatalogueKeys::default(),
+            },
             queue: match &file.queue {
                 Some(v) => queue_keys(v, path, text, level == Level::User)?,
                 None => QueueKeys::default(),
@@ -3761,6 +3813,9 @@ impl LeticodeConfig {
             seat: SeatKeys {
                 default: other.seat.default.or(self.seat.default),
             },
+            catalogue: CatalogueKeys {
+                refresh: other.catalogue.refresh.or(self.catalogue.refresh),
+            },
             subagents: SubagentKeys {
                 max_running: other.subagents.max_running.or(self.subagents.max_running),
                 daemon_max_running: other
@@ -3802,6 +3857,14 @@ impl LeticodeConfig {
     /// on by default.
     pub fn auto_reseat(&self) -> bool {
         self.sessions.auto_reseat.unwrap_or(true)
+    }
+
+    /// Whether this daemon keeps the catalogue's cache fresh by itself: `[catalogue] refresh`, on
+    /// when no level says otherwise. The operator's `LETIBOT_MODELS_JSON` is not read here - it
+    /// names a file this box may not replace, and `letibot_provider::refresh::wanted` is where the
+    /// two answers meet.
+    pub fn catalogue_refresh(&self) -> bool {
+        self.catalogue.refresh.unwrap_or(true)
     }
 
     /// Whether a round's adjacent read-class calls run at once: `[tools] parallel`, on by default,
@@ -4065,6 +4128,9 @@ struct LeticodeConfigFile {
     /// The `[room]` table, see [`RoomKeys`].
     #[serde(default)]
     room: Option<toml::Value>,
+    /// The `[catalogue]` table, see [`CatalogueKeys`].
+    #[serde(default)]
+    catalogue: Option<toml::Value>,
     /// The `[peering]` table, see [`PeeringKeys`].
     #[serde(default)]
     peering: Option<toml::Value>,

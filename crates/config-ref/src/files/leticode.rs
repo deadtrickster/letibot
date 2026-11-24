@@ -392,6 +392,19 @@ pub const LETICODE: File = File {
             keys: &[k("default", "\"vm\" | \"host\"", "\"vm\"", PW, "placement a headless seat gets: a firecode VM, or this machine", "\"host\"")],
         },
         Table {
+            path: "catalogue",
+            note: "The daemon fetches models.dev itself when the cache (`$XDG_CACHE_HOME/letibot/models.json`) is missing or a day old, in the background, and never blocks a start or a turn. `LETIBOT_MODELS_JSON` disables it whatever this says, because a file the operator named is not one this box may replace. A failed fetch is one log line and at most one warning row a day.",
+            needs: "",
+            keys: &[k(
+                "refresh",
+                "bool",
+                "true",
+                PW,
+                "keep the model catalogue's cache fresh by fetching models.dev; false pins whatever file is there",
+                "false",
+            )],
+        },
+        Table {
             path: "subagents",
             note: "A spawn over a cap waits for a running child to answer, or is refused. A spawn with the objective of a running child is refused, naming it. Review-queue reviewers are outside these caps.",
             needs: "",
