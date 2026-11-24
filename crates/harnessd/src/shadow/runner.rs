@@ -76,7 +76,7 @@ impl Request {
 pub struct Persist {
     pub log: Arc<Mutex<Log>>,
     pub fresh_every: u32,
-    /// History bytes before compaction.
+    /// The mirror's bytes before compaction, from `[shadow] mirror_bytes`.
     pub budget: usize,
     /// The turns the record kept before a restart, resumed at the first question.
     pub resume: Vec<super::resume::Kept>,
@@ -547,7 +547,9 @@ impl Inner {
         outcome
     }
 
-    /// The persistent turn: the new rows and the question on top of the running conversation.
+    /// The persistent turn: the new rows and the question on top of the running conversation. An
+    /// empty reply is retried once on a smaller mirror: a model that said nothing has more often
+    /// read a prompt past its window than had nothing to say, and a void loses the whole answer.
     fn exchange_persistent(
         &self,
         req: &Request,
@@ -555,13 +557,8 @@ impl Inner {
         p: &Persist,
         coalesced: u32,
     ) -> Outcome {
-        let asked: Asked = {
-            let log = p.log.lock().unwrap_or_else(|e| e.into_inner());
-            self.convo
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .ask(&log, q)
-        };
+        let system = format!("{}{}", self.system, super::conversation::addendum(self.job));
+        let (mut asked, mut got, mut took) = self.converse_round(p, q, &system);
         if let Some(note) = &asked.resumed {
             self.recorder
                 .row(&format!("resume · {} · {note}", self.job.as_str()), "");
@@ -570,11 +567,33 @@ impl Inner {
             self.recorder
                 .row(&format!("compacted · {} · {note}", self.job.as_str()), "");
         }
-        let system = format!("{}{}", self.system, super::conversation::addendum(self.job));
-        let started = Instant::now();
-        let (sys, msgs) = (system.clone(), asked.messages.clone());
-        let got = self.call(Box::new(move |j| j.converse(&sys, &msgs)));
-        let took = started.elapsed();
+        let mut retried = None;
+        if matches!(&got, Ok(Ok((reply, _))) if reply.trim().is_empty()) {
+            let first = system.len() + asked.messages.iter().map(|m| m.text.len()).sum::<usize>();
+            // Rebuilt from the rows, and to half the budget: the history the model could not read
+            // is exactly what must not be sent again.
+            *self.convo.lock().unwrap_or_else(|e| e.into_inner()) =
+                super::conversation::Conversation::rebuilt(p.budget);
+            let (again, got2, took2) = self.converse_round(p, q, &system);
+            let second = system.len() + again.messages.iter().map(|m| m.text.len()).sum::<usize>();
+            retried = Some(format!(
+                "the reply was empty at {first} bytes of prompt; retried once on a smaller mirror \
+                 ({second} bytes)"
+            ));
+            let rebuilt = match &again.compacted {
+                Some(note) => format!("\n{note}\n"),
+                None => String::new(),
+            };
+            self.recorder.row(
+                &format!(
+                    "empty reply · {} · retried on a smaller mirror · at #{}",
+                    self.job.as_str(),
+                    req.position
+                ),
+                &format!("first prompt: {first} bytes\nretry prompt: {second} bytes\n{rebuilt}"),
+            );
+            (asked, got, took) = (again, got2, took2);
+        }
         let mut shown = asked.shown.clone();
         shown.shortlist = req.shown.shortlist.clone();
         shown.call = req.shown.call.clone();
@@ -606,8 +625,12 @@ impl Inner {
                 asked.messages.len()
             ),
         };
+        let retry = match &retried {
+            Some(note) => format!("{note}\n"),
+            None => String::new(),
+        };
         let body = format!(
-            "model: {}\nprompt: {}\nmode: persistent, turn {}\nposition: #{}\ncoalesced before it: {coalesced}\n{tokens}\n\
+            "model: {}\nprompt: {}\nmode: persistent, turn {}\nposition: #{}\ncoalesced before it: {coalesced}\n{tokens}{retry}\n\
              {sys}--- new rows and question\n{}\n--- reply\n{reply}\n--- checks\n{}\n--- outcome\n{}\n",
             self.judge.label(),
             self.source,
@@ -619,6 +642,23 @@ impl Inner {
         );
         self.record(req.position, took, &outcome, body, kept.as_ref());
         outcome
+    }
+
+    /// One ask of the running conversation and the call it makes: the mirror is read under the
+    /// log's lock and the model is called without it.
+    fn converse_round(&self, p: &Persist, q: &Question, system: &str) -> (Asked, Got, Duration) {
+        let asked = {
+            let log = p.log.lock().unwrap_or_else(|e| e.into_inner());
+            self.convo
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ask(&log, q)
+        };
+        let (sys, msgs) = (system.to_string(), asked.messages.clone());
+        let started = Instant::now();
+        let got = self.call(Box::new(move |j| j.converse(&sys, &msgs)));
+        let took = started.elapsed();
+        (asked, got, took)
     }
 
     /// The same question, asked of a fresh stateless call, and whether it agrees. Recorded, and
@@ -897,7 +937,7 @@ impl Shadow {
         let mut runners = BTreeMap::new();
         let notices: Arc<Mutex<Vec<(&'static str, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let mut said = cfg.disclose(watched_model);
-        let budget = super::conversation::BUDGET;
+        let budget = cfg.mirror_bytes();
         let log = cfg
             .persistent()
             .then(|| Arc::new(Mutex::new(Log::new(2 * budget))));
@@ -993,14 +1033,7 @@ impl Shadow {
     pub fn operator_words(&self) -> Option<String> {
         let log = self.log.as_ref()?;
         let log = log.lock().unwrap_or_else(|e| e.into_inner());
-        let mut last = None;
-        for row in log
-            .since(log.start())
-            .filter(|r| r.author == super::words::Author::Operator)
-        {
-            last = Some(row.text.clone());
-        }
-        last
+        log.operator_row().map(|(_, row)| row.text.clone())
     }
 
     /// The watched transcript grew to `n` rows: a verdict stamped earlier is now stale.

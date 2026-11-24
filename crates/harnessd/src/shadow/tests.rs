@@ -2046,6 +2046,34 @@ fn the_stages_are_the_setting_and_answer_reads_is_the_old_spelling() {
 }
 
 #[test]
+fn the_mirrors_budget_is_a_config_key_with_a_24_kib_default() {
+    // The default is the size the pack's item 1 asked for; a file may size it either way.
+    let d = providers("mirror-default", "[shadow]\nenabled = [\"turn_end\"]\n");
+    let cfg = ShadowConfig::load(Some(&d)).unwrap();
+    assert_eq!(cfg.mirror_bytes(), 24 * 1024);
+    assert!(
+        cfg.disclose("glm/x")
+            .join("\n")
+            .contains("mirror: the last 24576 bytes of the watched rows"),
+        "{:?}",
+        cfg.disclose("glm/x")
+    );
+    let f = providers(
+        "mirror-bytes",
+        "[shadow]\nenabled = [\"turn_end\"]\nmirror_bytes = 8192\n",
+    );
+    assert_eq!(ShadowConfig::load(Some(&f)).unwrap().mirror_bytes(), 8192);
+    // A mirror under one row answers nothing, and the file says why rather than sizing it.
+    let tiny = providers(
+        "mirror-tiny",
+        "[shadow]\nenabled = [\"turn_end\"]\nmirror_bytes = 100\n",
+    );
+    let err = ShadowConfig::load(Some(&tiny)).unwrap_err();
+    assert!(err.contains("the least is 2000"), "{err}");
+    assert!(cfg.with_mirror_bytes(4096).mirror_bytes() == 4096);
+}
+
+#[test]
 fn a_shadow_with_no_stage_says_it_only_observes() {
     let f = providers("stages-none", "[shadow]\nenabled = [\"permission\"]\n");
     let cfg = ShadowConfig::load(Some(&f)).unwrap();

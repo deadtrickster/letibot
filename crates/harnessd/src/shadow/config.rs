@@ -53,6 +53,9 @@ pub struct ShadowConfig {
     turn_monitor: bool,
     /// How much of the turn's digest that check is shown, in bytes.
     turn_monitor_max_chars: usize,
+    /// The most bytes of watched conversation a persistent job's mirror holds: the last rows of
+    /// the session as the model saw them, elided from the oldest by a marker.
+    mirror_bytes: usize,
 }
 
 impl Default for ShadowConfig {
@@ -68,6 +71,7 @@ impl Default for ShadowConfig {
             stages: BTreeSet::new(),
             turn_monitor: true,
             turn_monitor_max_chars: super::overreach::DEFAULT_MAX_CHARS,
+            mirror_bytes: super::conversation::BUDGET,
         }
     }
 }
@@ -105,6 +109,7 @@ impl ShadowConfig {
             turn_monitor_max_chars: lines
                 .turn_monitor_max_chars
                 .unwrap_or(super::overreach::DEFAULT_MAX_CHARS),
+            mirror_bytes: lines.mirror_bytes.unwrap_or(super::conversation::BUDGET),
             ..ShadowConfig::default()
         };
         if let Some(m) = lines.mode.as_deref()
@@ -176,6 +181,18 @@ impl ShadowConfig {
 
     pub fn fresh_every(&self) -> u32 {
         self.fresh_every
+    }
+
+    /// The mirror's byte budget for a persistent job: how much of the watched conversation it
+    /// holds before the oldest rows are elided behind a marker.
+    pub fn mirror_bytes(&self) -> usize {
+        self.mirror_bytes
+    }
+
+    /// For a test or a caller that sizes the mirror in code.
+    pub fn with_mirror_bytes(mut self, bytes: usize) -> ShadowConfig {
+        self.mirror_bytes = bytes;
+        self
     }
 
     /// What the turn-end job is shown of what the turn did, in bytes: `None` is the monitor off,
@@ -256,6 +273,14 @@ impl ShadowConfig {
             ),
             false => "mode: stateless".to_string(),
         });
+        if self.persistent() {
+            // What the mirror holds is a number a person can check against a model's window: a
+            // mirror past it is a shadow that is voiding answers it never read.
+            out.push(format!(
+                "mirror: the last {} bytes of the watched rows, older rows elided",
+                self.mirror_bytes
+            ));
+        }
         out
     }
 }

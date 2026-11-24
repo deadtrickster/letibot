@@ -7,8 +7,9 @@ use super::feed::{Log, Row};
 use super::resume::Kept;
 use super::verdict::{Shown, Span};
 
-/// The history a conversation may hold before it is compacted, in bytes of text sent.
-pub const BUDGET: usize = 64_000;
+/// The history a conversation may hold before it is compacted, in bytes of text sent. The
+/// default; `[shadow] mirror_bytes` sizes it, and the newest rows are kept as the model saw them.
+pub const BUDGET: usize = 24 * 1024;
 
 /// What a trigger asks, beside the rows already fed.
 #[derive(Debug, Clone)]
@@ -26,6 +27,15 @@ pub struct Question {
 pub enum Role {
     User,
     Assistant,
+}
+
+/// One piece of a rebuilt tail: rows as stored, or a run of rows the mirror does not hold. A gap
+/// is only ever at the front or in the middle, because the operator's last request is kept whole
+/// even when it is older than everything else the mirror holds.
+#[derive(Debug, Clone, Copy)]
+enum Part<'a> {
+    Dropped(usize, &'static str),
+    Row(&'a Row),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,8 +103,15 @@ pub struct Conversation {
     history: Shown,
     bytes: usize,
     budget: usize,
+    /// Set by [`Conversation::rebuilt`]: the next request rebuilds the history even when the rows
+    /// it has would have fitted. How an empty reply is retried on a smaller mirror.
+    forced: bool,
     /// Rows before this fed index are not in the history: said once, behind a marker.
     marker: Option<usize>,
+    /// The fed index of the operator's last request when the mirror holds it apart from the window:
+    /// the one row a compaction never drops, since "did the operator ask for this" is answered
+    /// from their own words.
+    operator_row: Option<usize>,
     /// Turns from the record, applied at the first request once the log is refed.
     pending: Vec<Kept>,
 }
@@ -113,8 +130,20 @@ impl Conversation {
             history: Shown::default(),
             bytes: 0,
             budget,
+            forced: false,
             marker: None,
+            operator_row: None,
             pending: Vec::new(),
+        }
+    }
+
+    /// A conversation whose first request rebuilds its history even when the rows it has would
+    /// have fitted. A rebuild keeps half of `budget`, so that is the mirror the retry of an empty
+    /// reply is sent: a prompt this model can read.
+    pub fn rebuilt(budget: usize) -> Conversation {
+        Conversation {
+            forced: true,
+            ..Conversation::new(budget)
         }
     }
 
@@ -147,17 +176,19 @@ impl Conversation {
     }
 
     /// The request for `q`: the history, then the rows fed since the last kept turn, then `q`. Past
-    /// the budget the history is dropped and the newest rows are sent again behind a marker.
+    /// the budget the history is dropped and the newest rows are sent again behind a marker, with
+    /// the operator's last request kept whole even when it is older than all of them.
     pub fn ask(&mut self, log: &Log, q: &Question) -> Asked {
         let resumed = self.adopt(log);
         let size = |r: &Row| r.text.len() + r.header.len() + 16;
         let pending: usize = log.since(self.sent.max(log.start())).map(size).sum();
         let mut compacted = None;
-        if self.bytes + pending + q.facts.len() > self.budget {
+        if self.forced || self.bytes + pending + q.facts.len() > self.budget {
             // Mechanical: keep the newest rows that fit half the budget, as stored, with authors.
+            let all: Vec<&Row> = log.since(log.start()).collect();
             let mut kept = 0;
             let mut total = 0;
-            for r in log.since(log.start()).collect::<Vec<_>>().into_iter().rev() {
+            for r in all.iter().rev() {
                 if kept > 0 && total + size(r) > self.budget / 2 {
                     break;
                 }
@@ -165,54 +196,113 @@ impl Conversation {
                 kept += 1;
             }
             let first = log.end() - kept;
-            compacted = Some(format!(
-                "dropped {} turns; kept the newest {kept} rows, {first} earlier rows behind a marker",
-                self.turns.len()
-            ));
+            let turns = self.turns.len();
             self.turns.clear();
             self.history = Shown::default();
             self.bytes = 0;
             self.sent = first;
-            self.marker = (first > 0).then_some(first);
+            // The last request the operator made, when the newest window starts after it: the
+            // mirror keeps it whole, apart from the rows, or a check on "did they ask for this"
+            // reads the model's own account of the work instead.
+            self.operator_row = log
+                .operator_row()
+                .map(|(at, _)| at)
+                .filter(|at| *at < first);
+            // A leading marker is the count of fed rows the rebuilt mirror does not hold; a row
+            // kept apart from the window also has a gap AFTER it, counted where it is printed.
+            self.marker = match self.operator_row {
+                Some(_) => None,
+                None => (first > 0).then_some(first),
+            };
+            compacted = Some(match self.operator_row {
+                Some(at) => format!(
+                    "dropped {turns} turns; kept the newest {kept} rows and the operator's last \
+                     request at fed row {at}"
+                ),
+                None => format!(
+                    "dropped {turns} turns; kept the newest {kept} rows, {first} earlier rows \
+                     behind a marker"
+                ),
+            });
         } else if self.sent < log.start() {
-            self.marker = Some(log.start());
+            // Rows the cap evicted before any turn was kept: counted from where the sent rows end.
+            self.marker = Some(log.start() - self.sent);
             self.sent = log.start();
+            // The operator's last request survives the cap, so it is the one evicted row still
+            // shown; everything between it and the kept rows is counted where it is printed.
+            self.operator_row = log
+                .operator_row()
+                .map(|(at, _)| at)
+                .filter(|at| *at < self.sent);
         }
-        let rows: Vec<&Row> = log.since(self.sent).collect();
-        let mut asked = self.build(rows, q, compacted, self.marker, log.end());
+        self.forced = false;
+        let parts = self.parts(log);
+        let mut asked = self.build(parts, q, compacted, log.end());
         asked.resumed = resumed;
         asked.last = asked.upto.checked_sub(1).and_then(|i| log.chain_at(i));
         asked
     }
 
+    /// What this request sends of the log: the kept operator row, with a marker on each side of it
+    /// that says how many rows are missing, then every row from the window on.
+    fn parts<'a>(&self, log: &'a Log) -> Vec<Part<'a>> {
+        let from = self.sent.max(log.start());
+        let mut out = Vec::new();
+        match self.operator_row.filter(|at| *at < from) {
+            Some(at) => {
+                if at > 0 {
+                    out.push(Part::Dropped(
+                        at,
+                        "earlier rows; the operator's last request is kept below",
+                    ));
+                }
+                if let Some(r) = log.row_at(at) {
+                    out.push(Part::Row(r));
+                }
+                let gap = from - at - 1;
+                if gap > 0 {
+                    out.push(Part::Dropped(gap, "rows between here and the next"));
+                }
+            }
+            None => {
+                if let Some(n) = self.marker.filter(|n| *n > 0) {
+                    out.push(Part::Dropped(n, "earlier rows"));
+                }
+            }
+        }
+        out.extend(log.since(from).map(Part::Row));
+        out
+    }
+
     fn build(
         &self,
-        rows: Vec<&Row>,
+        parts: Vec<Part<'_>>,
         q: &Question,
         compacted: Option<String>,
-        dropped: Option<usize>,
         upto: usize,
     ) -> Asked {
         let mut tail = String::new();
         let mut spans = Vec::new();
-        if !rows.is_empty() || dropped.is_some() {
+        if !parts.is_empty() {
             tail.push_str("<transcript>\n");
-            if let Some(n) = dropped {
-                tail.push_str(&format!(
-                    "[compaction: {n} earlier rows are not shown; the rows below are as stored]\n\n"
-                ));
-            }
-            for r in rows {
-                tail.push_str(&format!("[row {}] {}:\n", r.row, r.header));
-                let start = tail.len();
-                tail.push_str(&fenced(&r.text));
-                spans.push(Span {
-                    start,
-                    end: tail.len(),
-                    author: r.author.clone(),
-                    row: Some(r.row),
-                });
-                tail.push_str("\n\n");
+            for part in parts {
+                match part {
+                    Part::Dropped(n, why) => tail.push_str(&format!(
+                        "[compaction: {n} {why} are not shown; the rows below are as stored]\n\n"
+                    )),
+                    Part::Row(r) => {
+                        tail.push_str(&format!("[row {}] {}:\n", r.row, r.header));
+                        let start = tail.len();
+                        tail.push_str(&fenced(&r.text));
+                        spans.push(Span {
+                            start,
+                            end: tail.len(),
+                            author: r.author.clone(),
+                            row: Some(r.row),
+                        });
+                        tail.push_str("\n\n");
+                    }
+                }
             }
             tail.push_str("</transcript>\n\n");
         }
@@ -291,5 +381,8 @@ impl Conversation {
         self.turns.push((tail.to_string(), reply.to_string()));
         self.sent = upto;
         self.marker = None;
+        // The operator's request went into the history with this turn, so it cannot be printed
+        // twice: a kept turn is the record of the rows it carried.
+        self.operator_row = None;
     }
 }

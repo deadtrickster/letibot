@@ -9,6 +9,8 @@ use letibot_transcript::{Speaker, TranscriptItem};
 use super::words::{self, Author};
 
 /// Most of one row the shadow is shown. A long tool output is evidence, and its head is enough.
+/// The operator's own request is never cut: it is the authority a permission allow is measured
+/// against, and a cut request is a quote the shadow cannot make.
 pub const ROW_CHARS: usize = 6_000;
 
 /// One fed row: the watched transcript index, who wrote it, and the header it is shown under.
@@ -32,11 +34,15 @@ fn header(author: &Author, call: bool) -> String {
 }
 
 fn row(at: usize, author: Author, call: bool, text: &str) -> Row {
+    let text = match author {
+        Author::Operator => text.trim().to_string(),
+        _ => super::during::cut(text.trim(), ROW_CHARS),
+    };
     Row {
         row: at,
         header: header(&author, call),
         author,
-        text: super::during::cut(text.trim(), ROW_CHARS),
+        text,
     }
 }
 
@@ -88,7 +94,10 @@ pub fn rows_of(items: &[TranscriptItem], from: usize) -> Vec<Row> {
 }
 
 /// Every row fed so far, shared by the jobs. Bounded: the oldest rows go once the log holds more
-/// than `cap` bytes, and a job that had not sent them yet starts at the oldest kept.
+/// than `cap` bytes, and a job that had not sent them yet starts at the oldest kept. The newest
+/// row the operator wrote is the one exception: it is held aside when the cap evicts it, because
+/// the permission check asks what the operator asked for and a mirror of the work alone cannot
+/// answer that.
 #[derive(Debug)]
 pub struct Log {
     base: usize,
@@ -98,6 +107,8 @@ pub struct Log {
     head: [u8; 32],
     bytes: usize,
     cap: usize,
+    /// The newest operator row the cap evicted, with its fed index.
+    kept_operator: Option<(usize, Row)>,
 }
 
 impl Log {
@@ -109,6 +120,7 @@ impl Log {
             head: [0; 32],
             bytes: 0,
             cap,
+            kept_operator: None,
         }
     }
 
@@ -130,6 +142,9 @@ impl Log {
             self.chain.pop_front();
             if let Some(r) = self.rows.pop_front() {
                 self.bytes -= r.text.len() + r.header.len();
+                if r.author == Author::Operator {
+                    self.kept_operator = Some((self.base, r));
+                }
                 self.base += 1;
             }
         }
@@ -155,5 +170,27 @@ impl Log {
     /// The kept rows from index `from` on.
     pub fn since(&self, from: usize) -> impl Iterator<Item = &Row> {
         self.rows.iter().skip(from.saturating_sub(self.base))
+    }
+
+    /// The newest row the operator wrote: from the kept rows, or the one the cap evicted.
+    pub fn operator_row(&self) -> Option<(usize, &Row)> {
+        self.rows
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, r)| r.author == Author::Operator)
+            .map(|(i, r)| (self.base + i, r))
+            .or_else(|| self.kept_operator.as_ref().map(|(at, r)| (*at, r)))
+    }
+
+    /// The row fed at `at`: from the kept rows, or the operator row the cap holds aside.
+    pub fn row_at(&self, at: usize) -> Option<&Row> {
+        if at >= self.base {
+            return self.rows.get(at - self.base);
+        }
+        self.kept_operator
+            .as_ref()
+            .filter(|(k, _)| *k == at)
+            .map(|(_, r)| r)
     }
 }

@@ -607,6 +607,9 @@ pub struct ShadowLines {
     pub turn_monitor: Option<bool>,
     /// How much of the turn's digest that check is shown, in bytes. `None` is the built-in cap.
     pub turn_monitor_max_chars: Option<usize>,
+    /// The most bytes of watched conversation a persistent job's mirror holds. `None` is the
+    /// built-in 24 KiB.
+    pub mirror_bytes: Option<usize>,
 }
 
 /// The stages `[shadow] answers` takes, in the order they are promoted. A closed set: a stage
@@ -728,6 +731,19 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                     )));
                 }
                 out.turn_monitor_max_chars = Some(n);
+            } else if k == "mirror_bytes" {
+                let n = v.trim().parse::<usize>().map_err(|_| {
+                    fault(format!(
+                        "[shadow] mirror_bytes = {v} is not a count; write `mirror_bytes = 24576`"
+                    ))
+                })?;
+                if n < 2_000 {
+                    return Err(fault(format!(
+                        "[shadow] mirror_bytes = {n} leaves the mirror less than one row; \
+                         the least is 2000"
+                    )));
+                }
+                out.mirror_bytes = Some(n);
             } else if known(k) {
                 let model = v.trim();
                 if model.is_empty() {
@@ -740,8 +756,8 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
             } else {
                 return Err(fault(format!(
                     "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every`, \
-                     `answer_reads`, `answers`, `turn_monitor`, `turn_monitor_max_chars` and the \
-                     jobs, {}",
+                     `answer_reads`, `answers`, `turn_monitor`, `turn_monitor_max_chars`, \
+                     `mirror_bytes` and the jobs, {}",
                     SHADOW_JOBS.join(", ")
                 )));
             }
