@@ -5916,7 +5916,6 @@ impl Server {
                     let answer: Answer =
                         me.answer_frame(&project, seat, &speaker, &frame, now_ms());
                     let parting = matches!(answer.response, Response::Bye { .. });
-                    conn.send(answer.response);
                     // A ruling lands in the room it names, so its events go there too.
                     let landed_in = match &frame {
                         Request::Rule {
@@ -5925,7 +5924,14 @@ impl Server {
                         } if !named.trim().is_empty() => named.trim().to_string(),
                         _ => project.clone(),
                     };
+                    // Routed BEFORE the answer is written, because the answer is what a client acts
+                    // on: a bell rung for a session that is away is counted at this instant, and a
+                    // session that reconnected on the strength of the answer would take a `Welcome`
+                    // reading zero - a gap it is then never told, while the event it missed is not
+                    // pushed to it either. An event that is queued first is one the client cannot
+                    // outrun.
                     me.route(&landed_in, &answer.events);
+                    conn.send(answer.response);
                     if parting {
                         break;
                     }
@@ -6095,11 +6101,13 @@ impl Server {
             });
             // The bell rang where nobody was - counted for every audience member with no
             // connection, before anything is written, so a session that comes back is told the
-            // size of the gap instead of a `Welcome` a session that was never away also gets.
-            for session in &audience {
-                if !here.contains(session.as_str()) {
-                    self.count_missed(session, now);
-                }
+            // size of the gap instead of a `Welcome` a session that was never away also gets. A
+            // connection that arrived since `here` was taken is handed the event instead: its
+            // `Welcome` was answered after that arrival and read this map empty.
+            for conn in self.bell_where_nobody_was(project, &audience, &here, now) {
+                conn.send(Response::Event {
+                    event: event.clone(),
+                });
             }
             // The arbiter is written to through `boxed`, because its connection is in another
             // room; it is in `audience` like every other member (the closure above inserts it), so
@@ -6115,11 +6123,46 @@ impl Server {
         }
     }
 
-    /// One event was addressed to a session that is not here - see [`Server::route`].
-    fn count_missed(&self, session: &str, now: u64) {
+    /// Count this event for the audience members with no connection, and answer the connections
+    /// that turned out to have arrived since [`Server::route`] took `here`. Decided under the
+    /// `missed` lock because a `Welcome` takes its count under it: a connection added before its
+    /// `Hello` was answered (that order is the serve loop's) is one whose count is already spent,
+    /// so it is handed the event rather than a gap nobody would ever read. Either way the row is
+    /// pushed to a live connection or counted for the next `Welcome`, never neither.
+    fn bell_where_nobody_was(
+        &self,
+        project: &str,
+        audience: &BTreeSet<String>,
+        here: &BTreeSet<&str>,
+        now: u64,
+    ) -> Vec<Arc<Conn>> {
+        let mut late: Vec<Arc<Conn>> = Vec::new();
+        let mut missed = self.inner.missed.lock().expect("the missed lock");
+        let conns = self.inner.conns.lock().expect("the connections lock");
+        for session in audience {
+            if here.contains(session.as_str()) {
+                continue;
+            }
+            let live: Vec<Arc<Conn>> = conns
+                .values()
+                .filter(|c| c.project == project && &c.who.session == session)
+                .cloned()
+                .collect();
+            if live.is_empty() {
+                self.count_missed(&mut missed, session, now);
+            } else {
+                late.extend(live);
+            }
+        }
+        late
+    }
+
+    /// One event was addressed to a session that is not here - see [`Server::route`]. `missed` is
+    /// the caller's guard, so the decision to count and the count itself cannot be split by a
+    /// `Welcome` reading the map in between.
+    fn count_missed(&self, missed: &mut BTreeMap<String, Missed>, session: &str, now: u64) {
         let session = self.principal_of(session);
         let session = session.as_str();
-        let mut missed = self.inner.missed.lock().expect("the missed lock");
         if !missed.contains_key(session) {
             let max = self.inner.principals.load(Ordering::SeqCst);
             if missed.len() >= max
