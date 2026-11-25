@@ -41,6 +41,9 @@ pub struct InboxCondition {
     /// write `@seat/planner` rather than a timestamped id. Matched
     /// case-insensitively; empty is no alias.
     alias: Mutex<String>,
+    /// Where the alias is READ from, when the thing that owns it can answer later: the host's
+    /// registry, so a rename reaches `@seat/title` without anybody telling the seat about it.
+    live_alias: Mutex<Option<Arc<dyn Fn() -> String + Send + Sync>>>,
     me: Mutex<Identity>,
     attention: Mutex<Attention>,
     subs: Mutex<BTreeSet<Subscription>>,
@@ -65,6 +68,7 @@ impl InboxCondition {
             seat: seat.to_string(),
             session: session.to_string(),
             alias: Mutex::new(String::new()),
+            live_alias: Mutex::new(None),
             me: Mutex::new(me),
             attention: Mutex::new(attention),
             subs: Mutex::new(BTreeSet::new()),
@@ -80,7 +84,22 @@ impl InboxCondition {
         *self.alias.lock().unwrap_or_else(|e| e.into_inner()) = alias.trim().to_string();
     }
 
+    /// Read the alias from `source` instead of the string [`InboxCondition::set_alias`] last
+    /// stored. A host whose sessions can be renamed asks here, so a name typed a second ago is
+    /// the name the fabric matches - a title cached at attach goes stale the moment it moves.
+    pub fn set_alias_source(&self, source: Arc<dyn Fn() -> String + Send + Sync>) {
+        *self.live_alias.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
     pub fn alias(&self) -> String {
+        let live = self
+            .live_alias
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(source) = live {
+            return source().trim().to_string();
+        }
         self.alias.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 

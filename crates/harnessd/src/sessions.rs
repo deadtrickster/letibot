@@ -1185,9 +1185,16 @@ impl<'a> Sessions<'a> {
         slot: &letibot_flowy::tool::SeatSlot,
     ) -> Arc<letibot_flowy::InboxCondition> {
         // The title is the session's short address on the fabric - `@seat/title` beside `@seat/id`
-        // - so agents on one project can name each other. From the entry
+        // - so agents on one project can name each other. Read from the registry EVERY time it is
+        // asked, not once here: a `/rename` an hour later moves the address, and a copy taken at
+        // attach would keep answering to the old one.
         let title = self.registry.title_of(session_id).unwrap_or_default();
         let cond = seat.attach_as(session_id, &title, letibot_flowy::Attention::default());
+        let registry = self.registry.clone();
+        let me = session_id.to_string();
+        cond.set_alias_source(std::sync::Arc::new(move || {
+            registry.title_of(&me).unwrap_or_default()
+        }));
         *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(letibot_flowy::tool::Attachment {
             seat: seat.clone(),
             cond: cond.clone(),

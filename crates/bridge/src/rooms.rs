@@ -448,19 +448,38 @@ fn title_cell() -> &'static Mutex<crate::titles::Title> {
 }
 
 /// The label this seat asks the room to draw it by, in the order [`base_name`] names it:
-/// `$LETIBOT_ROOM_NAME` when the operator named it, else the nick this session was given, else the
-/// title `/rename` gave it, else whatever the folder holds. Display only - the seat's id is the
-/// address, so a label that moves moves nothing else.
+/// `$LETIBOT_ROOM_NAME` when the operator named it, else the newer of the nick this session was
+/// given and the title Claude Code's `/rename` gave it, else whatever the folder holds. Display
+/// only - the seat's id is the address, so a label that moves moves nothing else.
 fn label() -> Option<String> {
     if let Ok(named) = std::env::var(NAME_ENV)
         && !named.trim().is_empty()
     {
         return title_name(&named);
     }
-    if let Some(nick) = session_env().and_then(|s| read_session_nick(&data_dir(), &s)) {
+    // The title is read FIRST, because reading it is what notices a rename: a `/rename` typed
+    // while this bridge was running is NEWER than a nick file written before it, and a person who
+    // renames their session means it. A title the transcript already had when the process
+    // started is not newer than anything, so the nick keeps the seat.
+    let title = session_title();
+    let moved = title_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .moved_at();
+    let nick = session_env().and_then(|s| read_session_nick(&data_dir(), &s));
+    if title_outranks_the_nick(moved) && title.is_some() {
+        return title;
+    }
+    if let Some(nick) = nick {
         return Some(nick);
     }
-    session_title().or_else(|| read_nick(&data_dir(), &cwd()))
+    title.or_else(|| read_nick(&data_dir(), &cwd()))
+}
+
+/// Did a `/rename` land after this bridge started? That is the whole of "the title is newer than
+/// the nick file": both were settled before the process, or one of them is not there.
+fn title_outranks_the_nick(moved_at: Option<std::time::SystemTime>) -> bool {
+    moved_at.is_some()
 }
 
 /// The label the room was last told, so a title read again is not a frame again.
@@ -478,6 +497,76 @@ fn told() -> Option<String> {
 
 fn take_told(label: Option<String>) {
     *told_cell().lock().unwrap_or_else(|e| e.into_inner()) = label;
+}
+
+/// A label the room refused: its own words, when it was refused, and how many times it has been.
+/// `None` for a label the room took, which is every ordinary case.
+struct Refusal {
+    label: String,
+    said: String,
+    at: std::time::Instant,
+    tries: u32,
+}
+
+fn refusal_cell() -> &'static Mutex<Option<Refusal>> {
+    static REFUSED: std::sync::OnceLock<Mutex<Option<Refusal>>> = std::sync::OnceLock::new();
+    REFUSED.get_or_init(|| Mutex::new(None))
+}
+
+/// How long a refused label waits before it is said again, and how many times it is said at all.
+/// A name another live seat holds is a fact that changes when that seat leaves, so the wait grows
+/// rather than the tries ending at one: the last attempt is ten minutes after the first.
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+const TRIES: u32 = 6;
+
+/// The wait after `tries` refusals: 30 s, 1 min, 2 min... to the sixth.
+fn backoff(tries: u32) -> std::time::Duration {
+    RETRY_AFTER * 2u32.saturating_pow(tries.saturating_sub(1).min(10))
+}
+
+/// May this label be said now? Not while the room's refusal of it is younger than its wait, and
+/// not at all once it has been refused `TRIES` times - a name that has failed six times over ten
+/// minutes is somebody else's, and repeating it is a frame nobody reads.
+fn may_say_the_label(label: &str) -> bool {
+    let held = refusal_cell().lock().unwrap_or_else(|e| e.into_inner());
+    match held.as_ref() {
+        Some(r) if r.label == label => r.tries < TRIES && r.at.elapsed() >= backoff(r.tries),
+        _ => true,
+    }
+}
+
+/// The line said ONCE when a label is given up on, naming what the room said - a taken nick is
+/// refused with the seat that holds it. `None` for every label that has not run out of tries, and
+/// for the one just consumed.
+fn gave_up(label: &str) -> Option<String> {
+    let mut held = refusal_cell().lock().unwrap_or_else(|e| e.into_inner());
+    let refused = held.as_ref()?;
+    if refused.label != label || refused.tries < TRIES {
+        return None;
+    }
+    let said = held.take()?.said;
+    Some(format!(
+        "the room would not take the name `{label}`: {said}. The seat keeps the name it speaks as, \
+         and this is the last time it is tried."
+    ))
+}
+
+/// Record a refusal of `label` (with the room's own words), or clear it once the room took one.
+/// The count is per label: a refusal of one name is not a strike against the next.
+fn take_refusal(refused: Option<(String, String)>) {
+    let mut held = refusal_cell().lock().unwrap_or_else(|e| e.into_inner());
+    *held = refused.map(|(label, said)| {
+        let tries = match held.take() {
+            Some(previous) if previous.label == label => previous.tries + 1,
+            _ => 1,
+        };
+        Refusal {
+            label,
+            said,
+            at: std::time::Instant::now(),
+            tries,
+        }
+    });
 }
 
 fn name_cell() -> &'static Mutex<String> {
@@ -1492,25 +1581,51 @@ impl RoomLink {
             return None;
         }
         let named = now?;
-        self.take_label(&named);
-        // Nothing is kept: the transcript is where a title comes from, and reading it again is how
-        // a second rename is found. A label the room refuses (another live seat answers to it) is
-        // not retried - the name this bridge speaks as is drawn instead.
-        take_told(Some(named.clone()));
-        Some(named)
+        // A label the room REFUSED is not the label the room was told - another live seat answers
+        // to it, and the refusal names which. Saying it again on the next tick would be a frame
+        // storm, and saying it never is how the seat silently keeps a name nobody sees, so it is
+        // retried on a doubling wait and given up on aloud.
+        if !may_say_the_label(&named) {
+            // Said once, with the room's own words, when the tries run out.
+            if let Some(why) = gave_up(&named) {
+                let note = self
+                    .inner
+                    .note
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                note(&why);
+            }
+            return None;
+        }
+        match self.take_label(&named) {
+            Ok(()) => {
+                take_refusal(None);
+                take_told(Some(named.clone()));
+                Some(named)
+            }
+            Err(why) => {
+                take_refusal(Some((named, why)));
+                None
+            }
+        }
     }
 
     /// One `nick` frame, split from [`RoomLink::relabel`] so a test can drive the frame itself.
-    fn take_label(&self, label: &str) {
-        if let Err(e) = self.request(&json!({ "type": "nick", "nick": label })) {
-            let note = self
-                .inner
-                .note
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            note(&e);
-        }
+    /// `Err` is the room's own words, holder included - a taken nick is refused with the seat that
+    /// has it and the next free one, so the log line says something a person can act on.
+    fn take_label(&self, label: &str) -> Result<(), String> {
+        self.request(&json!({ "type": "nick", "nick": label }))
+            .map(|_| ())
+            .inspect_err(|e| {
+                let note = self
+                    .inner
+                    .note
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                note(e);
+            })
     }
 
     /// A fresh request id, unique to this bridge process.
@@ -3705,5 +3820,62 @@ mod tests {
         );
         assert_eq!(plain["facts"]["working"]["branch"], "");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A label the room refused is NOT the label it was told: it is retried on a doubling wait,
+    /// and given up on aloud once - the base behaviour recorded the refusal as success, so the
+    /// room went on drawing a name the seat had asked to change.
+    #[test]
+    fn a_refused_label_is_waited_out_and_then_given_up_on_aloud() {
+        take_refusal(None);
+        let held = "the room refused it: the nick `planner` is taken by seat lab2x1/cc-1";
+        assert!(may_say_the_label("planner"), "nothing has been refused yet");
+        take_refusal(Some(("planner".into(), held.into())));
+        assert!(
+            !may_say_the_label("planner"),
+            "the same label is not said again on the next tick"
+        );
+        assert!(
+            gave_up("planner").is_none(),
+            "one refusal is a wait, not a surrender"
+        );
+        assert!(
+            may_say_the_label("another-name"),
+            "a different name is a different question"
+        );
+        for _ in 1..TRIES {
+            take_refusal(Some(("planner".into(), held.into())));
+        }
+        let said = gave_up("planner").expect("the last try is said out loud");
+        assert!(
+            said.contains("planner") && said.contains("lab2x1/cc-1"),
+            "it names the holder the room named: {said}"
+        );
+        assert!(gave_up("planner").is_none(), "said once");
+        take_refusal(None);
+    }
+
+    /// The wait doubles from thirty seconds, so six tries cover the ten minutes a seat needs to
+    /// see whether the other one has gone.
+    #[test]
+    fn the_retry_wait_doubles() {
+        assert_eq!(backoff(1), std::time::Duration::from_secs(30));
+        assert_eq!(backoff(2), std::time::Duration::from_secs(60));
+        assert_eq!(backoff(3), std::time::Duration::from_secs(120));
+        assert!(backoff(TRIES) >= std::time::Duration::from_secs(600));
+    }
+
+    /// A `/rename` typed while this bridge was running outranks a nick file written before it; a
+    /// title the transcript already had does not, so the nick an operator chose keeps the seat.
+    #[test]
+    fn a_rename_after_a_nick_file_wins() {
+        assert!(
+            !title_outranks_the_nick(None),
+            "a title the file already held is nobody's news"
+        );
+        assert!(
+            title_outranks_the_nick(Some(std::time::SystemTime::now())),
+            "a rename under this process is newer than a nick file"
+        );
     }
 }

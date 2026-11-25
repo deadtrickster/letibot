@@ -121,6 +121,10 @@ pub struct Title {
     /// The file's length and modification time when it was last read.
     seen: Option<(Option<SystemTime>, u64)>,
     title: Option<String>,
+    /// When a title this watcher had not read before was found, or `None` while the file has only
+    /// ever said what it said at the first read. It is what tells a `/rename` that happened while
+    /// the bridge was running - the one that settles which of two names is the newer.
+    moved_at: Option<SystemTime>,
 }
 
 impl Title {
@@ -136,6 +140,13 @@ impl Title {
     /// The transcript this watcher reads.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// When this session's title last CHANGED under this watcher: a `/rename` typed since the
+    /// bridge started, and `None` for the title the file already had. A name settled before this
+    /// process started is not newer than anything, so it cannot outrank a nick file.
+    pub fn moved_at(&self) -> Option<SystemTime> {
+        self.moved_at
     }
 
     /// The last title the transcript names, reading only what it gained since the last call.
@@ -179,8 +190,14 @@ impl Title {
         if self.fresh {
             lines.next();
         }
+        // A title found on a file this watcher has read before is a `/rename`; one found on the
+        // first read is the name the session already had, and it is nobody's news.
+        let read_before = self.seen.is_some();
         for line in lines {
             if let Some(title) = title_of(line) {
+                if read_before && self.title.as_deref() != Some(title.as_str()) {
+                    self.moved_at = Some(SystemTime::now());
+                }
                 self.title = Some(title);
             }
         }
