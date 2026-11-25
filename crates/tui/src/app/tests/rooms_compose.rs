@@ -5,8 +5,11 @@
 use super::rooms::{history as chat_history, msg, opened, reply, rooms_reply};
 use super::*;
 use crate::app::chat_input::complete::Complete;
+use crate::app::chat_input::complete::{FILE_TOP, TOP};
+use crate::app::chat_input::files;
 use crate::app::rooms::Chan;
 use letibot_plugin::complete::{Candidate, Completion};
+use letibot_sessionlog::testing::wait_until;
 use rano::style::Palette;
 use serde_json::json;
 
@@ -428,6 +431,8 @@ fn at_a_path_completes_files_and_a_handle_stays_a_handle() {
     let mut a = opened(1_000);
     host_roster(&mut a);
     a.wiring.workspace = d.to_string_lossy().to_string();
+    files_landed(&a, "src/");
+    files_landed(&a, "gen/");
     let inserts = |a: &App| -> Vec<String> {
         a.rooms_completion()
             .map(|c| c.candidates.iter().map(|c| c.insert.clone()).collect())
@@ -455,6 +460,69 @@ fn at_a_path_completes_files_and_a_handle_stays_a_handle() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// The row is the room's names first and the workspace's files after them: a handle is a name in
+/// the room, and a path must never push one off the edge of the composer.
+#[test]
+fn at_lists_the_workspaces_files_after_the_handles() {
+    let d = at_workspace();
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        json!({"type": "roster", "room": "host", "rows": [
+            {"name": "s-main", "kind": "session", "connected": true, "project": "", "label": ""}
+        ]}),
+    );
+    a.wiring.workspace = d.to_string_lossy().to_string();
+    files_landed(&a, "");
+    a.set_composer("@ma");
+    assert!(a.rooms_complete());
+    let inserts: Vec<String> = a
+        .rooms_completion()
+        .expect("an answer")
+        .candidates
+        .iter()
+        .map(|c| c.insert.clone())
+        .collect();
+    let handle = inserts
+        .iter()
+        .position(|i| i == "@s-main")
+        .unwrap_or_else(|| panic!("the handle is offered: {inserts:?}"));
+    let file = inserts
+        .iter()
+        .position(|i| i == "@src/main.rs")
+        .unwrap_or_else(|| panic!("the file is offered too: {inserts:?}"));
+    assert!(handle < file, "the file follows the handle: {inserts:?}");
+    assert_eq!(a.input(), "@s-main", "tab writes the first candidate");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A word a large tree answers with a great many paths is still one bounded row: the top twenty of
+/// its matches are collected, and the row draws its own six of those.
+#[test]
+fn at_files_collect_the_top_twenty_and_the_row_draws_six() {
+    let d = at_workspace();
+    for i in 1..=25 {
+        std::fs::write(d.join(format!("f{i:02}.rs")), "").unwrap();
+    }
+    let mut a = opened(1_000);
+    a.wiring.workspace = d.to_string_lossy().to_string();
+    files_landed(&a, "");
+
+    let (_, files) = a.room_completer().files_at("@f", 2).expect("a file word");
+    assert_eq!(files.len(), FILE_TOP, "the collection is bounded");
+    assert_eq!(files[0].insert, "@f01.rs", "and the best of them is first");
+
+    a.set_composer("@f");
+    assert!(a.rooms_complete());
+    assert_eq!(
+        a.rooms_completion().expect("an answer").candidates.len(),
+        TOP,
+        "the row draws its own six"
+    );
+    assert_eq!(a.input(), "@f01.rs", "the best of them is in the line");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A fixture workspace: two source files whose names share a prefix, so the completion's ranking
 /// has something to choose between.
 fn at_workspace() -> std::path::PathBuf {
@@ -473,6 +541,13 @@ fn at_workspace() -> std::path::PathBuf {
     d
 }
 
+/// The `@` file list is a walk's, and the walk runs on its own thread (`chat_input::files`), so a
+/// test that wants files waits for the folder's walk rather than sleeping a guessed interval.
+fn files_landed(a: &App, dir: &str) {
+    let ws = a.wiring.workspace.clone();
+    wait_until("the `@` file walk", || files::landed(&ws, dir));
+}
+
 /// Choosing a FILE with Enter attaches it: the chip a paste makes, and the typed `@…` gone. A path
 /// sent as prose is a path the model has to open; an attachment is the file itself.
 #[test]
@@ -481,6 +556,7 @@ fn an_at_file_chosen_with_enter_becomes_a_chip() {
     let mut a = opened(1_000);
     host_roster(&mut a);
     a.wiring.workspace = d.to_string_lossy().to_string();
+    files_landed(&a, "src/");
     a.set_composer("look at @src/ma");
     // Enter chooses rather than sends: no message, and the chip is in the line where the word was.
     let line = a.input().to_string();

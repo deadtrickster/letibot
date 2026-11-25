@@ -4,9 +4,15 @@
 use letibot_plugin::complete::{Candidate, Completion};
 use letibot_plugin::pane::HUES;
 
+use super::files;
+
 /// How many candidates the row offers. Fewer than the host's `MAX_CANDIDATES`: six is as many as
 /// one row of the composer's edge is read at a glance.
 pub(crate) const TOP: usize = 6;
+
+/// How many file candidates an `@` word collects before the row takes its own share: a big tree
+/// matches thousands of paths, and ranking thousands is not a keypress's work.
+pub(crate) const FILE_TOP: usize = 20;
 
 /// The note a candidate carries when its member is in another room.
 pub(crate) const ELSEWHERE: &str = "elsewhere";
@@ -52,9 +58,6 @@ pub(crate) struct RoomComplete {
     pub workspace: String,
 }
 
-/// The most entries one `@path` walk visits: a Tab must answer at once in a large tree.
-const FILE_WALK_LIMIT: usize = 20_000;
-
 /// The completion a Tab opened: the answer, which candidate is in the line, and the line that
 /// candidate wrote. A character typed on makes the line differ, and the next Tab asks fresh.
 #[derive(Debug, Clone)]
@@ -78,16 +81,10 @@ impl Complete for RoomComplete {
             };
         }
         if let Some((from, frag)) = at_fragment(text, cursor) {
-            // A path-like fragment is a file and anything else a handle. Files only for paths,
-            // so the chat layer's roster answer stays the native one and a `@cc` stays a handle.
-            let candidates = match pathish(frag) {
-                true => self.files_for(frag),
-                false => self.people_for(frag),
-            };
             return Completion {
                 from,
                 to: cursor,
-                candidates,
+                candidates: self.with_files(self.people_for(frag), frag),
             };
         }
         Completion::default()
@@ -180,9 +177,29 @@ impl RoomComplete {
 }
 
 impl RoomComplete {
-    /// The `@path` candidates: files under the workspace, `.gitignore` honoured as `grep` honours
-    /// it, ranked by name prefix, path prefix, substring, then in-order letters. A fragment with
-    /// a directory part walks that directory, so a named ignored tree is still offered.
+    /// The `@` word's row: the candidates a completer gave, then the workspace's files. Files come
+    /// LAST because a handle is a name in the room, and a path must not push one off the row; a
+    /// bare `@` is the roster alone, since files begin when there is a word to match them.
+    pub(crate) fn with_files(&self, mut candidates: Vec<Candidate>, frag: &str) -> Vec<Candidate> {
+        if frag.is_empty() {
+            return candidates;
+        }
+        let room = TOP.max(candidates.len());
+        candidates.extend(self.files_for(frag));
+        candidates.truncate(room);
+        candidates
+    }
+
+    /// The files an `@` word offers, alone: Enter's door, so a file chosen there can never be a
+    /// handle the room would have understood.
+    pub(crate) fn files_at(&self, text: &str, cursor: usize) -> Option<(usize, Vec<Candidate>)> {
+        let (from, frag) = at_fragment(text, cursor)?;
+        Some((from, self.files_for(frag)))
+    }
+
+    /// The `@path` candidates: files under the workspace, from the list the walk in [`files`] keeps
+    /// current, ranked by name prefix, path prefix, substring, then in-order letters. A fragment
+    /// with a directory part reads that directory's own list, so a named ignored tree is offered.
     fn files_for(&self, frag: &str) -> Vec<Candidate> {
         let ws = match self.workspace.is_empty() {
             true => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -192,44 +209,30 @@ impl RoomComplete {
             Some(i) => (&frag[..=i], &frag[i + 1..]),
             None => ("", frag),
         };
-        let dir = match dir_part.strip_prefix("~/") {
-            Some(rest) => {
-                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest)
-            }
-            None => ws.join(dir_part),
+        // `~/src/ma` is the home directory's, as the shell's own completion reads it.
+        let (folder, dir) = match dir_part.strip_prefix("~/") {
+            Some(rest) => (
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
+                rest,
+            ),
+            None => (ws, dir_part),
         };
         // A directory part that is not a directory is a fuzzy needle over the whole tree.
-        let (dir, prefix, needle) = if dir.is_dir() {
-            (dir, dir_part, needle.to_lowercase())
-        } else {
-            (ws, "", frag.to_lowercase())
+        let (folder, dir, needle, prefix) = match dir.is_empty() || folder.join(dir).is_dir() {
+            true => (folder, dir, needle.to_lowercase(), dir_part),
+            false => (folder, "", frag.to_lowercase(), ""),
         };
-        let walk = ignore::WalkBuilder::new(&dir)
-            .hidden(false)
-            .require_git(false)
-            // `.gitignore` files only, the set the `grep` and `glob` tools read.
-            .git_global(false)
-            .ignore(false)
-            .filter_entry(|e| e.file_name() != ".git")
-            .build();
-        let mut found: Vec<(u8, String)> = Vec::new();
-        for e in walk.flatten().take(FILE_WALK_LIMIT) {
-            if !e.file_type().is_some_and(|t| t.is_file()) {
-                continue;
-            }
-            let Ok(rel) = e.path().strip_prefix(&dir) else {
-                continue;
-            };
-            let rel = rel.to_string_lossy().to_string();
-            if let Some(rank) = file_rank(&needle, &rel) {
-                found.push((rank, rel));
-            }
-        }
+        let names = files::under(&folder.to_string_lossy(), dir);
+        let mut found: Vec<(u8, &str)> = names
+            .iter()
+            .filter_map(|n| file_rank(&needle, &n.lower).map(|rank| (rank, n.path.as_str())))
+            .collect();
         found.sort_by(|(ra, a), (rb, b)| (ra, a.len(), a).cmp(&(rb, b.len(), b)));
         found
             .into_iter()
-            .take(TOP)
+            .take(FILE_TOP)
             .map(|(_, rel)| Candidate {
+                // The fragment's own spelling, so a `~` in it survives being completed.
                 insert: format!("@{prefix}{rel}"),
                 ..Candidate::default()
             })
@@ -237,16 +240,17 @@ impl RoomComplete {
     }
 }
 
-/// A fragment that names a path rather than a handle, by the shell completion's own test.
+/// A fragment that names a path rather than a handle, by the shell completion's own test. Enter on
+/// one chooses the file the completion offered; a bare word stays a handle the room can resolve.
 pub(crate) fn pathish(frag: &str) -> bool {
     frag.starts_with(['.', '~']) || frag.contains('/')
 }
 
-/// How well a needle matches a relative path: `0` the file name starts with it, `1` the path
-/// does, `2` it occurs, `3` its letters occur in order, `None` not at all.
-fn file_rank(needle: &str, rel: &str) -> Option<u8> {
-    let hay = rel.to_lowercase();
-    let name = hay.rsplit('/').next().unwrap_or(&hay);
+/// How well a needle matches a relative path - `0` the file name starts with it, `1` the path
+/// does, `2` it occurs, `3` its letters occur in order, `None` not at all. Both are lowercased:
+/// the path by the walk that cached it, and the needle by the caller.
+fn file_rank(needle: &str, hay: &str) -> Option<u8> {
+    let name = hay.rsplit('/').next().unwrap_or(hay);
     if name.starts_with(needle) {
         return Some(0);
     }

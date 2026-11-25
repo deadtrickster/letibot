@@ -6,6 +6,7 @@
 
 pub(crate) mod complete;
 pub(crate) mod drafts;
+pub(crate) mod files;
 pub(crate) mod history;
 pub(crate) mod reply;
 
@@ -163,7 +164,8 @@ impl App {
     /// spent choosing, so nothing is sent - the chip is in the line and the next Enter sends it.
     ///
     /// A handle is not this: `@cc` is a name in the room, and a line of names is text. The test is
-    /// the completion's own - [`complete::pathish`], the same one that decided to offer files.
+    /// the completion's own - [`complete::pathish`] - and the candidates are the file list alone, so
+    /// a handle that happens to match the word cannot be attached in place of the file.
     pub(crate) fn rooms_attach_at_word(&mut self) -> bool {
         if self.focused_surface() != Some(Surface::Rooms) {
             return false;
@@ -176,8 +178,10 @@ impl App {
         if frag.is_empty() || !complete::pathish(frag) {
             return false;
         }
-        let answer = self.room_completer().complete(&text, cursor);
-        let Some(chosen) = answer.candidates.iter().find(|c| c.insert.starts_with('@')) else {
+        let Some((from, files)) = self.room_completer().files_at(&text, cursor) else {
+            return false;
+        };
+        let Some(chosen) = files.first() else {
             return false;
         };
         let rel = chosen.insert.trim_start_matches('@').to_string();
@@ -200,7 +204,7 @@ impl App {
             }
         };
         // The typed fragment goes first, so the chip lands where the word was rather than after it.
-        self.write_candidate(answer.from, answer.to, "");
+        self.write_candidate(from, cursor, "");
         self.compose.open = None;
         self.chip_in(attachment);
         true
@@ -343,6 +347,37 @@ impl App {
             verbs,
             aliases,
             workspace: self.wiring.workspace.clone(),
+        }
+    }
+
+    /// Keep the composer's `@` file list warm, so the first `@` of a session already has files to
+    /// offer. The walk itself runs on its own thread (`chat_input::files`); this only asks for one
+    /// when the folder has none, and costs a lock once it has.
+    pub fn warm_at_files(&self) {
+        if self.wiring.workspace.is_empty() || !self.is_open(Surface::Rooms) {
+            return;
+        }
+        self::files::warm(&self.wiring.workspace);
+    }
+
+    /// An `@` answer with the workspace's files after its candidates. The roster is a layer's to
+    /// rank; the files are the host's, because a guest has no filesystem to walk. A span that names
+    /// another word is left alone, so a completer's answer is never edited by a fact about it.
+    pub(crate) fn at_files_after(
+        &self,
+        answer: Completion,
+        text: &str,
+        cursor: usize,
+    ) -> Completion {
+        let Some((from, frag)) = complete::at_fragment(text, cursor) else {
+            return answer;
+        };
+        if from != answer.from {
+            return answer;
+        }
+        Completion {
+            candidates: self.room_completer().with_files(answer.candidates, frag),
+            ..answer
         }
     }
 

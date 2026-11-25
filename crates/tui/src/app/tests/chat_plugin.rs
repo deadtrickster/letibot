@@ -5,7 +5,9 @@
 use super::rooms::{history, msg as wire_msg, opened, reply};
 use super::*;
 use crate::app::chat_input::complete::Complete;
+use crate::app::chat_input::files;
 use letibot_plugins::{Capability, Loader, Module, Stack};
+use letibot_sessionlog::testing::wait_until;
 use rano::style::Palette;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -864,6 +866,41 @@ fn the_parity_scenes_draw_runs_dividers_and_a_quote() {
         unread.entries.iter().any(|e| e.divider.is_some()),
         "the unread mark is drawn"
     );
+}
+
+/// The `@` file completion the head keeps is only reachable if the KEY reaches it, and Tab asks the
+/// chat layer first (`chat_complete`). A word the layer cannot answer - a path, which a guest has no
+/// filesystem to walk - is the room's own completion's: Tab offers the file, and Enter attaches it.
+#[test]
+fn tab_on_a_path_the_layer_cannot_answer_reaches_the_files() {
+    let mut a = a_builtin_layer(1_793_735_794_500);
+    reply(&mut a, super::rooms::rooms_reply(&[("host", 2, 0, 0)]));
+    assert!(a.chat_view().is_some(), "the built-in layer answered");
+    let d = std::env::temp_dir().join(format!(
+        "letibot-layer-at-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
+    a.wiring.workspace = d.to_string_lossy().to_string();
+    let ws = a.wiring.workspace.clone();
+    wait_until("the `@` file walk", || files::landed(&ws, "src/"));
+
+    a.set_composer("@src/ma");
+    a.key(Key::Tab);
+    assert_eq!(
+        a.editor.text(),
+        "@src/main.rs",
+        "tab fell through to the room's own completion"
+    );
+    let line = a.editor.text().to_string();
+    assert_eq!(a.submit(line), None, "choosing the file sent the line");
+    assert_eq!(a.chips.len(), 1, "the file became a chip");
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Completion parity. Tab on the layer's input ranks what the native completion ranks, for the

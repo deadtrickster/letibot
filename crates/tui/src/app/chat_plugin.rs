@@ -396,9 +396,12 @@ impl App {
                 .filter(|c| c.validate(&text).is_ok())
         };
         let Some(answer) = answer.filter(|c| !c.candidates.is_empty()) else {
-            self.compose.open = None;
-            return false;
+            // A word the layer cannot answer - a path, which a guest has no filesystem to walk -
+            // is the room's own completion's, exactly as it was before the layer answered.
+            return self.rooms_complete();
         };
+        // The layer ranks the roster; the files are the host's, so they go after its candidates.
+        let answer = self.at_files_after(answer, &text, self.editor.cursor());
         let insert = answer.candidates[0].insert.clone();
         let line = self.write_candidate(answer.from, answer.to, &insert);
         self.compose.open = Some(chat_input::complete::Open {

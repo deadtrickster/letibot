@@ -487,6 +487,9 @@ impl Link {
         // The workspace's branch, read from the loop and never from a paint: it spawns a process, and a
         // measurement never runs where the frame is drawn. Two seconds between readings keeps the rate low.
         app.refresh_git();
+        // The composer's `@` file list is a walk's, and a walk of a large tree is not a keypress's:
+        // the loop asks for it here, so the first `@` of a session already has files to offer.
+        app.warm_at_files();
         app.refresh_github_refs();
         app.refresh_fleet();
         // And the model check a held message waits on (`app::reach`) - collected here for the
