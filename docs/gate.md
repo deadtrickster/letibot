@@ -166,8 +166,9 @@ says. When the gate host cannot start a VM, the steps run in this machine's VM i
 
 `~/.config/letibot/hosts.toml` is the operator's and never in a repository. A `[host.NAME]` table
 has `hostname`, `user`, `key` (the identity file ssh is given, never read into a session or a log),
-`root`, `path`, `reserve`, `flags`, `mise`, `never_touch`. The `hosts` tool lists them and, with
-`probe`, reports cores, load and spare cores. A name not in the file is refused by name.
+`root`, `path`, `reserve`, `flags`, `mise`, `never_touch`, `rustc_wrapper` and `sccache_dir`. The
+`hosts` tool lists them and, with `probe`, reports cores, load and spare cores. A name not in the file
+is refused by name.
 
 ## Running it by hand
 

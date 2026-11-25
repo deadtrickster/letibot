@@ -55,6 +55,14 @@ pub struct Host {
     /// `hosts.toml`. The operator's own workloads live here beside every agent's and nothing on the
     /// far side knows whose is whose, so it is checked before any signal, stop or remove.
     pub never_touch: Vec<String>,
+    /// Cargo's `RUSTC_WRAPPER` on this machine: `rustc_wrapper` in `hosts.toml`, the sccache
+    /// wrapper. A session placed here gets a private `$HOME`, so without one every package
+    /// compiles the whole workspace cold.
+    pub rustc_wrapper: Option<String>,
+    /// The cache that wrapper writes: `sccache_dir` in `hosts.toml`. The one directory a confined
+    /// session's view must let it write, and nothing at all is bound when it is not set. Read only
+    /// when there is a `rustc_wrapper`.
+    pub sccache_dir: Option<String>,
 }
 
 /// Toolchains through `mise`, which is how the operator's machines are set up. `mise` is not on a
@@ -184,9 +192,10 @@ impl Hosts {
         }
     }
 
-    /// The file's grammar, and its refusals: `[host.NAME]` tables of nine keys, refused by name when
-    /// unknown, stated twice, or not one line of quoted strings. Nothing beyond the grammar is
-    /// validated here; whether a host may be used is asked when it is used ([`Ssh::connect`]).
+    /// The file's grammar, and its refusals: `[host.NAME]` tables of eleven keys, refused by name
+    /// when unknown, stated twice, or not one line of quoted strings. Nothing beyond the grammar is
+    /// validated here; whether a host may be used is asked when it is used ([`Ssh::connect`]), and
+    /// whether its build wrapper is really there is asked when a session is placed.
     pub fn parse(text: &str) -> Result<Hosts, String> {
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut current: Option<String> = None;
@@ -341,6 +350,8 @@ impl Hosts {
                     reserve,
                     flags,
                     never_touch,
+                    rustc_wrapper: get("rustc_wrapper").map(str::to_string),
+                    sccache_dir: get("sccache_dir").map(str::to_string),
                     name,
                 },
             );
@@ -389,8 +400,10 @@ impl Hosts {
              (directories to put in front of the remote `PATH`), `root` (where remote \
              worktrees live, default `~/letibot-remote`), `mise` (the toolchain wrapper, \
              default: found once and cached), `reserve` (cores held back for the owner), \
-             `flags` (words such as `heavy` or `tmpfs`) and `never_touch` (process, compose \
-             and container names letibot must never signal, stop or remove there). The machine \
+             `flags` (words such as `heavy` or `tmpfs`), `never_touch` (process, compose and \
+             container names letibot must never signal, stop or remove there), `rustc_wrapper` \
+             (cargo's `RUSTC_WRAPPER` there, an sccache wrapper) and `sccache_dir` (the cache it \
+             writes, bound writable in a confined session's view). The machine \
              this daemon runs on has a section of its own — `[local]` with `never_touch` — which \
              is what a process record with no host is checked against.",
             hosts_file().display()
@@ -411,6 +424,8 @@ const HOST_KEYS: &[&str] = &[
     "reserve",
     "flags",
     "never_touch",
+    "rustc_wrapper",
+    "sccache_dir",
 ];
 
 /// `["a", "b"]` -> the strings, with the quotes and spaces off, and an empty list for `[]`. A tiny
@@ -3424,6 +3439,124 @@ fn toolchain_env(confine: Option<&crate::exec::Bwrap>) -> Vec<(String, String)> 
     crate::exec::seat::env_for_grants(boundary.view.grants.iter().map(|g| g.path()))
 }
 
+/// What a host's `rustc_wrapper` becomes for one session: the pairs every command carries, and the
+/// grants its view needs so the wrapper can run and write its cache. Asked of the host once, at
+/// placement, because a wrapper the operator configured and the host has not got must never fail a
+/// build — cargo refuses a `RUSTC_WRAPPER` that names nothing — so it is skipped and said instead.
+fn build_cache(
+    ssh: &Ssh,
+    host: &Host,
+    notes: &mut Vec<String>,
+) -> (Vec<(String, String)>, Vec<crate::exec::boundary::HostGrant>) {
+    let Some(wrapper) = host.rustc_wrapper.as_deref() else {
+        return (Vec::new(), Vec::new());
+    };
+    // One round trip for both questions. `readlink -f` because a bind has to land where the writes
+    // go: a cache or a wrapper reached through a symlink is really the directory behind it.
+    let mut script = format!(
+        "w={w}\n\
+         if [ -x \"$w\" ]; then printf 'wrapper %s\\n' \"$(readlink -f \"$w\")\"; \
+         else echo wrapper-missing; fi\n",
+        w = one_entry(wrapper)
+    );
+    if let Some(dir) = host.sccache_dir.as_deref() {
+        script.push_str(&format!(
+            "d={d}\n\
+             if [ -d \"$d\" ]; then printf 'cache %s\\n' \"$(readlink -f \"$d\")\"; \
+             else echo cache-missing; fi\n",
+            d = one_entry(dir)
+        ));
+    }
+    let said = match ssh.must(
+        &format!("asking {} for its build wrapper", host.name),
+        &script,
+    ) {
+        Ok(said) => said,
+        Err(e) => {
+            notes.push(format!(
+                "`rustc_wrapper` could not be asked about on {}: {e}. Nothing is set there, so \
+                 every build on it compiles the tree cold",
+                host.name
+            ));
+            return (Vec::new(), Vec::new());
+        }
+    };
+    let (mut found, mut cache) = (None, None);
+    for line in said.lines() {
+        let line = line.trim_end_matches('\r').trim();
+        if let Some(real) = line.strip_prefix("wrapper ") {
+            found = Some(real.trim().to_string());
+        } else if let Some(real) = line.strip_prefix("cache ") {
+            cache = Some(real.trim().to_string());
+        } else if line == "wrapper-missing" {
+            notes.push(format!(
+                "`rustc_wrapper = \"{wrapper}\"` in hosts.toml is not an executable file on {} — \
+                 it is not set there, so every build on that machine compiles the tree cold",
+                host.name
+            ));
+        } else if line == "cache-missing" {
+            notes.push(format!(
+                "`sccache_dir` is not a directory on {}: nothing is bound for it, so a confined \
+                 build there finds no cache it may write and compiles plainly",
+                host.name
+            ));
+        }
+    }
+    let Some(wrapper) = found else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut env = vec![("RUSTC_WRAPPER".to_string(), wrapper.clone())];
+    // The wrapper's own directory, read-only: a wrapper outside the toolchain grants (`~/.cargo`,
+    // `~/.rustup`) is a file the view could not reach. Both binds are `-try`, so the ordinary case
+    // — a wrapper inside `~/.cargo` — is a redundant mount and not a failure.
+    let mut grants = Vec::new();
+    if let Some(dir) = Path::new(&wrapper).parent() {
+        grants.push(cache_grant(
+            dir.display().to_string(),
+            false,
+            "rustc_wrapper",
+        ));
+    }
+    match cache {
+        Some(real) => {
+            env.push(("SCCACHE_DIR".to_string(), real.clone()));
+            grants.push(cache_grant(real.clone(), true, "sccache_dir"));
+            notes.push(format!(
+                "builds on {} share one compile cache: `{wrapper}` writing `{real}`",
+                host.name
+            ));
+        }
+        None => notes.push(format!(
+            "builds on {} go through `{wrapper}`, which writes whatever cache it names itself",
+            host.name
+        )),
+    }
+    (env, grants)
+}
+
+/// Whether a session's boundary makes the build wrapper a liability rather than a saving. A view
+/// whose egress is denied runs under `--unshare-net`, so the command's own loopback is a namespace
+/// away: a cache client whose server cannot start there exits non-zero instead of compiling. One
+/// rule in one place, so it can be tested where no boundary can be measured.
+fn wrapper_withheld(confined: bool, egress: &crate::exec::Egress) -> bool {
+    confined && !egress.allowed()
+}
+
+/// One grant `hosts.toml` implies for a placement's view. The operator declared it there, as they
+/// declare `[boundary] grants_rw`, but the note about one names the file it is edited in.
+fn cache_grant(path: String, write: bool, key: &str) -> crate::exec::boundary::HostGrant {
+    crate::exec::boundary::HostGrant {
+        path,
+        write,
+        label: key.to_string(),
+        from: crate::exec::boundary::Origin {
+            file: hosts_file(),
+            line: 0,
+            user: true,
+        },
+    }
+}
+
 /// The `key=value` lines of [`facts_script`] as a [`Facts`]. Unknown keys are ignored and missing
 /// ones are absent: a host that answers half a probe is half-known, which is a fact itself.
 pub fn facts_of(said: &str) -> Facts {
@@ -4007,6 +4140,11 @@ impl SshBackend {
             ));
         }
 
+        // The compile cache the operator declared for this host, asked before the boundary is
+        // measured because the view has to bind what the wrapper writes, and kept as pairs every
+        // command of this session carries (they are applied below, under a perimeter's own).
+        let (build_env, build_grants) = build_cache(&ssh, &spec.host, &mut notes);
+
         // Can this machine bound a command, and in what view. Asked once per host per process
         // ([`CONFINE`]), after the checkout exists because the checkout is the writable root of the
         // view. A machine that cannot confine runs unconfined and says so, and must never claim it.
@@ -4054,13 +4192,17 @@ impl SshBackend {
                         &format!("mkdir -p {} {}", quote(&dir), quote(&format!("{dir}/tmp"))),
                     )
                     .map_err(place)?;
+                    // The operator's grants, and the two `hosts.toml` implies for the build
+                    // wrapper's own directory and its cache.
+                    let mut grants = spec.grants.clone();
+                    grants.extend(build_grants.iter().cloned());
                     let measured = confine_a_checkout(
                         &ssh,
                         &dir,
                         &worktree,
                         &mirror,
                         &spec.egress,
-                        &spec.grants,
+                        &grants,
                         &mut notes,
                     );
                     session_home = Some(dir);
@@ -4088,10 +4230,30 @@ impl SshBackend {
             ));
         }
         let confined_env = toolchain_env(confine.as_ref());
+        // A boundary with no network is the second way the wrapper would fail a build rather than
+        // speed one up: `--unshare-net` gives the command a namespace whose loopback is its own and
+        // down, and a cache client whose server cannot start there exits non-zero instead of
+        // compiling. Measured after the boundary, so the sentence is about the boundary there is.
+        let mut build_env = build_env;
+        if wrapper_withheld(confine.is_some(), &spec.egress) && !build_env.is_empty() {
+            notes.push(format!(
+                "`rustc_wrapper` is not set on {host}: this session runs inside a boundary with no \
+                 network, where the cache's own server has only a loopback socket — builds there \
+                 compile the tree cold"
+            ));
+            build_env.clear();
+        }
         // The perimeter's own pairs, at the door of another machine's shell: a loader variable is
         // refused here whatever wrote it, and what was dropped is said on the notes rather than
         // left as a variable a command quietly does not have.
-        let (env, mut dropped) = crate::exec::boundary::env_for_a_placement(&spec.env);
+        let (mut env, mut dropped) = crate::exec::boundary::env_for_a_placement(&spec.env);
+        // After the perimeter's, and never over one: a `[boundary] env` entry is the operator's last
+        // word on a session's environment, and the wrapper is this backend's default.
+        for (k, v) in build_env {
+            if !env.iter().any(|(have, _)| *have == k) {
+                env.push((k, v));
+            }
+        }
         // The project's `.env` pairs, for a host the operator named. A value a FILE gave is a
         // secret, so it rides the descriptor a secret rides and never an argv - and it comes FIRST,
         // so a perimeter pair of the same name still wins. A VM has no second channel (`firecode

@@ -23,6 +23,8 @@ pub const HOSTS: File = File {
                 k("reserve", "int", "0", "", "cores kept back for the owner; reported only", "2"),
                 k("flags", "list of words", "[]", "", "free-form host words (heavy, tmpfs)", "[\"heavy\"]"),
                 k("never_touch", "list of names", "[]", "", "processes, compose projects and containers letibot never stops there", "[\"postgres\"]"),
+                k("rustc_wrapper", "path", "unset", "", "cargo's RUSTC_WRAPPER there, an sccache wrapper; unset means every build compiles cold", "\"~/.cargo/bin/sccache-rustc\""),
+                k("sccache_dir", "path", "unset", "", "the cache a confined session's view may write for that wrapper", "\"~/.cache/sccache\""),
             ],
         },
         Table {

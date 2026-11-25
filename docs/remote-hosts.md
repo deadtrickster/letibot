@@ -29,12 +29,14 @@ mise        = "~/.local/bin/mise"              # the toolchain wrapper; `false` 
 reserve     = 4                                # cores held back for the owner
 flags       = ["heavy", "tmpfs"]               # what the machine is for
 never_touch = ["etcd", "pgfuzz"]               # names letibot must never signal, stop or remove
+rustc_wrapper = "~/.cargo/bin/sccache-rustc"    # cargo's RUSTC_WRAPPER there: the compile cache
+sccache_dir  = "~/.cache/sccache"               # the cache it writes, bound read-write in the view
 
 [local]                                        # THIS box, and not a placement
 never_touch = ["etcd", "pgfuzz"]
 ```
 
-Nine keys, and an unknown one is **refused by name** rather than ignored: a typo places a session on a
+Eleven keys, and an unknown one is **refused by name** rather than ignored: a typo places a session on a
 machine nobody named, or points ssh at a key nobody meant. `reserve` is a whole number of cores and
 anything else is refused rather than defaulted - a `reserve = "two"` read as zero is a scheduler that
 believes a busy machine is empty. `flags` and `never_touch` use the `path` grammar (quoted strings on one
@@ -315,6 +317,50 @@ because sshd runs it with no login shell at all.
 
 `hosts {probe: true}` reports the mise version and `mise ls --current` in the host's root **instead of** *cargo
 on PATH* - on a host with mise that question has no meaning - and falls back to `PATH` without it.
+
+## The build wrapper: one compile cache per machine
+
+A session placed on a host gets a private `$HOME` there, so `cargo` finds no `~/.cargo/config.toml` of the
+operator's and no wrapper it names: every package placed there compiles the whole workspace **cold**, and two
+in parallel push a 24-core box to load 36. `rustc_wrapper` names that machine's wrapper (an sccache shim),
+and every command of the session - a `bash` call, a job's launcher, a confined spawn - carries
+`RUSTC_WRAPPER=<that path>`. Local sessions are untouched: they read this box's own `~/.cargo/config.toml`.
+
+* **Asked once, at placement, and never assumed.** One round trip at `place` asks the host whether the
+  wrapper is an executable file and whether `sccache_dir` is a directory there (`readlink -f`, because a bind
+  has to land where the writes go). Nothing is asked when the key is absent, and a host with no `rustc_wrapper`
+  behaves exactly as it did.
+* **A wrapper that is configured and missing is SKIPPED, with one note per session.** Not a fallback of the
+  wrapper's own: cargo refuses a `RUSTC_WRAPPER` that names nothing (`could not execute process … (never
+  executed)`), so a stale line in `hosts.toml` would break every build on that host. The placement instead
+  leaves the variable unset and says so on its notes, which reach the head once:
+
+      `rustc_wrapper = "…"` in hosts.toml is not an executable file on xmg — it is not set there,
+      so every build on that machine compiles the tree cold
+
+  The same rule covers a wrapper that is there and a cache that is not: no `SCCACHE_DIR`, no bind, one note.
+* **A boundary with no network skips it too, and for a different reason.** A view whose session has no
+  egress runs under `--unshare-net`, so it has a network namespace of its own with its own loopback. An
+  sccache client is a client of a **loopback socket**: a server that cannot start there fails the compile
+  rather than caching it (sccache reports `Server startup failed` and exits non-zero, and the wrapper's own
+  `exec` has already handed over). So a session that IS measured a boundary and has no network gets no
+  `RUSTC_WRAPPER`, one note saying which of the two it was, and cold builds - which is exactly what it had
+  before the key existed. A session with egress, and an unconfined one, both get the cache.
+* **The confinement is widened by exactly what the two keys name, and nothing else.** A confined remote view
+  holds the checkout, the system roots and the toolchain read-only, `$HOME` as the session's own, and the
+  operator's grants. The wrapper's own directory is added **read-only** (redundant when it is inside the
+  toolchain grants, `-try` so a missing one is skipped), and `sccache_dir` is the one **read-write** grant:
+  a cache nobody can write is a build that falls back anyway. `SCCACHE_DIR` is exported with the resolved
+  path so a wrapper that reads its cache from the environment and one that bakes it in agree with the view.
+  Both binds are `-try`, so a directory that vanished between the probe and the argv does not fail the open.
+* **A note says it worked**, once, in the same place:
+
+      builds on xmg share one compile cache: `/home/dead/.cargo/bin/sccache-rustc` writing
+      `/home/dead/.cache/sccache`
+
+A wrapper that decides for itself to fall back - its own `sccache` binary missing, or its cache unwritable -
+`exec`s the compiler and says nothing: the build still works, it is just cold. That check is the wrapper's,
+and this side does not duplicate it; `rustc_wrapper` only answers *is the wrapper file there at all*.
 
 ## The supervisor, and work across hosts
 

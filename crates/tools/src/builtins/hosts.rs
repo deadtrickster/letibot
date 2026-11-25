@@ -249,10 +249,10 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
             },
         ));
         // What the operator said about this machine's sharing - the three keys that are
-        // not about reaching it. Reported with no connection, because they are facts of the FILE
-        // and a session deciding where to put work should not pay four ssh calls to read them.
+        // not about reaching it - and the build cache, which is a fact of the FILE too: no
+        // connection is made, and whether the wrapper is really there is the placement's question.
         out.push_str(&format!(
-            "  reserve:  {}\n  flags:    {}\n  never:    {}\n",
+            "  reserve:  {}\n  flags:    {}\n  never:    {}\n  build:    {}\n",
             if host.reserve == 0 {
                 "none held back for the owner".to_string()
             } else {
@@ -271,6 +271,12 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
                     "letibot will never signal, stop or remove: {}",
                     host.never_touch.join(", ")
                 )
+            },
+            match (&host.rustc_wrapper, &host.sccache_dir) {
+                (None, _) =>
+                    "no `rustc_wrapper`: every build there compiles the tree cold".to_string(),
+                (Some(w), None) => format!("{w}, writing whatever cache it names itself"),
+                (Some(w), Some(d)) => format!("{w}, cache {d}"),
             },
         ));
     }
@@ -554,6 +560,33 @@ mod tests {
         );
         // Nothing that would connect is named as something this call did.
         assert!(!said.contains("REACHABLE"), "{said}");
+        let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
+    }
+
+    /// `build:` in the listing is the file's two keys, with no connection made: the same rule the
+    /// sharing keys follow, so a session can pick a host with a warm cache without a round trip.
+    #[test]
+    fn the_listing_reports_the_build_cache_the_file_declares() {
+        let text = "[host.warm]\nhostname = \"warm.invalid\"\n\
+                    rustc_wrapper = \"~/.cargo/bin/sccache-rustc\"\n\
+                    sccache_dir = \"~/.cache/sccache\"\n\n\
+                    [host.cold]\nhostname = \"cold.invalid\"\n";
+        let (file, paths) = fixture("build-cache", text, &[], &[]);
+        let hosts = Hosts::parse(text).expect("it parses");
+        let chosen: Vec<Host> = hosts
+            .names()
+            .iter()
+            .filter_map(|n| hosts.get(n).cloned())
+            .collect();
+        let said = listing(&file, &chosen, &paths);
+        assert!(
+            said.contains("build:    ~/.cargo/bin/sccache-rustc, cache ~/.cache/sccache"),
+            "{said}"
+        );
+        assert!(
+            said.contains("no `rustc_wrapper`: every build there compiles the tree cold"),
+            "{said}"
+        );
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 

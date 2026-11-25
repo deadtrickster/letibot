@@ -531,6 +531,64 @@ fn hosts_toml_reads_the_three_sharing_keys() {
     assert!(why.contains("never_touch"), "{why}");
 }
 
+/// The wrapper is withheld from a boundary with no network, and from nothing else. The rule is a
+/// free function because no boundary can be measured on every box a test runs on.
+#[test]
+fn the_build_wrapper_is_withheld_only_inside_a_boundary_with_no_network() {
+    use crate::exec::Egress;
+    assert!(super::wrapper_withheld(true, &Egress::Denied));
+    assert!(!super::wrapper_withheld(
+        true,
+        &Egress::Host {
+            why: "allow-all".into()
+        }
+    ));
+    // Unconfined, the command has the machine's own network: the cache works there as it does for
+    // a `cargo` run by hand.
+    assert!(!super::wrapper_withheld(false, &Egress::Denied));
+}
+
+/// `rustc_wrapper` and `sccache_dir`: the machine's compile cache, two plain paths, and the default
+/// is no cache at all - which is what every host did before this key existed.
+#[test]
+fn hosts_toml_reads_the_build_wrapper_and_its_cache() {
+    let h = Hosts::parse(
+        "[host.xmg]\nhostname = \"xmg\"\nrustc_wrapper = \"~/.cargo/bin/sccache-rustc\"\n\
+         sccache_dir = \"~/.cache/sccache\"\n",
+    )
+    .expect("it parses");
+    let a = h.get("xmg").expect("xmg");
+    // `~` is left as written: it is the FAR shell's home, expanded where the command runs.
+    assert_eq!(
+        a.rustc_wrapper.as_deref(),
+        Some("~/.cargo/bin/sccache-rustc")
+    );
+    assert_eq!(a.sccache_dir.as_deref(), Some("~/.cache/sccache"));
+
+    // Unset by default, both of them: a host nobody declared a wrapper for is a cold build, not a
+    // refused placement.
+    let plain = Hosts::parse("[host.a]\nhostname = \"a\"\n").expect("it parses");
+    let a = plain.get("a").expect("a");
+    assert!(a.rustc_wrapper.is_none());
+    assert!(a.sccache_dir.is_none());
+
+    // A wrapper with no cache line is a wrapper whose cache is its own business, and it is taken.
+    let one = Hosts::parse("[host.b]\nrustc_wrapper = \"/opt/bin/w\"\n").expect("it parses");
+    let b = one.get("b").expect("b");
+    assert_eq!(b.rustc_wrapper.as_deref(), Some("/opt/bin/w"));
+    assert!(b.sccache_dir.is_none());
+
+    // A typo in either name is refused by name, like every other key in this file.
+    let why = Hosts::parse("[host.a]\nrustc_wraper = \"/x\"\n").expect_err("a typo's refusal");
+    assert!(why.contains("rustc_wraper"), "{why}");
+    assert!(
+        why.contains("rustc_wrapper"),
+        "the list names the keys it has: {why}"
+    );
+    let why = Hosts::parse("[host.a]\nsccache_dirr = \"/x\"\n").expect_err("a typo's refusal");
+    assert!(why.contains("sccache_dir"), "{why}");
+}
+
 /// A link into the ssh directory is the ssh directory, after every symlink and for a path that
 /// does not exist yet: the rule is about the bytes, not the spelling.
 #[test]
