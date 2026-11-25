@@ -31,10 +31,14 @@ pub fn serve<R: BufRead, W: Write + Send>(
     std::thread::scope(|scope| {
         let writer = scope.spawn(move || {
             // The stream's senders live as long as the bridge, so the channel never closes:
-            // `done` is what ends this thread when the client's input does.
+            // `done` is what ends this thread when the client's input does. A read loop that
+            // PANICS never sets it, so a closed channel ends the thread too - otherwise `scope`
+            // waits on a writer that spins for ever, and a panic hangs the client.
             while !done.load(Ordering::SeqCst) {
-                let Ok(message) = push_rx.recv_timeout(Duration::from_millis(100)) else {
-                    continue;
+                let message = match push_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(message) => message,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 let mut w = out_ref.lock().unwrap_or_else(|e| e.into_inner());
                 if write_message(&mut *w, &message).is_err() {
@@ -42,13 +46,26 @@ pub fn serve<R: BufRead, W: Write + Send>(
                 }
             }
         });
+        // Held across the read loop and dropped however it leaves: a panic unwinds past the
+        // `done` below, and the scope would then wait on this writer for ever.
+        let ends = Ends(done);
         let result = read_loop(&mut input, &out, bridge, &push_tx);
         done.store(true, Ordering::SeqCst);
         let _ = writer.join();
+        drop(ends);
         // The input ending is the client going away, and the sessions it started go with it.
         bridge.release_leases();
         result
     })
+}
+
+/// Ends the writer thread when it drops, which is the one thing a panicking read loop still does.
+struct Ends<'a>(&'a AtomicBool);
+
+impl Drop for Ends<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 fn read_loop<R: BufRead, W: Write>(
@@ -732,5 +749,30 @@ mod tests {
         let answers = run(&["", "   ", r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#]);
         assert_eq!(answers.len(), 1, "{answers:?}");
         assert_eq!(answers[0]["id"], 7);
+    }
+
+    /// A read loop that PANICS must end the server, not leave it waiting on its writer: `done` is a
+    /// line the panic never reaches, and the writer would then spin on it for ever.
+    #[test]
+    fn a_panicking_read_loop_ends_the_server_instead_of_hanging() {
+        struct Boom;
+        impl std::io::Read for Boom {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("the client's input panicked")
+            }
+        }
+        impl BufRead for Boom {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                panic!("the client's input panicked")
+            }
+            fn consume(&mut self, _: usize) {}
+        }
+        let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            serve(Boom, Vec::new(), &Bridge::new())
+        }));
+        assert!(
+            said.is_err(),
+            "the panic comes back to whoever called `serve`"
+        );
     }
 }
