@@ -87,7 +87,12 @@ v41 gains the table at its next open, empty.
   and the answer arrives by `todo_answer` as the operator's own words, kept on the row as
   `TodoNeed::Answered`. A session's ask validates an option index against the card's options
   (`crates/harnessd/src/operator_ask.rs:55`); a seat's has none to validate, because there is
-  nothing the person chose between.
+  nothing the person chose between. When EVERY open row waits on the operator - directly, or
+  through rows that wait on rows that do - the plan is PARKED (`parked_on_the_operator`,
+  `crates/tools/src/builtins/todo.rs`): the check says one line, `[todo check] parked: waiting on
+  the operator's answer to "<question>"`, once and not again on the ladder, and never
+  `NOTHING can start`. The answer is what wakes the seat. A plan with a row that can start, or one
+  waiting on a job, a child, a peer or another board, is not parked and keeps the check it had.
 - **`row` / `monitor` / `room`** - unchanged and free: the board is the same type, so an edge between
   its own rows resolves as it does in a session, and the check already honours a `Room` edge
   (`crates/tools/src/builtins/todo.rs:1014`). Nothing writes one for a seat yet: answer waits

@@ -614,6 +614,14 @@ fn a_pass(
     // still counts as said, or it would come back at every pass. Recorded by the PLAN, so that the
     // packages' jobs coming and going are not twenty reasons to ask one plan again.
     clock.said_plan(&askable, notice.clone(), now);
+    // A plan parked on the operator wakes nobody: the answer is the person's, and a seat woken to
+    // be told so spends a turn on it. Recorded above, so it is not asked again either.
+    if notice
+        .as_deref()
+        .is_some_and(|n| n.starts_with("[todo check] parked:"))
+    {
+        return Some(None);
+    }
     Some(notice)
 }
 
@@ -977,6 +985,72 @@ mod tests {
             .is_some(),
             "a plan that moved is asked about"
         );
+    }
+
+    /// A plan parked on the operator wakes the seat with nothing, and is never called
+    /// NOTHING-can-start. A seat with one free row keeps the ordinary check.
+    #[test]
+    fn a_seat_parked_on_the_operator_is_left_alone_and_never_told_nothing_can_start() {
+        let window = Duration::from_millis(50);
+        let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+        let mut asked = row(
+            "hand the lab1 hosts to another project",
+            TodoStatus::Pending,
+        );
+        asked.needs = vec![TodoNeed::Operator {
+            question: "hand them over now?".into(),
+            options: vec!["go ahead".into(), "hold".into()],
+        }];
+        let mut after = row("drain the background jobs", TodoStatus::Pending);
+        after.needs = vec![TodoNeed::Row {
+            content: asked.content.clone(),
+        }];
+        let rows = vec![asked.clone(), after.clone()];
+        let t0 = Instant::now();
+        let said = a_pass(
+            &mut clock,
+            &rows,
+            &ChildSessions::none(),
+            &RunningJobs::none(),
+            true,
+            t0,
+            t0 + window,
+        )
+        .expect("the check is due");
+        assert_eq!(said, None, "a parked plan wakes nobody: {said:?}");
+        // And no later pass says it again while the plan has not moved.
+        for n in 1..=5 {
+            assert_eq!(
+                a_pass(
+                    &mut clock,
+                    &rows,
+                    &ChildSessions::none(),
+                    &RunningJobs::none(),
+                    true,
+                    t0,
+                    t0 + window * (1 + n),
+                ),
+                None,
+                "pass {n} woke a parked plan"
+            );
+        }
+
+        // One free row is the ordinary check: the seat is asked about it, and not told it is parked.
+        let free = vec![asked, after, row("write the notes", TodoStatus::Pending)];
+        let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+        let said = a_pass(
+            &mut clock,
+            &free,
+            &ChildSessions::none(),
+            &RunningJobs::none(),
+            true,
+            t0,
+            t0 + window,
+        )
+        .expect("the check is due")
+        .expect("there is a row to name");
+        assert!(said.contains("write the notes"), "{said}");
+        assert!(!said.contains("parked"), "{said}");
     }
 
     /// A head that is on another protocol number, or that skipped frames this build could not

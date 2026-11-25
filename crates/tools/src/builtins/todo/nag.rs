@@ -450,6 +450,22 @@ impl TodoNagClock {
         let floor = self.window;
         let askable = the_plan_as_checked(todos, children, jobs);
         let text = unfinished_plan(&askable, todos, children, jobs);
+        // A PARKED plan is said once and then left alone: the person's answer is what wakes the
+        // session, so a ladder repeating "parked" is a reminder about a question already in front
+        // of them. Its TEXT is the identity here, a seat's clock too, whose key moves with its
+        // packages' jobs and would otherwise say the same parked line again for nothing.
+        if super::parked_on_the_operator(todos, children, jobs).is_some() {
+            let fresh = now + floor;
+            let news = self.should_arm(&askable, text.as_deref());
+            self.due = match (news, self.due) {
+                (true, Some(d)) if self.armed_for == text => Some(d.min(fresh)),
+                (true, _) => Some(fresh),
+                (false, _) => None,
+            };
+            self.armed_for = text;
+            self.arm_census(now);
+            return;
+        }
         if self.should_arm(&askable, text.as_deref()) {
             let fresh = now + floor;
             self.due = match (self.due, &self.armed_for) {

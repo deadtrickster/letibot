@@ -141,16 +141,119 @@ fn the_check_asks_about_the_other_rows_and_tells_the_model_to_keep_going() {
     assert!(said.contains("\"detach\": true"), "{said}");
 }
 
-/// A plan whose only open work waits on the operator is SILENT - directly, or through a row
-/// that waits on one that does. Nothing is the model's to unblock; the heads are the loud half.
+/// A plan whose every open row waits on the operator - directly, or through a row that waits on
+/// one that does - is PARKED: said once as itself, and never as a plan to unblock. The operator's
+/// case, 2026-11-26: a seat's rows left open on purpose until they answer.
 #[test]
-fn a_plan_waiting_only_on_the_operator_is_not_nagged() {
-    assert_eq!(nag_for(&[waiting(DEPLOY)]), None);
+fn a_plan_parked_on_the_operator_says_parked_and_never_that_nothing_can_start() {
     let after = needs("announce it", TodoStatus::Pending, &[DEPLOY]);
-    assert_eq!(nag_for(&[waiting(DEPLOY), after]), None);
-    // A broken edge beside it is still said: that one IS the model's to fix.
+    let further = needs(
+        "tell the other project",
+        TodoStatus::Pending,
+        &["announce it"],
+    );
+    for plan in [
+        vec![waiting(DEPLOY)],
+        vec![waiting(DEPLOY), after.clone()],
+        vec![waiting(DEPLOY), after.clone(), further],
+    ] {
+        let said = nag_for(&plan).expect("a parked plan is said, once");
+        assert!(
+            said.starts_with("[todo check] parked: waiting on the operator's answer to"),
+            "the state has its own words: {said}"
+        );
+        assert!(
+            said.contains(&format!("\"{QUESTION}\"")),
+            "and names the question the person was asked: {said}"
+        );
+        assert!(
+            !said.contains("NOTHING can start"),
+            "**parked is not stuck**: {said}"
+        );
+        assert!(
+            !said.contains("unblock one of these"),
+            "and names no act here, because there is none: {said}"
+        );
+    }
+    // A row that can start is the ordinary check, whatever else waits on the operator.
+    let free = vec![
+        waiting(DEPLOY),
+        item("write the release notes", TodoStatus::Pending),
+    ];
+    let said = nag_for(&free).expect("the free row is asked about");
+    assert!(said.contains("  - write the release notes"), "{said}");
+    assert!(!said.contains("parked"), "{said}");
+    // And a plan that waits on anything else keeps the check it has today: a broken edge is the
+    // model's to fix, so it is not parked.
     let broken = needs("tidy up", TodoStatus::Pending, &["no such row"]);
-    assert!(nag_for(&[waiting(DEPLOY), broken]).is_some());
+    let said = nag_for(&[waiting(DEPLOY), broken]).expect("the broken edge is said");
+    assert!(!said.contains("parked"), "{said}");
+    assert!(said.contains("no such row on this board"), "{said}");
+    // A row waiting on a job or a peer is the plan's own too, and parked says nothing about it.
+    let peer = TodoItem {
+        needs: vec![TodoNeed::Ask {
+            ask: 7,
+            of: "cc@etcd-752".into(),
+            room: "proj".into(),
+            question: "is the fix pushed?".into(),
+        }],
+        ..item("merge the peer's fix", TodoStatus::Pending)
+    };
+    assert_eq!(nag_for(&[waiting(DEPLOY), peer]), None);
+}
+
+/// Said ONCE: the answer is what wakes the session, so the parked line is not re-said on the
+/// ladder. A different question is news, and arms the check again.
+#[test]
+fn a_parked_plan_is_said_once_and_not_again_on_the_ladder() {
+    use std::time::Instant;
+    let window = Duration::from_secs(60);
+    let t0 = Instant::now();
+    let none = ChildSessions::none();
+    let plan = vec![
+        waiting(DEPLOY),
+        needs("announce it", TodoStatus::Pending, &[DEPLOY]),
+    ];
+    for (i, mut clock) in [
+        TodoNagClock::with_window(window),
+        TodoNagClock::with_window(window).keyed_by_plan(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seat = i == 1;
+        clock.rearm_from(&plan, t0, &none, &no_jobs());
+        assert!(clock.due_now(t0 + window), "the first check is due");
+        let text = nag_for(&plan).expect("a parked plan is said");
+        match seat {
+            // A seat records the PLAN it asked about; a session records its sentence.
+            true => clock.said_plan(&plan, Some(text), t0 + window),
+            false => clock.said(Some(text), t0 + window),
+        }
+        // Ten minutes of an unchanged parked plan: nothing is armed, so nothing repeats.
+        for minute in 1..=10 {
+            clock.rearm_from(&plan, t0 + window * (1 + minute), &none, &no_jobs());
+            assert_eq!(
+                clock.due_at(),
+                None,
+                "minute {minute} re-armed a parked plan"
+            );
+        }
+        // A new question is a new thing to say.
+        let asked_again = vec![TodoItem {
+            needs: vec![TodoNeed::Operator {
+                question: "which database, now that staging moved?".into(),
+                options: vec!["postgres".into(), "sqlite".into()],
+            }],
+            ..item(DEPLOY, TodoStatus::Pending)
+        }];
+        clock.rearm_from(&asked_again, t0 + window * 12, &none, &no_jobs());
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + window * 13),
+            "a different parked question is said at the base window"
+        );
+    }
 }
 
 /// The answer unblocks the row and keeps the reply on it - *"when i submit todo becomes

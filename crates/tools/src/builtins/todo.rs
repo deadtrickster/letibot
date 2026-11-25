@@ -1895,6 +1895,11 @@ pub fn unfinished_plan_naming(
 ) -> Option<(String, Vec<String>)> {
     let PlanAsGraph { ready, blocked, .. } = as_a_graph(rows, board, children, jobs);
     let Some(next) = the_row_to_name(&ready, chosen) else {
+        // A PARKED plan is said as itself, once, and never as a plan to unblock: every row left
+        // waits on a person's answer, so "unblock one of these" names an act nobody here can do.
+        if let Some(question) = parked_on_the_operator(board, children, jobs) {
+            return Some((parked_said(&question), Vec::new()));
+        }
         // The degenerate case, said out loud: an unfinished plan whose ready set is empty is a
         // plan to unblock, and silence would read as nothing to do. Except when everything left
         // waits on the operator - then nothing is the model's to move and the check stays quiet.
@@ -2194,6 +2199,77 @@ fn said_running(handle: &str, about: &str, jobs: &RunningJobs) -> String {
         Some(package) => format!("`{package}` is running `{handle}`{said}"),
         None => format!("`{handle}`{said}"),
     }
+}
+
+/// The question a plan is PARKED on: every open row waits on the operator - directly, or through
+/// a row that waits on a row that does - so there is nothing to start and nothing to unblock.
+/// `None` unless that is the whole story: a row that can start, or a chain ending at a job, a
+/// child, a peer or another board, is the plan's own and keeps today's check. Read over the BOARD
+/// and not the narrowed set, because a row the check is silent about is still one of the plan's.
+pub fn parked_on_the_operator(
+    board: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> Option<String> {
+    let open: Vec<&TodoItem> = board
+        .iter()
+        .filter(|row| matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress))
+        .collect();
+    if open.is_empty() {
+        return None;
+    }
+    // A fixed point over the open rows, each mapped to the question its chain ends on. The
+    // operator is the ONLY root here: a chain that bottoms out anywhere else leaves the row
+    // unrooted, the whole plan is not parked, and it answers `None` below.
+    let mut parked: BTreeMap<&str, String> = BTreeMap::new();
+    loop {
+        let before = parked.len();
+        for row in &open {
+            let key = row.content.trim();
+            if parked.contains_key(key) {
+                continue;
+            }
+            let unmet = unmet_needs(board, row, children, jobs);
+            // Every need must be the person's, or a row already rooted in them, and the question
+            // is the first one the chain passes through.
+            let mut question: Option<String> = None;
+            let mut rooted = !unmet.is_empty();
+            for (name, fate) in &unmet {
+                match fate {
+                    NeedFate::OperatorAsked => question = question.or_else(|| Some(name.clone())),
+                    NeedFate::NotDone => match parked.get(name.trim()) {
+                        Some(q) => question = question.or_else(|| Some(q.clone())),
+                        None => rooted = false,
+                    },
+                    _ => rooted = false,
+                }
+            }
+            if let (true, Some(question)) = (rooted, question) {
+                parked.insert(key, question);
+            }
+        }
+        if parked.len() == before {
+            break;
+        }
+    }
+    if open
+        .iter()
+        .any(|row| !parked.contains_key(row.content.trim()))
+    {
+        return None;
+    }
+    open.iter()
+        .find_map(|row| parked.get(row.content.trim()).cloned())
+}
+
+/// The check's one line for a parked plan: what is waited on, and that nothing here is the model's
+/// to move. It names no act, because the answer is the person's and it wakes the session itself.
+fn parked_said(question: &str) -> String {
+    format!(
+        "[todo check] parked: waiting on the operator's answer to \"{}\" — every row left waits on \
+         it, so there is nothing to start and nothing here to unblock.",
+        question.trim()
+    )
 }
 
 /// Is everything that is blocked waiting, in the end, on something no pass of this check can move?
