@@ -472,6 +472,42 @@ fn an_unknown_field_other_than_operator_is_refused_too() {
     );
 }
 
+/// A `wait_on` sent inside an entry: the wait is a TOP-LEVEL argument, and the generic "an entry
+/// has content, status and an optional needs" reads as though `wait_on` no longer exists. The
+/// refusal names it, says where it belongs, and nothing is written.
+#[test]
+fn a_wait_on_inside_a_todos_entry_is_refused_and_named_as_top_level() {
+    let (rt, board) = runtime();
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke(
+        "t1",
+        &call(
+            r#"{"todos": [{"content": "a step", "status": "pending",
+                            "wait_on": [{"content": "a step", "job": "j1"}]}]}"#,
+        ),
+        &mut sink,
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Failed { .. }),
+        "an entry's `wait_on` is refused rather than ignored: {:?}",
+        r.outcome
+    );
+    let said = format!("{} {:?}", r.payload, r.outcome);
+    assert!(
+        said.contains("wait_on") && said.contains("TOP-LEVEL"),
+        "the refusal names `wait_on` and where it belongs: {said}"
+    );
+    assert!(
+        said.contains("\"wait_on\": [{\"content\": \"<the row>\", \"job\": \"<handle>\"}]"),
+        "and shows the shape it was meant to send: {said}"
+    );
+    assert!(
+        board.snapshot().is_empty(),
+        "nothing was written: {:?}",
+        board.snapshot()
+    );
+}
+
 #[test]
 fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
     let (rt, board) = runtime();

@@ -3949,6 +3949,14 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>
                              \"status\": \"completed\"}]}. Left inside an entry it is ignored, \
                              and being ignored is what makes it look like the row changed when \
                              it did not."
+                        } else if key == "wait_on" || key == "target" {
+                            // Naming these by name: the generic sentence omits them, and a model
+                            // that reads it believes they are gone rather than misplaced.
+                            "**`wait_on` and `target` are TOP-LEVEL arguments, not fields of a \
+                             `todos` entry**: send them BESIDE `todos`, as {\"todos\": […], \
+                             \"wait_on\": [{\"content\": \"<the row>\", \"job\": \"<handle>\"}]}. \
+                             Left inside an entry the wait is ignored, and a row that waits for \
+                             nothing is released at once."
                         } else if key == "by" {
                             "**`by` is not yours to send**: the author of a row is decided by the \
                              daemon from the session making the call — yours on your own board, \
