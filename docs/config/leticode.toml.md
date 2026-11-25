@@ -141,7 +141,7 @@ One MCP server per NAME (letters, digits, `-`, `_`, no `__`), stdio by `command`
 
 ## `[mcp_projects]`
 
-A checkout's `.mcp.json` (`{"mcpServers": {NAME: {command, args, env} or {type: "http", url, headers}}}`, the file pi, Claude Code and Cursor read) starts its servers only when `pinned` holds that file's exact path at the sha256 of its bytes, because a cloned repository or an edit inside a trusted tree would otherwise start processes. Its stdio servers run in the workspace with a cleared environment. A name the user's [mcp] also has is the user's. Unpinned or changed, the file's servers are named in one `mcp_server` warning per open, with the line that pins the bytes on disk, and not started.
+A checkout's `.mcp.json` (`{"mcpServers": {NAME: {command, args, env} or {type: "http", url, headers}}}`, the file pi, Claude Code and Cursor read) starts its servers only when `pinned` holds that file's exact path at the sha256 of its bytes, because a cloned repository or an edit inside a trusted tree would otherwise start processes. Its stdio servers run in the workspace with a cleared environment. A name the user's [mcp] also has is the user's. `${VAR}` and `${VAR:-default}` in `command`, `args`, `env`, `url` and `headers` are expanded as Claude Code expands them; a variable left unset with no `:-` default keeps that one server from starting, and the warning names it. The pin is the bytes on disk, never the expanded values. Unpinned or changed, the file's servers are named in one `mcp_server` warning per open, with the line that pins the bytes on disk, and not started.
 
 | key | type | default | level | meaning |
 |---|---|---|---|---|

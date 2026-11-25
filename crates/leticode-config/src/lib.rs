@@ -1345,6 +1345,49 @@ pub fn mcp_pin(pinned: &BTreeMap<PathBuf, String>, file: &Path, sha256: &str) ->
     }
 }
 
+/// `${VAR}` and `${VAR:-default}`, as Claude Code reads them in `.mcp.json`. A variable that is
+/// unset and has no default refuses the server by name: an empty string is a value nobody wrote,
+/// and the failure it causes is far from the file that made it.
+fn mcp_expand(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("${") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let Some(end) = after.find('}') else {
+            return Err(format!("`${{{after}` has no closing `}}`"));
+        };
+        let inner = &after[..end];
+        if inner.contains("${") {
+            return Err(format!(
+                "`${{{inner}}}` nests a variable, which is not expanded"
+            ));
+        }
+        let (name, default) = match inner.split_once(":-") {
+            Some((n, d)) => (n, Some(d)),
+            None => (inner, None),
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("`${{{inner}}}` does not name a variable"));
+        }
+        // Set but empty is empty, as a shell reads `${VAR}`; `:-` is the form that takes the
+        // default for an empty one too.
+        match (lookup(name), default) {
+            (Some(v), Some(d)) if v.is_empty() => out.push_str(d),
+            (Some(v), _) => out.push_str(&v),
+            (None, Some(d)) => out.push_str(d),
+            (None, None) => {
+                return Err(format!(
+                    "`${{{name}}}` names `{name}`, which is not set, and it has no `:-` default"
+                ));
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 fn mcp_json_server(
     name: &str,
     v: &serde_json::Value,
@@ -1396,12 +1439,28 @@ fn mcp_json_server(
             })
             .ok_or("`args` is not a list of strings")?,
     };
+    // The values a server is reached by, and not the names: Claude Code expands the five the
+    // shape has, and a refusal says which file the operator has to read.
+    let file = workspace.join(MCP_JSON);
+    let expand = |s: &str| {
+        mcp_expand(s, &|n: &str| std::env::var(n).ok())
+            .map_err(|why| format!("{}: {why}", file.display()))
+    };
+    let args = args
+        .iter()
+        .map(|a| expand(a))
+        .collect::<Result<Vec<_>, _>>()?;
+    let values = |m: BTreeMap<String, String>| {
+        m.into_iter()
+            .map(|(k, v)| expand(&v).map(|v| (k, v)))
+            .collect::<Result<BTreeMap<_, _>, _>>()
+    };
     Ok(McpServerKeys {
-        command: string("command")?,
+        command: string("command")?.map(|s| expand(&s)).transpose()?,
         args,
-        env: strings("env")?,
-        url: string("url")?,
-        headers: strings("headers")?,
+        env: values(strings("env")?)?,
+        url: string("url")?.map(|s| expand(&s)).transpose()?,
+        headers: values(strings("headers")?)?,
         timeout_seconds: None,
         enabled: !o.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false),
         cwd: Some(workspace.to_path_buf()),

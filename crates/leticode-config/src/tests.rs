@@ -2315,6 +2315,98 @@ fn a_projects_mcp_json_is_read_in_the_shared_shape() {
 }
 
 #[test]
+fn an_mcp_json_value_expands_a_variable_and_a_default_or_is_refused_by_name() {
+    let vars = |n: &str| match n {
+        "TOKEN" => Some("t0k".to_string()),
+        "EMPTY" => Some(String::new()),
+        _ => None,
+    };
+    assert_eq!(mcp_expand("a ${TOKEN} b", &vars).unwrap(), "a t0k b");
+    assert_eq!(mcp_expand("${NOPE:-/srv}", &vars).unwrap(), "/srv");
+    assert_eq!(mcp_expand("${TOKEN:-/srv}", &vars).unwrap(), "t0k");
+    assert_eq!(mcp_expand("${EMPTY:-/srv}", &vars).unwrap(), "/srv");
+    assert_eq!(mcp_expand("${EMPTY}", &vars).unwrap(), "", "set and empty");
+    assert_eq!(
+        mcp_expand("a $TOKEN and no brace", &vars).unwrap(),
+        "a $TOKEN and no brace"
+    );
+
+    // An unset variable with no default is a refusal that names it, never an empty string.
+    let why = mcp_expand("--key=${NOPE}", &vars).unwrap_err();
+    assert!(
+        why.contains("`${NOPE}`") && why.contains("is not set"),
+        "{why}"
+    );
+    assert!(why.contains("`:-` default"), "{why}");
+    assert!(
+        mcp_expand("${NOPE", &vars)
+            .unwrap_err()
+            .contains("no closing")
+    );
+    assert!(
+        mcp_expand("${A:-${B}}", &vars)
+            .unwrap_err()
+            .contains("nests")
+    );
+    assert!(
+        mcp_expand("${}", &vars)
+            .unwrap_err()
+            .contains("does not name")
+    );
+    assert!(
+        mcp_expand("${A B}", &vars)
+            .unwrap_err()
+            .contains("does not name")
+    );
+}
+
+/// The five values Claude Code expands, and the pin that is the file's bytes rather than what they
+/// became: a variable's value is not a file the operator read and trusted.
+#[test]
+fn an_mcp_json_expands_its_variables_and_the_pin_is_the_raw_bytes() {
+    let dir = project_dir("mcp_expand");
+    // SAFETY (Rust 2024's `unsafe` on `set_var`): the name is this test's own, read by nothing else.
+    unsafe { std::env::set_var("LETIBOT_MCP_TEST_TOKEN", "t0k") };
+    // A raw string: the `${...}` is the file's text, and nothing here formats it away.
+    let text = r#"{"mcpServers": {
+            "fs": {"command": "${LETIBOT_MCP_TEST_TOKEN}",
+                    "args": ["--root=${LETIBOT_MCP_TEST_ROOT:-/srv}"],
+                    "env": {"KEY": "${LETIBOT_MCP_TEST_TOKEN}"}},
+            "docs": {"type": "http", "url": "http://127.0.0.1:1/${LETIBOT_MCP_TEST_TOKEN}",
+                      "headers": {"Authorization": "Bearer ${LETIBOT_MCP_TEST_TOKEN}"}},
+            "unset": {"command": "x", "args": ["${LETIBOT_MCP_TEST_MISSING}"]}
+        }}"#;
+    let path = dir.join(MCP_JSON);
+    std::fs::write(&path, text).unwrap();
+    let read = mcp_json(&dir).unwrap().unwrap();
+    let fs = read.servers["fs"].as_ref().unwrap();
+    assert_eq!(fs.command.as_deref(), Some("t0k"));
+    assert_eq!(fs.args, ["--root=/srv"], "the default filled in");
+    assert_eq!(fs.env["KEY"], "t0k");
+    let docs = read.servers["docs"].as_ref().unwrap();
+    assert_eq!(docs.url.as_deref(), Some("http://127.0.0.1:1/t0k"));
+    assert_eq!(docs.headers["Authorization"], "Bearer t0k");
+
+    let why = read.servers["unset"].as_ref().unwrap_err();
+    assert!(
+        why.contains("`${LETIBOT_MCP_TEST_MISSING}`") && why.contains("is not set"),
+        "{why}"
+    );
+    assert!(why.contains(MCP_JSON), "the file is named: {why}");
+
+    // I95: the pin is the bytes on disk, so a trusted file stays trusted however a variable reads.
+    assert_eq!(read.sha256, sha256_hex(text.as_bytes()));
+    assert_ne!(
+        read.sha256,
+        sha256_hex(fs.command.clone().unwrap().as_bytes()),
+        "not the expanded text"
+    );
+    let pinned = std::collections::BTreeMap::from([(read.path.clone(), read.sha256.clone())]);
+    assert_eq!(mcp_pin(&pinned, &read.path, &read.sha256), McpPin::Held);
+    unsafe { std::env::remove_var("LETIBOT_MCP_TEST_TOKEN") };
+}
+
+#[test]
 fn an_mcp_json_pin_holds_for_its_exact_path_and_bytes_only() {
     let dir = project_dir("mcp_pin");
     let repo = sub(&dir, "repo");

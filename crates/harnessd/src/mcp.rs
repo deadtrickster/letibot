@@ -162,6 +162,21 @@ fn pool() -> &'static Arc<letibot_mcp_client::Pool> {
     POOL.get_or_init(letibot_mcp_client::Pool::new)
 }
 
+/// The warning for each table refused before any start, such as a `.mcp.json` server naming an
+/// unset variable. `/mcp restart` spawns nothing here: only a re-read of the table can fix it.
+pub fn refused_lines(failures: &[letibot_mcp_client::Failure]) -> Vec<String> {
+    failures
+        .iter()
+        .map(|f| {
+            format!(
+                "MCP server `{}` is not started: {}. `/mcp reload` reads it again once its table \
+                 is fixed.",
+                f.server, f.why
+            )
+        })
+        .collect()
+}
+
 /// The warning for each server that did not start.
 pub fn failure_lines(failures: &[letibot_mcp_client::Failure]) -> Vec<String> {
     failures
@@ -245,12 +260,15 @@ impl Live {
     }
 
     /// Start what `cfg` names, sharing processes the daemon already runs. The warnings are the
-    /// read's and the start failures of servers this open started.
+    /// read's, a table refused before any start, and the start failures of servers this open
+    /// started.
     pub fn open(cfg: &Config) -> (Live, Vec<String>) {
         let (tables, warnings) = servers(cfg);
         let (specs, bad) = specs(&tables);
+        let refused = refused_lines(&bad);
         let (catalog, failed) = pool().catalog(&specs, bad);
         let mut said = warnings.clone();
+        said.extend(refused);
         said.extend(failure_lines(&failed));
         let live = Live {
             catalog: Arc::new(catalog),
@@ -510,6 +528,39 @@ mod tests {
         };
         assert_eq!(command, &ws.join("./bin/srv").display().to_string());
         assert_eq!(cwd.as_deref(), Some(ws.as_path()));
+    }
+
+    /// A `.mcp.json` server whose command names a variable nobody set is refused by name, and the
+    /// open's warning carries that name: a session that never runs `/mcp` has no other place to
+    /// learn why a tool it was promised is not there.
+    #[test]
+    fn a_mcp_json_server_naming_an_unset_variable_is_a_warning_that_names_it() {
+        let ws = checkout("var");
+        std::fs::write(
+            ws.join(".mcp.json"),
+            r#"{"mcpServers": {"fs": {"command": "npx",
+                 "args": ["${LETIBOT_MCP_TEST_UNSET}"], "env": {"A": "1"}}}}"#,
+        )
+        .unwrap();
+        let mut cfg = cfg_at(&ws);
+        pin(&mut cfg, &ws);
+        let (tables, warnings) = servers(&cfg);
+        assert!(warnings.is_empty(), "a held pin says nothing: {warnings:?}");
+        let why = tables["fs"].as_ref().unwrap_err();
+        assert!(
+            why.contains("`${LETIBOT_MCP_TEST_UNSET}`") && why.contains("is not set"),
+            "{why}"
+        );
+        let (specs, bad) = specs(&tables);
+        assert!(specs.is_empty(), "nothing to start: {specs:?}");
+        assert!(refused_lines(&bad)[0].contains("LETIBOT_MCP_TEST_UNSET"));
+        // And what the session is actually told: one `mcp_server` warning at open.
+        let (_live, said) = Live::open(&cfg);
+        assert!(
+            said.iter()
+                .any(|s| s.contains("`fs`") && s.contains("LETIBOT_MCP_TEST_UNSET")),
+            "{said:?}"
+        );
     }
 
     #[test]
