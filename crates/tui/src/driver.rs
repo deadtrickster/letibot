@@ -693,6 +693,18 @@ impl Link {
                         self.client
                             .fetch_rows(&session, transcript.as_deref(), from, count)?;
                     }
+                    // A conversation search, over this session or the whole project: the one
+                    // frame the find bar and the project's result list both ride.
+                    Action::Search {
+                        query,
+                        session,
+                        all,
+                        from,
+                        count,
+                    } => {
+                        self.client
+                            .search(&query, session.as_deref(), all, from, count)?;
+                    }
                     // The person's half of the board, on its way out: the head sends the WHOLE list, since
                     // there is no per-row frame and no delta, so a head cannot accumulate a difference between
                     // its copy and the store. A state move for the model's rows rides the same frame.

@@ -32,6 +32,9 @@ impl App {
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         let d = self.apply_frame(frame);
+        // A hit the find bar is waiting for its row: a page landed, or another conversation's
+        // rows did, and a jump asked for before either arrived is taken here.
+        self.find_rows_arrived();
         // The front card is settled after every frame - see
         // [`App::sync_front`].
         self.sync_front();
@@ -52,6 +55,7 @@ impl App {
             frame @ (ServerFrame::Diagnostic { .. }
             | ServerFrame::RowFetched { .. }
             | ServerFrame::RowsFetched { .. }
+            | ServerFrame::Searched { .. }
             | ServerFrame::Peeked { .. }
             | ServerFrame::Secret { .. }
             | ServerFrame::Resync { .. }

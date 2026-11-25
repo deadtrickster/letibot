@@ -313,6 +313,15 @@ fn every_key_on_the_conversation_bar_does_what_its_words_say() {
                 a.key(Key::CtrlP);
                 assert!(a.hold, "ctrl-p did not hold the view");
             }
+            // The find bar's chord, and what the words promise: the bar comes up over the
+            // conversation, with the keys already on it.
+            (Key::CtrlF, "find") => {
+                a.key(Key::CtrlF);
+                assert!(
+                    a.find.as_ref().is_some_and(|f| !f.sessions()),
+                    "ctrl-f did not open the find bar on the conversation"
+                );
+            }
             other => panic!("the bar names {other:?} and no test drives it"),
         }
     }

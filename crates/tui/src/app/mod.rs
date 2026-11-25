@@ -291,6 +291,12 @@ pub struct App {
     /// row drawn for session row `k`, its id line included. A click is trusted only for a row
     /// this record proves was on the screen. See [`App::picker_layout`].
     pub(crate) picker_hits: Vec<(usize, usize)>,
+    /// The find bar, when it is open: what is typed, what it matched and which hit the reader is
+    /// on. `None` is a head with no bar, which is every frame until `ctrl-f`.
+    pub(crate) find: Option<find::Find>,
+    /// The pane row each result of the sessions scope was DRAWN on, so the cursor's scroll lands
+    /// where the pane put it - the rule every list pane here follows.
+    pub(crate) search_stop_rows: Vec<usize>,
     /// The terminal height the last screen was composed for, so a click can
     /// redo the header-row arithmetic the screen did without a repaint.
     pub(crate) screen_rows: usize,
@@ -1435,6 +1441,8 @@ impl App {
             archive_armed: None,
             sessions_event: std::cell::RefCell::new(None),
             picker_hits: Vec::new(),
+            find: None,
+            search_stop_rows: Vec::new(),
             screen_rows: 0,
             completion: None,
             shell_ask: std::collections::HashMap::new(),
@@ -1936,6 +1944,7 @@ mod editor;
 mod events;
 mod feedback;
 pub(crate) mod filter;
+pub(crate) mod find;
 pub(crate) mod fork_card;
 mod ghlinks;
 mod hits;

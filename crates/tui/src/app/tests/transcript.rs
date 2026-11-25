@@ -1699,10 +1699,11 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
 
     // The bar's width is pinned rather than remembered: a chord past the frame is a chord nobody
     // has. The numbers moved with each entry added, and what is visible at 80 and at 120 is what the
-    // assertions below keep.
+    // assertions below keep. 203 is 189 plus `ctrl-f find` and its separator, the find bar's chord
+    // ranked second because finding a word on the screen is the reflex the bar is for.
     assert_eq!(
         bar.trim().chars().count(),
-        189,
+        203,
         "the bar's width changed; re-measure what is visible at 80: {bar}"
     );
     let at80 = a.screen(80, 24).pop().unwrap_or_default();

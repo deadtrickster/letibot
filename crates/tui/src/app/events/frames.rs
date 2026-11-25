@@ -393,6 +393,19 @@ impl App {
                 self.settle_rows();
                 Disposition::Rendered
             }
+            // The find bar's answer, over one conversation or the whole project: the bar holds
+            // the state, and its own question (the echoed query) is what the answer is matched by.
+            ServerFrame::Searched {
+                query,
+                session,
+                hits,
+                more,
+                why,
+                ..
+            } => {
+                self.on_searched(query, session, hits, more, why);
+                Disposition::Rendered
+            }
             ServerFrame::Peeked {
                 session_id,
                 dropped,

@@ -229,6 +229,7 @@ impl Act {
 /// the table `key_dispatch` is judged by - a row whose key no longer does what its words say is a bar
 /// that names a dead key - and the conversation's half of the hint bar is read from it.
 pub(crate) const OWN: &[(Key, &str)] = &[
+    (Key::CtrlF, "find"),
     (Key::CtrlN, "clears notes"),
     (Key::CtrlV, "newest result"),
     (Key::AltN, "newest notice"),
@@ -245,6 +246,7 @@ pub(crate) fn key_word(k: &Key) -> Option<&'static str> {
         Key::CtrlG => "ctrl-g",
         Key::CtrlQ => "ctrl-q",
         Key::CtrlN => "ctrl-n",
+        Key::CtrlF => "ctrl-f",
         Key::CtrlP => "ctrl-p",
         Key::CtrlV => "ctrl-v",
         Key::CtrlR => "ctrl-r",
@@ -622,6 +624,15 @@ const LISTING: &[Binding] = &[
     b(&[On::Page], Always, Act::Page, Row),
     WHEEL,
 ];
+// A project's conversation search: the arrows walk the hits the daemon answered with and Enter
+// opens the conversation at the row that matched. Every other key is the find bar's, which owns
+// the keyboard while it is open - this table is what the bar and the help read.
+const SEARCH: &[Binding] = &[
+    b(UPDOWN, Always, Act::Cursor, Row),
+    b(&[On::Enter], Empty, Act::Open, Row),
+    b(&[On::Page], Always, Act::Page, Row),
+    WHEEL,
+];
 // A plugin's pane: the host's keys, and the plugin's own behind them. The panel keys and the
 // action letters are the VIEW's, which a static table cannot name, so one last binding hands
 // every other key to [`App::plugin_key`], and a letter that is none of those falls through.
@@ -681,6 +692,7 @@ impl Surface {
             Surface::PluginPane => PLUGIN,
             Surface::PluginDetail => PLUGIN_DETAIL,
             Surface::Listing => LISTING,
+            Surface::Search => SEARCH,
             Surface::Rooms => ROOMS,
             Surface::Keys => READING,
         }
@@ -715,6 +727,7 @@ impl Surface {
             | Surface::Monitors
             | Surface::PluginPane
             | Surface::Listing
+            | Surface::Search
             | Surface::Rooms => true,
             Surface::Help
             | Surface::Stats
@@ -748,6 +761,7 @@ impl Surface {
             Surface::PluginPane => "pane",
             Surface::PluginDetail => "row read whole",
             Surface::Listing => "listing",
+            Surface::Search => "conversation search",
             Surface::Rooms => "rooms",
             Surface::Keys => "the keys",
         }
@@ -775,6 +789,7 @@ impl Surface {
             Surface::PluginPane => "pane",
             Surface::PluginDetail => "detail",
             Surface::Listing => "listing",
+            Surface::Search => "search",
             Surface::Rooms => "rooms",
             Surface::Keys => "keys",
         }
@@ -881,6 +896,11 @@ impl Surface {
                  ones that ended and how"
             }
             Surface::Listing => "a slash command's listing",
+            Surface::Search => {
+                "a conversation search's hits over this project's sessions — the title, the \
+                 folder, the time, whose words matched and the line around them; enter opens \
+                 that conversation at the row"
+            }
             Surface::Rooms => {
                 "the chat rooms: the host room, one room per project and your DMs on the left, \
                  the selected room on the right; what you type posts as operator"
@@ -1293,8 +1313,8 @@ impl KeyOverrides {
 /// two `Show` chords, and every arm of `key_chords`. A rebinding may not target one - a surface
 /// never sees it, so the key would be advertised and do nothing.
 pub(crate) const GLOBAL_CHORDS: &[&str] = &[
-    "esc", "ctrl-c", "ctrl-^", "ctrl-]", "ctrl-e", "ctrl-g", "ctrl-l", "ctrl-n", "ctrl-o",
-    "ctrl-p", "ctrl-q", "ctrl-r", "ctrl-s", "ctrl-t", "ctrl-v", "ctrl-x",
+    "esc", "ctrl-c", "ctrl-^", "ctrl-]", "ctrl-e", "ctrl-f", "ctrl-g", "ctrl-l", "ctrl-n",
+    "ctrl-o", "ctrl-p", "ctrl-q", "ctrl-r", "ctrl-s", "ctrl-t", "ctrl-v", "ctrl-x",
 ];
 
 /// The head chord a key is, and what it opens, for the editor pane's refusal: an unexplained

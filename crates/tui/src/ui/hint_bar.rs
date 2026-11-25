@@ -27,6 +27,8 @@ pub(crate) enum Chord {
 /// reflexes first, `/help` - the index - last.
 pub(crate) const CONVERSATION: &[Chord] = &[
     Chord::Surface(Surface::Picker, "sessions"),
+    // Second, because finding a word in what is on the screen is the reflex the bar is for.
+    Chord::Own(Key::CtrlF),
     Chord::Own(Key::CtrlN),
     Chord::Surface(Surface::Todos, "todos"),
     Chord::Surface(Surface::Subagents, "subagents"),

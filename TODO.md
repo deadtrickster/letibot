@@ -260,7 +260,8 @@ Older backlog:
 | R382 | The model picker hides which providers have headroom | Code work | built (c48ad2861); left: no `balance $X`, a door's refusal or limit is forgotten at restart |
 | R383 | A VCS command drew as nine hand edits | Code work | built (2e2734609); left: `jj` global flags with a value hide the verb, a background job gets no git line |
 | R384 | A dm to a peer in another project goes through only with the operator's consent | Design work | open: rules from the operator, for the LAN-wide rooms work; see the section |
-| R385 | Session names: one rule for every path, and the file enforces it | Code work | built; left: a package's title arriving over the bridge is refused rather than dashed (the frame's rule), and a build older than 62 leaves a row with no name key until the next open repairs it |
+| R386 | Session names: one rule for every path, and the file enforces it | Code work | built; left: a package's title arriving over the bridge is refused rather than dashed (the frame's rule), and a build older than 62 leaves a row with no name key until the next open repairs it |
+| R387 | Conversation search in the head: `ctrl-f` over the open conversation, and over the project's sessions | Code work | built; left: a hit inside a folded run is counted and its own window is opened, the run's fold is not; the sessions scope pages one page of hits |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3158,7 +3159,7 @@ Opening the picker polls the doors nobody watches. Protocol 80 adds `ClientFrame
 
 Tests. `crates/tui/src/app/tests/model_card.rs`: `the_picker_draws_each_doors_reading_and_a_limited_one`, `a_billing_refusal_shows_no_balance`, `a_provider_with_no_reading_shows_nothing`, `a_stale_reading_shows_its_age`. `crates/harnessd/src/harness/door_limits.rs`: the words for windows, age, limits, spent windows and refusals, and no row when nothing is known. `crates/sessionlog/src/registry/tests.rs`: `live_rows_are_built_at_each_read`. `crates/provider/src/usage_poll/tests.rs`: `a_door_reading_is_listed_and_readable_inside_a_tell`, `a_pickers_poll_is_debounced_per_door`. `crates/harnessd/tests/picker_usage_poll.rs`: `opening_the_picker_polls_a_door_no_session_has_watched` (an isolated HOME and XDG, every preset key variable and `LETIBOT_*` door removed, a `providers.toml` fixture pointing `kimi-code` at a loopback mock; the reading reaches the row and a second open sends nothing). `model_card.rs`: `the_picker_asks_for_a_poll_only_from_a_daemon_that_echoed_it`.
 
-## R385 - Session names: one rule for every path, and the file enforces it
+## R386 - Session names: one rule for every path, and the file enforces it
 
 **Status:** built, 2026-11-25, branch `remote/59651143`. The rule itself is in `docs/session-names.md`.
 
@@ -3214,6 +3215,76 @@ open repairs - the index cannot see that row until then.
 **A shape that needs no new UI first.** The coordinator holds the dm and dms the operator: who wants to reach whom, and the first line. The operator answers in that thread with `once`, `session` or `no`. A card in the head can come on the same held state later.
 
 **Pointers.** `server.rs` `resolve_name` and `resolve_handle` (`Reach::Host`, `Miss::Elsewhere`); the dm handler at `Request::Dm`; the existing consent pattern for a cross-project prompt (`PromptNeedsOperator`, `because` citing the operator's message); the decision card's once/session ladder (`crates/tui/src/ui/cards/decision.rs`, `OptionKind::AllowOnce`).
+
+## R387 - Conversation search: `ctrl-f` over the open conversation, and over the project's sessions
+
+**Status:** built, 2026-11-26. Left: a hit inside a folded RUN is counted and jumped to, and the tool
+result's own window is opened - the run's fold itself is not opened by the jump. The sessions scope
+answers one page of hits and asks again at `from + hits.len()`, but nothing asks for the next page
+while the list is scrolled. R286's `filter_hits` does not call the matcher yet: the module is written
+so it can (see below) and the switch is one line in `sessions_pane.rs`.
+
+**What the head had.** Nothing searched a conversation. `sessions_pane.rs`'s `filter_hits` matched a
+session's title, slug, project and id; the room's `/search` covers chat. So a word the model said
+three turns ago was findable only by scrolling.
+
+**One query syntax, in `letibot_transcript::search`.** `me:` / `agent:` / `tool:` / `tool:NAME` are
+role tokens (no token is every role, two tokens are both), `"a phrase"` is that text exactly,
+`re:PATTERN` is a pattern (or `re:"a b"` when it carries a space), and the words left over are one
+substring. Case is smart: a needle with a capital in it is case-sensitive. Every needle of a query
+must be found, so the tiers narrow together. `row_match` splits a row into its searchable pieces -
+an assistant row's prose and the arguments of the calls it proposed are two - so `tool:bash` finds a
+call and not the sentence around it, and a `User` row appended by the agent or a peer is not `me:`.
+It is in the row type's crate because the head, the list filter and the daemon's scan must spell a
+tier the same way; `regex` is its one new dependency.
+
+**The bar (`app::find`).** `ctrl-f` opens it on the composer's line when one is typed, otherwise
+empty. The head matches the rows it holds at once, so the tint and the count follow the keyboard
+without a round trip; `ctrl-f` again moves the bar to the project's conversations and back, `tab`
+cycles the role filters by rewriting the tokens in the query, `alt-o` takes the sessions that are not
+the operator's own, `enter`/`shift-enter` (and `ctrl-n`/`ctrl-p`, and the arrows) step through the
+hits, and `esc` closes it and keeps the reader's place. `ctrl-f` was readline's forward-char here -
+the Right arrow and `alt-f` already do that, and it is rano's own `C-f` (`search-forward`) inside the
+editor pane, so one chord means *search here* on whichever surface has the keys. The bar takes the
+hint bar's row while it is open: one row that always exists, so nothing above it reflows.
+
+**The tint.** `app::find::paint_find` restyles the matched cells of the frame's conversation rows
+with the selection's own reverse-video mark, after the frame is composed and before the pointer's
+marks. What is searched is the row's TEXT and what is tinted is the row's CELLS, so a match the
+rendering wrapped across two lines is counted and jumped to but not tinted - the one thing this
+approach cannot do, and the reason a hit inside a fold is counted.
+
+**The store half (`tokencore::store::search`).** No second index: `transcript_item` already holds
+every row, so `Store::search_rows` walks a transcript backwards from its newest row, bounded by
+`ROWS_SCAN_MAX` rows and `BYTES_SCAN_MAX` of JSON, and answers a page of hits with `more` set when it
+stopped. `Store::sessions_to_search` is the project's sessions - `Archived::Any`, so the archive is
+read - kept by a filter the caller supplies; `Store::scan_target` is one session by id. The
+`recall_unit` index was read and left alone: it is built for the recall offer's scoring, one bounded
+text blob per person-turn, with no role, no tool name and no row ordinal - so it cannot answer *a
+row with a role, a time and a snippet* and cannot name a row for the head to jump to. The `transcript`
+tool's `match:` is the same vocabulary over one session's rows, and the head cannot call a tool.
+
+**The wire.** `ClientFrame::Search { query, session, all, from, count }` and
+`ServerFrame::Searched { query, session, from, hits, more, scanned, sessions, why }`, answered by
+`SessionSource::search` (defaulted to `None`, which the frame says as *this daemon has no store*, not
+as a count of zero). `harnessd`'s `StoreSessions` implements it: a session's own rows, or the
+project's conversations kept by `is_operator_top_level` and out of a package's worktree. The
+daemon's cap is `SEARCH_HITS_MAX`.
+
+**The project's list (`Surface::Search`).** A hit is one row of session, folder, time, role and the
+line around the match; Enter opens the conversation at the hit's row, and the row is put on the
+screen when its page lands (`App::find_rows_arrived`, called after every frame).
+
+**Proving tests.** `letibot-transcript`'s `search::tests` (the three tiers, the role tokens, the
+cycle, the excerpts, an empty query); `letibot-tokencore`'s `store::search::tests`
+(`a_project_scan_includes_the_archived_and_the_filter_removes_the_rest`,
+`a_page_is_bounded_and_says_when_the_next_one_exists`, `a_tool_filter_finds_only_that_tools_words`,
+`a_named_session_is_a_target_of_its_own`); `letibot-sessionlog`'s `tests/search.rs` (the frame, the
+archive in the answer, a daemon with no store); `letibot-tui`'s `app::tests::find`
+(`a_typed_query_tints_its_hits_and_counts_them`, `enter_jumps_to_a_hit_past_the_loaded_window`,
+`esc_closes_the_bar_and_keeps_the_scroll`, `a_role_token_and_the_cycle_narrow_the_same_rows`,
+`a_project_search_draws_the_hits_and_opens_the_one_under_the_cursor`). Each fails without the
+change: removing `paint_find` reds the first, removing the jump reds the second, and so on.
 
 ## R383 - A VCS command drew as nine hand edits
 

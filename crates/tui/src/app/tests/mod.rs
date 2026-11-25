@@ -1411,6 +1411,7 @@ mod draft;
 mod editor;
 mod feedback;
 mod filter;
+mod find;
 mod fork_card;
 mod ghlinks;
 mod header_ctx;

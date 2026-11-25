@@ -200,6 +200,19 @@ pub enum Action {
         /// How many: the daemon caps a page, so this is a request and not a promise.
         count: usize,
     },
+    /// Search conversation rows: one session's, or the project's. The query is
+    /// `letibot_transcript::search`'s one syntax, so this request, the find bar and the session
+    /// list's filter cannot spell a tier differently. Answered with `ServerFrame::Searched`.
+    Search {
+        query: String,
+        /// The conversation to read; `None` is the project's sessions.
+        session: Option<String>,
+        /// Take the sessions that are not the operator's own.
+        all: bool,
+        /// The first hit of the page, so a long answer is paged rather than truncated.
+        from: usize,
+        count: usize,
+    },
     /// Read one background job's output into a pane, without leaving this session and without
     /// posting a slash to the conversation. Answered with a `SessionEvent::JobOutput`, and the
     /// pane is built from it.

@@ -74,6 +74,9 @@ impl App {
             // survives a streaming turn, and the second press releases it and says how much
             // arrived. The contract is in [`App::toggle_hold`].
             Key::CtrlP => return ControlFlow::Break(self.toggle_hold()),
+            // Ctrl+F: the find bar, or the wider scope when it is already open - one chord for
+            // *where is it* over the conversation and over the project's conversations.
+            Key::CtrlF => return ControlFlow::Break(self.find_key_chord()),
             // Clearing your own screen costs one key, and it calls the VERB rather than
             // reimplementing it: `notes_command` is the one writer of the key set, the
             // watermark, the file and the sentence. The empty press says so, not nothing.

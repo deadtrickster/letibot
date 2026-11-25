@@ -64,6 +64,9 @@ impl App {
         // is kept, so what is kept is the frame itself and the marks are painted on every serve.
         // See `app::pointer`.
         self.relight();
+        // The find bar's tint before the pointer's: a selection is the reader's own mark and wins
+        // where the two overlap.
+        self.paint_find(&mut out);
         self.paint_pointer(&mut out);
         out
     }
@@ -445,7 +448,13 @@ impl App {
             chrome.push(self.status_line(w));
         }
         if hint {
-            chrome.push(self.hint_bar(w));
+            // The find bar takes the hint bar's row while it is open: one row that always exists,
+            // so a bar does not reflow the conversation under it, and it is the row that already
+            // talks about keys.
+            chrome.push(match self.find.is_some() {
+                true => self.find_bar(w),
+                false => self.hint_bar(w),
+            });
         }
         // The setting card's click facts are recorded below, once the frame's final shape is
         // known (`mode_hits`).
@@ -1112,6 +1121,12 @@ impl App {
                 let rows = self.skills_lines(w);
                 let kept = self.skill_hits().len();
                 self.filtered_window(rows, room, kept)
+            }
+            // A project's conversation search: the hits the bar asked for, drawn as rows with the
+            // cursor on one. The bar above keeps the query and the keys.
+            Drawn::Surface(Surface::Search) => {
+                let rows = self.search_lines(w);
+                self.pane_window(rows, room)
             }
             Drawn::Surface(Surface::Subagents) => {
                 let rows = self.subagents_lines(w);

@@ -362,6 +362,15 @@ impl App {
                 }
                 self.rooms_step(up)
             }
+            // The hits the daemon answered with; with none there is no row to walk, and every
+            // key is the find bar's, which owns them while it is open.
+            Surface::Search => {
+                let n = self.find.as_ref().map_or(0, |f| f.results.len());
+                if n == 0 {
+                    return ControlFlow::Break(None);
+                }
+                self.search_move(!up);
+            }
             // The `/pane` listing walks its panes; any other listing is text, and scrolls.
             Surface::Listing => {
                 let n = self.listed_panes().len();
@@ -432,6 +441,7 @@ impl App {
             Surface::Skills => self.skill_open(),
             Surface::Subagents => self.subagents_enter(),
             Surface::Jobs => self.jobs_enter(),
+            Surface::Search => ControlFlow::Break(self.search_open()),
             Surface::Monitors => {
                 self.open_monitor_details();
                 ControlFlow::Break(None)

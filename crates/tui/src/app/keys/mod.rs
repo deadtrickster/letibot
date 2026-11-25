@@ -251,6 +251,12 @@ impl App {
         if let ControlFlow::Break(r) = self.key_todo_draft(&k) {
             return r;
         }
+        // The find bar owns the keys while it is open: its query is a line being typed, so a
+        // letter must not reach the composer and Enter is a jump rather than a send. Below the
+        // cards, so a question that arrives over it is still answerable.
+        if let ControlFlow::Break(r) = self.key_find(&k) {
+            return r;
+        }
         // A click on a key hint is that key, typed - but only with no card in front: a card owns
         // every click aimed at its slot, and a hint drawn behind it is not what the person meant.
         if let Key::Click { x, y } = k
@@ -858,6 +864,14 @@ pub enum Key {
     /// The reader is the only party who can know a selection exists, so the reader decides when to stop painting.
     /// See [`App::toggle_hold`].
     CtrlP,
+    /// Ctrl+F: the find bar - the conversation, or every conversation of the project with a second
+    /// press. It takes readline's forward-char, which the Right arrow and alt-f already do, and it
+    /// is rano's own `C-f` (`search-forward`) inside the editor pane, so one chord means *search
+    /// here* on whichever surface has the keys. See `app::find`.
+    CtrlF,
+    /// alt-o: on the find bar, take the sessions that are not the operator's own. Its own chord
+    /// because alt-a is the resident answer-the-question key, and a bar must not borrow it.
+    AltO,
     /// Open or close the subagent tree: the subagents this session spawned.
     CtrlG,
     /// Move the running command to the background (Ctrl+O, like Claude Code's
@@ -963,6 +977,8 @@ impl Key {
             | Key::CtrlL
             | Key::CtrlS
             | Key::CtrlP
+            | Key::CtrlF
+            | Key::AltO
             | Key::CtrlG
             | Key::CtrlO
             | Key::CtrlQ

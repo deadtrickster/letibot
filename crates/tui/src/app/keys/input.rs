@@ -60,6 +60,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::Char('<') if m == Mods::ALT => Key::AltNarrow,
         KeyCode::Char('>') if m == Mods::ALT => Key::AltWiden,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
+        // alt-o: on the find bar, the sessions that are not the operator's own.
+        KeyCode::Char('o') if m == Mods::ALT => Key::AltO,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.
         KeyCode::Char('z') if m == Mods::ALT => Key::Redo,
@@ -104,7 +106,9 @@ fn ctrl(c: char) -> Option<Key> {
         'b' => Key::Left,
         // Not `End` outright: on an empty prompt it is the editor. See `Key::CtrlE`.
         'e' => Key::CtrlE,
-        'f' => Key::Right,
+        // The find bar's, and rano's `search-forward` inside the editor pane: one chord, one
+        // meaning. Forward-char is the Right arrow's and alt-f's, which is why it can be spared.
+        'f' => Key::CtrlF,
         'k' => Key::KillToEnd,
         'u' => Key::KillToStart,
         'w' => Key::KillWordBack,
@@ -221,7 +225,7 @@ mod tests {
             (0x03, Some(Key::CtrlC)),
             (0x04, Some(Key::Eof)),
             (0x05, Some(Key::CtrlE)),
-            (0x06, Some(Key::Right)),
+            (0x06, Some(Key::CtrlF)),
             (0x07, Some(Key::CtrlG)),
             (0x08, Some(Key::Backspace)),
             (0x09, Some(Key::Tab)),

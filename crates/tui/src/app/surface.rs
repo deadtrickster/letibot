@@ -55,6 +55,9 @@ pub(crate) enum Surface {
     /// Every key the pane under it takes, one row each - the pane's `?`. A reading surface: the
     /// rows are the surface's own table, so the card cannot name a key the pane does not take.
     Keys,
+    /// A conversation search's hits over the project's sessions - the find bar's wider scope. The
+    /// bar still owns the keys; this draws what it found, and Enter opens the conversation.
+    Search,
 }
 
 impl Surface {
@@ -80,7 +83,7 @@ impl Surface {
     }
 
     /// Every surface, for the tests and the generated help that walk them.
-    pub(crate) const ALL: [Surface; 20] = [
+    pub(crate) const ALL: [Surface; 21] = [
         Surface::Help,
         Surface::Stats,
         Surface::Picker,
@@ -101,6 +104,7 @@ impl Surface {
         Surface::Listing,
         Surface::Rooms,
         Surface::Keys,
+        Surface::Search,
     ];
 }
 
@@ -448,6 +452,7 @@ impl App {
             | Surface::JobOut
             | Surface::Listing
             | Surface::Keys
+            | Surface::Search
             | Surface::PluginDetail => None,
         }
     }
