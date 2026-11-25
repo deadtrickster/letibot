@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. The daemon accepts a differing head and says so,
 /// translates for an older one (`compat::SINCE`), and refuses by name only below `OLDEST_HEAD`.
-pub const PROTOCOL_VERSION: u32 = 80;
+pub const PROTOCOL_VERSION: u32 = 81;
 
 /// The first version whose heads read [`crate::SessionEvent::TurnEnded`]. An older head is sent
 /// none, and gets the prompt's end as a `TurnFinished` with `ends_turn` instead.
@@ -34,6 +34,11 @@ pub const QUEUE_PROMPT_SINCE: u32 = 79;
 /// The first version whose daemons read [`ClientFrame::PollUsage`]. A head sends it only to a
 /// daemon that echoed [`FEATURE_USAGE_POLL`].
 pub const USAGE_POLL_SINCE: u32 = 80;
+
+/// The first version whose daemons read [`ClientFrame::Search`] and answer
+/// [`ServerFrame::Searched`]. A head only ever RECEIVES the answer to its own ask, so nothing here
+/// needs translating for an older head: an older head cannot ask.
+pub const SEARCH_SINCE: u32 = 81;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1081,6 +1086,27 @@ pub enum ClientFrame {
         #[serde(default)]
         transcript: Option<String>,
     },
+    /// Search conversation ROWS: one session's, or the project's sessions'. The query is
+    /// `letibot_transcript::search`'s one syntax, so the head's own find bar, this request and
+    /// the session list's filter cannot spell a tier differently.
+    Search {
+        /// The query as it was typed, role tokens and all.
+        query: String,
+        /// The conversation to read. Absent is the project's sessions, which is the only scope a
+        /// `from`/`count` page is paged in - a session's own search is bounded by its own rows.
+        #[serde(default)]
+        session: Option<String>,
+        /// Take the sessions that are not the operator's own as well: subagents, packages, the
+        /// review queue's and the shadows. Ignored when `session` names one.
+        #[serde(default)]
+        all: bool,
+        /// The first hit of the page wanted, so a head pages rather than asking for everything.
+        #[serde(default)]
+        from: usize,
+        /// How many hits. Capped by the daemon: an answer is a screen, not a project's history.
+        #[serde(default = "search_page")]
+        count: usize,
+    },
     /// A call the OPERATOR ran themselves: the daemon checks `name` against [`HEAD_RUN_TOOLS`] and
     /// records the admission as the operator's, so the row says a person ran it.
     OperatorCall {
@@ -1227,6 +1253,45 @@ pub struct Ack {
     /// How many it suppressed. *Busy, and none of it was for me* is a different fact from *quiet*,
     /// and this field is the difference. Not `Option`: a head that filters nothing reports zero.
     pub filtered: u64,
+}
+
+/// One conversation row a [`ClientFrame::Search`] matched, as a list row draws it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub session: String,
+    pub title: String,
+    /// The session's folder, so a hit from another conversation says where it came from.
+    pub folder: String,
+    /// When the ROW was written.
+    pub at_ms: u64,
+    /// `mine`, `agent` or `tool` - `letibot_transcript::search::Role`'s word.
+    pub role: String,
+    /// The tool whose words matched, when the role is `tool`.
+    #[serde(default)]
+    pub tool: String,
+    /// The row's ordinal in its own transcript, so a head that opens the session pages to it.
+    pub row: usize,
+    pub item_id: String,
+    /// One line around the match, cut by the daemon: an answer is drawn, not scrolled.
+    pub excerpt: String,
+}
+
+/// What a [`SessionSource`](crate::registry::SessionSource) found for one
+/// [`ClientFrame::Search`]. The frame is built from this, so a source answers with what the wire
+/// carries and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchAnswer {
+    pub hits: Vec<SearchHit>,
+    /// The scan stopped with more to find.
+    pub more: bool,
+    pub scanned: usize,
+    pub sessions: usize,
+}
+
+/// How many hits one [`ClientFrame::Search`] asks for when it names no count: a screen and a
+/// half, which is what a person scrolling a result list reads before typing again.
+pub fn search_page() -> usize {
+    40
 }
 
 /// Daemon → head.
@@ -1410,6 +1475,31 @@ pub enum ServerFrame {
         /// splice another transcript's rows where the history goes.
         #[serde(default)]
         transcript: Option<String>,
+    },
+    /// The answer to [`ClientFrame::Search`]: the hits of one page, newest row first, and whether
+    /// another page exists. `why` is a daemon that cannot search at all - one with no store - and
+    /// is the sentence a head draws instead of a count of zero.
+    Searched {
+        /// The query, echoed: two searches in flight must not answer each other's question.
+        query: String,
+        #[serde(default)]
+        session: Option<String>,
+        #[serde(default)]
+        from: usize,
+        hits: Vec<SearchHit>,
+        /// The scan stopped with more to find. A head asks again at `from + hits.len()`.
+        #[serde(default)]
+        more: bool,
+        /// Rows looked at, so the answer says what it cost.
+        #[serde(default)]
+        scanned: usize,
+        /// Sessions opened.
+        #[serde(default)]
+        sessions: usize,
+        /// The sentence a daemon that cannot search says instead of an empty answer. Present and
+        /// null on a daemon that could: an absent field and a field with no complaint are two
+        /// facts, and a head must not read one as the other.
+        why: Option<String>,
     },
     /// The answer to [`ClientFrame::FetchRow`]: a window of one row's body. `total` is the whole
     /// body's length, so a head knows what it has not been sent.

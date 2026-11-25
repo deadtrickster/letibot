@@ -44,6 +44,7 @@ mod owners;
 mod procs;
 mod prompts;
 mod recall;
+mod search;
 mod seat;
 pub mod split;
 mod told;
@@ -57,6 +58,7 @@ pub use owners::{
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use prompts::{PROMPTS_SQL, QueuedPrompt};
 pub use recall::{RECALL_SQL, RecallUnit};
+pub use search::{ConversationHit, Conversations, ScanTarget};
 pub use seat::SeatJob;
 pub use told::Told;
 

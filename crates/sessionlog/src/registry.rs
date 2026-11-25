@@ -660,6 +660,21 @@ pub trait SessionSource: Send + Sync {
     fn queue_here(&self, _session_id: &str) -> Option<crate::event::QueueHere> {
         None
     }
+    /// Search conversation rows: `session` names one conversation, `None` is the project's
+    /// sessions in `workspace`, and `all` takes the ones that are not the operator's own as well.
+    /// Default none - a daemon with no store has no conversations to search, which the head draws
+    /// as a sentence rather than as a count of zero.
+    fn search(
+        &self,
+        _workspace: &str,
+        _session: Option<&str>,
+        _query: &str,
+        _all: bool,
+        _from: usize,
+        _count: usize,
+    ) -> Option<crate::protocol::SearchAnswer> {
+        None
+    }
 }
 
 struct Entry {
@@ -1742,6 +1757,21 @@ impl Registry {
         source
             .map(|s| s.row_items(session_id, from, count))
             .unwrap_or_default()
+    }
+
+    /// Conversation search, through the source that has the store. `None` is a daemon with no
+    /// store: the caller says so in the answer rather than drawing an empty result list.
+    pub fn search(
+        &self,
+        workspace: &str,
+        session: Option<&str>,
+        query: &str,
+        all: bool,
+        from: usize,
+        count: usize,
+    ) -> Option<crate::protocol::SearchAnswer> {
+        let source = self.source()?;
+        source.search(workspace, session, query, all, from, count)
     }
 
     /// [`Registry::rows_from_store`] for a transcript the session has LEFT: the rows a fork did not

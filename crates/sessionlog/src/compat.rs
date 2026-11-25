@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use letibot_transcript::{Speaker, TranscriptItem};
 
 use crate::event::{Envelope, FinishReason, SessionEvent, Timings, TodoBy, TodoEntry, Usage};
-use crate::protocol::{QUEUE_PROMPT_SINCE, TURN_ENDED_SINCE, USAGE_POLL_SINCE};
+use crate::protocol::{QUEUE_PROMPT_SINCE, SEARCH_SINCE, TURN_ENDED_SINCE, USAGE_POLL_SINCE};
 use crate::view::{Snapshot, TurnState};
 
 /// A change to what the daemon sends that an older head cannot decode, and whether this module
@@ -24,6 +24,12 @@ pub const PARKED_SINCE: u32 = 75;
 pub const TODO_BY_PEER_SINCE: u32 = 77;
 
 pub const SINCE: &[Since] = &[
+    Since {
+        version: SEARCH_SINCE,
+        what: "`ClientFrame::Search` and its answer `ServerFrame::Searched`: a head that predates \
+               them never asks, so there is nothing to translate for it",
+        translated: true,
+    },
     Since {
         version: USAGE_POLL_SINCE,
         what: "`ClientFrame::PollUsage`, sent only to a daemon that echoed `usage_poll_v1`",

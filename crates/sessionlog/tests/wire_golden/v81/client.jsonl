@@ -1,0 +1,8 @@
+{"frame":"attach","protocol_version":81,"session_id":"s","since_seq":7,"kind":"tui","identity":"corpus","caps":{"queue":64,"can_decide":true,"features":["queue"],"row_bodies":true}}
+{"frame":"ack","seq":12,"rendered":10,"filtered":2}
+{"frame":"resync"}
+{"frame":"prompt","client_request_id":"p1","expected_seq":12,"text":"explain this","attachments":[],"context":{"origin":"rano","refs":[{"file":"/w/src/lib.rs","range":{"start":{"line":3,"column":1},"end":{"line":9,"column":2}},"cursor":{"line":4,"column":5},"text":"fn main() {}","unsaved":true,"lang":"rust","title":""}],"open":[{"file":"/w/Cargo.toml","unsaved":false,"visible":true}],"ask":{"preset":"explain","answer":"notes"},"outcomes":[],"captured":""},"from":"cc@rano","delivery":"queue"}
+{"frame":"driver_todos","client_request_id":"d1","expected_seq":12,"from":"cc@rano","rows":[{"content":"land the corpus","status":"completed"}]}
+{"frame":"answer","client_request_id":"a1","req_id":"r1","option_id":"deny_and_tell","pattern":null,"note":"not on main"}
+{"frame":"interrupt","client_request_id":"i1","expected_seq":12,"reason":"operator"}
+{"frame":"detach"}

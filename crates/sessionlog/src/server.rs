@@ -610,6 +610,11 @@ pub const MAX_FETCH_ROWS: usize = 256;
 /// quarter-gigabyte frame, and the memory it is built in is the daemon's.
 pub const MAX_FETCH_BYTES: usize = 1024 * 1024;
 
+/// The most hits one `Search` may answer, whatever the head asked for. The scan itself is bounded
+/// by the store (`ROWS_SCAN_MAX` there); this bound is the frame's, and a result list a person
+/// reads is smaller than a screenful of rows.
+pub const SEARCH_HITS_MAX: usize = 60;
+
 /// The nearest character boundary at or below `at`, for slicing a body: a byte window can land
 /// inside a multi-byte character.
 fn clamp_char(s: &str, at: usize) -> usize {
@@ -2178,6 +2183,53 @@ pub fn serve_conn_on(
                     from: starts,
                     rows: rows.into_iter().map(|(_, r)| r).collect(),
                     transcript,
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
+            Ok(ClientFrame::Search {
+                query,
+                session,
+                all,
+                from,
+                count,
+            }) => {
+                // A project's search is the ASKING session's project: the head asked from the
+                // conversation it has open, and a folder it never mentioned is not one to search.
+                let workspace = registry.wiring(&seat.hub.session_id()).workspace;
+                let answer = registry.search(
+                    &workspace,
+                    session.as_deref(),
+                    &query,
+                    all,
+                    from,
+                    count.min(SEARCH_HITS_MAX),
+                );
+                let f = match answer {
+                    Some(a) => ServerFrame::Searched {
+                        query,
+                        session,
+                        from,
+                        hits: a.hits,
+                        more: a.more,
+                        scanned: a.scanned,
+                        sessions: a.sessions,
+                        why: None,
+                    },
+                    // Said, not silently empty: a count of zero is a different answer from
+                    // *this daemon cannot search at all*.
+                    None => ServerFrame::Searched {
+                        query,
+                        session,
+                        from,
+                        hits: Vec::new(),
+                        more: false,
+                        scanned: 0,
+                        sessions: 0,
+                        why: Some(
+                            "this daemon has no session store, so it has no conversations to search"
+                                .into(),
+                        ),
+                    },
                 };
                 writer.lock().unwrap().write(&f)?;
             }

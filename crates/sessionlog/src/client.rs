@@ -1024,6 +1024,26 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Search conversation rows: one session's, or the project's. The query is the one syntax
+    /// `letibot_transcript::search` parses, and the answer is a `Searched` frame on the pump.
+    pub fn search(
+        &mut self,
+        query: &str,
+        session: Option<&str>,
+        all: bool,
+        from: usize,
+        count: usize,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Search {
+            query: query.to_string(),
+            session: session.map(str::to_string),
+            all,
+            from,
+            count,
+        })?;
+        Ok(())
+    }
+
     /// Read a window of one row's body without leaving this session: answered with a `RowFetched`
     /// frame on the pump.
     pub fn fetch_row(

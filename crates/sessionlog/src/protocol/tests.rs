@@ -52,6 +52,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ClientFrame::ResumeSession { .. }
             | ClientFrame::Resync
             | ClientFrame::Screen { .. }
+            | ClientFrame::Search { .. }
             | ClientFrame::Secret { .. }
             | ClientFrame::SendLine { .. }
             | ClientFrame::Settings
@@ -144,6 +145,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ServerFrame::ModeSettled { .. }
             | ServerFrame::RowFetched { .. }
             | ServerFrame::RowsFetched { .. }
+            | ServerFrame::Searched { .. }
             | ServerFrame::Diagnostic { .. }
             | ServerFrame::ShellSuggestions { .. }
             | ServerFrame::TermAttached { .. }
@@ -161,8 +163,11 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 80,
-        "the match above was last reconciled with the frame list at 80. 80 added \
+        PROTOCOL_VERSION, 81,
+        "the match above was last reconciled with the frame list at 81. 81 added \
+             `ClientFrame::Search` and `ServerFrame::Searched`: a head asks for conversation rows \
+             by the one query syntax, over its own session or the whole project, and is answered \
+             with a page of hits. 80 added \
              `ClientFrame::PollUsage`: the model picker asks the daemon to poll the usage \
              endpoints it holds no fresh reading of, sent only to a daemon that echoed \
              `FEATURE_USAGE_POLL`. 79 added \
@@ -716,6 +721,14 @@ fn every_frame_round_trips() {
         ClientFrame::Switch {
             session_id: "s-2".into(),
             since_seq: 0,
+        },
+        // 81's pair: the whole query as typed, a project scope (no session) and a page.
+        ClientFrame::Search {
+            query: "me: \"the cache key\" re:^fn".into(),
+            session: None,
+            all: false,
+            from: 0,
+            count: 40,
         },
         ClientFrame::Detach,
     ] {

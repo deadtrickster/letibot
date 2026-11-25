@@ -98,6 +98,7 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
         ClientFrame::Switch { .. } => "switching sessions",
         ClientFrame::Peek { .. } => "reading another session",
         ClientFrame::FetchRow { .. } | ClientFrame::FetchRows { .. } => "reading the conversation",
+        ClientFrame::Search { .. } => "searching the conversations",
         ClientFrame::OperatorCall { .. } => "running a tool as the operator",
         ClientFrame::OperatorResult { .. } => "an operator call's result",
         ClientFrame::OperatorShell { .. } => "a ! line",

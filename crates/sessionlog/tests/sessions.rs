@@ -143,6 +143,11 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::ShellSuggestions { prefix, lines, .. } => {
             format!("ShellSuggestions({prefix}, {} lines)", lines.len())
         }
+        // A search's answer is named by the query it answers and how much came back, so two
+        // answers in one test are two lines rather than two blanks.
+        ServerFrame::Searched { query, hits, .. } => {
+            format!("Searched({query}, {} hits)", hits.len())
+        }
         ServerFrame::TermAttached { pane, command, .. } => {
             format!("TermAttached({pane} {command})")
         }

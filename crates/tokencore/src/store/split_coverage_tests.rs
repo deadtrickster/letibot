@@ -25,6 +25,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("prompts.rs", include_str!("prompts.rs")),
     ("queues.rs", include_str!("queues.rs")),
     ("recall.rs", include_str!("recall.rs")),
+    ("search.rs", include_str!("search.rs")),
     ("seat.rs", include_str!("seat.rs")),
     ("split.rs", include_str!("split.rs")),
     ("subagents.rs", include_str!("subagents.rs")),
@@ -269,6 +270,9 @@ const EXERCISED: &[&str] = &[
     "forget_import",
     "recall_transcripts",
     "recall_rows",
+    "sessions_to_search",
+    "scan_target",
+    "search_rows",
     "item_created_at",
     "item_times",
     "export_session",
@@ -452,6 +456,15 @@ fn every_project_method_runs_on_a_split_set() {
     assert_eq!(s.children_of("s1").unwrap().len(), 2);
     assert!(!s.list_sessions().unwrap().is_empty());
     s.list_sessions_archived(Archived::No).unwrap();
+    // The conversation search, on the same set: the project's sessions and one by name, then the
+    // scan over what it holds - a read whose rows live on the project's file and whose listing is
+    // on the shared one.
+    let targets = s.sessions_to_search("/w", &|_| true).unwrap();
+    s.search_rows("a", &targets, 0, 5).unwrap();
+    if let Some(one) = s.scan_target("s1").unwrap() {
+        s.search_rows("a", std::slice::from_ref(&one), 0, 5)
+            .unwrap();
+    }
     s.recent_models(5).unwrap();
     // A fork taken at an EARLIER transcript of the conversation, which is what a message from
     // before a compaction asks for. After the count above: this is a child of `s1` too.

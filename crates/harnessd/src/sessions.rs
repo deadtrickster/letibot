@@ -5291,6 +5291,42 @@ impl StoreSessions {
     }
 }
 
+/// Is this stored session one of the operator's own conversations - the rows a project-wide
+/// search reads by default? Theirs, top-level, archived or not, and not a package's tree: a row
+/// written before `session.origin` existed has no other trace of what it was, and offering a
+/// finished package's brief as a conversation is the defect that check exists for.
+fn is_a_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
+    let origin = s
+        .origin
+        .as_deref()
+        .and_then(letibot_sessionlog::SessionOrigin::parse)
+        .unwrap_or_default();
+    let row = letibot_sessionlog::GroupRow {
+        id: &s.id,
+        parent: s.parent_session_id.as_deref(),
+        origin,
+        role: s.role.as_deref(),
+        title: s.title.as_deref().unwrap_or(""),
+    };
+    letibot_sessionlog::is_operator_top_level(&row)
+        && !letibot_tools::lifecycle::is_package_worktree(&s.workspace_root)
+}
+
+/// A store hit as the wire carries it. One conversion, so the two shapes cannot drift.
+fn a_hit(h: letibot_tokencore::store::ConversationHit) -> letibot_sessionlog::protocol::SearchHit {
+    letibot_sessionlog::protocol::SearchHit {
+        session: h.session,
+        title: h.title,
+        folder: h.folder,
+        at_ms: h.at_ms.max(0) as u64,
+        role: h.role,
+        tool: h.tool,
+        row: h.row,
+        item_id: h.item_id,
+        excerpt: h.excerpt,
+    }
+}
+
 /// The same handle, answering a row the view has trimmed. One instance does both jobs
 /// because they are one store asked two questions, and because another handle would be
 /// another reader of the same file.
@@ -5811,6 +5847,35 @@ impl SessionSource for StoreSessions {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         let s = g.session(session_id).ok().flatten()?;
         Some(self.keyed_brief(&g, s))
+    }
+
+    /// Conversation search: one session's rows, or the project's the asking session belongs to.
+    /// `all` takes the sessions that are not the operator's own; without it a search reads the
+    /// conversations they started - archived ones included - and nothing a subagent, a package,
+    /// the review queue or a shadow wrote.
+    fn search(
+        &self,
+        workspace: &str,
+        session: Option<&str>,
+        query: &str,
+        all: bool,
+        from: usize,
+        count: usize,
+    ) -> Option<letibot_sessionlog::protocol::SearchAnswer> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let targets = match session {
+            Some(id) => vec![g.scan_target(id).ok()??],
+            None => g
+                .sessions_to_search(workspace, &|s| all || is_a_conversation(s))
+                .ok()?,
+        };
+        let found = g.search_rows(query, &targets, from, count).ok()?;
+        Some(letibot_sessionlog::protocol::SearchAnswer {
+            hits: found.hits.into_iter().map(a_hit).collect(),
+            more: found.more,
+            scanned: found.scanned,
+            sessions: found.sessions,
+        })
     }
 
     fn children_of(&self, parent_id: &str) -> Vec<StoredBrief> {
