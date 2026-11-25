@@ -1238,6 +1238,10 @@ pub const SESSION_MARK: &str = "LETIBOT_SESSION";
 /// stopped answering must not hold the daemon's exit open past a fresh master's timeout.
 const END_SESSION_BOUND: Duration = Duration::from_secs(25);
 
+/// How long ending a session's own compile cache server gets. It is one short request to a daemon
+/// on that machine, and a close that cannot reach it must not be a close that waits.
+const STOP_BOUND: Duration = Duration::from_secs(15);
+
 /// The sweep [`Ssh::end_session_processes`] runs on the far side. A script, not `pkill`: pids are TERMed,
 /// waited for, then KILLed, so the answer is what is left. The id arrives as `$1`, the ledger as `$2`,
 /// and the mark matches as a whole field, so `-1` is not a prefix of `-12`.
@@ -3615,12 +3619,46 @@ fn toolchain_env(confine: Option<&crate::exec::Bwrap>) -> Vec<(String, String)> 
     crate::exec::seat::env_for_grants(boundary.view.grants.iter().map(|g| g.path()))
 }
 
-/// What one placement takes from `hosts.toml`'s three build keys: the pairs every command of the
+/// What one placement takes from `hosts.toml`'s build keys: the pairs every command of the
 /// session carries, and what its view must gain before a build there can run and cache.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BuildCache {
     env: Vec<(String, String)>,
     grants: Vec<crate::exec::boundary::HostGrant>,
+    /// The wrapper the operator named, as the host resolved it.
+    wrapper: Option<String>,
+    /// The `sccache` program beside that wrapper, when there is one. A host that mounts every
+    /// session's tree at fixed names needs this program as its client, and this is where it was
+    /// found: at placement, so the view can grant the directory it is in.
+    program: Option<String>,
+}
+
+/// One session's own sccache server: the program that starts and stops it, and the port it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheServer {
+    program: String,
+    port: u16,
+}
+
+/// The first port a session's own cache server may hold, and how many sessions can be told apart.
+/// Below the ephemeral range (`32768`), so an assignment is never a port the kernel hands an
+/// outgoing connection, and well away from sccache's own default of 4226 — the host's own server,
+/// which is exactly the one a session must not talk to.
+const SCCACHE_PORT_FIRST: u16 = 22000;
+const SCCACHE_PORT_SPAN: u16 = 4096;
+
+/// The port one session's cache server holds on a host: a function of the owner id, so every
+/// command of the session asks the same server and two sessions ask different ones. A collision
+/// is possible (4096 slots) and its symptom is a client talking to another view's server; it is
+/// bounded by the fact that the ids are session ids, not something a caller can choose at will.
+fn sccache_port(owner: &str) -> u16 {
+    // FNV-1a, written out: a hash that must be the same in every process and every version.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in owner.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    SCCACHE_PORT_FIRST + (hash % u64::from(SCCACHE_PORT_SPAN)) as u16
 }
 
 /// What a host's `rustc_wrapper`, `sccache_dir` and `cargo_home` become for one session. Asked of the
@@ -3640,9 +3678,16 @@ fn build_cache(ssh: &Ssh, host: &Host, notes: &mut Vec<String>) -> BuildCache {
     // go: a cache, a wrapper or a cargo home reached through a symlink is the directory behind it.
     let mut script = String::new();
     if let Some(w) = wrapper {
+        // The sccache program the wrapper runs, asked for in the same round trip: a host that
+        // rebinds every session's tree needs that program as the client, because the wrapper's own
+        // script may pin a cache port, and a pinned port is one server for every session.
         script.push_str(&format!(
             "w={w}\n\
              if [ -x \"$w\" ]; then printf 'wrapper %s\\n' \"$(readlink -f \"$w\")\"; \
+             s=$(dirname \"$w\")/sccache\n\
+             if [ -x \"$s\" ]; then printf 'sccache %s\\n' \"$(readlink -f \"$s\")\"; \
+             elif p=$(command -v sccache 2>/dev/null); then printf 'sccache %s\\n' \"$(readlink -f \"$p\")\"; \
+             fi; \
              else echo wrapper-missing; fi\n",
             w = one_entry(w)
         ));
@@ -3696,11 +3741,13 @@ fn build_cache(ssh: &Ssh, host: &Host, notes: &mut Vec<String>) -> BuildCache {
             return BuildCache::default();
         }
     };
-    let (mut found, mut cache, mut shared) = (None, None, None);
+    let (mut found, mut program, mut cache, mut shared) = (None, None, None, None);
     for line in said.lines() {
         let line = line.trim_end_matches('\r').trim();
         if let Some(real) = line.strip_prefix("wrapper ") {
             found = Some(real.trim().to_string());
+        } else if let Some(real) = line.strip_prefix("sccache ") {
+            program = Some(real.trim().to_string());
         } else if let Some(real) = line.strip_prefix("cache ") {
             cache = Some(real.trim().to_string());
         } else if let Some(real) = line.strip_prefix("cargo-home ") {
@@ -3763,15 +3810,23 @@ fn build_cache(ssh: &Ssh, host: &Host, notes: &mut Vec<String>) -> BuildCache {
     // `~/.rustup`) is a file the view could not reach. Both binds are `-try`, so the ordinary case
     // — a wrapper inside `~/.cargo` — is a redundant mount and not a failure. Left out when the
     // shared cargo home is INSIDE it: a read-only parent bind would take the home's writability
-    // away again, and a fetch would fail on a directory nobody can write.
-    if let Some(dir) = Path::new(&wrapper).parent() {
-        let dir = dir.display().to_string();
-        if !shared.as_deref().is_some_and(|home| under(home, &dir)) {
-            build
-                .grants
-                .push(cache_grant(dir, false, RUSTC_WRAPPER_KEY));
+    // away again, and a fetch would fail on a directory nobody can write. The sccache program is
+    // granted the same way, because it is the client on a host whose tree is rebound and it is not
+    // always in the wrapper's directory.
+    for tool in [Some(&wrapper), program.as_ref()].into_iter().flatten() {
+        if let Some(dir) = Path::new(tool).parent() {
+            let dir = dir.display().to_string();
+            if !shared.as_deref().is_some_and(|home| under(home, &dir))
+                && !build.grants.iter().any(|g| g.path == dir)
+            {
+                build
+                    .grants
+                    .push(cache_grant(dir, false, RUSTC_WRAPPER_KEY));
+            }
         }
     }
+    build.wrapper = Some(wrapper.clone());
+    build.program = program;
     match cache {
         Some(real) => {
             build.env.push(("SCCACHE_DIR".to_string(), real.clone()));
@@ -3789,6 +3844,50 @@ fn build_cache(ssh: &Ssh, host: &Host, notes: &mut Vec<String>) -> BuildCache {
         )),
     }
     build
+}
+
+/// What a session whose view mounts the fixed names must be told about the cache. The client becomes
+/// the `sccache` program itself, on a port of this session's own, because the SERVER is what writes
+/// the objects and the dep-info files: a server outside the view would write `/run/letibot/...` on a
+/// machine where nothing is mounted there, and fail the build. A wrapper is a script that may pin a
+/// cache port, and one pinned port is one server for every session, outside every view — so it is
+/// not the client here. Where there is no program to name, the wrapper is withheld instead: a cold
+/// build is right where the alternative is one that cannot write its own dep-info.
+fn a_server_of_its_own(
+    build: &BuildCache,
+    owner: &str,
+    host: &str,
+    env: &mut Vec<(String, String)>,
+    notes: &mut Vec<String>,
+) -> Option<CacheServer> {
+    let wrapper = build.wrapper.as_deref()?;
+    let Some(program) = build.program.as_deref() else {
+        notes.push(format!(
+            "`rustc_wrapper` is not set on {host}: this host mounts every session's tree at fixed \
+             names (`stable_paths`), so a build there needs a cache server inside this session's own \
+             view, and no `sccache` program was found beside `{wrapper}` to start one. Builds there \
+             compile the tree cold"
+        ));
+        env.retain(|(k, _)| k != "RUSTC_WRAPPER" && k != "SCCACHE_SERVER_PORT");
+        return None;
+    };
+    let port = sccache_port(owner);
+    for (key, value) in env.iter_mut() {
+        if key == "RUSTC_WRAPPER" {
+            *value = program.to_string();
+        }
+    }
+    env.retain(|(k, _)| k != "SCCACHE_SERVER_PORT");
+    env.push(("SCCACHE_SERVER_PORT".to_string(), port.to_string()));
+    notes.push(format!(
+        "builds on {host} go through `{program}` with a cache server of this session's own on port \
+         {port}: the server writes the objects and the dep-info files, so it has to run inside this \
+         session's view, where the fixed names are; the session's close stops it"
+    ));
+    Some(CacheServer {
+        program: program.to_string(),
+        port,
+    })
 }
 
 /// Is `path` the directory `dir` or inside it? Both are the host's own resolved paths, so this is a
@@ -4026,6 +4125,9 @@ pub struct SshBackend {
     /// found nothing. A second close reports what the first found rather than a machine it has
     /// already emptied.
     swept: Mutex<Option<String>>,
+    /// The compile cache's server this session started inside its own view, when it needed one of
+    /// its own: the close is the only thing that ends it, because nothing else knows the port.
+    cache_server: Option<CacheServer>,
 }
 
 impl std::fmt::Debug for SshBackend {
@@ -4410,7 +4512,7 @@ impl SshBackend {
         // What the operator declared for this host's builds, asked before the boundary is measured
         // because the view has to bind what a build writes, and kept as pairs every command of this
         // session carries (they are applied below, under a perimeter's own).
-        let build = build_cache(&ssh, &spec.host, &mut notes);
+        let mut build = build_cache(&ssh, &spec.host, &mut notes);
 
         // Can this machine bound a command, and in what view. Asked once per host per process
         // ([`CONFINE`]), after the checkout exists because the checkout is the writable root of the
@@ -4511,7 +4613,8 @@ impl SshBackend {
         // compiling. Measured after the boundary, so the sentence is about the boundary there is.
         // The shared cargo home is NOT withheld with it: a registry already fetched is exactly what
         // a session with no egress needs, and nothing about reading it wants a socket.
-        let mut build_env = build.env;
+        let mut build_env = std::mem::take(&mut build.env);
+        let mut cache_server = None;
         if wrapper_withheld(confine.is_some(), &spec.egress)
             && build_env.iter().any(|(k, _)| k == "RUSTC_WRAPPER")
         {
@@ -4520,7 +4623,9 @@ impl SshBackend {
                  network, where the cache's own server has only a loopback socket — builds there \
                  compile the tree cold"
             ));
-            build_env.retain(|(k, _)| k != "RUSTC_WRAPPER" && k != "SCCACHE_DIR");
+            build_env.retain(|(k, _)| {
+                k != "RUSTC_WRAPPER" && k != "SCCACHE_DIR" && k != "SCCACHE_SERVER_PORT"
+            });
         }
         // The fixed names are mounts, so only a measured view can hold them. A VM's copy, a session
         // with no exec, and a host that could not make a namespace all keep their own paths, and the
@@ -4546,6 +4651,12 @@ impl SshBackend {
             // The build directory at the name every session on this host uses: with it, two
             // sessions' `--out-dir`, `-L dependency=` and `--extern` arguments are one string.
             confined_env.push(("CARGO_TARGET_DIR".to_string(), STABLE_TARGET.to_string()));
+            // And the cache's own server, which has to be inside this view for the same reason the
+            // compile is: it is the server that writes the objects and the dep-info files.
+            if build_env.iter().any(|(k, _)| k == "RUSTC_WRAPPER") {
+                cache_server =
+                    a_server_of_its_own(&build, &short, &host, &mut build_env, &mut notes);
+            }
             notes.push(format!(
                 "commands on {host} see the checkout at {STABLE_WORK} and build in {STABLE_TARGET}: \
                  both are mounts in this session's own view, so every path the session's tools and \
@@ -4642,6 +4753,7 @@ impl SshBackend {
             vm,
             brought_back: Mutex::new(None),
             swept: Mutex::new(None),
+            cache_server,
         };
         // What is running here is a session's work until somebody ends it, and the daemon's exit
         // closes no backend: the last act sweeps this list, and fetches what it holds, for exactly
@@ -4674,6 +4786,25 @@ impl SshBackend {
     /// second call reports what the first found.
     fn settle(&self) -> String {
         let mut said: Vec<String> = Vec::new();
+        // The session's own cache server first, and before the sweep: it is a daemon nobody else
+        // tracks, it lives as long as it is idle on its port, and a compile of its own landing in
+        // the target directory while the branch is fetched home is the one thing the sweep is for.
+        if let Some(server) = &self.cache_server {
+            let step = format!(
+                "SCCACHE_SERVER_PORT={port} {program} --stop-server >/dev/null 2>&1",
+                port = server.port,
+                program = quote(&server.program)
+            );
+            if let Ok((_, _, 0)) =
+                self.ssh
+                    .sh_step_within("stopping this session's cache server", &step, STOP_BOUND)
+            {
+                said.push(format!(
+                    "the compile cache server this session started on port {} was stopped",
+                    server.port
+                ));
+            }
+        }
         // Sweep the session's processes before the branch is fetched home: a process still writing in the
         // checkout would corrupt the fetch. Said once, so a second close repeats the first's finding.
         let swept = {

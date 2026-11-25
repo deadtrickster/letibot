@@ -644,6 +644,110 @@ fn hosts_toml_reads_stable_paths_as_a_switch() {
     assert!(why.contains("true") && why.contains("false"), "{why}");
 }
 
+/// One port per session, out of a band of its own: below the ephemeral range, away from sccache's
+/// default 4226 (the host's own server), and the same port for every command of one session.
+#[test]
+fn a_session_holds_one_cache_port_of_its_own() {
+    let first = sccache_port("s-01abcdef");
+    assert_eq!(first, sccache_port("s-01abcdef"), "one session, one port");
+    assert!(
+        (SCCACHE_PORT_FIRST..SCCACHE_PORT_FIRST + SCCACHE_PORT_SPAN).contains(&first),
+        "{first} is in the band"
+    );
+    assert!(first < 32768, "no port the kernel hands out: {first}");
+    assert_ne!(first, 4226, "the host's own server is the one to stay off");
+    let ports: std::collections::BTreeSet<u16> = (0..200)
+        .map(|n| sccache_port(&format!("s-{n:05}")))
+        .collect();
+    assert!(
+        ports.len() > 180,
+        "two hundred ids over 4096 ports: {} distinct",
+        ports.len()
+    );
+}
+
+/// A host that mounts every session's tree at fixed names points cargo at the sccache PROGRAM, on a
+/// port of the session's own: the server it starts is inside the view, which is the only place a
+/// server can write the objects and the dep-info files under those names.
+#[test]
+fn a_rebinding_host_points_the_client_at_a_server_of_the_sessions_own() {
+    let build = BuildCache {
+        env: vec![(
+            "RUSTC_WRAPPER".to_string(),
+            "/home/dead/.cargo/bin/sccache-rustc".to_string(),
+        )],
+        wrapper: Some("/home/dead/.cargo/bin/sccache-rustc".to_string()),
+        program: Some("/home/dead/.cargo/bin/sccache".to_string()),
+        ..BuildCache::default()
+    };
+    let mut env = build.env.clone();
+    let mut notes = Vec::new();
+    let server = a_server_of_its_own(&build, "s-01abcdef", "xmg", &mut env, &mut notes)
+        .expect("a host with a program beside its wrapper gets a server");
+    assert_eq!(server.program, "/home/dead/.cargo/bin/sccache");
+    assert_eq!(server.port, sccache_port("s-01abcdef"));
+    let pairs: std::collections::BTreeMap<String, String> = env.into_iter().collect();
+    assert_eq!(
+        pairs.get("RUSTC_WRAPPER").map(String::as_str),
+        Some("/home/dead/.cargo/bin/sccache"),
+        "the wrapper is a script that may pin a port, so it is not the client here"
+    );
+    assert_eq!(
+        pairs.get("SCCACHE_SERVER_PORT").map(String::as_str),
+        Some(server.port.to_string().as_str())
+    );
+    let said = notes.join("\n");
+    assert!(
+        said.contains(&server.port.to_string()) && said.contains("inside this session's view"),
+        "the placement says where the server runs: {said}"
+    );
+}
+
+/// With no program beside the wrapper there is nothing to start a server inside the view, so the
+/// wrapper goes and the build compiles cold: a wrong client fails the build, and a cold one does not.
+#[test]
+fn a_rebinding_host_with_no_program_withholds_the_wrapper() {
+    let build = BuildCache {
+        env: vec![(
+            "RUSTC_WRAPPER".to_string(),
+            "/opt/bin/sccache-rustc".to_string(),
+        )],
+        wrapper: Some("/opt/bin/sccache-rustc".to_string()),
+        program: None,
+        ..BuildCache::default()
+    };
+    let mut env = build.env.clone();
+    let mut notes = Vec::new();
+    assert!(
+        a_server_of_its_own(&build, "s-01abcdef", "xmg", &mut env, &mut notes).is_none(),
+        "no program, no server"
+    );
+    assert!(
+        env.iter()
+            .all(|(k, _)| k != "RUSTC_WRAPPER" && k != "SCCACHE_SERVER_PORT"),
+        "nothing is left to fail a build with: {env:?}"
+    );
+    let said = notes.join("\n");
+    assert!(
+        said.contains("no `sccache` program") && said.contains("compile the tree cold"),
+        "{said}"
+    );
+}
+
+/// A host with no wrapper at all has no cache to point anywhere, and is left alone.
+#[test]
+fn a_host_with_no_wrapper_gets_no_server() {
+    let mut env = Vec::new();
+    let mut notes = Vec::new();
+    assert!(
+        a_server_of_its_own(&BuildCache::default(), "s-01", "xmg", &mut env, &mut notes).is_none()
+    );
+    assert!(
+        env.is_empty() && notes.is_empty(),
+        "nothing said, nothing set"
+    );
+}
+
 /// The two spellings of a rebound tree, and the joins a prefix must not fool:
 /// `/run/letibot/workbench` is not under `/run/letibot/work`, so it is not the checkout.
 #[test]

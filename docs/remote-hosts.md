@@ -222,13 +222,15 @@ tree already puts the two other fixed names a session sees (`/run/letibot/agent.
 `/run/letibot/home`).
 
 Measured on xmg (2026-11-25, sccache 0.19, one crate whose only dependency is `serde_json`, the box's
-`sccache` as `RUSTC_WRAPPER`, one cache directory, one server inside each session's view):
+`sccache` program as `RUSTC_WRAPPER`, one cache directory, one server inside each session's view on a
+port of its own):
 
 | setup | the second session's compile |
 |---|---|
-| today: two checkouts, two build directories | requests 15, **hits 0**, misses 5 |
-| `stable_paths`, build directory emptied first | requests 15, **hits 5**, misses 0 |
+| two checkouts, two build directories, no fixed names | requests 14, **hits 0**, misses 5 |
+| `stable_paths`, build directory emptied first | requests 14, **hits 5**, misses 0 |
 | `stable_paths`, build directory as the first session left it | requests 0 - cargo reuses the artifacts |
+| one server OUTSIDE every view, both sessions pointed at it | the build FAILS: `Failed to write dep-info to /run/letibot/target/debug/deps/itoa-….d` |
 
 What the fixed names do and do not change:
 
@@ -243,14 +245,26 @@ What the fixed names do and do not change:
   measures or reaps a session's disk learns a new path.
 * **A placement that cannot mount says so, once.** A VM's copy, a session with no exec, and a host whose
   probe failed all keep their own paths, with one note that what was asked for is not in force.
-* A cache whose **server** runs outside the view cannot write into it: sccache's server writes the dep-info
-  and the outputs, so the server must live in a view that mounts the same names. That happens by itself -
-  a session's first compile starts the server inside its own view - and every session then has its own
-  server over one shared cache directory. A host-wide server started by hand, or one left from another
-  session's view, fails the build with `failed to write dep-info to /run/letibot/target/…: No such file or
-  directory` (measured). This is not a "one server for the box" feature.
+* **A cache's server must run inside the session's own view, so each session gets one.** sccache's
+  server writes the dep-info and the outputs, so a server outside the view writes
+  `/run/letibot/target/…` on a machine where nothing is mounted there and fails the build. On a
+  `stable_paths` host the client is therefore the `sccache` **program** itself, not the wrapper
+  script: `SCCACHE_SERVER_PORT` is set from the session id (22000-26095, below the ephemeral range
+  and away from sccache's own 4226), `SCCACHE_DIR` is the shared directory, bound writable, and the
+  first compile of the session starts the server in the view it runs in. A wrapper may pin a port,
+  and one pinned port is one server for every session; where no `sccache` program can be found
+  beside the configured wrapper, the wrapper is withheld and the build compiles cold rather than
+  failing. The close stops the server (`sccache --stop-server` with that port), and sccache's own
+  idle timeout ends one whose session died without closing.
+* **Two servers over one cache directory is safe.** An entry is written to a temporary file in the
+  cache root and renamed into place, so a reader sees the old entry or the new one and never part of
+  either, and each server keeps its own LRU index in memory. Measured: two servers writing at once,
+  seven misses each, no cache write error, both builds green. The costs are a lost entry - a server's
+  start-up scan deletes another's in-flight `.sccachetmp*` file, and sccache counts a failed write
+  rather than failing the compile - and a directory that can grow past `SCCACHE_CACHE_SIZE` by what
+  the other server wrote, because the two keep separate size accounts.
 * A view with no network (`Egress::Denied`, which is `--unshare-net`) has its loopback down, so a cache
-  client cannot reach any server: fixed paths alone save nothing there.
+  client cannot reach any server: fixed paths alone save nothing there, and the wrapper is withheld.
 
 ## A VM on that machine: `--host NAME --vm`
 
@@ -401,7 +415,8 @@ and every command of the session - a `bash` call, a job's launcher, a confined s
 * **The confinement is widened by exactly what the keys name, and nothing else.** A confined remote view
   holds the checkout, the system roots and the toolchain read-only, `$HOME` as the session's own, and the
   operator's grants. The wrapper's own directory is added **read-only** (redundant when it is inside the
-  toolchain grants, `-try` so a missing one is skipped), and `sccache_dir` and `cargo_home` are the
+  toolchain grants, `-try` so a missing one is skipped), and so is the `sccache` program's when it is not in
+  that same directory, and `sccache_dir` and `cargo_home` are the
   **read-write** grants: a cache or a registry nobody can write is a build that falls back anyway.
   `SCCACHE_DIR` and `CARGO_HOME` are exported with the resolved path, so a wrapper that reads its cache from
   the environment and one that bakes it in agree with the view. Both binds are `-try`, so a directory that
@@ -410,6 +425,13 @@ and every command of the session - a `bash` call, a job's launcher, a confined s
 
       builds on xmg share one compile cache: `/home/dead/.cargo/bin/sccache-rustc` writing
       `/home/dead/.cache/sccache`
+
+* **On a host with `stable_paths`, the client is the `sccache` program, not the wrapper, and the session
+  gets a port of its own.** The wrapper is still what proves the machine has a cache - its path is what
+  the placement resolves, and its directory is what the view grants - but a script may pin a port, and a
+  pinned port is one server for every session, outside every view. Where no `sccache` program is found
+  beside it, the wrapper is withheld with a note and builds there compile cold. See
+  [fixed paths](#fixed-paths-so-two-sessions-can-share-a-build-cache-stable_paths).
 
 A wrapper that decides for itself to fall back - its own `sccache` binary missing, or its cache unwritable -
 `exec`s the compiler and says nothing: the build still works, it is just cold. That check is the wrapper's,

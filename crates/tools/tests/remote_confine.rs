@@ -1505,3 +1505,103 @@ fn a_host_that_cannot_confine_says_stable_paths_is_not_in_force() {
         "the placement does not claim a view it did not measure: {notes}"
     );
 }
+
+/// A host that mounts every session's tree at fixed names needs the cache's SERVER inside the same
+/// view as the compile: the server is what writes the objects and the dep-info files, so a server
+/// outside the view would write `/run/letibot/target/...` on a machine where nothing is mounted
+/// there and fail the build. So the client is the sccache program itself, on a port of the
+/// session's own, and the close stops that server.
+#[test]
+fn a_rebinding_host_runs_the_cache_server_inside_the_sessions_own_view() {
+    let mut rig = Rig::new("sccache", FAKE_READBACK, true);
+    rig.host.stable_paths = true;
+    rig.host.rustc_wrapper = Some("~/.cargo/bin/sccache-rustc".into());
+    rig.host.sccache_dir = Some("~/.cache/sccache".into());
+    // The host as it is on a machine the operator set up: a wrapper beside the program it runs, and
+    // a cache directory. The stub writes down what it is asked, so the close's `--stop-server` is a
+    // fact and not a claim.
+    let bin = rig.home.join(".cargo/bin");
+    std::fs::create_dir_all(&bin).expect("a cargo bin");
+    write_executable(&bin.join("sccache-rustc"), "#!/bin/sh\nexec \"$@\"\n");
+    let asked = rig.dir.join("sccache-asked.txt");
+    write_executable(
+        &bin.join("sccache"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexit 0\n",
+            asked.display()
+        ),
+    );
+
+    let cache = rig.home.join(".cache/sccache");
+    std::fs::create_dir_all(&cache).expect("the cache directory");
+
+    let b = rig.place(Egress::Host {
+        why: "allow-all".into(),
+    });
+    assert!(b.is_confined(), "the fake host answered the probe");
+    let program = std::fs::canonicalize(bin.join("sccache")).expect("the program");
+    let cache_real = std::fs::canonicalize(&cache).expect("the cache");
+    let notes = b.placement_notes().join("\n");
+    let port = notes
+        .split("port ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|p| p.trim_end_matches(':').parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("the placement names the port: {notes}"));
+    assert!((22000..26095).contains(&port), "a port of its own: {port}");
+
+    // What the session's own commands carry: the program, not the wrapper, and the port.
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'W=[%s] P=[%s] D=[%s]' \"$RUSTC_WRAPPER\" \"$SCCACHE_SERVER_PORT\" \
+                 \"$SCCACHE_DIR\""
+                    .into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("a command on the fake host");
+    assert_eq!(out.exit, 0, "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!(
+            "W=[{}] P=[{port}] D=[{}]",
+            program.display(),
+            cache_real.display()
+        ),
+        "the client is the program, on this session's port, writing the shared cache"
+    );
+    // The cache is bound writable, which is what lets the server inside the view write it.
+    let calls = rig.bwrap_calls();
+    let argv = calls.last().expect("the command's call");
+    let bound = cache_real.display().to_string();
+    assert!(
+        argv.contains(&format!("--bind-try {bound} {bound}")),
+        "the shared cache has to be writable inside every view: {argv}"
+    );
+
+    // And the close stops the server it started: `--stop-server`, with that port on the command's
+    // own environment, and the program it started it with.
+    let closed = b.close().unwrap_or_default();
+    assert!(
+        closed.contains(&format!(
+            "server this session started on port {port} was stopped"
+        )),
+        "the close says what it ended: {closed}"
+    );
+    let log = std::fs::read_to_string(&asked).unwrap_or_default();
+    assert!(
+        log.lines().any(|l| l.contains("--stop-server")),
+        "the close asked the program to stop:\n{log}"
+    );
+    // The port is that server's, not the host's: `sccache --stop-server` reads the same variable.
+    assert!(
+        rig.ssh_calls()
+            .contains(&format!("SCCACHE_SERVER_PORT={port}")),
+        "the stop names the port: {}",
+        rig.ssh_calls()
+    );
+}
