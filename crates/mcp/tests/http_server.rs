@@ -286,6 +286,11 @@ fn tools(cat: &Catalog) -> Vec<String> {
 fn an_http_server_is_listed_and_called_with_its_session_id() {
     let (cat, _) = web();
     assert_eq!(cat.servers()[0].tools[0].name, "whoami");
+    // Reached over the network and never run here, so its calls stay `Network`.
+    assert_eq!(
+        cat.servers()[0].access,
+        letibot_tools::schema::Access::Network
+    );
     let r = cat.call("web", "whoami", &json!({})).unwrap();
     assert_eq!(r.text, "s-1");
 }

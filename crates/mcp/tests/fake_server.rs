@@ -60,6 +60,20 @@ fn allow_all_mcp() -> serde_json::Value {
     serde_json::json!({"mcp_search": "allow", "mcp_call": {"fake__*": "allow"}})
 }
 
+/// A stdio server is a process this box started, so its tools carry `Exec` into the gate: the
+/// class of a command here, not of a reach outside. An HTTP server's stay `Network`, and
+/// `tests/http_server.rs` says so.
+#[test]
+fn a_stdio_servers_tools_are_classed_exec() {
+    let cat = Catalog::start(&[fake("fake", &[])]);
+    assert!(cat.failures().is_empty(), "{:?}", cat.failures());
+    assert_eq!(
+        cat.servers()[0].access,
+        letibot_tools::schema::Access::Exec,
+        "a local server's call runs here"
+    );
+}
+
 #[test]
 fn tools_are_listed_searched_and_called() {
     let cat = Catalog::start(&[fake("fake", &[])]);

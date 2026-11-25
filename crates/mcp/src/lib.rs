@@ -845,6 +845,12 @@ impl McpCatalog for Catalog {
                 }
                 McpServer {
                     name: e.spec.name.clone(),
+                    // A stdio server is a process this box started, so its calls are `Exec`; an
+                    // HTTP server is reached and never run here.
+                    access: match &e.spec.transport {
+                        Transport::Stdio { .. } => letibot_tools::schema::Access::Exec,
+                        Transport::Http { .. } => letibot_tools::schema::Access::Network,
+                    },
                     tools: e.tools.read().unwrap_or_else(|e| e.into_inner()).clone(),
                 }
             })

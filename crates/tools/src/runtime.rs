@@ -2528,12 +2528,20 @@ impl ToolRuntime {
         // Clause 4: the gate is consulted only when the declared access is not read. What this
         // call amounts to can be narrower than the schema's class; a tool may not declare its
         // way past the gate, so the narrower answer is used only when it is less consequential.
+        //
+        // The one answer that is not narrower and is taken is `Exec` over `Network`: an MCP door
+        // whose server is a process on this box is judged as a command here, not as a reach
+        // outside it, and the schema cannot say which of its servers a call names.
         let declared = schema.access;
         let effective = self
             .registry
             .get(&call.name)
             .and_then(|t| t.access_for(&args))
-            .filter(|a| a.is_unattended() && !declared.is_unattended())
+            .filter(|a| {
+                (a.is_unattended() && !declared.is_unattended())
+                    || (*a == crate::schema::Access::Exec
+                        && declared == crate::schema::Access::Network)
+            })
             .unwrap_or(declared);
         if gated && !effective.is_unattended() {
             // The workspace, not the root: unconfined means `/`, which answers "is this inside
@@ -2561,7 +2569,9 @@ impl ToolRuntime {
             let preview = self.preview_of(&schema.name, &args);
             let gate_call = GateCall {
                 name: &schema.name,
-                access: schema.access,
+                // The class this call is JUDGED at, which a tool may narrow - or, for an MCP
+                // door, make stricter: a stdio server's call is a command on this box.
+                access: effective,
                 args: &args,
                 turn_id,
                 call_id: &call.id,

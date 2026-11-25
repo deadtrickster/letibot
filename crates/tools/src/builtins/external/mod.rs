@@ -87,7 +87,8 @@ pub struct ExternalWiring {
     pub fetch: String,
     pub github: String,
     pub mcp: String,
-    /// Seated tools declaring [`Access::Network`], in prompt order.
+    /// Seated tools that reach outside the session: `Network`, and `Exec` for an MCP server that
+    /// is a process on this box. In prompt order.
     pub seated: Vec<String>,
 }
 
@@ -118,7 +119,7 @@ impl ExternalWiring {
             mcp: backends.mcp.describe(),
             seated: schemas
                 .iter()
-                .filter(|s| s.access == Access::Network)
+                .filter(|s| matches!(s.access, Access::Network | Access::Exec))
                 .map(|s| s.name.clone())
                 .collect(),
         }
@@ -272,8 +273,9 @@ impl ExternalWiring {
                 subject: "mcp",
                 state: "",
                 detail: format!(
-                    "{}, reached through `{}` and `{}`. Every call passes the gate as a \
-                     network call, and what comes back is quarantined as untrusted text.",
+                    "{}, reached through `{}` and `{}`. Every call passes the gate - as a \
+                     network call, or as exec when the server is a process on this box - and \
+                     what comes back is quarantined as untrusted text.",
                     self.mcp,
                     mcp::SEARCH,
                     mcp::CALL
@@ -345,6 +347,7 @@ pub mod scripted {
         FetchError, FetchRequest, FetchedPage, Fetcher, PageFormat, SearchError, SearchHit,
         SearchProvider, SearchQuery, SearchResults,
     };
+    use crate::schema::Access;
 
     /// All four attached. What a session looks like when the infrastructure exists.
     pub fn attached() -> ExternalBackends {
@@ -569,6 +572,7 @@ pub mod scripted {
             Arc::new(Servers {
                 servers: vec![McpServer {
                     name: "fake".into(),
+                    access: Access::Network,
                     tools: vec![McpToolSpec {
                         name: "echo".into(),
                         description: "Say a thing back. Give it `text`.".into(),
@@ -591,6 +595,7 @@ pub mod scripted {
             Arc::new(Servers {
                 servers: vec![McpServer {
                     name: "fake".into(),
+                    access: Access::Network,
                     tools: vec![McpToolSpec {
                         name: "echo".into(),
                         description: "Say a thing back. Give it `text`.".into(),

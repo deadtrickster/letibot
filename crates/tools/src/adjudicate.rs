@@ -2267,7 +2267,11 @@ impl AdjudicatedGate {
     /// is, whatever the program inside does, so this narrows to `Read` or `Write` from layer A's
     /// reading. Narrowing only, and only when the tool declared `Exec`; the gate is still asked.
     fn judged_access(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> Access {
-        if call.access == Access::Exec && baseline.reads_only() {
+        // Only a call layer A READ narrows. A tool carrying no command (an `mcp_call`) has no
+        // reading to narrow on - `{read_file}` over no path - and calling that a read is how a
+        // mode came to admit a call nobody had preapproved.
+        let read = baseline.command.is_some() && baseline.reads_only();
+        if call.access == Access::Exec && read {
             Access::Read
         } else if call.access == Access::Exec && baseline.writes_only() {
             // The class the edit path already knows how to judge; `path_is_inside` is asked of
