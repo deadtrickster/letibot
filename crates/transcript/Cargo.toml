@@ -9,3 +9,7 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# `re:` in a search query is a real pattern. It is a dependency of the ROW type's crate because
+# the query and the rows it reads are one vocabulary: the head, the session list and the daemon's
+# scan parse it here, so none can spell a tier the others do not.
+regex = "1.13"

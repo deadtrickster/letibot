@@ -1846,6 +1846,7 @@ dependencies = [
 name = "letibot-transcript"
 version = "0.7.2"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
 ]

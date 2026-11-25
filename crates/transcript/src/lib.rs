@@ -20,6 +20,10 @@ pub mod testing;
 /// rule for a block that is never closed live here, once. Same reason as `media` above.
 pub mod citation;
 
+/// One query syntax for searching conversation rows - the head's find bar, the session list's
+/// filter and the daemon's cross-session scan - and the role every row's words belong to.
+pub mod search;
+
 /// Cutting text to a bound, once: a payload, a queue row, a card and a status line all cut,
 /// and a second copy of the arithmetic is a second place a character can be split.
 pub mod text;
