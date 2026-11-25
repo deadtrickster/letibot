@@ -70,6 +70,9 @@ pub mod instruments;
 pub mod jobwatch;
 pub mod late_scope;
 pub mod leases;
+// The session listing as a person reads it: tree branches, rano's roles, and the marks only a
+// running daemon can answer (`cli.rs`'s `Query::List`).
+pub mod listing;
 // The seat's config layer, re-exported rather than re-implemented: which file a leticode
 // reads is a leticode decision, and it lives in `crates/leticode-config` outside the
 // daemon. This binding keeps every `crate::leticode_config::…` path below compiling.

@@ -1,5 +1,19 @@
 use super::*;
 
+use crate::listing::{
+    FOLDER_SHOWN, FOLDERS_SHOWN, HERE_SHOWN, Marks, ROW_FIXED_COLS, TREE_COLS, census,
+    conversation_blocks, name_width, plain,
+};
+
+/// A listing as the lines a terminal gets, so a test asserts on the text a person reads and not on
+/// the spans it is painted from: the drawing itself is `crate::listing`'s own tests.
+fn drawn(lines: Vec<rano::render::Line>) -> Vec<String> {
+    rano::markdown::to_plain(&lines)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
 fn stored(rows: &[(&str, Option<&str>)]) -> Vec<letibot_tokencore::store::StoredSession> {
     use letibot_tokencore::store::{SessionRecord, Store};
     let s = Store::open_in_memory().unwrap();
@@ -1270,7 +1284,13 @@ fn a_session_with_no_rows_is_hidden_from_the_listing_and_kept_in_the_tsv() {
     session_row(&store, "s-silent", "/p/here", Some("silent"), None, None);
     let all = store.list_sessions().expect("listing");
 
-    let lines = plain_lines(&all, std::path::Path::new("/p/here"), 120, 0);
+    let lines = drawn(plain(
+        &all,
+        std::path::Path::new("/p/here"),
+        120,
+        0,
+        &Marks::default(),
+    ));
     assert!(
         lines
             .iter()
@@ -1286,7 +1306,7 @@ fn a_session_with_no_rows_is_hidden_from_the_listing_and_kept_in_the_tsv() {
         "what was held back is counted, not dropped silently: {lines:#?}"
     );
     // `--all` is the census, and a census that hid a row would be a lie about the store.
-    let census = census_lines(&all, 120, 0);
+    let census = drawn(census(&all, 120, 0, &Marks::default()));
     assert!(
         census.iter().any(|l| l.contains("silent")),
         "--all draws the empty session: {census:#?}"
@@ -1318,7 +1338,13 @@ fn a_long_name_is_cut_to_the_terminal_and_never_widens_the_column() {
     rows_for(&store, "s-short", 1, at);
     let all = store.list_sessions().expect("listing");
 
-    let lines = plain_lines(&all, std::path::Path::new("/p/here"), 140, 0);
+    let lines = drawn(plain(
+        &all,
+        std::path::Path::new("/p/here"),
+        140,
+        0,
+        &Marks::default(),
+    ));
     for line in &lines {
         assert!(
             line.chars().count() <= 140,
@@ -1329,7 +1355,7 @@ fn a_long_name_is_cut_to_the_terminal_and_never_widens_the_column() {
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("a conversation about ") && l.contains('…')),
+            .any(|l| l.contains("a conversation about ") && l.contains('…')),
         "the long name is cut with an ellipsis rather than wrapped: {lines:#?}"
     );
     // The cap is the terminal's, not a fixed number of characters: at a width nothing wraps at the
@@ -1342,8 +1368,8 @@ fn a_long_name_is_cut_to_the_terminal_and_never_widens_the_column() {
     );
     assert_eq!(
         name_width(&labels, 80, 9),
-        80 - ROW_FIXED_COLS - 9,
-        "and a narrow one caps the column so the row still fits"
+        80 - ROW_FIXED_COLS - TREE_COLS - 9,
+        "and a narrow one caps the column so the row still fits, branch and all"
     );
 }
 
@@ -1479,21 +1505,27 @@ fn a_folder_draws_its_newest_rows_and_counts_the_rest() {
         "the header counts every conversation in it"
     );
 
-    let lines = plain_lines(&all, std::path::Path::new(&here), 120, at);
+    let lines = drawn(plain(
+        &all,
+        std::path::Path::new(&here),
+        120,
+        at,
+        &Marks::default(),
+    ));
     assert!(
         lines.contains(&format!("{here} (25)")),
         "this folder's header counts them all: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|l| l.trim_start() == format!("+{} more (--all)", 25 - HERE_SHOWN)),
+        lines.iter().any(|l| l
+            .trim_start()
+            .ends_with(&format!("+{} more (--all)", 25 - HERE_SHOWN))),
         "and the cap owes the reader a count: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|l| l.trim_start() == format!("+{} more (--all)", 14 - FOLDER_SHOWN)),
+        lines.iter().any(|l| l
+            .trim_start()
+            .ends_with(&format!("+{} more (--all)", 14 - FOLDER_SHOWN))),
         "the other folder's cap says its own: {lines:#?}"
     );
     assert!(
@@ -1553,7 +1585,13 @@ fn a_folder_that_no_longer_exists_is_one_line_and_not_a_block() {
     assert_eq!(blocks.gone_folders, 3, "and every folder once");
     assert_eq!(blocks.others.len(), 1, "a folder on disk keeps its block");
 
-    let lines = plain_lines(&all, std::path::Path::new(&here), 140, 0);
+    let lines = drawn(plain(
+        &all,
+        std::path::Path::new(&here),
+        140,
+        0,
+        &Marks::default(),
+    ));
     assert!(
         lines.contains(&"    +4 sessions in 3 folders that no longer exist (--all)".to_string()),
         "one line for all of them: {lines:#?}"
@@ -1569,7 +1607,7 @@ fn a_folder_that_no_longer_exists_is_one_line_and_not_a_block() {
         );
     }
     // `--all` is where they are: the listing folded them, it did not forget them.
-    let census = census_lines(&all, 140, 0);
+    let census = drawn(census(&all, 140, 0, &Marks::default()));
     assert!(
         census.iter().any(|l| l.contains("gone 0")),
         "--all draws a gone folder's row: {census:#?}"
@@ -1625,15 +1663,21 @@ fn the_newest_folders_are_drawn_and_the_rest_are_counted() {
         blocks.others[0].workspace
     );
 
-    let lines = plain_lines(&all, std::path::Path::new(here), 140, at);
+    let lines = drawn(plain(
+        &all,
+        std::path::Path::new(here),
+        140,
+        at,
+        &Marks::default(),
+    ));
     assert!(
         lines.contains(&"    +4 more folders (--all)".to_string()),
         "the folders kept off the list are counted: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|l| l.trim_start() == format!("+{} more (--all)", 7 - FOLDER_SHOWN)),
+        lines.iter().any(|l| l
+            .trim_start()
+            .ends_with(&format!("+{} more (--all)", 7 - FOLDER_SHOWN))),
         "and so are the rows in the ones that are drawn: {lines:#?}"
     );
 }
@@ -1686,7 +1730,13 @@ fn the_mac_shaped_listing_fits_a_fifty_line_screen() {
 
     let all = store.list_sessions().expect("listing");
     let here = here.to_str().expect("utf-8");
-    let lines = plain_lines(&all, std::path::Path::new(here), 140, 0);
+    let lines = drawn(plain(
+        &all,
+        std::path::Path::new(here),
+        140,
+        0,
+        &Marks::default(),
+    ));
     for line in &lines {
         println!("{line}");
     }
