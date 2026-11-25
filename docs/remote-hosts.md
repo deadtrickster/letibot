@@ -550,8 +550,8 @@ records is looked at twice - that directory is its owner's business, and the own
 **What the operator sees.** The plan (`letibot gc`) lists a settled owner's remote holdings with the size the
 last pass measured and a verdict naming the machine, so the 985G is in somebody's list before anything is
 removed; a live owner's rows are kept whatever their size. `letibot gc --now` prints one line per freed
-path (`s-… target on xmg remove — a build regenerates it, and its branch is home (549G)`), and the pass's
-summary counts it in `freed`. The journal keeps every one of them, with the bytes.
+path (`s-… target on xmg remove — a build regenerates it, and nothing in it is work (549G)`), and the
+pass's summary counts it in `freed`. The journal keeps every one of them, with the bytes.
 
 A directory no row records has no owner to name its line after, so its own name stands in that place
 (`08150654 target on xmg remove — no owner home on that host names it (276G)`); that is what a search of the

@@ -1350,6 +1350,69 @@ mod tests {
         assert_eq!(freed_kind("/r/repo/abc"), "checkout");
     }
 
+    /// The listing names what sits beside the homes and nothing that is not a placement's tree: a
+    /// mirror, the merge gate's own caches, an askpass helper and a home are never candidates, and a
+    /// checkout is one only because of the `.git` in it.
+    #[test]
+    fn the_listing_names_a_checkout_and_a_fanout_dir_and_no_mirror() {
+        let dir = std::env::temp_dir().join(format!("letibot-listing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("root");
+        let at = |rel: &str, file: Option<&str>| {
+            let p = match file {
+                Some(name) => root.join(rel).join(name),
+                None => root.join(rel),
+            };
+            std::fs::create_dir_all(p).unwrap();
+        };
+        at(".letibot-home/s-1", None);
+        let stamp = RemoteOwner {
+            owner: "s-1".into(),
+            box_id: "lab2x1".into(),
+            kind: "session".into(),
+            created_ms: 1,
+            lease_ms: 2,
+            idle_ttl_ms: None,
+            work: Some(root.join("repo/abc").display().to_string()),
+            ledger: None,
+        };
+        std::fs::write(root.join(".letibot-home/s-1/owner.json"), stamp.line()).unwrap();
+        at("repo/abc", None);
+        std::fs::write(root.join("repo/abc/.git"), "gitdir: ../repo.git\n").unwrap();
+        at("fanout-c1", None);
+        at("repo.git/objects", None);
+        at("gate/repo-abc/tree", None);
+        std::fs::write(root.join("gate/repo-abc/tree/.git"), "gitdir: ../src.git\n").unwrap();
+        at("askpass/abc", Some("nested"));
+        std::fs::write(root.join("askpass/abc/nested/.git"), "gitdir: x\n").unwrap();
+
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(list_script(&root))
+            .output()
+            .expect("a shell");
+        assert!(out.status.success(), "{out:?}");
+        let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(parse_listing(&listed).len(), 1, "the home: {listed}");
+        let mut dirs = parse_dirs(&listed);
+        dirs.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            dirs,
+            vec![
+                RootDir {
+                    path: root.join("fanout-c1").display().to_string(),
+                    shape: DirShape::Work,
+                },
+                RootDir {
+                    path: root.join("repo/abc").display().to_string(),
+                    shape: DirShape::Checkout,
+                },
+            ],
+            "{listed}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// One sweep of a fixture's home: the build output goes, the stamp and everything else stay,
     /// and the sizes it reports are what it freed.
     #[test]
