@@ -24,6 +24,7 @@ fn stored(id: &str, parent: Option<&str>) -> StoredBrief {
         slug: String::new(),
         role: String::new(),
         origin: SessionOrigin::default(),
+        forked_from: None,
     }
 }
 

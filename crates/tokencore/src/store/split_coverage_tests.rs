@@ -188,6 +188,9 @@ const EXERCISED: &[&str] = &[
     "put_fork_unsealed",
     "seal_transcript",
     "fork_session",
+    "fork_session_at",
+    "forked_from",
+    "transcript_chain",
     "children_of",
     "list_sessions",
     "list_sessions_archived",
@@ -417,11 +420,31 @@ fn every_project_method_runs_on_a_split_set() {
     s.put_session(&session("s2", Some("s1"))).unwrap();
     s.put_transcript("t4", "s2", &pid).unwrap();
     s.fork_session("s2", "s3", 0).unwrap();
+    // The chain the fork verbs read: a session's own transcripts oldest first, where a fork of a
+    // CONVERSATION came from, and a fork taken at an earlier transcript of one.
+    assert_eq!(
+        s.transcript_chain("s1").unwrap(),
+        vec!["t1".to_string(), "t3".to_string()],
+        "oldest first, from the first transcript to the one the session speaks"
+    );
+    assert_eq!(
+        s.forked_from("t2").unwrap(),
+        None,
+        "a compaction forks a transcript of the same session, which is no fork of a conversation"
+    );
+    assert_eq!(
+        s.forked_from("s3#t0").unwrap().as_deref(),
+        Some("s2"),
+        "and a `/fork` names the session it came from"
+    );
     // A fork of a child keeps the child's parent.
     assert_eq!(s.children_of("s1").unwrap().len(), 2);
     assert!(!s.list_sessions().unwrap().is_empty());
     s.list_sessions_archived(Archived::No).unwrap();
     s.recent_models(5).unwrap();
+    // A fork taken at an EARLIER transcript of the conversation, which is what a message from
+    // before a compaction asks for. After the count above: this is a child of `s1` too.
+    s.fork_session_at("s2", "t4", 0, "s4").unwrap();
     s.put_session(&session("s-empty", None)).unwrap();
     s.delete_empty_session("s-empty").unwrap();
 

@@ -129,3 +129,67 @@ fn a_feed_over_the_cap_says_how_many_rows_it_left_out() {
         "a line with no id is not a row a key can enter: {last:?}"
     );
 }
+
+/// The head's half of a fork's nesting: which session a row was forked from, and - when that
+/// session is out of sight - a line put back for it in the FORK's project. The layer cannot know
+/// either: the transcript chain is the daemon's and a project is the head's.
+#[test]
+fn the_feed_names_a_forks_source_and_puts_an_archived_one_back_in_the_tree() {
+    const TREE: &str = "/home/dead/Projects/letibot/letibot";
+    let mut a = app();
+    let mut fork = brief("s-fork", "the conversation", true);
+    fork.wiring.workspace = TREE.into();
+    fork.forked_from = Some("s-src".into());
+    let mut source = brief("s-src", "the conversation", false);
+    source.wiring.workspace = TREE.into();
+    a.apply(hello(
+        "s-fork",
+        vec![fork.clone()],
+        Hub::new("s-fork").snapshot(),
+    ));
+    // The operator puts the source away. The archived group draws its rows flat and in no project,
+    // so a fork left to it would lose the one row that says where it came from.
+    a.on_lists(ServerFrame::Sessions {
+        sessions: vec![fork],
+        current: "s-fork".into(),
+        created: None,
+        archived: vec![source],
+    });
+    let feed = a.sessions_feed();
+    let rows = feed["sessions"].as_array().expect("rows").clone();
+    let row = |id: &str| {
+        rows.iter()
+            .find(|r| r["id"] == id && r["source"] == true)
+            .unwrap_or_else(|| panic!("no source line for {id}: {rows:?}"))
+            .clone()
+    };
+    let fork = rows
+        .iter()
+        .find(|r| r["id"] == "s-fork")
+        .expect("the fork's row")
+        .clone();
+    assert_eq!(
+        fork["fork_of"], "s-src",
+        "the edge the layer hangs the fork under"
+    );
+    let line = row("s-src");
+    assert_eq!(
+        line["project"], fork["project"],
+        "in the fork's own project, which is the only place the nesting can be read"
+    );
+    assert_eq!(
+        line["bucket"], fork["bucket"],
+        "and in its group, so the two are drawn together"
+    );
+    assert_eq!(
+        rows.iter().filter(|r| r["source"] == true).count(),
+        1,
+        "one line for the source, not one per fork"
+    );
+    // And the archived group still holds it: the group is the archive, the line is the nesting.
+    assert!(
+        rows.iter()
+            .any(|r| r["id"] == "s-src" && r["bucket"] == "archived"),
+        "an archived session is out of sight and not out of the list: {rows:?}"
+    );
+}

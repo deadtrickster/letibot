@@ -87,6 +87,7 @@ impl SessionSource for KeptStore {
             slug: String::new(),
             origin: Default::default(),
             role: String::new(),
+            forked_from: None,
         }]
     }
 }

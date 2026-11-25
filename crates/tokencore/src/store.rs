@@ -3190,6 +3190,22 @@ impl Store {
     /// transcript, copied verbatim under the same prefix so the chain still verifies. The fork's
     /// transcript names the source's as its parent; the source is not written to.
     pub fn fork_session(&self, source: &str, new_id: &str, keep: u32) -> Result<String> {
+        let from = self
+            .session(source)?
+            .and_then(|s| s.transcript_id)
+            .ok_or_else(|| StoreError::NotFound(format!("a transcript of session {source}")))?;
+        self.fork_session_at(source, &from, keep, new_id)
+    }
+
+    /// [`Store::fork_session`] over a transcript that is not the session's current one: a fork at a
+    /// message from before a compaction carries those rows, not the summary that replaced them.
+    pub fn fork_session_at(
+        &self,
+        source: &str,
+        from: &str,
+        keep: u32,
+        new_id: &str,
+    ) -> Result<String> {
         let src = self
             .session(source)?
             .ok_or_else(|| StoreError::NotFound(format!("session {source}")))?;
@@ -3198,11 +3214,15 @@ impl Store {
                 "session {new_id} already exists"
             )));
         }
-        let from = src
-            .transcript_id
-            .clone()
-            .ok_or_else(|| StoreError::NotFound(format!("a transcript of session {source}")))?;
-        let loaded = self.load_transcript(&from)?;
+        let loaded = self.load_transcript(from)?;
+        // The chain a resume walks stops at another session's transcript, so a fork must not carry
+        // one: the caller resolves the transcript from THIS conversation's history.
+        if loaded.session_id != source {
+            return Err(StoreError::Refused(format!(
+                "transcript {from} belongs to session {}, so it is not {source}'s history to fork",
+                loaded.session_id
+            )));
+        }
         if keep as usize > loaded.items.len() {
             return Err(StoreError::Refused(format!(
                 "transcript {from} holds {} row(s), so it cannot be forked after row {keep}",
@@ -3237,7 +3257,7 @@ impl Store {
         let limit = self.limit_state(source)?;
         self.set_limit_state(new_id, limit.as_deref())?;
         let tid = format!("{new_id}#t0");
-        self.put_fork(&tid, new_id, &loaded.stable_prefix_id, &from, keep)?;
+        self.put_fork(&tid, new_id, &loaded.stable_prefix_id, from, keep)?;
         self.append_items(
             &tid,
             0,
@@ -3621,6 +3641,61 @@ impl Store {
             )
             .optional()?
             .flatten())
+    }
+
+    /// The session a transcript was forked from, when that is ANOTHER session's: a compaction forks a
+    /// transcript of the same session and is not a fork of a conversation. Both rows are in this
+    /// table's file, so the join never crosses a split set's two files.
+    pub fn forked_from(&self, transcript_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .at("transcript")
+            .query_row(
+                "SELECT p.session_id FROM transcript t\n                   JOIN transcript p ON p.id = t.parent_transcript_id\n                 WHERE t.id = ?1 AND p.session_id <> t.session_id",
+                params![transcript_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// A session's transcripts, oldest first: from its first one to the one it speaks now. A
+    /// transcript whose parent belongs to another session ends the walk - that is a `/fork`'s
+    /// source, whose conversation this session's own rows already carry up to the point.
+    pub fn transcript_chain(&self, session_id: &str) -> Result<Vec<String>> {
+        let Some(current) = self.session(session_id)?.and_then(|s| s.transcript_id) else {
+            return Ok(Vec::new());
+        };
+        let mut out = vec![current.clone()];
+        let mut cursor = current;
+        // The cap is the check against a malformed chain that names itself: a chain deeper than
+        // this is not a conversation anybody had.
+        for _ in 0..1024 {
+            let Some((owner, parent)) = self.transcript_link(&cursor)? else {
+                break;
+            };
+            if owner != session_id {
+                break;
+            }
+            let Some(parent) = parent else {
+                break;
+            };
+            out.push(parent.clone());
+            cursor = parent;
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    /// A transcript's session and parent, or `None` when the store holds no such transcript. Both
+    /// halves come from one row so a walk can tell "no parent" from "nothing there".
+    fn transcript_link(&self, transcript_id: &str) -> Result<Option<(String, Option<String>)>> {
+        Ok(self
+            .at("transcript")
+            .query_row(
+                "SELECT session_id, parent_transcript_id FROM transcript WHERE id = ?1",
+                params![transcript_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
     }
 
     /// One row's JSON by ordinal, the read behind `FetchRow`: one indexed lookup on

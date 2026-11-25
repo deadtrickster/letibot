@@ -169,6 +169,14 @@ struct Session {
     /// A shadow's facts, worded by the head: its jobs, its model, its breaker, its last verdict.
     #[serde(default)]
     shadow: Option<String>,
+    /// The session this one was forked from (`/fork`): the row it hangs under and the mark it
+    /// carries. Not `parent`, which is a subagent's - a fork is nobody's child in that sense.
+    #[serde(default)]
+    fork_of: Option<String>,
+    /// An archived session the head put back in the tree because a fork names it: a dim line with its
+    /// forks under it, and no number, because it is not a row a key acts on.
+    #[serde(default)]
+    source: bool,
 }
 
 /// One ask a session waits on, as the feed spells it. Only the kind is read here.
@@ -284,7 +292,9 @@ impl<'a> Ctx<'a> {
         for (i, s) in feed.sessions.iter().enumerate() {
             // An archived row is in the feed and not in the tree: it is drawn flat under its own
             // group, so it must not be a parent here, a member of a project, or the row this head
-            // is standing in - a row that was in the tree and in the group would be drawn twice.
+            // is standing in - a row that was in the tree and in the group would be drawn twice. A
+            // SOURCE is the exception: the head put it back because a fork names it, and the forks
+            // hang under it in the fork's own project.
             if s.bucket == letibot_plugin::sessions::ARCHIVED_BUCKET {
                 archived.push(i);
                 continue;
@@ -294,6 +304,11 @@ impl<'a> Ctx<'a> {
             if let Some(parent) = s.parent.as_deref() {
                 kids.entry(parent).or_default().push(i);
             }
+            // A fork is drawn under the session it came from: the same nesting a child has, and a
+            // different edge - see `Session::fork_of`.
+            if let Some(from) = s.fork_of.as_deref() {
+                kids.entry(from).or_default().push(i);
+            }
         }
         let mut path = vec![feed.here.clone()];
         let mut cur = feed.here.as_str();
@@ -301,11 +316,11 @@ impl<'a> Ctx<'a> {
             let Some(s) = index.get(cur).map(|&i| &feed.sessions[i]) else {
                 break;
             };
-            let Some(parent) = s.parent.as_deref() else {
+            let Some(up) = s.fork_of.as_deref().or(s.parent.as_deref()) else {
                 break;
             };
-            path.push(parent.to_string());
-            cur = parent;
+            path.push(up.to_string());
+            cur = up;
         }
         Ctx {
             sessions: &feed.sessions,
@@ -375,12 +390,14 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Whether session `i`'s parent is on this feed and drawn in this branch - the rule that decides
-    /// whether a row is a root of the branch or a child inside it.
+    /// Whether session `i`'s parent - a subagent's session, or the one a fork came from - is on this
+    /// feed and drawn in this branch: the rule that decides whether a row is a root of the branch or a
+    /// child inside it.
     fn parent_in(&self, i: usize, project: &str, system: Option<&str>) -> bool {
         self.sessions[i]
             .parent
             .as_deref()
+            .or(self.sessions[i].fork_of.as_deref())
             .and_then(|p| self.at(p))
             .is_some_and(|p| self.in_branch(p, Some((project, system))))
     }
@@ -842,24 +859,49 @@ fn node_row(
 }
 
 /// One session's row: a gutter mark, the name, the facts a reader scans for - ONE line, so thirty
-/// sessions are thirty rows and not sixty.
+/// sessions are thirty rows and not sixty. A fork carries the mark that says which kind of child it
+/// is, and an archived SOURCE is the dim line its forks hang under.
 fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Option<Fold>) -> Out {
     let s = &ctx.sessions[at];
+    if s.source {
+        return Out {
+            id: s.id.clone(),
+            depth: depth.min(MAX_INDENT),
+            // No number, and no Enter on a session: nothing here is a row a key switches to, and its
+            // forks are numbered where they are drawn under it.
+            number: None,
+            cells: vec![
+                Cell::role(" ", Role::Faint),
+                Cell::role(name_of(s), Role::Faint),
+            ],
+            facts: Vec::new(),
+            under: vec![ctx.w(
+                "sessions.under.archived_source",
+                "the session this was forked from, put out of sight",
+            )],
+            open,
+            enter: Some(Act::fold()),
+        };
+    }
+    let mut cells = vec![mark_of(ctx, s)];
+    if s.fork_of.is_some() {
+        // The mark a fork carries, in the column the gutter leaves empty: two rows under one parent
+        // are a fork and a subagent, and a list that drew them alike would misread the history.
+        cells.push(Cell::role("⑂ ", Role::Faint));
+    }
+    cells.push(Cell::role(
+        name_of(s),
+        if s.id == ctx.here {
+            Role::Strong
+        } else {
+            Role::Plain
+        },
+    ));
     Out {
         id: s.id.clone(),
         depth: depth.min(MAX_INDENT),
         number: Some(number),
-        cells: vec![
-            mark_of(ctx, s),
-            Cell::role(
-                name_of(s),
-                if s.id == ctx.here {
-                    Role::Strong
-                } else {
-                    Role::Plain
-                },
-            ),
-        ],
+        cells,
         facts: facts_of(ctx, s),
         // What tells two sessions of one title apart. The head draws it under the row the cursor
         // is on, and nowhere else (`App::tree_of`): an id and a path under every row doubled the

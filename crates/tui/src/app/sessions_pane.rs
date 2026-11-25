@@ -1021,12 +1021,36 @@ impl App {
             )
         });
         let more = total.saturating_sub(kept.len());
+        // A fork hangs under the session it came from - and when that session is out of sight, the
+        // archived group would hide the link. So the head puts a dim line for the source back in the
+        // FIRST fork's project: one line per source, so two forks of one session hang under one line.
+        let out_of_sight: std::collections::HashSet<&str> = self
+            .archived
+            .iter()
+            .map(|a| a.session_id.as_str())
+            .collect();
+        let mut sources: Vec<(String, String, String)> = Vec::new();
+        for (i, s) in &kept {
+            let Some(from) = s.forked_from.as_deref() else {
+                continue;
+            };
+            if out_of_sight.contains(from) && !sources.iter().any(|(id, _, _)| id == from) {
+                sources.push((
+                    from.to_string(),
+                    place[*i].project.clone(),
+                    self.bucket_of(&place, &place[*i].project, now)
+                        .word()
+                        .to_string(),
+                ));
+            }
+        }
         let sessions: Vec<Value> = kept
             .into_iter()
             .map(|(i, s)| {
                 let shadow = self.shadow_row_facts(s);
                 json!({
                     "id": s.session_id,
+                    "fork_of": s.forked_from,
                     // A shadow is named by the session it watches, as the header names it.
                     "title": if shadow.is_some() { self.session_label(&s.session_id) } else { s.title.clone() },
                     "slug": s.slug,
@@ -1077,6 +1101,7 @@ impl App {
                         // would be a tree of one group that is not a tree.
                         json!({
                             "id": s.session_id,
+                            "fork_of": s.forked_from,
                             "title": s.title,
                             "slug": s.slug,
                             "parent": null,
@@ -1100,6 +1125,35 @@ impl App {
                         })
                     }),
             )
+            // The lines a fork hangs under when its source is out of sight: dim, unnumbered, and in
+            // the tree rather than in the archived group, so the nesting a person reads survives.
+            .chain(sources.into_iter().filter_map(|(source, project, bucket)| {
+                let a = self.archived.iter().find(|a| a.session_id == source)?;
+                Some(json!({
+                    "id": a.session_id,
+                    "source": true,
+                    "title": a.title,
+                    "slug": a.slug,
+                    "parent": null,
+                    "fork_of": null,
+                    "origin": a.origin.as_str(),
+                    "live": false,
+                    "running": false,
+                    "heads": 0,
+                    "items": 0,
+                    "stored": a.stored_items,
+                    "model": a.wiring.model,
+                    "workspace": a.wiring.workspace,
+                    "waits_on": 0,
+                    "nags_paused": false,
+                    "moved_ms": a.moved_ms,
+                    "age": null,
+                    "project": project,
+                    "project_name": name_of(&project),
+                    "bucket": bucket,
+                    "system": null,
+                }))
+            }))
             .collect();
         let fleet: Vec<Value> = self
             .fleet

@@ -5774,7 +5774,7 @@ impl SessionSource for StoreSessions {
                 let slug = slugs.get(&s.id).cloned().unwrap_or_default();
                 let role = roles.get(&s.id).cloned().unwrap_or_default();
                 let waits = Self::waits_of(&g, &s.id);
-                self.brief_of(s, waits, slug, role)
+                self.brief_of(&g, s, waits, slug, role)
             })
             .collect()
     }
@@ -5817,7 +5817,7 @@ impl StoreSessions {
                 };
                 let slug = slugs.get(&s.id).cloned().unwrap_or_default();
                 let role = roles.get(&s.id).cloned().unwrap_or_default();
-                self.brief_of(s, waits, slug, role)
+                self.brief_of(&g, s, waits, slug, role)
             })
             .collect()
     }
@@ -5848,11 +5848,12 @@ impl StoreSessions {
             })
             .unwrap_or_default();
         let waits = Self::waits_of(g, &s.id);
-        self.brief_of(s, waits, slug, role)
+        self.brief_of(g, s, waits, slug, role)
     }
 
     fn brief_of(
         &self,
+        g: &Store,
         s: letibot_tokencore::store::StoredSession,
         waits: Vec<letibot_transcript::pending::Pending>,
         slug: String,
@@ -5865,7 +5866,14 @@ impl StoreSessions {
         } else {
             role
         };
+        // Where a `/fork` came from, off the transcript chain: a compaction forks a transcript of
+        // the same session and says nothing here.
+        let forked_from = s
+            .transcript_id
+            .as_deref()
+            .and_then(|t| g.forked_from(t).ok().flatten());
         StoredBrief {
+            forked_from,
             waits_on_operator: waits.len(),
             pending: waits,
             slug,

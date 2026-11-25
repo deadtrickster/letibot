@@ -112,6 +112,7 @@ sessions.system.shadows.legend = "a second model's verdicts on the session each 
 sessions.fact.on_disk = "on disk"
 sessions.fact.nags_paused = "nags paused"
 sessions.fact.rows = "{n} rows"
+sessions.under.archived_source = "the session this was forked from, put out of sight"
 sessions.fact.held = "{n} held"
 sessions.rollup.waiting = "{n} waiting"
 sessions.rollup.generating = "{n} generating"

@@ -116,6 +116,7 @@ sessions.system.shadows.legend = "вердикты второй модели о 
 sessions.fact.on_disk = "на диске"
 sessions.fact.nags_paused = "проверки плана на паузе"
 sessions.fact.rows = "строк: {n}"
+sessions.under.archived_source = "сеанс, от которого этот ответвлён, убран с глаз"
 sessions.fact.held = "не прочитано моделью: {n}"
 sessions.rollup.waiting = "ждут: {n}"
 sessions.rollup.generating = "в работе: {n}"

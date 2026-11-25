@@ -189,6 +189,7 @@ fn stored(id: &str) -> StoredBrief {
         slug: String::new(),
         role: String::new(),
         origin: Default::default(),
+        forked_from: None,
     }
 }
 

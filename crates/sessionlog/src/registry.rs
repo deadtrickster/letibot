@@ -355,6 +355,11 @@ pub struct SessionBrief {
     /// session's bar and on the shadow's own row. Live only, so `None` for a row on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ShadowBrief>,
+    /// The session this one was forked from (`/fork`), or `None` for the one that started the
+    /// conversation. NOT `parent_session_id`: a fork is nobody's subagent, so the reaper and the
+    /// queue must not read it as a child - this is the row a head draws it under, and nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<String>,
 }
 
 /// A running shadow as a head draws it: its session, its jobs, its model, its breaker and the
@@ -405,6 +410,7 @@ fn unheld(d: StoredBrief) -> SessionBrief {
         moved_ms: d.last_activity_ms,
         role: d.role,
         shadow: None,
+        forked_from: d.forked_from,
     }
 }
 
@@ -543,6 +549,8 @@ pub struct StoredBrief {
     /// The role the daemon seated it as, when the row is a CHILD's and its record still says - see
     /// [`SessionBrief::role`].
     pub role: String,
+    /// The session this one was forked from - see [`SessionBrief::forked_from`].
+    pub forked_from: Option<String>,
 }
 
 /// A live entry as `Registry::assemble` needs it. A named type rather than a seven-tuple: a
@@ -2687,6 +2695,9 @@ impl Registry {
                         // role is a live seating and the store keeps the seat.
                         role: self.role_of(&session_id),
                         shadow: self.shadow_of(&session_id),
+                        // The store's row is the one place a fork's source survives a restart, and
+                        // a session's history is written as it goes, so it answers for both.
+                        forked_from: on_disk.and_then(|d| d.forked_from.clone()),
                         session_id,
                     }
                 },
@@ -3044,6 +3055,7 @@ mod stored_end_wire {
             moved_ms: 0,
             role: String::new(),
             shadow: None,
+            forked_from: None,
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

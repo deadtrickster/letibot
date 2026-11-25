@@ -35,6 +35,9 @@ fn session(id: &str, title: &str) -> Session {
         // here means unless it says otherwise.
         bucket: "own".into(),
         system: None,
+        shadow: None,
+        fork_of: None,
+        source: false,
     }
 }
 
@@ -74,6 +77,8 @@ fn feed(sessions: Vec<Session>, here: &str) -> Feed {
         here: here.to_string(),
         home: "/home/dead".into(),
         filtered: false,
+        // No catalog: every word is this layer's own English, which is what an older head gets.
+        words: Default::default(),
     }
 }
 
@@ -746,5 +751,71 @@ fn an_archived_row_is_neither_a_member_nor_a_parent() {
         draw(&f, &[])[1].open,
         None,
         "a row whose only child is the archived one holds nothing to fold"
+    );
+}
+
+/// A fork is drawn under the session it came from, with the mark that says which kind of child it
+/// is - and when the source is out of sight the head puts a dim line back for it, so the nesting a
+/// person reads survives the archiving.
+#[test]
+fn a_fork_hangs_under_its_source_and_survives_the_source_being_archived() {
+    let mut fork = session("s-fork", "the conversation");
+    fork.fork_of = Some("s-src".into());
+    let f = feed(vec![session("s-src", "the conversation"), fork], "s-fork");
+    let drawn = draw(&f, &[]);
+    assert_eq!(
+        ids(&drawn),
+        vec![format!("[{PROJECT}]"), "s-src".into(), "s-fork".into()],
+        "the fork is the source's child, not a root of the project"
+    );
+    let row = drawn.last().expect("the fork's row");
+    assert_eq!(row.depth, 2, "one step in from the source");
+    assert_eq!(
+        row.cells[1].text, "⑂ ",
+        "a fork is marked, so two rows under one parent cannot be read as alike"
+    );
+    assert_eq!(
+        row.cells[2].text, "the conversation",
+        "and the mark is its own column, so a name starts where names start"
+    );
+    assert_eq!(
+        drawn[1].cells[1].text, "the conversation",
+        "the source is an ordinary row: it is on the tree, so it is numbered and switched to"
+    );
+
+    // Put out of sight, the source comes back as a dim line with no number: the fork keeps its
+    // nesting and the source cannot be switched to from here.
+    let mut fork = session("s-fork", "the conversation");
+    fork.fork_of = Some("s-old".into());
+    let mut source = archived_session("s-old", "the conversation");
+    source.source = true;
+    source.bucket = "own".into();
+    // The head puts the line in the FORK's project, which is the only place the nesting can be read.
+    source.project = PROJECT.into();
+    source.project_name = "letibot".into();
+    let f = feed(vec![source, fork], "s-fork");
+    let drawn = draw(&f, &[]);
+    assert_eq!(
+        ids(&drawn),
+        vec![format!("[{PROJECT}]"), "[s-old]".into(), "s-fork".into()],
+        "the source is in the tree with nothing counting it, and the fork is under it"
+    );
+    let line = &drawn[1];
+    assert_eq!(line.number, None, "a source line takes no number");
+    assert_eq!(
+        line.cells[1].role,
+        Some(Role::Faint),
+        "and it is dim: it is history, not a session to work in"
+    );
+    assert_eq!(
+        line.enter,
+        Some(Act::fold()),
+        "it folds, and switches to nothing"
+    );
+    assert_eq!(drawn[2].depth, 2, "the fork hangs under the line");
+    assert_eq!(
+        drawn.iter().filter(|r| r.id == "s-old").count(),
+        1,
+        "the source is drawn once, and not again in the archived group"
     );
 }

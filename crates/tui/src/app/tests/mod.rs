@@ -704,6 +704,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
         moved_ms: 0,
         role: String::new(),
         shadow: None,
+        forked_from: None,
     }
 }
 
@@ -1410,6 +1411,7 @@ mod draft;
 mod editor;
 mod feedback;
 mod filter;
+mod fork_card;
 mod ghlinks;
 mod header_ctx;
 mod hits;

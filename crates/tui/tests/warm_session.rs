@@ -97,6 +97,7 @@ fn brief(session_id: &str, title: &str, items: u32) -> StoredBrief {
         // The operator's own, which is what every fixture in this file is: a grouping
         // fixture that is not about the groups says nothing about them.
         origin: letibot_sessionlog::SessionOrigin::Operator,
+        forked_from: None,
     }
 }
 
