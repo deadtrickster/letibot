@@ -114,10 +114,10 @@ fn an_operator_question_with_fewer_than_two_options_or_no_words_is_refused() {
 }
 
 /// The check skips the row and keeps asking about the others - *"the other heads of the todo
-/// DAG keep firing"* - and its blocked line quotes the question and tells the model to keep going
-/// and to try to figure it out - *"model told to try to figure it out anyways"*.
+/// DAG keep firing"* - and its blocked line quotes the question, says whose answer it is, and
+/// names no act of the model's: a person answers this one.
 #[test]
-fn the_check_asks_about_the_other_rows_and_tells_the_model_to_keep_going() {
+fn the_check_asks_about_the_other_rows_and_says_the_operators_answer_is_theirs() {
     let plan = vec![
         waiting(DEPLOY),
         item("write the release notes", TodoStatus::Pending),
@@ -135,10 +135,49 @@ fn the_check_asks_about_the_other_rows_and_tells_the_model_to_keep_going() {
     );
     assert!(said.contains("Keep going"), "{said}");
     assert!(
-        said.contains("try to work the question out yourself"),
-        "{said}"
+        said.contains("The answer is theirs to give"),
+        "the sentence says whose the answer is: {said}"
     );
-    assert!(said.contains("\"detach\": true"), "{said}");
+}
+
+/// NO sentence of the check tells the model to answer the operator's question itself. It used to -
+/// *"try to work the question out yourself ... take the wait off"* - and a seat that did decided
+/// for somebody still thinking. Every shape the operator's question reaches is read here.
+#[test]
+fn no_check_sentence_asks_the_model_to_answer_the_operators_question() {
+    let broken = needs("tidy up", TodoStatus::Pending, &["no such row"]);
+    let after = needs("announce it", TodoStatus::Pending, &[DEPLOY]);
+    let shapes: Vec<Vec<TodoItem>> = vec![
+        // One other row can start, so the blocked line is said beside it.
+        vec![
+            waiting(DEPLOY),
+            item("write the release notes", TodoStatus::Pending),
+        ],
+        // Nothing can start and one edge is the model's to fix: the long NOTHING sentence.
+        vec![waiting(DEPLOY), broken],
+        // Parked on the operator: its own line.
+        vec![waiting(DEPLOY), after],
+    ];
+    for plan in shapes {
+        let said = nag_for(&plan).expect("every shape here has something to say");
+        for forbidden in [
+            "try to work the question out yourself",
+            "work the question out",
+            "work it out itself",
+            "say in your reply what you decided",
+        ] {
+            assert!(
+                !said.contains(forbidden),
+                "the check invites the model to answer the operator ({forbidden}): {said}"
+            );
+        }
+        // And the operator's own clause names no door that would take the wait off unasked: the
+        // schedule of a question somebody else is answering is not the model's to clear.
+        assert!(
+            !said.contains(&format!("\"content\": \"{DEPLOY}\", \"detach\": true")),
+            "the operator's wait is not offered a detach: {said}"
+        );
+    }
 }
 
 /// A plan whose every open row waits on the operator - directly, or through a row that waits on

@@ -2630,16 +2630,13 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
                 row.content.trim(),
                 human_gap(EXTERNAL_QUIET)
             ),
-            // The operator's sentence carries the instruction, because it is the one blocker the
-            // model may resolve without the blocker moving: keep going, and take the wait off with
-            // the row's own words if the answer is worked out.
+            // The operator's sentence names no act, because none is the model's: a person answers
+            // this one. It used to invite the model to work the question out itself and take the
+            // wait off, and a model that did decided for somebody who was still thinking.
             NeedFate::OperatorAsked => format!(
-                "the OPERATOR — they were asked \"{name}\" and have not answered yet. Keep going \
-                 with the rest of the plan meanwhile, and try to work the question out yourself: if \
-                 you find the answer, take the wait off — `todo_write` {{\"wait_on\": \
-                 [{{\"content\": \"{}\", \"detach\": true}}]}} — and say in your reply what you \
-                 decided and why",
-                row.content.trim()
+                "the OPERATOR — they were asked \"{name}\" and have not answered yet. The answer \
+                 is theirs to give: it reaches you by itself, and this row starts then. Keep going \
+                 with any other row that can start meanwhile"
             ),
             // A peer is a person's sibling one door over: the answer arrives by itself, the row is
             // not the model's to unblock, and the detach door is named for a wait it gives up on.
