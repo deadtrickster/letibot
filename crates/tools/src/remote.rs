@@ -6085,6 +6085,16 @@ impl ExecBackend for SshBackend {
         Some(self.as_the_session_says("."))
     }
 
+    /// The checkout's name on the machine itself, when `stable_paths` gave it a second one: the
+    /// model reads the real path out of a note or a log as readily as the fixed one, and both are
+    /// the session's own tree.
+    fn workspace_aliases(&self) -> Vec<String> {
+        self.stable
+            .as_ref()
+            .map(|s| vec![s.work.clone()])
+            .unwrap_or_default()
+    }
+
     /// The machine the tools run on, for the gate's own sentence: a card that said only
     /// `/home/dead/letibot-remote/letibot/1a2b3c4d` would name a path nobody could tell apart from
     /// one on this box.

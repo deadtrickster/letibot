@@ -90,6 +90,17 @@ impl Owned {
         self
     }
 
+    /// Another name for the session's own checkout. A host with `stable_paths` mounts the tree at
+    /// one fixed name and keeps it elsewhere, so the two spellings are one tree and a call naming
+    /// either is the session's own work.
+    pub fn with_worktree(mut self, root: &Path) -> Owned {
+        let root = crate::view::key(root);
+        if !self.roots.iter().any(|(_, r)| *r == root) {
+            self.roots.push((Where::Worktree, root));
+        }
+        self
+    }
+
     /// [`TEMP_DIRS`] and the `TMPDIR` this session's shell actually holds.
     pub fn with_tmpdir(mut self, tmpdir: Option<PathBuf>) -> Owned {
         if let Some(p) = tmpdir.filter(|p| !p.as_os_str().is_empty()) {

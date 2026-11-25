@@ -1721,6 +1721,15 @@ impl Harness {
         // remote session whose probe failed is unconfined, which is what its `describe` says.
         let backend_confined = in_vm || backend.boundary().is_some();
 
+        // The workspace layer A places a path against is where THIS backend puts the session's
+        // tree, not where the daemon's own repository is: over ssh the two differ (a fixed name in
+        // the view, another on the machine), and a gate told the wrong one asks about every write
+        // to the session's own checkout.
+        let mut surroundings = surroundings;
+        if let Some(where_it_works) = backend.workspace_path() {
+            surroundings.workspace = Some(where_it_works);
+        }
+
         Ok(Placed {
             backend,
             described: backend_described,
@@ -3471,6 +3480,13 @@ impl Harness {
                     // `ShellTrust::Unknown`, under which a bare command name is unresolved and the
                     // call is `not_run`, which is the fail-closed direction.
                     .with_surroundings(surroundings)
+                    // And the same tree under the placement's other name, if it has one: a host
+                    // with `stable_paths` has the checkout in two places at once, and a write to
+                    // either spelling is the session doing its own work.
+                    .with_owned_roots(backend.workspace_aliases())
+                    // The machine, when it is not this one: a fact of the card, and never part of
+                    // the workspace string a relative argument is joined to.
+                    .with_host_label(backend.host_label())
                     // Without this the trail is `NotCollected`, which is not the same fact as an
                     // empty trail.
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())

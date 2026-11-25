@@ -1325,6 +1325,13 @@ fn a_stable_host_mounts_the_checkout_and_its_build_directory_at_the_fixed_names(
         Some("/run/letibot/work"),
         "the session's workspace is spelled the way its own tools are"
     );
+    // And the machine's own name for that same tree: the gate places a path against both, or a
+    // write to the session's own checkout asks whoever spells it the other way.
+    assert_eq!(
+        b.workspace_aliases(),
+        vec![real.display().to_string()],
+        "the placement's other name for the checkout"
+    );
 }
 
 /// The other half of the switch: without it nothing is mounted and no path is translated, which is
@@ -1365,6 +1372,11 @@ fn without_stable_paths_the_view_keeps_the_checkouts_own_names() {
         b.workspace_path().as_deref(),
         Some(b.worktree_path()),
         "the session's workspace is the real checkout"
+    );
+    assert!(
+        b.workspace_aliases().is_empty(),
+        "one name is not a second name: {:?}",
+        b.workspace_aliases()
     );
     assert!(
         !b.placement_notes().join("\n").contains("stable_paths"),

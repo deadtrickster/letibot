@@ -2547,17 +2547,17 @@ impl ToolRuntime {
             // The workspace, not the root: unconfined means `/`, which answers "is this inside
             // the boundary" and not "where is this session working", and this string is what the
             // head prints on the gate card. `root_path` and `describe` are the fallbacks.
+            //
+            // A PATH and nothing else. This string is also what a relative argument is joined to,
+            // and a card that carried the machine in it - `/run/letibot/work (on xmg over ssh)` -
+            // made every absolute argument read as outside the session's tree and every relative
+            // one resolve to a directory that does not exist. The machine reaches the card through
+            // the gate's own host label instead.
             let workspace = self
                 .backend
                 .workspace_path()
                 .or_else(|| self.backend.root_path())
                 .unwrap_or_else(|| self.backend.describe());
-            // And on which machine, when it is not this one: a card naming only the path would
-            // ask the operator to decide about a machine it never mentioned.
-            let workspace = match self.backend.host_label() {
-                Some(host) => format!("{workspace} (on {host})"),
-                None => workspace,
-            };
             let target_exists = args
                 .get("path")
                 .and_then(|v| v.as_str())

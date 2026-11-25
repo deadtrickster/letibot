@@ -210,6 +210,14 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// The session's own checkout under any OTHER name this backend gives it. Empty for a session
+    /// whose tree has one name. A host with `stable_paths` mounts the tree at a fixed name and keeps
+    /// it elsewhere, so a path spelled either way is the session's own work and the gate, which
+    /// places a path by name, has to be told both.
+    fn workspace_aliases(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Which machine the tools run on, when it is not this one. `None` for every backend whose
     /// files are here. [`Self::workspace_path`] answers which directory; over ssh a directory
     /// alone names a path the operator cannot open and a machine the card never mentions.

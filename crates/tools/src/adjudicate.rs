@@ -1564,6 +1564,12 @@ pub struct AdjudicatedGate {
     /// The branch this session's worktree has checked out, handed in at open: `ik/*` and `wt-*`
     /// are the operator's patterns for a session's own work, and only the caller can read one.
     own_branch: Option<String>,
+    /// The session's own checkout under a placement's other names, when it has any - see
+    /// [`Self::with_owned_roots`].
+    own_roots: Vec<std::path::PathBuf>,
+    /// The machine these files are on, when it is not this one: a card that named only
+    /// `/run/letibot/work` would ask the operator to decide about a host it never mentioned.
+    host: Option<String>,
     /// What the call in flight was admitted as, taken into the row by [`Self::record`].
     owned: Option<String>,
     /// Actions the operator DENIED, as `(shape, target, by)` read from the ledger: refused without
@@ -1713,6 +1719,8 @@ impl AdjudicatedGate {
             view_answered_by: None,
             view_root: None,
             own_branch: None,
+            own_roots: Vec::new(),
+            host: None,
             owned: None,
         }
     }
@@ -1751,6 +1759,27 @@ impl AdjudicatedGate {
         self
     }
 
+    /// The session's own checkout under every OTHER name the placement gives it. A host with
+    /// `stable_paths` mounts the tree at one fixed name, so the session's tools spell it
+    /// `/run/letibot/work` while the machine has it elsewhere - and a call naming either spelling
+    /// is that same tree. Handed in from the backend, which is the only thing that knows both.
+    pub fn with_owned_roots(mut self, roots: Vec<String>) -> Self {
+        self.own_roots = roots
+            .into_iter()
+            .filter(|r| !r.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .collect();
+        self
+    }
+
+    /// Where these files live, when it is not this box ("xmg over ssh", "xmg in a firecode VM").
+    /// A fact of the card, never part of a path: the workspace it is printed beside is joined to
+    /// relative arguments, so a label inside it is a directory that does not exist.
+    pub fn with_host_label(mut self, host: Option<String>) -> Self {
+        self.host = host.filter(|h| !h.trim().is_empty());
+        self
+    }
+
     /// What this session owns, as the call in front of it sees it: its worktree, its scratch, the
     /// temp directories, the paths its own commands created - read live off the view record, so a
     /// tree a command made a moment ago counts at the next call - and its branches.
@@ -1759,6 +1788,9 @@ impl AdjudicatedGate {
             Some(w) => crate::ownership::Owned::of(std::path::Path::new(w)),
             None => crate::ownership::Owned::default(),
         };
+        for root in &self.own_roots {
+            owned = owned.with_worktree(root);
+        }
         if let Some(s) = &self.surroundings.scratch {
             owned = owned.with_scratch(std::path::Path::new(s));
         }
@@ -2538,7 +2570,10 @@ impl AdjudicatedGate {
                     .to_string(),
             ]
         } else {
-            let mut f = vec![format!("workspace: {}", call.workspace)];
+            let mut f = vec![match &self.host {
+                Some(host) => format!("workspace: {} (on {host})", call.workspace),
+                None => format!("workspace: {}", call.workspace),
+            }];
             // A call with no path argument is judged on what it DOES. `path_is_inside` answers
             // `true` when the key is absent, so printing the fact unconditionally asserted that
             // a path nobody named was inside the workspace. The guard is its own first line.
