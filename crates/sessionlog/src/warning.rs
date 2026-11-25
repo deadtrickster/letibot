@@ -965,6 +965,13 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("`/mode` again in the fork"),
     ),
+    // A fork could not be given the name it continues, so it is unnamed until somebody says one:
+    // the conversation is intact and `-r NAME` finds only the parent.
+    (
+        "fork_unnamed",
+        Class::Failure,
+        Action::Do("`/rename` the fork"),
+    ),
     // A seat is attached to this session and nothing said on the fabric can wake it.
     (
         "flowy_not_seated",
@@ -1873,17 +1880,19 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_105_routine_16_refused_and_120_failures() {
+    fn the_table_is_105_routine_16_refused_and_121_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 241, "the table's size");
+        assert_eq!(TABLE.len(), 242, "the table's size");
         // 101, plus the shadow's two: a job that stopped answering, and the one that says it is
         // back.
         assert_eq!(count(Class::Routine), 105, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 16, "the sixteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 120);
+        // 120 and the fork whose name could not be written: a fork with no name is reached by id
+        // only, so somebody has to be told.
+        assert_eq!(count(Class::Failure), 121);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

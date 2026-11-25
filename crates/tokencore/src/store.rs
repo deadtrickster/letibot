@@ -876,6 +876,11 @@ fn is_a_name_clash(e: &rusqlite::Error) -> bool {
     }
 }
 
+/// [`is_a_name_clash`] as this module's own error, for a door that retries rather than reports.
+fn is_a_name_clash_in(e: &StoreError) -> bool {
+    matches!(e, StoreError::Sql(inner) if is_a_name_clash(inner))
+}
+
 /// Which sessions a listing shows, by archive state: the three values a `--sessions` filter takes.
 /// `No` is the default because an archived session is out of SIGHT, not out of reach - naming it
 /// by id still opens it, which is the difference between this and a delete.
@@ -3289,42 +3294,26 @@ impl Store {
         })
     }
 
-    /// Insert a session's row. The name it carries is the caller's: this door does not invent one,
-    /// and the file refuses a SECOND live session of the same folder answering to it (v62's
-    /// `session_live_name`). [`Store::check_name`] is the read that says why before a write.
+    /// Insert a session's row. A name another live main session of the folder holds is DASHED, never
+    /// refused: a package, shadow, reviewer, restore or test writes through here and none of them may
+    /// fail to open. Only a person's typed name is refused (`rename_unique`, a head's NewSession, the
+    /// daemon's start), and the file's index is the race guard, so the dash retries on its refusal.
+    /// The title is written as given, byte for byte: the key is the slug, which trims for itself.
     pub fn put_session(&self, rec: &SessionRecord) -> Result<()> {
-        let title = rec
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty());
-        let inserted = self.exec(
-            "INSERT INTO session
-               (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json,
-                created_at, role, parent_session_id, workspace_canon, name_slug)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                rec.id,
-                title,
-                rec.model_id,
-                rec.dialect_sha,
-                rec.workspace_root,
-                rec.owner,
-                serde_json::to_string(&rec.approvers)?,
-                now_ms(),
-                rec.role,
-                rec.parent_session_id,
-                names::canonical_folder(&rec.workspace_root),
-                title.and_then(names::name_key),
-            ],
-        );
-        if let Err(e) = inserted {
-            return Err(self.name_refusal(
-                e,
-                &rec.id,
-                &rec.workspace_root,
-                title.unwrap_or_default(),
-            )?);
+        let base = rec.title.as_deref().filter(|t| !t.trim().is_empty());
+        let mut title = base.map(str::to_string);
+        let mut n = 1u32;
+        loop {
+            match self.insert_session(rec, title.as_deref()) {
+                Ok(()) => break,
+                // The counter an auto title takes: `-2` first, so the session that had the name
+                // first is never the one with a number on it.
+                Err(e) if base.is_some() && is_a_name_clash_in(&e) && n < 1000 => {
+                    n += 1;
+                    title = Some(format!("{}-{n}", base.unwrap_or_default().trim()));
+                }
+                Err(e) => return Err(e),
+            }
         }
         // A set records whose project file the history is in: the column is the index's, and a
         // reader with only the index finds the file by it.
@@ -3343,6 +3332,31 @@ impl Store {
                 params![key, rec.id],
             )?;
         }
+        Ok(())
+    }
+
+    /// [`Store::put_session`]'s one statement, for the title a retry settled on.
+    fn insert_session(&self, rec: &SessionRecord, title: Option<&str>) -> Result<()> {
+        self.exec(
+            "INSERT INTO session
+               (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json,
+                created_at, role, parent_session_id, workspace_canon, name_slug)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                rec.id,
+                title,
+                rec.model_id,
+                rec.dialect_sha,
+                rec.workspace_root,
+                rec.owner,
+                serde_json::to_string(&rec.approvers)?,
+                now_ms(),
+                rec.role,
+                rec.parent_session_id,
+                names::canonical_folder(&rec.workspace_root),
+                title.and_then(names::name_key),
+            ],
+        )?;
         Ok(())
     }
 

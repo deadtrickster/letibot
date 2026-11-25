@@ -22,8 +22,14 @@ is two ways to open the wrong one. This page is the whole rule; the code is
   counter (`night shift-2`) and the door that brought it back says which name it came back as.
 - **A name that reads as an id is refused.** Every id this tree mints begins `s-` or `cc-`, so a
   name with that prefix would be a second spelling of one address. Refused where a person types a
-  name (`/rename`, `session rename`, `--new TITLE`, a head's NewSession title), never at a row that
-  already has one.
+  name (`/rename`, `session rename`, `--new TITLE`, `--title`, a head's NewSession title), never at a
+  row that already has one.
+- **Only a person's name is refused; every other title is DASHED.** A name a person just typed is a
+  claim on an address, and taking a different one than they asked for would be a quiet answer to a
+  question they asked. A title nothing typed - a package's, a daemon seat's, a reviewer's, a
+  shadow's, a test's, a stored row's on the way back in - is the tree's own guess at a label, and a
+  session that cannot open is worse than a `-2`. So `Store::put_session` dashes rather than fails,
+  and opening or reopening a session never fails on its own name.
 
 ## Where it is enforced
 
@@ -42,9 +48,11 @@ is the rule's scope, written once. Everything else is a door onto it:
 |---|---|
 | `Store::rename_unique` (`/rename`, `session rename`) | refused, holder named - and an archived session that used to answer to it is named too |
 | `Store::set_title` (a raw write) | the index refuses; the sentence is read back so it names the holder |
+| `Store::put_session` (a package, a shadow, a reviewer, a restore, a test) | the `-2`, `-3` counter, retried on the index's refusal - so the dash is decided by the same write that the file guards, and never fails the open |
 | `Store::name_default` (the auto title) | `title IS NULL` on the write, then the `-2`, `-3` counter; `None` when a rename landed first, so a person's name is never overwritten |
-| `Store::free_derived_name` (a fork, the daemon's own queue seat) | the counter, by the same rule |
-| a head's `NewSession` title, `--new TITLE`, `--title` | refused BY THE FRAME, before a row exists, with the holder named (`SessionSource::name_taken`) |
+| `Store::free_derived_name` (a fork) | the counter, by the same rule |
+| a head's `NewSession` title, `--new TITLE` | refused BY THE FRAME, before a row exists, with the holder named (`SessionSource::name_taken`) |
+| `--title` at a daemon start | refused before the socket binds (`Registry::name_ok`), with the holder named: the name came off the command line, so a person typed it |
 
 `schema 62` fills both columns for the rows already there, dashes the duplicates it finds onto the
 oldest row that had the name, and builds the index. `repair_name_keys` runs the same pass at every
@@ -87,9 +95,12 @@ the candidates: a tool call has nobody to ask.
   `an_archived_session_frees_its_name_and_says_so`, `a_subagent_does_not_hold_a_name`,
   `two_renames_at_once_cannot_both_win`, `a_rename_that_lands_first_beats_the_auto_title`,
   `a_name_that_reads_as_an_id_is_refused`, `a_typed_name_means_exact_then_prefix_then_archived`,
+  `a_title_somebody_else_holds_is_dashed_and_never_refused`,
+  `a_title_is_written_as_it_was_given`,
   `the_name_migration_dashes_the_duplicates_it_finds`.
 - `crates/harnessd/tests/session_names.rs`: `a_new_session_named_twice_is_refused_and_names_the_holder`,
-  `a_workspace_spelled_another_way_is_the_same_folder`, `a_name_that_reads_as_an_id_is_refused`.
+  `a_workspace_spelled_another_way_is_the_same_folder`, `a_name_that_reads_as_an_id_is_refused`,
+  `a_title_typed_at_the_start_is_refused_and_names_the_holder`.
 - `crates/bridge/src/names.rs`: `a_name_resolves_to_its_id_within_the_folder` (the prefix),
   `an_archived_session_is_refused_as_archived`.
 - `crates/bridge/src/rooms.rs`: `a_refused_label_is_waited_out_and_then_given_up_on_aloud`,

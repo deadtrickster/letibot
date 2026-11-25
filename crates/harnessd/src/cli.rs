@@ -1380,6 +1380,16 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         (t, Some(b)) if t.is_empty() => b.title.clone(),
         (t, _) => t.clone(),
     };
+    // `--title` is a name a PERSON typed, so a live session of this folder already answering to it
+    // is refused here, before the socket binds, and the holder is named. Every other title is
+    // derived, and the store dashes it on the way in (see `Store::put_session`).
+    if !cfg.title.trim().is_empty() {
+        registry.name_ok(
+            &cfg.session_id,
+            &cfg.workspace.display().to_string(),
+            &title,
+        )?;
+    }
     // Who this session's parent is, by the tree's one rule - the caller's `--parent` when it
     // has one, else its own stored row. `Harness::open` asks the same function, so the registry's
     // entry and the session's config cannot disagree.

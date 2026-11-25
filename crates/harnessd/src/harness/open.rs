@@ -2131,22 +2131,12 @@ impl Harness {
                     // `INSERT OR IGNORE`-shaped by hand: a session row may already be here with no rows behind it, so
                     // re-opening it is a resume of an empty conversation rather than a collision.
                     if stored.is_none() {
-                        // The daemon's OWN seat is the one title nobody typed: a clash there is
-                        // answered with the dash, not with a refusal that would leave the daemon
-                        // with no queue session. Every other title is the caller's, and the store
-                        // refuses a name another live session of the folder holds.
-                        let title = if letibot_sessionlog::is_gatekeeper_session(&cfg.session_id) {
-                            s.free_derived_name(
-                                &cfg.workspace.display().to_string(),
-                                cfg.title.trim(),
-                            )
-                            .map_err(|e| HarnessError::Store(e.to_string()))?
-                        } else {
-                            cfg.title.clone()
-                        };
+                        // Nothing is refused here: a package, shadow, reviewer, restore and test all
+                        // write a row through this door, and the store DASHES a title another live
+                        // session of the folder holds. Only a name a person typed is refused.
                         s.put_session(&SessionRecord {
                             id: cfg.session_id.clone(),
-                            title: Some(title).filter(|t| !t.is_empty()),
+                            title: Some(cfg.title.clone()).filter(|t| !t.trim().is_empty()),
                             // Who answers, not what the vocabulary binds: `cfg.model` is the local alias whose tokenizer renders
                             // the prompt, while the turns may go to a provider. This row is what the picker draws. `Sessions::wiring`
                             // is the same fact from one expression.

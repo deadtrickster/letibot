@@ -81,8 +81,24 @@ fn scratch() -> PathBuf {
 
 fn start(home: &Path) -> Daemon {
     let socket = home.join("d.sock");
+    let child = spawn(home, &[], "s-only");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !socket.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never bound its socket"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Daemon(child)
+}
+
+/// A daemon for `home`, holding `session` as its first one, with `extra` on the command line.
+/// Returned unwaited: a start that is expected to REFUSE never binds a socket to wait for.
+fn spawn(home: &Path, extra: &[&str], session: &str) -> std::process::Child {
+    let socket = home.join("d.sock");
     let _ = std::fs::remove_file(&socket);
-    let child = letibot_testenv::daemon(env!("CARGO_BIN_EXE_harnessd"))
+    letibot_testenv::daemon(env!("CARGO_BIN_EXE_harnessd"))
         .args([
             "--provider",
             "deepseek",
@@ -94,12 +110,13 @@ fn start(home: &Path) -> Daemon {
             // and this test is about the names of the sessions it was ASKED for.
             "--no-queue",
         ])
-        .args(["--session", "s-only", "--workspace"])
+        .args(["--session", session, "--workspace"])
         .arg(home.join("ws"))
         .arg("--store")
         .arg(home.join("store"))
         .arg("--socket")
         .arg(&socket)
+        .args(extra)
         .env("HOME", home)
         .env("LETIBOT_LANDING_ROOT", home.join("landing"))
         .env("LETIBOT_NOTES_REPO", home.join("notes"))
@@ -111,16 +128,7 @@ fn start(home: &Path) -> Daemon {
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(home.join("daemon.log")).expect("the daemon's log"))
         .spawn()
-        .expect("harnessd starts");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !socket.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the daemon never bound its socket"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Daemon(child)
+        .expect("harnessd starts")
 }
 
 /// The title the daemon's store holds for `id`, waiting for it: the row is written at the OPEN,
@@ -226,4 +234,65 @@ fn a_name_that_reads_as_an_id_is_refused() {
         .ask("s-20260101", &ws)
         .expect_err("an address is not a name");
     assert!(why.contains("not a session name"), "{why}");
+}
+
+/// `--title` is a name a person typed, so a live session of the folder already answering to it is
+/// refused before the socket binds, and the refusal names the holder. The other half of the rule is
+/// that nothing else is refused: a title the tree writes itself is dashed (`Store::put_session`),
+/// which is what keeps a package, a shadow, a reviewer and a restore able to open.
+#[test]
+fn a_title_typed_at_the_start_is_refused_and_names_the_holder() {
+    let home = scratch();
+    let ws = home.join("ws").display().to_string();
+    {
+        let store = Store::open_set(&home.join("store"), &project_key(&ws)).expect("the store");
+        store
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: "s-live".into(),
+                title: Some("the work".into()),
+                model_id: "deepseek-flash".into(),
+                dialect_sha: "d".into(),
+                workspace_root: ws.clone(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .expect("a live session of this folder, named");
+        // And one already carrying the name it was configured with, as a restore leaves it.
+        store
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: "s-stored".into(),
+                title: Some("a configured title".into()),
+                model_id: "deepseek-flash".into(),
+                dialect_sha: "d".into(),
+                workspace_root: ws.clone(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .expect("a stored session");
+    }
+
+    // The typed name, in another case: refused, by the store's own rule, before anything binds.
+    let mut refused = spawn(&home, &["--title", "The Work"], "s-2");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        match refused.try_wait().expect("the daemon's state") {
+            Some(status) => break status,
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            None => {
+                let _ = refused.kill();
+                panic!("a start with a taken, typed title did not refuse");
+            }
+        }
+    };
+    assert!(!status.success(), "a refused name does not open a daemon");
+    assert!(!home.join("d.sock").exists(), "nothing bound a socket");
+    let said = std::fs::read_to_string(home.join("daemon.log")).expect("the daemon's log");
+    assert!(
+        said.contains("taken in this folder by s-live"),
+        "the refusal names the holder: {said}"
+    );
 }

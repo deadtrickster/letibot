@@ -5036,6 +5036,64 @@ mod names {
         );
     }
 
+    /// A title nobody typed is a label, not a claim on an address: the low-level write dashes it
+    /// rather than refusing, because a package, a shadow, a reviewer, a restore or a test writing a
+    /// row must never be the reason a session cannot open.
+    #[test]
+    fn a_title_somebody_else_holds_is_dashed_and_never_refused() {
+        let s = store();
+        put(&s, "s-1", "/w", Some("a session"));
+        put(&s, "s-2", "/w", Some("A Session"));
+        put(&s, "s-3", "/w", Some("a session"));
+        assert_eq!(s.title("s-1").unwrap().as_deref(), Some("a session"));
+        assert_eq!(
+            s.title("s-2").unwrap().as_deref(),
+            Some("A Session-2"),
+            "the dash keeps the caller's own spelling and takes the first free number"
+        );
+        assert_eq!(
+            s.title("s-3").unwrap().as_deref(),
+            Some("a session-3"),
+            "and the next one skips a number already held, whatever its case"
+        );
+        // A name of its own is not a clash: a rename to the name a session ALREADY answers to goes
+        // through untouched, which is what makes reopening a stored session safe.
+        s.rename_unique("s-1", "a session").expect("its own name");
+        assert_eq!(s.title("s-1").unwrap().as_deref(), Some("a session"));
+        // A child holds nothing, so it keeps the title it was given.
+        s.put_session(&SessionRecord {
+            id: "s-child".into(),
+            title: Some("a session".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w".into(),
+            owner: "operator".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: Some("s-1".into()),
+        })
+        .expect("a child may share its parent's title");
+        assert_eq!(s.title("s-child").unwrap().as_deref(), Some("a session"));
+        // Another folder is another scope.
+        put(&s, "s-elsewhere", "/other", Some("a session"));
+        assert_eq!(
+            s.title("s-elsewhere").unwrap().as_deref(),
+            Some("a session")
+        );
+    }
+
+    /// The row keeps the title it was given, spaces and all: the column is the bytes a listing
+    /// draws, so a store that trimmed it would shorten a name nobody asked it to shorten. A title
+    /// with nothing but space in it is no name at all, which is what an empty title means.
+    #[test]
+    fn a_title_is_written_as_it_was_given() {
+        let s = store();
+        put(&s, "s-1", "/w", Some("  the deck  "));
+        assert_eq!(s.title("s-1").unwrap().as_deref(), Some("  the deck  "));
+        put(&s, "s-2", "/w", Some("   "));
+        assert_eq!(s.title("s-2").unwrap(), None);
+    }
+
     /// Two connections renaming to one name at once: the file decides, exactly one wins, and the
     /// loser is told who has it. Not a read before a write - the read would let both through.
     #[test]
