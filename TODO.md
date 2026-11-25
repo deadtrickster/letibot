@@ -260,6 +260,7 @@ Older backlog:
 | R382 | The model picker hides which providers have headroom | Code work | built (c48ad2861); left: no `balance $X`, a door's refusal or limit is forgotten at restart |
 | R383 | A VCS command drew as nine hand edits | Code work | built (2e2734609); left: `jj` global flags with a value hide the verb, a background job gets no git line |
 | R384 | A dm to a peer in another project goes through only with the operator's consent | Design work | open: rules from the operator, for the LAN-wide rooms work; see the section |
+| R385 | Session names: one rule for every path, and the file enforces it | Code work | built; left: a package's title arriving over the bridge is refused rather than dashed (the frame's rule), and a build older than 62 leaves a row with no name key until the next open repairs it |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3156,6 +3157,45 @@ The row is built at read time: a session's harness installs a `LiveRowsSource` (
 Opening the picker polls the doors nobody watches. Protocol 80 adds `ClientFrame::PollUsage` and the `usage_poll_v1` feature (`FEATURE_USAGE_POLL`, its `compat::SINCE` row, `wire_golden/v80`). `App::open_model_pick` queues it only when the daemon echoed the feature, so it is the picker's alone and not every `Settings` sender's. The server hands it to `Registry::poll_usage`; the harness's `UsagePollSource` polls, on a thread of its own, each keyed door with a usage endpoint through `usage_poll::poll_once`, which is debounced per door by the poll period and reuses a fresh reading, then `Registry::push_settings` sends the rows.
 
 Tests. `crates/tui/src/app/tests/model_card.rs`: `the_picker_draws_each_doors_reading_and_a_limited_one`, `a_billing_refusal_shows_no_balance`, `a_provider_with_no_reading_shows_nothing`, `a_stale_reading_shows_its_age`. `crates/harnessd/src/harness/door_limits.rs`: the words for windows, age, limits, spent windows and refusals, and no row when nothing is known. `crates/sessionlog/src/registry/tests.rs`: `live_rows_are_built_at_each_read`. `crates/provider/src/usage_poll/tests.rs`: `a_door_reading_is_listed_and_readable_inside_a_tell`, `a_pickers_poll_is_debounced_per_door`. `crates/harnessd/tests/picker_usage_poll.rs`: `opening_the_picker_polls_a_door_no_session_has_watched` (an isolated HOME and XDG, every preset key variable and `LETIBOT_*` door removed, a `providers.toml` fixture pointing `kimi-code` at a loopback mock; the reading reaches the row and a second open sends nothing). `model_card.rs`: `the_picker_asks_for_a_poll_only_from_a_daemon_that_echoed_it`.
+
+## R385 - Session names: one rule for every path, and the file enforces it
+
+**Status:** built, 2026-11-25, branch `remote/59651143`. The rule itself is in `docs/session-names.md`.
+
+**What was wrong.** A name was checked by a read before a write, in one door, and nowhere else.
+`same_name` scoped the check to the exact `workspace_root` string, so a trailing slash or a symlink
+made a second scope and a name could be held twice; archived rows and subagents held names they were
+never addressed by; and every new-session path (`--new TITLE`, `--title`, the head's `NewSession`, the
+daemon's own seat, a child, a fork, the shadow) skipped the check entirely. `name_default` read
+`title IS NULL` and then wrote the title unconditionally, so a `/rename` that landed in between was
+overwritten. `-r NAME` opened a single prefix match silently and skipped archived sessions, while the
+bridge's lookup counted them. The fabric alias was set only for an auto title, so `/rename` left
+`@seat/title` stale, and the bridge recorded a REFUSED room label as if the room had taken it.
+
+**What the target was.** One name per canonical folder among live main sessions; every path enforces
+it - an explicit name refused with the holder named, a derived name dashed; race-proof by a partial
+unique index rather than by reading first; one resolver for `-r NAME` and the bridge, offering a prefix
+and an archived session instead of opening one; the fabric alias and the bridge's label following a
+rename.
+
+**Built.** Schema 62 (`workspace_canon`, `name_slug`, `session_live_name`), the rule and its doors in
+`crates/tokencore/src/store/names.rs` and `store.rs`; `SessionSource::name_taken` so a head's
+`NewSession` is refused before a row exists; a fork and the daemon's own seat taking the counter; the
+resolver in `crates/harnessd/src/cli.rs` and `crates/bridge/src/names.rs`; the launcher offering a
+prefix and an archived session on a tty and refusing with the command otherwise; the flowy seat's
+alias read from the registry each time (so a rename moves it) and the bridge's refused label retried
+on a doubling wait, given up on aloud, with a Claude Code `/rename` outranking an older nick file.
+
+**Tests.** The list is in `docs/session-names.md` § Tests. The five the report asked for are
+`two_renames_at_once_cannot_both_win` (two connections, one winner), `a_rename_that_lands_first_beats_the_auto_title`,
+`a_new_session_named_twice_is_refused_and_names_the_holder` (`--new X` twice, over a real daemon),
+`an_archived_session_frees_its_name_and_says_so`, and `a_folder_is_its_canonical_path` +
+`a_workspace_spelled_another_way_is_the_same_folder` (a trailing slash and a symlink).
+
+**Left.** A package's title arrives over the bridge's `NewSession`, which is a person's door in the
+wire's eyes, so a clash there is refused rather than dashed; dashing it at the caller needs a
+"derived" mark on the frame. And a build older than 62 writes a row with no name key, which the next
+open repairs - the index cannot see that row until then.
 
 ## R384 - A dm to a peer in another project goes through only with the operator's consent
 

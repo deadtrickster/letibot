@@ -65,8 +65,10 @@ Project file - everything one folder's sessions own:
 
 Shared file - what is read across folders or arbitrated between daemons:
 
-- `session`: the index. id, title, workspace, parent, role, project key. `--sessions`, the
-  picker, `--continue NAME` and the fleet view read only this.
+- `session`: the index. id, title, workspace, parent, role, project key, and the two columns the
+  NAME rule is keyed on (`workspace_canon`, `name_slug`, v62 - see `docs/session-names.md`).
+  `--sessions`, the picker, `--continue NAME` and the fleet view read only this. `session_live_name`
+  is the partial unique index that keeps one live main session of one folder to a name.
 - `session_writer`: which daemon holds a session. Arbitrates across daemons by definition.
 - `review_queue`, `merge_queue`, `queue_lease`, `queue_transition`, `queue_told`,
   `target_health`: keyed by repository, and a repository's queue is served by whichever daemon
