@@ -31,6 +31,8 @@ pub use busy::{BUSY_RETRY_TOTAL, Watch, WatchGuard, is_busy_sql, watch_busy_wait
 pub use queues::*;
 mod modes;
 pub use modes::ProjectMode;
+mod names;
+pub use names::{Meaning, Named, canonical_folder, looks_like_an_id, meaning_of, name_key};
 mod subagents;
 pub use subagents::*;
 mod citations;
@@ -254,7 +256,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 61;
+pub const SCHEMA_VERSION: i64 = 62;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -276,6 +278,17 @@ pub const CORPUS_VERSION: i64 = 1;
 pub const SESSION_INDEXES_SQL: &str = "
 CREATE INDEX IF NOT EXISTS transcript_by_session ON transcript (session_id, created_at);
 CREATE INDEX IF NOT EXISTS session_by_parent ON session (parent_session_id);
+";
+
+/// The NAME rule, in the file rather than in a read before a write (v62): one live main session of
+/// one folder to a name. The predicate is the rule's scope exactly - a child (`parent_session_id`)
+/// and an archived row are not names the store must keep unique, and a row nobody has named has
+/// no name to clash with. A batch of its own rather than a line on [`SESSION_INDEXES_SQL`], because
+/// an arm that runs an older batch must not be read as the one that made this.
+pub const NAME_INDEX_SQL: &str = "
+CREATE UNIQUE INDEX IF NOT EXISTS session_live_name
+    ON session (workspace_canon, name_slug)
+    WHERE name_slug IS NOT NULL AND parent_session_id IS NULL AND archived_ms IS NULL;
 ";
 
 /// [`corpus_counts`], index-only: the four columns the five counts read, so every open's
@@ -380,10 +393,15 @@ CREATE TABLE IF NOT EXISTS session (
     nags_paused_at INTEGER,          -- v51; unix ms the pause in `nags_paused_until` was made.
                                      -- NULL with it, or a pause written before v51.
     nags_paused_by TEXT,             -- v51; who made it (`operator` or `model` or `bridge`).
-    limit_state    TEXT              -- v56; the session's usage-limit park, re-tries, way back
+    limit_state    TEXT,             -- v56; the session's usage-limit park, re-tries, way back
                                      -- and limited models, as JSON. NULL = nothing limited.
-                                     -- No comma in the comment above: sqlite's DROP COLUMN of
-                                     -- a last column cuts at the last comma before it.
+    workspace_canon TEXT,            -- v62; the canonical folder the name is unique in, from
+                                     -- `workspace_root` at insert. NULL = a row an older build
+                                     -- wrote after the migration, read by its own path.
+    name_slug       TEXT             -- v62; the key a name is filed under (`name_key`), NULL for an
+                                     -- unnamed session. No comma in the comment above: sqlite's
+                                     -- DROP COLUMN of a last column cuts at the last comma
+                                     -- before it.
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -841,6 +859,23 @@ pub fn same_name(a: &str, b: &str) -> bool {
     !slug.is_empty() && slug == slug_of(b)
 }
 
+/// Did the file refuse this write because another live session of the folder holds the name?
+/// `session_live_name` (v62) is the only unique index on `session`, so a constraint violation
+/// that names it - or the two columns it is built from - is the name rule and nothing else.
+fn is_a_name_clash(e: &rusqlite::Error) -> bool {
+    match e {
+        rusqlite::Error::SqliteFailure(err, said) => {
+            err.code == rusqlite::ErrorCode::ConstraintViolation
+                && said.as_deref().is_some_and(|m| {
+                    m.contains("session_live_name")
+                        || m.contains("session.workspace_canon")
+                        || m.contains("session.name_slug")
+                })
+        }
+        _ => false,
+    }
+}
+
 /// Which sessions a listing shows, by archive state: the three values a `--sessions` filter takes.
 /// `No` is the default because an archived session is out of SIGHT, not out of reach - naming it
 /// by id still opens it, which is the difference between this and a delete.
@@ -982,6 +1017,10 @@ pub struct StoredSession {
     pub archived_ms: Option<i64>,
     /// Why, in the archiver's own words. `None` unless [`Self::archived_ms`] is set.
     pub archived_reason: Option<String>,
+    /// The folder this session's NAME is unique in: [`Self::workspace_root`] canonicalized when
+    /// the row was written (v62). `None` for a row an older build wrote after the migration, and
+    /// a reader then canonicalizes the path itself - see [`names::canonical_folder`].
+    pub workspace_canon: Option<String>,
 }
 
 /// One job's row as the store keeps it: the durable half of the process table, which dies with
@@ -1588,7 +1627,8 @@ pub(crate) fn sessions_sql(filter: &str) -> String {
                     s.moved_ms,
                     s.origin,
                     s.archived_ms,
-                    s.archived_reason
+                    s.archived_reason,
+                    s.workspace_canon
                FROM session s{filter}"
     )
 }
@@ -1643,7 +1683,8 @@ pub(crate) fn sessions_index_sql(filter: &str) -> String {
                     s.origin,
                     s.archived_ms,
                     s.archived_reason,
-                    s.project
+                    s.project,
+                    s.workspace_canon
                FROM session s{filter}"
     )
 }
@@ -1703,6 +1744,10 @@ fn stored_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
         // `sessions_matching` alone - it says which file filled these four columns.
         archived_ms: r.get(25)?,
         archived_reason: r.get(26)?,
+        // Read by NAME, not position: the two listings put it at different indexes (a split set's
+        // row carries the project key at 27 and this at 28), and a name costs one lookup per row
+        // that neither shape can get wrong.
+        workspace_canon: r.get("workspace_canon")?,
     })
 }
 
@@ -2139,6 +2184,7 @@ impl Store {
             Some(_) => {
                 self.ensure_reader_floor(SCHEMA_VERSION)?;
                 self.repair_queue_mute()?;
+                self.repair_name_keys()?;
                 return Ok(());
             }
             // Tables and no version row: a schema written and never stamped, which a kill between
@@ -2977,6 +3023,167 @@ impl Store {
             // `QUEUES_SQL` is idempotent throughout, so `gate_live` arrives alone.
             self.batch_for(file, queues::QUEUES_SQL)?;
         }
+        if from < 62 {
+            // v62: a NAME is unique among the live main sessions of one folder - the canonical
+            // folder this row was written in and the key its title is filed under - and the file
+            // is what enforces it (`session_live_name`). Two columns the rule is keyed on, filled
+            // for every row already here, then the index. A store that already held two sessions
+            // of one folder under one name keeps the oldest and dashes the rest: the one that has
+            // been in use longest is the one a person means.
+            if self.name_rule_ready()? {
+                if !self.probe(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'workspace_canon'",
+                )? {
+                    self.conn()
+                        .execute_batch("ALTER TABLE session ADD COLUMN workspace_canon TEXT")?;
+                }
+                if !self
+                    .probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'name_slug'")?
+                {
+                    self.conn()
+                        .execute_batch("ALTER TABLE session ADD COLUMN name_slug TEXT")?;
+                }
+                self.fill_name_keys()?;
+                self.dash_duplicate_names()?;
+                self.batch_for(file, crate::store::NAME_INDEX_SQL)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Can this file hold the name rule at all: a `session` table with the four columns the key
+    /// and its predicate are made of? False for a project file, and for a fixture whose `session`
+    /// table was written by hand with three columns of a schema this tree never shipped.
+    fn name_rule_ready(&self) -> Result<bool> {
+        if !self.probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")? {
+            return Ok(false);
+        }
+        for column in ["workspace_root", "parent_session_id", "archived_ms"] {
+            if !self.probe(&format!(
+                "SELECT 1 FROM pragma_table_info('session') WHERE name = '{column}'"
+            ))? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Fill the two columns the name rule is keyed on, for every row that is missing one. A
+    /// canonical path is a syscall per DISTINCT folder, not per row, because a store's rows are
+    /// mostly one project's.
+    fn fill_name_keys(&self) -> Result<()> {
+        let rows: Vec<(
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = {
+            let conn = self.conn();
+            let mut st = conn.prepare(
+                "SELECT id, title, workspace_root, workspace_canon, name_slug FROM session",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut known: BTreeMap<String, String> = BTreeMap::new();
+        for (id, title, root, canon, _) in rows {
+            let canon = match canon.filter(|c| !c.is_empty()) {
+                Some(c) => c,
+                None => known
+                    .entry(root.clone())
+                    .or_insert_with(|| names::canonical_folder(&root))
+                    .clone(),
+            };
+            let title = title.filter(|t| !t.trim().is_empty());
+            let key = names::name_key(title.as_deref().unwrap_or_default());
+            self.exec(
+                "UPDATE session SET workspace_canon = ?2, name_slug = ?3 WHERE id = ?1 \
+                  AND (workspace_canon IS NOT ?2 OR name_slug IS NOT ?3)",
+                params![id, canon, key],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// One name per folder: every live main row after the first that answers to a taken name gets
+    /// the `-2`, `-3` counter, in age order, so the rule holds the moment the index is built.
+    fn dash_duplicate_names(&self) -> Result<()> {
+        let rows: Vec<(String, String, String)> = {
+            let conn = self.conn();
+            let mut st = conn.prepare(
+                "SELECT id, workspace_canon, name_slug FROM session \
+                  WHERE name_slug IS NOT NULL AND parent_session_id IS NULL \
+                    AND archived_ms IS NULL ORDER BY created_at, id",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut held: std::collections::BTreeSet<(String, String)> = Default::default();
+        for (id, folder, key) in rows {
+            if held.insert((folder.clone(), key.clone())) {
+                continue;
+            }
+            let base: String = self
+                .conn()
+                .query_row(
+                    "SELECT title FROM session WHERE id = ?1",
+                    params![id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .unwrap_or_default();
+            let free = names::counted(&base, |candidate| {
+                names::name_key(candidate).is_some_and(|k| held.contains(&(folder.clone(), k)))
+            });
+            if let Some(k) = names::name_key(&free) {
+                held.insert((folder.clone(), k.clone()));
+                self.exec(
+                    "UPDATE session SET title = ?2, name_slug = ?3 WHERE id = ?1",
+                    params![id, free, k],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every live row must carry the key its name is filed under, no two live rows of one folder
+    /// may carry the same one, and the file must hold the index that says so. A build older than
+    /// v62 writes rows WITHOUT a key and reads a store without the index, so the migration alone
+    /// cannot keep a mixed box clean - this is the same repair, cheap when the file already says
+    /// what it should.
+    fn repair_name_keys(&self) -> Result<()> {
+        if !self.name_rule_ready()?
+            || !self.probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'name_slug'")?
+            || !self.probe(
+                "SELECT 1 FROM pragma_table_info('session') WHERE name = 'workspace_canon'",
+            )?
+        {
+            return Ok(());
+        }
+        let wanting: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM session WHERE workspace_canon IS NULL OR workspace_canon = '' \
+                OR (title IS NOT NULL AND title <> '' AND (name_slug IS NULL OR name_slug = '')) \
+                OR ((title IS NULL OR title = '') AND name_slug IS NOT NULL)",
+            [],
+            |r| r.get(0),
+        )?;
+        if wanting > 0 {
+            self.fill_name_keys()?;
+            self.dash_duplicate_names()?;
+        }
+        let indexed: bool = self.conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+              WHERE type = 'index' AND name = 'session_live_name')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !indexed {
+            self.batch_for(None, crate::store::NAME_INDEX_SQL)?;
+        }
         Ok(())
     }
 
@@ -3079,15 +3286,23 @@ impl Store {
         })
     }
 
+    /// Insert a session's row. The name it carries is the caller's: this door does not invent one,
+    /// and the file refuses a SECOND live session of the same folder answering to it (v62's
+    /// `session_live_name`). [`Store::check_name`] is the read that says why before a write.
     pub fn put_session(&self, rec: &SessionRecord) -> Result<()> {
-        self.exec(
+        let title = rec
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        let inserted = self.exec(
             "INSERT INTO session
                (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json,
-                created_at, role, parent_session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                created_at, role, parent_session_id, workspace_canon, name_slug)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 rec.id,
-                rec.title,
+                title,
                 rec.model_id,
                 rec.dialect_sha,
                 rec.workspace_root,
@@ -3096,8 +3311,18 @@ impl Store {
                 now_ms(),
                 rec.role,
                 rec.parent_session_id,
+                names::canonical_folder(&rec.workspace_root),
+                title.and_then(names::name_key),
             ],
-        )?;
+        );
+        if let Err(e) = inserted {
+            return Err(self.name_refusal(
+                e,
+                &rec.id,
+                &rec.workspace_root,
+                title.unwrap_or_default(),
+            )?);
+        }
         // A set records whose project file the history is in: the column is the index's, and a
         // reader with only the index finds the file by it.
         let has_column = || -> Result<bool> {
@@ -3915,72 +4140,102 @@ impl Store {
 
     /// Name a session, or clear its name with an empty string. `session` carries no append-only
     /// trigger and is not part of the chain: a title is metadata about a conversation, and
-    /// changing it changes no prompt byte.
+    /// changing it changes no prompt byte. The name's key is written in the SAME statement, so the
+    /// file's unique index sees the new name at once and nothing can rename itself into a gap.
     pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
-        let n = self.exec(
-            "UPDATE session SET title = ?2 WHERE id = ?1",
-            params![id, (!title.is_empty()).then(|| title.to_string())],
-        )?;
+        let title = title.trim();
+        let named = (!title.is_empty()).then_some(title);
+        let written = self.exec(
+            "UPDATE session SET title = ?2, name_slug = ?3 WHERE id = ?1",
+            params![id, named, named.and_then(names::name_key)],
+        );
+        let n = match written {
+            Ok(n) => n,
+            Err(e) => {
+                let folder = self.session_workspace(id)?.unwrap_or_default();
+                return Err(self.name_refusal(e, id, &folder, title)?);
+            }
+        };
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
         }
         Ok(())
     }
 
-    /// [`Store::set_title`] for a name a person typed: refused when another session in the same
-    /// workspace already has it, by title (case-insensitive) or by [`slug_of`], because
-    /// `--session NAME` and `@NAME` must pick one.
+    /// [`Store::set_title`] for a name a person typed: refused when another live session of the
+    /// same folder already answers to it, by title (case-insensitive) or by [`slug_of`], because
+    /// `-r NAME` and `@NAME` must pick one. A name that reads as an id is refused too - an address
+    /// and a name must not be two spellings of one answer.
+    ///
+    /// The refusal is the FILE's (`session_live_name`), so two renames at once cannot both win;
+    /// the sentence is read back after it fires, which is why it can name the holder.
     pub fn rename_unique(&self, id: &str, title: &str) -> Result<()> {
-        if !title.is_empty() {
-            let me = self
-                .session(id)?
-                .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
-            if let Some(o) = self
-                .sessions_matching(" WHERE s.workspace_root = ?1", &[&me.workspace_root])?
-                .into_iter()
-                .find(|o| o.id != id && o.title.as_deref().is_some_and(|t| same_name(t, title)))
-            {
-                return Err(StoreError::Refused(format!(
-                    "the name {title:?} is taken in this project by {}",
-                    o.id
-                )));
-            }
+        if title.trim().is_empty() {
+            return self.set_title(id, "");
+        }
+        let me = self
+            .session(id)?
+            .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
+        // A child and an archived row are not under the rule - their names are nobody's address -
+        // so only the id check applies to them, and the file has no index to refuse it.
+        if me.parent_session_id.is_none() && me.archived_ms.is_none() {
+            self.check_name(Some(id), &me.workspace_root, title)?;
+        } else {
+            names::refuse_an_id(title)?;
         }
         self.set_title(id, title)
     }
 
-    /// Give an unnamed session `base` as its name, with `-2`, `-3`... appended until no other
-    /// session in the workspace has it. `None` when the session already has a name, so a default
-    /// never overwrites what a person typed.
+    /// Give an unnamed session `base` as its name, with `-2`, `-3`... appended until the file takes
+    /// it. `None` when the session already has a name, so a default never overwrites what a person
+    /// typed - including one typed between the read and the write, which is why the write itself
+    /// is spelled `title IS NULL`: the loser of that race reports `None` rather than overwriting.
     pub fn name_default(&self, id: &str, base: &str) -> Result<Option<String>> {
+        let base = base.trim();
+        if base.is_empty() {
+            return Ok(None);
+        }
         let me = self
             .session(id)?
             .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
-        if me.title.as_deref().is_some_and(|t| !t.is_empty()) || base.is_empty() {
+        if me.title.as_deref().is_some_and(|t| !t.is_empty()) {
             return Ok(None);
         }
-        let others =
-            self.sessions_matching(" WHERE s.workspace_root = ?1", &[&me.workspace_root])?;
-        let taken = |name: &str| {
-            others
-                .iter()
-                .any(|o| o.id != id && o.title.as_deref().is_some_and(|t| same_name(t, name)))
-        };
-        let mut name = base.to_string();
-        let mut n = 2u32;
-        while taken(&name) {
-            name = format!("{base}-{n}");
-            n += 1;
+        let mut n = 1u32;
+        loop {
+            let name = if n == 1 {
+                base.to_string()
+            } else {
+                format!("{base}-{n}")
+            };
+            let written = self.exec(
+                "UPDATE session SET title = ?2, name_slug = ?3 \
+                  WHERE id = ?1 AND (title IS NULL OR title = '')",
+                params![id, name, names::name_key(&name)],
+            );
+            match written {
+                Ok(0) => return Ok(None),
+                Ok(_) => return Ok(Some(name)),
+                // Another session has it. The next candidate is the dash - the file said no, so
+                // there is nothing to read back and nothing to guess.
+                Err(e) if is_a_name_clash(&e) && n < 1000 => n += 1,
+                Err(e) => return Err(self.name_refusal(e, id, &me.workspace_root, &name)?),
+            }
         }
-        self.set_title(id, &name)?;
-        Ok(Some(name))
     }
 
     /// The conversations of `workspace` that a typed `name` means exactly: the same title
-    /// (case-insensitive) or the same [`slug_of`]. Subagents are not addressed by name.
+    /// (case-insensitive) or the same [`slug_of`], among the LIVE ones - an archived session is
+    /// not in the list and must not answer a name a live session has taken over. Subagents are not
+    /// addressed by name. [`Store::meaning`] is the whole answer, with what else a name could mean.
     pub fn named_in(&self, workspace: &str, name: &str) -> Result<Vec<StoredSession>> {
+        let canon = names::canonical_folder(workspace);
         Ok(self
-            .sessions_matching(" WHERE s.workspace_root = ?1", &[&workspace])?
+            .sessions_matching(
+                " WHERE (s.workspace_canon = ?1 OR s.workspace_root = ?1 OR s.workspace_root = ?2) \
+                  AND s.archived_ms IS NULL",
+                params![canon, workspace.trim()],
+            )?
             .into_iter()
             .filter(|s| {
                 s.parent_session_id.is_none()
@@ -3992,23 +4247,80 @@ impl Store {
     /// Put a session out of sight, or bring it back - the one write [`Archived`] filters on. The
     /// row and its transcripts stay, so `session(id)` and `--session ID` still reach it; archiving
     /// twice keeps the FIRST clock, because a second archive is not a second act.
-    pub fn set_archived(&self, id: &str, archived: bool, reason: Option<&str>) -> Result<()> {
-        let n = if archived {
-            self.exec(
+    ///
+    /// Coming back is the interesting half: an archived session FREES its name, so a row that comes
+    /// back to a name a live session has taken in the meantime is renamed by the counter rule, and
+    /// the name it came back as is `Some`. A silent rename would be worse than the refusal, which
+    /// is why this does not answer `()`.
+    pub fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        reason: Option<&str>,
+    ) -> Result<Option<String>> {
+        if archived {
+            let n = self.exec(
                 "UPDATE session SET archived_ms = COALESCE(archived_ms, ?2), \
                  archived_reason = ?3 WHERE id = ?1",
                 params![id, now_ms(), reason.unwrap_or("").trim()],
-            )?
-        } else {
-            self.exec(
-                "UPDATE session SET archived_ms = NULL, archived_reason = NULL WHERE id = ?1",
-                params![id],
-            )?
-        };
-        if n == 0 {
-            return Err(StoreError::NotFound(format!("session {id}")));
+            )?;
+            if n == 0 {
+                return Err(StoreError::NotFound(format!("session {id}")));
+            }
+            return Ok(None);
         }
-        Ok(())
+        let Some(me) = self.session(id)? else {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        };
+        let name = me.title.clone().unwrap_or_default();
+        let mut came_back = None;
+        let mut clearing = name.clone();
+        let mut n = 1u32;
+        loop {
+            let written = self.exec(
+                "UPDATE session SET archived_ms = NULL, archived_reason = NULL, \
+                 title = ?2, name_slug = ?3 WHERE id = ?1",
+                params![
+                    id,
+                    (!clearing.is_empty()).then_some(clearing.as_str()),
+                    names::name_key(&clearing)
+                ],
+            );
+            match written {
+                Ok(_) => break,
+                // The same counter an auto title takes: `-2` first, so the first name in the
+                // folder is never the one with a number on it.
+                Err(e) if is_a_name_clash(&e) && n < 1000 => {
+                    n += 1;
+                    clearing = format!("{name}-{n}");
+                    came_back = Some(clearing.clone());
+                }
+                Err(e) => return Err(self.name_refusal(e, id, &me.workspace_root, &clearing)?),
+            }
+        }
+        Ok(came_back)
+    }
+
+    /// Turn a failed write into the sentence the name rule owes: the file refused a duplicate, so
+    /// the holder is read back and named. Anything that is not a duplicate passes through.
+    fn name_refusal(
+        &self,
+        e: rusqlite::Error,
+        id: &str,
+        folder: &str,
+        title: &str,
+    ) -> Result<StoreError> {
+        if !is_a_name_clash(&e) {
+            return Ok(e.into());
+        }
+        match self.taken_by(id, folder, title)? {
+            Some(said) => Ok(StoreError::Refused(said)),
+            // The holder let go between the refusal and this read. The write can be tried again,
+            // and pretending a free name is taken would be a lie with a direction.
+            None => Ok(StoreError::Refused(format!(
+                "the name {title:?} was taken a moment ago and is free now - try it again"
+            ))),
+        }
     }
 
     /// Every session still in the list, as the few columns an archive rule reads. No transcript

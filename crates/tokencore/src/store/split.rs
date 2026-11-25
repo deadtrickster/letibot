@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex, Weak, mpsc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    CORPUS_INDEXES_SQL, READER_FLOOR_SQL, RECALL_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION,
-    SESSION_INDEXES_SQL, Store, StoreError, citations, disclosures, grants, leases, marks, modes,
-    owners, pragmas, procs, prompts, queues, seat, subagents, told, transfer, writers,
+    CORPUS_INDEXES_SQL, NAME_INDEX_SQL, READER_FLOOR_SQL, RECALL_SQL, Result, SCHEMA_SQL,
+    SCHEMA_VERSION, SESSION_INDEXES_SQL, Store, StoreError, citations, disclosures, grants, leases,
+    marks, modes, owners, pragmas, procs, prompts, queues, seat, subagents, told, transfer,
+    writers,
 };
 
 /// The shared file, beside the directory project files are in (§ The shape).
@@ -172,10 +173,11 @@ pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
 
 /// The batches `Store::migrate` builds a fresh file from, in its own order, plus the reader-floor
 /// table its `ensure_reader_floor` runs. One list, so a batch added there is routed or refused here.
-pub(super) fn batches() -> [&'static str; 22] {
+pub(super) fn batches() -> [&'static str; 23] {
     [
         SCHEMA_SQL,
         SESSION_INDEXES_SQL,
+        NAME_INDEX_SQL,
         CORPUS_INDEXES_SQL,
         queues::QUEUES_SQL,
         subagents::SUBAGENTS_SQL,

@@ -877,7 +877,8 @@ fn a_v1_store_is_migrated_and_its_rows_read_as_unrecorded() {
     {
         let c = rusqlite::Connection::open(&path).unwrap();
         c.execute_batch(
-            "ALTER TABLE session DROP COLUMN role;
+            "DROP INDEX session_live_name;
+                 ALTER TABLE session DROP COLUMN role;
                  DROP INDEX session_by_parent;
                  ALTER TABLE session DROP COLUMN parent_session_id;
                  DELETE FROM schema_version;
@@ -987,6 +988,9 @@ fn a_v2_store_is_migrated_and_gains_a_todo_table() {
         let c = rusqlite::Connection::open(&path).unwrap();
         c.execute("DROP TABLE todo", []).unwrap();
         c.execute("DROP INDEX session_by_parent", []).unwrap();
+        // The name index is built from the two columns this fixture takes away, so it has to go
+        // first or sqlite refuses the drop.
+        c.execute("DROP INDEX session_live_name", []).unwrap();
         c.execute("ALTER TABLE session DROP COLUMN parent_session_id", [])
             .unwrap();
         c.execute("UPDATE schema_version SET version = 2", [])
@@ -4083,7 +4087,8 @@ fn a_store_from_before_the_archive_columns_gains_them() {
     seeded(&s);
     s.connection()
         .execute_batch(
-            "ALTER TABLE session DROP COLUMN archived_ms;
+            "DROP INDEX session_live_name;
+             ALTER TABLE session DROP COLUMN archived_ms;
              ALTER TABLE session DROP COLUMN archived_reason;
              UPDATE schema_version SET version = 44;",
         )
@@ -4550,6 +4555,9 @@ mod migrated_schema {
             "queues" => include_str!("queues.rs"),
             "recall" => include_str!("recall.rs"),
             "seat" => include_str!("seat.rs"),
+            // The store's own module, for a batch it holds as a const of its own rather than of a
+            // submodule (`crate::store::SESSION_INDEXES_SQL`).
+            "store" => include_str!("../store.rs"),
             "subagents" => include_str!("subagents.rs"),
             "told" => include_str!("told.rs"),
             "transfer" => include_str!("transfer.rs"),
@@ -4894,5 +4902,314 @@ mod migrated_schema {
                 );
             }
         }
+    }
+}
+
+/// The name rule, as the store keeps it: one live main session of one FOLDER to a name. These are
+/// the store's own half of what `-r NAME` and the bridge promise - `meaning` is the other half.
+mod names {
+    use super::*;
+
+    fn put(s: &Store, id: &str, folder: &str, title: Option<&str>) {
+        s.put_session(&SessionRecord {
+            id: id.into(),
+            title: title.map(Into::into),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: folder.into(),
+            owner: "operator".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+    }
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("name-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Two spellings of one folder are one folder: `/w`, `/w/` and a symlink to it are a single
+    /// scope, so a name cannot be held twice by spelling the path differently.
+    #[test]
+    fn a_folder_is_its_canonical_path() {
+        let root = dir("canon");
+        let real = root.join("proj");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = root.join("through-a-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let real_s = real.to_string_lossy().into_owned();
+        let trailing = format!("{real_s}/");
+        let link_s = link.to_string_lossy().into_owned();
+
+        let s = store();
+        put(&s, "s-1", &real_s, Some("one"));
+        // A trailing slash and a symlink are the SAME folder: a session written in either spelling
+        // may not hold `one` again, and the row's own spelling is the one the rule reads.
+        for (at, spelling) in [&trailing, &link_s].into_iter().enumerate() {
+            let id = format!("s-aside-{at}");
+            put(&s, &id, spelling, None);
+            let e = s
+                .rename_unique(&id, "one")
+                .expect_err(&format!("{spelling} is the same folder"));
+            assert!(e.to_string().contains("s-1"), "{e}");
+        }
+        // And a second session in that folder may keep its own name.
+        put(&s, "s-2", &link_s, Some("two"));
+        assert_eq!(s.title("s-2").unwrap().as_deref(), Some("two"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An archived session frees its name, the clash a live holder causes says which archived
+    /// session used to answer to it, and a row that comes back to a taken name is dashed.
+    #[test]
+    fn an_archived_session_frees_its_name_and_says_so() {
+        let s = store();
+        put(&s, "s-old", "/w", Some("night shift"));
+        s.set_archived("s-old", true, Some("a week ago")).unwrap();
+        // Free now, so a live session takes it without a dash.
+        put(&s, "s-new", "/w", None);
+        s.rename_unique("s-new", "night shift").unwrap();
+
+        // An archived row is not under the rule - its name is nobody's address - so it may be
+        // renamed to a name a live session holds, and the DASH is decided when it comes back.
+        put(&s, "s-other", "/w", Some("day shift"));
+        s.set_archived("s-other", true, None).unwrap();
+        s.rename_unique("s-other", "night shift")
+            .expect("an archived name is not an address");
+
+        // A live holder AND an archived one of the same name: the refusal names the live one and
+        // says the archived one used to answer to it too.
+        let s2 = store();
+        put(&s2, "s-away", "/w", Some("shared"));
+        s2.set_archived("s-away", true, None).unwrap();
+        put(&s2, "s-live", "/w", Some("shared"));
+        put(&s2, "s-third", "/w", None);
+        let e = s2.rename_unique("s-third", "shared").unwrap_err();
+        let said = e.to_string();
+        assert!(
+            said.contains("s-live") && said.contains("s-away") && said.contains("archived"),
+            "{said}"
+        );
+
+        // Coming back to a name a live session has taken: the counter rule, and it is SAID.
+        assert_eq!(
+            s.set_archived("s-old", false, None).unwrap().as_deref(),
+            Some("night shift-2")
+        );
+        assert_eq!(
+            s.title("s-old").unwrap().as_deref(),
+            Some("night shift-2"),
+            "the returning session is the one that moves"
+        );
+        assert_eq!(s.title("s-new").unwrap().as_deref(), Some("night shift"));
+    }
+
+    /// A subagent is not addressed by name, so it never holds one: its title may be its parent's,
+    /// and renaming it to a name a main session holds is allowed.
+    #[test]
+    fn a_subagent_does_not_hold_a_name() {
+        let s = store();
+        put(&s, "s-1", "/w", Some("the work"));
+        s.put_session(&SessionRecord {
+            id: "s-child".into(),
+            title: Some("the work".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w".into(),
+            owner: "operator".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: Some("s-1".into()),
+        })
+        .expect("a child may share its parent's title");
+        put(&s, "s-2", "/w", None);
+        s.rename_unique("s-child", "the work")
+            .expect("still a child");
+        let e = s.rename_unique("s-2", "the work").unwrap_err();
+        assert!(
+            e.to_string().contains("s-1"),
+            "the MAIN session holds it: {e}"
+        );
+    }
+
+    /// Two connections renaming to one name at once: the file decides, exactly one wins, and the
+    /// loser is told who has it. Not a read before a write - the read would let both through.
+    #[test]
+    fn two_renames_at_once_cannot_both_win() {
+        let file = dir("race").join("sessions.db");
+        {
+            let s = Store::open(&file).unwrap();
+            put(&s, "s-1", "/w", None);
+            put(&s, "s-2", "/w", None);
+        }
+        let (a, b) = (
+            Store::open_private(&file).unwrap(),
+            Store::open_private(&file).unwrap(),
+        );
+        let go = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let run = |store: Store, id: &'static str, go: std::sync::Arc<std::sync::Barrier>| {
+            std::thread::spawn(move || {
+                go.wait();
+                store
+                    .rename_unique(id, "the same name")
+                    .map_err(|e| e.to_string())
+            })
+        };
+        let (first, second) = (run(a, "s-1", go.clone()), run(b, "s-2", go));
+        let results = [first.join().unwrap(), second.join().unwrap()];
+        let won = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(won, 1, "exactly one rename won: {results:?}");
+        let lost = results
+            .iter()
+            .find_map(|r| r.as_ref().err())
+            .expect("a loser");
+        assert!(lost.contains("taken in this folder by"), "{lost}");
+    }
+
+    /// The auto title is a default, never an overwrite: a name that lands between the check and
+    /// the write wins, and the derivation reports that it lost instead of clobbering it.
+    #[test]
+    fn a_rename_that_lands_first_beats_the_auto_title() {
+        let s = store();
+        put(&s, "s-1", "/w", None);
+        s.rename_unique("s-1", "typed by a person").unwrap();
+        assert_eq!(
+            s.name_default("s-1", "from-the-first-message").unwrap(),
+            None
+        );
+        assert_eq!(
+            s.title("s-1").unwrap().as_deref(),
+            Some("typed by a person")
+        );
+        // And with nothing in the way it takes the base, then dashes.
+        put(&s, "s-2", "/w", None);
+        put(&s, "s-3", "/w", None);
+        assert_eq!(
+            s.name_default("s-2", "fix-parser").unwrap().as_deref(),
+            Some("fix-parser")
+        );
+        assert_eq!(
+            s.name_default("s-3", "fix-parser").unwrap().as_deref(),
+            Some("fix-parser-2")
+        );
+    }
+
+    /// A name that reads as an id is refused where a person types one, so the two can never be
+    /// two spellings of one answer.
+    #[test]
+    fn a_name_that_reads_as_an_id_is_refused() {
+        let s = store();
+        put(&s, "s-1", "/w", None);
+        for bad in ["s-17", "cc@folder:name", "S 17"] {
+            let e = s
+                .rename_unique("s-1", bad)
+                .expect_err(&format!("{bad} reads as an id"));
+            assert!(e.to_string().contains("not a session name"), "{bad}: {e}");
+        }
+        s.rename_unique("s-1", "a session name").expect("a name");
+        // A row that already has one keeps it: the rule is about what a person TYPES.
+        put(&s, "s-2", "/w", None);
+        s.set_title("s-2", "cc-legacy")
+            .expect("a stored name is not refused");
+    }
+
+    /// What a typed name means: the live exact one first, then a prefix, then an archived row.
+    /// A caller with no way to ask a person gets a refusal that names what to do instead.
+    #[test]
+    fn a_typed_name_means_exact_then_prefix_then_archived() {
+        let s = store();
+        put(&s, "s-1", "/w", Some("gate repair"));
+        put(&s, "s-2", "/w", Some("gate repair again"));
+        put(&s, "s-old", "/w", Some("gate watch"));
+        s.set_archived("s-old", true, None).unwrap();
+        put(&s, "s-elsewhere", "/other", Some("gate repair"));
+
+        assert_eq!(
+            s.meaning(&["/w".into()], "gate repair")
+                .unwrap()
+                .opened("gate repair")
+                .unwrap(),
+            "s-1"
+        );
+        assert_eq!(
+            s.meaning(&["/w".into()], "gate-repair")
+                .unwrap()
+                .opened("gate-repair")
+                .unwrap(),
+            "s-1",
+            "the slug is the same name"
+        );
+        let prefixes = s.meaning(&["/w".into()], "gate").unwrap();
+        assert!(
+            matches!(&prefixes, Meaning::Prefixes(rows) if rows.len() == 2),
+            "{prefixes:?}"
+        );
+        let e = prefixes.opened("gate").unwrap_err();
+        assert!(
+            e.contains("s-1") && e.contains("s-2") && e.contains("Use the id"),
+            "{e}"
+        );
+        let away = s.meaning(&["/w".into()], "gate watch").unwrap();
+        assert!(
+            matches!(&away, Meaning::Archived(rows) if rows[0].id == "s-old"),
+            "{away:?}"
+        );
+        assert!(away.opened("gate watch").unwrap_err().contains("archived"));
+        assert_eq!(
+            s.meaning(&["/w".into()], "nothing here").unwrap(),
+            Meaning::Nothing
+        );
+        assert!(matches!(
+            s.meaning(&["/w".into(), "/other".into()], "gate repair").unwrap(),
+            Meaning::Ambiguous(rows) if rows.len() == 2
+        ));
+    }
+
+    /// The file's rule is built by the migration: two rows that already shared a name of one
+    /// folder are separated, and the index exists afterwards. Written as a v61 store would have -
+    /// no keys, no index - because that is the shape the arm has to carry forward.
+    #[test]
+    fn the_name_migration_dashes_the_duplicates_it_finds() {
+        let file = dir("migrate").join("sessions.db");
+        {
+            let s = Store::open(&file).unwrap();
+            put(&s, "s-1", "/w", Some("same"));
+            put(&s, "s-2", "/w", None);
+        }
+        {
+            // The shape a build older than v62 leaves: no index, no key on the row it names.
+            let conn = rusqlite::Connection::open(&file).unwrap();
+            conn.execute_batch(
+                "DROP INDEX session_live_name;
+                 UPDATE session SET title = 'same', name_slug = NULL WHERE id = 's-2';
+                 UPDATE session SET name_slug = NULL;",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&file).unwrap();
+        assert_eq!(s.title("s-1").unwrap().as_deref(), Some("same"));
+        assert_eq!(
+            s.title("s-2").unwrap().as_deref(),
+            Some("same-2"),
+            "the older session keeps the name it has been answering to"
+        );
+        let indexed: i64 = s
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                  WHERE type = 'index' AND name = 'session_live_name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1, "the migration builds the index");
+        // And it refuses now.
+        put(&s, "s-3", "/w", None);
+        assert!(s.rename_unique("s-3", "same").is_err());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }

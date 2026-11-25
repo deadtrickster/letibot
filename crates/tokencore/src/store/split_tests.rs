@@ -456,7 +456,8 @@ fn an_older_set_migrates_both_files() {
     let shared = Connection::open(&paths[0]).expect("shared");
     shared
         .execute_batch(
-            "ALTER TABLE session DROP COLUMN archived_ms;
+            "DROP INDEX session_live_name;
+             ALTER TABLE session DROP COLUMN archived_ms;
              ALTER TABLE session DROP COLUMN archived_reason;
              UPDATE schema_version SET version = 44;",
         )

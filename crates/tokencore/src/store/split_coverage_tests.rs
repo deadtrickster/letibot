@@ -19,6 +19,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("leases.rs", include_str!("leases.rs")),
     ("marks.rs", include_str!("marks.rs")),
     ("modes.rs", include_str!("modes.rs")),
+    ("names.rs", include_str!("names.rs")),
     ("owners.rs", include_str!("owners.rs")),
     ("procs.rs", include_str!("procs.rs")),
     ("prompts.rs", include_str!("prompts.rs")),
@@ -272,6 +273,16 @@ const EXERCISED: &[&str] = &[
     "item_times",
     "export_session",
     "import_session",
+    "meaning",
+    "holder",
+    "taken_by",
+    "free_derived_name",
+    "check_name",
+    "named_rows",
+    "put_session",
+    "rename_unique",
+    "set_title",
+    "set_archived",
 ];
 
 #[test]
@@ -334,7 +345,7 @@ fn temp(name: &str) -> PathBuf {
 fn session(id: &str, parent: Option<&str>) -> SessionRecord {
     SessionRecord {
         id: id.into(),
-        title: Some("t".into()),
+        title: Some(id.into()),
         model_id: "qwen".into(),
         dialect_sha: "aa".repeat(32),
         workspace_root: "/w".into(),
@@ -637,6 +648,32 @@ fn every_project_method_runs_on_a_split_set() {
     // The half-import marker: written by an import, read by a retry, cleared by the operator.
     assert_eq!(s.import_pending("s1").unwrap(), None);
     assert!(!s.forget_import("s1").unwrap(), "nothing was pending");
+
+    // The name rule, which is the index's: the same queries run against the index file whatever
+    // shape the store is. `s1` and `s2` are two sessions of one folder, and which of them holds a
+    // name is the store's answer, not this test's.
+    assert!(matches!(
+        s.meaning(&["/w".into()], "s1").unwrap(),
+        Meaning::One(_)
+    ));
+    s.rename_unique("s1", "Stroppy Conformity").unwrap();
+    s.set_title("s2", "a child's own name").unwrap();
+    s.set_archived("s3", true, Some("done")).unwrap();
+    s.set_archived("s3", false, None).unwrap();
+    assert!(
+        s.taken_by("s2", "/w", "stroppy-conformity")
+            .unwrap()
+            .is_some()
+    );
+    assert!(s.holder("/w", "Stroppy Conformity").unwrap().is_some());
+    assert!(
+        s.free_derived_name("/w", "Stroppy Conformity")
+            .unwrap()
+            .ends_with("-2")
+    );
+    assert!(s.check_name(None, "/w", "s-1").is_err());
+    s.check_name(None, "/w", "a free name").unwrap();
+    assert_eq!(s.named_rows(Archived::No).unwrap().len(), 1);
 
     // Out of this set and into another, which takes the rows into its own two files.
     let transfer = s.export_session("s1").unwrap();

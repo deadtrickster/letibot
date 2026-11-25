@@ -463,6 +463,7 @@ pub fn write_to(store: &Store) -> impl Fn(&str, &str) -> Result<(), String> + '_
     move |id, reason| {
         store
             .set_archived(id, true, Some(reason))
+            .map(|_| ())
             .map_err(|e| e.to_string())
     }
 }

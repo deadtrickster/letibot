@@ -97,6 +97,9 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (59, Arm::Additive), // owner.daemon_pid/daemon_start: NULLed columns
     (60, Arm::Additive), // disclosure: a new table, which an older reader never names
     (61, Arm::Additive), // gate_live: a new table, which an older reader never names
+    (62, Arm::Additive), // session.workspace_canon/name_slug and session_live_name: two NULLed
+                         // columns, a backfill OF THEM, and a new index. The rows the backfill
+                         // dashes keep every column an older reader reads.
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],
