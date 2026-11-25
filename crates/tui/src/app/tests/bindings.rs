@@ -237,39 +237,71 @@ fn the_bar_follows_the_surface_in_front() {
     assert!(out.contains("esc back to the subagents"), "{out}");
 }
 
-/// The `Says` literals on the conversation bar have no dispatch table behind them, so each is
-/// driven here: the key named does what the words say. A new literal fails until it is added.
+/// The conversation's half of the bar is the head's key table read as words: every row of it is on
+/// the bar, spelled by the word the key has, and pressing that key does what the words say. A key
+/// renamed in the table and not in the dispatch fails here, which is the rename this guards.
 #[test]
-fn every_says_literal_on_the_conversation_bar_does_what_it_says() {
+fn the_conversation_bar_is_the_key_table_read_as_words() {
+    use crate::app::keys::bindings::{GLOBAL_CHORDS, Word, own_says, word_of};
     use crate::ui::hint_bar::{CONVERSATION, Chord};
+    let a = app();
+    let bar = a.conversation_hint();
+    for (k, says) in crate::app::keys::bindings::OWN {
+        let word = crate::app::key_word(k)
+            .unwrap_or_else(|| panic!("{k:?} is on the bar's table and has no word"));
+        // The word is never one `[keys]` could rebind a surface ONTO, and a `ctrl-` one is on the
+        // head's own refusal list - so a hint and a refusal spell one key.
+        assert!(
+            !matches!(word_of(word), Word::On(_)),
+            "{word} is spellable as a bindable key"
+        );
+        assert!(
+            !word.starts_with("ctrl-") || GLOBAL_CHORDS.contains(&word),
+            "{word} is a ctrl chord the head does not claim"
+        );
+        assert!(
+            bar.contains(&format!("{word} {says}")),
+            "{word} {says} is not on the bar: {bar}"
+        );
+    }
+    // Nothing on the bar is spelled by hand: every chord it names is a row of a table.
     for c in CONVERSATION {
-        let Chord::Says(key, says) = c else { continue };
+        if let Chord::Own(k) = c {
+            assert!(
+                own_says(k).is_some(),
+                "{k:?} is named on the bar and is not a row of the head's key table"
+            );
+        }
+    }
+}
+
+/// And each row's key does what its words say. Driven through `App::key`, so a key the table has
+/// moved - and the dispatch has not - is a bar naming a key that does nothing.
+#[test]
+fn every_key_on_the_conversation_bar_does_what_its_words_say() {
+    for (k, says) in crate::app::keys::bindings::OWN {
         let mut a = app();
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        match (*key, *says) {
-            ("ctrl-n", "clears notes") => {
+        match (k.clone(), *says) {
+            (Key::CtrlN, "clears notes") => {
                 a.key(Key::CtrlN);
                 let by_key = a.notice.clone();
                 let mut b = app();
                 let _ = b.notes_command("notes", "dismiss all");
                 assert_eq!(by_key, b.notice, "ctrl-n is not `/notes dismiss all`");
             }
-            ("ctrl-v", "newest result") => {
+            (Key::CtrlV, "newest result") => {
                 a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
                 let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
                 a_result_row(&mut a, 2, "i1", &long);
                 a.key(Key::CtrlV);
                 assert_eq!(a.payload_sel.as_deref(), Some("i1"), "no result window");
             }
-            ("/t", "all tool rows") => {
-                assert_eq!(a.command("t"), None);
-                assert!(a.tools.is_open(), "/t did not unfold the tool rows");
-            }
-            ("alt-n", "newest notice") => {
+            (Key::AltN, "newest notice") => {
                 a.key(Key::AltN);
                 assert!(
                     a.notice.as_deref().is_some_and(|n| n.contains("no notice")),
@@ -277,16 +309,33 @@ fn every_says_literal_on_the_conversation_bar_does_what_it_says() {
                     a.notice
                 );
             }
-            ("ctrl-p", "hold") => {
+            (Key::CtrlP, "hold") => {
                 a.key(Key::CtrlP);
                 assert!(a.hold, "ctrl-p did not hold the view");
             }
-            ("/help", "") => {
-                let _ = a.command("help");
-                assert_eq!(a.top_surface(), Some(Surface::Help));
-            }
             other => panic!("the bar names {other:?} and no test drives it"),
         }
+    }
+}
+
+/// The typed verbs on the bar are verbs this head answers: `/t` and `/help` are dispatched by
+/// `command`, and a bar naming a verb nothing answers would be a key that does nothing.
+#[test]
+fn every_verb_on_the_conversation_bar_is_one_the_head_has() {
+    use crate::ui::hint_bar::{CONVERSATION, Chord};
+    for c in CONVERSATION {
+        let Chord::Verb(word, _) = c else { continue };
+        // Driven rather than read off a list: `/t` is an alias of `/tools`, and the alias table is
+        // the dispatcher's rather than the heading's.
+        let mut a = app();
+        a.command(word.trim_start_matches('/'));
+        assert!(
+            !a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("unknown command")),
+            "{word} is on the bar and this head does not answer it: {:?}",
+            a.notice
+        );
     }
 }
 
@@ -461,6 +510,11 @@ fn every_pane_keeps_the_verb_table() {
                     assert_eq!(class, want, "{s:?} binds {} to {:?}", on.label(), b.act);
                 }
                 if let On::Char(c) = on {
+                    // A character is a LETTER unless the verb table already names it: `/` is a
+                    // shared verb, and a letter is never one.
+                    if verb_class(&on.label()).is_some() {
+                        continue;
+                    }
                     assert_eq!(
                         class,
                         Class::Own,

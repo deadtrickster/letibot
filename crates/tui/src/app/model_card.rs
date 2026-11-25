@@ -648,50 +648,11 @@ fn ranked<'a>(card: &'a ModelCard, query: &str, a: &App) -> Vec<ModelHit<'a>> {
 }
 
 /// The tier a subsequence match sits at, and the last one: see [`rank`].
-pub(crate) const SUBSEQUENCE: u8 = 4;
+pub(crate) use crate::app::query::SUBSEQUENCE;
 
-/// How well one model's name answers what was typed, lowest first: the whole name or the model part
-/// alone, a prefix of either, the start of a word inside it, anywhere inside it, and last its
-/// letters in order. `None` is no match at all.
-pub(crate) fn rank(name: &str, query: &str) -> Option<u8> {
-    let (name, query) = (name.to_lowercase(), query.to_lowercase());
-    let model = name.rsplit('/').next().unwrap_or(&name);
-    if name == query || model == query {
-        return Some(0);
-    }
-    if name.starts_with(&query) || model.starts_with(&query) {
-        return Some(1);
-    }
-    if word_start(&name, &query) {
-        return Some(2);
-    }
-    if name.contains(&query) {
-        return Some(3);
-    }
-    subsequence(&name, &query).then_some(SUBSEQUENCE)
-}
-
-/// Whether what was typed begins a word of the name: `pro` starts the `pro` of `deepseek-v4-pro`,
-/// and `deep` does not start the `deep` of `deepseek` by this test - a prefix already answered it.
-fn word_start(name: &str, query: &str) -> bool {
-    let mut from = 0;
-    while let Some(at) = name[from..].find(query) {
-        let at = from + at;
-        let before = name[..at].chars().next_back();
-        if before.is_none_or(|c| !c.is_alphanumeric()) {
-            return true;
-        }
-        from = at + query.len().max(1);
-    }
-    false
-}
-
-/// The query's letters in order inside the name, which is how `dflash` reaches
-/// `deepseek/deepseek-v4-flash`.
-fn subsequence(name: &str, query: &str) -> bool {
-    let mut letters = name.chars();
-    query.chars().all(|c| letters.any(|x| x == c))
-}
+/// How well one model's name answers what was typed: the one ladder every query is ranked by,
+/// spelled in `app::query` beside the phrase and `re:` tiers the session list and the panes share.
+pub(crate) use crate::app::query::rank;
 
 /// The characters of a name that the query matched, for the highlight: the contiguous run for a real
 /// match, and the scattered ones for a subsequence.

@@ -247,6 +247,10 @@ pub struct App {
     /// prompt is put back when the list closes instead of being read as a query. See
     /// [`App::hold_the_composer_for_the_picker`].
     pub(crate) picker_draft: Option<String>,
+    /// The `/` filter a list pane is narrowed by, while it is up: the pane, and the draft its line
+    /// displaced. The line itself is the composer's, so a pane's filter is typed the way every other
+    /// line here is. See `app::filter`.
+    pub(crate) filtering: Option<Filtering>,
     /// The home this head shortens paths against, `$HOME`, read once at construction: three
     /// places draw a path and a per-frame read would make the picture depend on the process's
     /// environment, which no test can pin. A test sets this field.
@@ -1414,6 +1418,7 @@ impl App {
             picker_seat_pending: false,
             picker_filter: String::new(),
             picker_draft: None,
+            filtering: None,
             home: std::env::var("HOME").unwrap_or_default(),
             frozen_now_ms: None,
             sessions_host: std::cell::RefCell::new(None),
@@ -1925,6 +1930,7 @@ pub(crate) mod diff_popup;
 mod editor;
 mod events;
 mod feedback;
+pub(crate) mod filter;
 mod ghlinks;
 mod hits;
 pub(crate) mod keyhints;
@@ -1941,6 +1947,9 @@ mod pictures;
 mod plugin;
 mod pointer;
 mod prefs;
+/// The one query a list is narrowed by - a `"phrase"`, a `re:` pattern, and the ladder - shared by
+/// the session list, every pane a `/` filter narrows and the model card.
+pub(crate) mod query;
 mod queue_pane;
 pub(crate) mod queue_rows;
 mod quick_ask;
@@ -1968,12 +1977,13 @@ pub(crate) use cards_plugin::*;
 pub(crate) use commands::*;
 pub use editor::*;
 pub(crate) use events::*;
+pub(crate) use filter::*;
 pub(crate) use hits::*;
 pub use keys::*;
 // The two `[keys]` values the bar and the help screen read, named here because `keys` is a private
 // module of `app` and `ui` is its sibling: a help screen that named the key a rebinding replaced
 // would advertise a key that does nothing.
-pub(crate) use keys::bindings::{KeyOverrides, surface_help_keys};
+pub(crate) use keys::bindings::{KeyOverrides, key_word, own_says, surface_help_keys};
 pub(crate) use links::{link_path_lines, osc8_spans};
 pub(crate) use model_card::*;
 pub(crate) use notes::*;
@@ -1983,6 +1993,7 @@ pub(crate) use pick::*;
 pub(crate) use pictures::*;
 pub(crate) use plugin::*;
 pub(crate) use prefs::*;
+pub(crate) use query::Query;
 pub(crate) use scroll::*;
 pub use session::*;
 pub(crate) use surface::*;

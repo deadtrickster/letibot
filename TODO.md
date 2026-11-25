@@ -171,7 +171,7 @@ Older backlog:
 | R385 | Plan 2.10: ship `terminal`, `dark` and `light`, a user file of the same name overrides one, the picker lists both | Code work | built (6ff4debfa); left: nothing this row names |
 | R283 | Markdown command files: `.letibot/commands/*.md` and the user's become `/name args` | Code work | built (3107cc7a6); left: no one-turn fleet model switch, non-bash patterns ignored, a new file shows after the next settings refresh |
 | R292 | One concept has several spellings: the stored-session verbs are six launcher flags | Code work | built (747b98cc1); left: drop the aliases next release, `session export`, old spellings printed by bridge, sessionlog and tui |
-| R289 | One verb table for list panes: the same key does the same thing in every pane | Code work | built (6c94d7c47); left: no pane has a `/` filter, the hint bar's conversation half is literals |
+| R289 | One verb table for list panes: the same key does the same thing in every pane | Code work | built (6c94d7c47); left: `/` narrows five panes (standing, skills, jobs, monitors, settings) - subagents, todos, the queue, a plugin pane and a command's listing are not wired, and the session list keeps its typed line as its filter |
 | R300 | The review queue asked the operator about harmless probes at `allow-all`, and the shadow said nothing on a relayed card | Code work | built (5e1ed9a22); left: the shadow judges the main workspace, not the reviewer's clone; `leticode_asks` drops the line |
 | R314 | Session and queue grants were lost on a restart, and each new reviewer asked again | Code work | built (47894496a); left: a parent does not re-read a child's view grants after a restart, `/config` lists no grants; running commands are I16 (R337) |
 | R316 | The shadow runs auto mode: its permission job becomes layer B, the oracle `automode` expects | Code work | design: `docs/design/automode-and-broker.md`, `docs/PLAN.md` section 1; stage 1's oracle is built (`shadow::oracle::ShadowOracle` behind `ModelAdjudicator`, `stage_scope`, `[shadow] answers`); after R361, R364-R370 for stages 3-4 |
@@ -276,7 +276,7 @@ Older backlog:
 | R268 | Spills are durable: kept in the data dir, bounded by a budget, evicted visibly | Code work | built (f2833c21a); left: `read_spill` lists the project-wide store, not the session's |
 | R269 | Per-job disk and IO accounting, an IO throttle and a disk floor | Code work | built (3a0393fac); left: the live IO-delegation checks on the box |
 | R284 | Tool calls of one message run one at a time | Code work | built (7f79499b4); left: `runs_pooled` keys on declared access, no harness-level pool test |
-| R286 | Live session search: the session list filters as you type | Code work | built (621c2ee23); left: `filter_hits` has no phrase or `re:` tier |
+| R286 | Live session search: the session list filters as you type | Code work | built (621c2ee23); left: the tiers are in `app::query` and `"phrase"`/`re:` reach the session list and five panes; the click's row is not highlighted
 | R293 | A skill that is box policy is offered like optional help, so a model ignores it | Needs the operator | built (e4a34db70); left: the operator's `leticode.toml` pins `rust-builds` with no `[skills.when.rust-builds]` |
 | R296 | The merge queue chooses its train size for each landing | Parked | design: this file's R296 section; after the stability bar |
 | R298 | A compaction the model asks for: no context check, three visible phases, a folded record | Code work | built (76b439a89); left: the reseat path has no `COMPACTION_PENDING` row |
@@ -4246,11 +4246,13 @@ Done when: `crates/tui/src/theme/tests.rs::every_shipped_theme_answers_for_every
 
 ## R286 - Live session search: the session list filters as you type
 
-**Status:** built, 2026-11-15. Audit package J4, plan item 1.18 (`/build/oss-harnesses/PLAN-fable-5.2.md`). left (sweep 2026-11-16): landed 621c2ee23; left: `filter_hits` has no phrase or `re:` tier.
+**Status:** built, 2026-11-15; its tiers 2026-11-25. Audit package J4, plan item 1.18 (`/build/oss-harnesses/PLAN-fable-5.2.md`). left: the rows are not highlighted, and only the session list and the panes R289 names are narrowed by a line.
 
 **Built.** While the session list is in front, the composer's line is its filter (`App::picker_filter`, synced after every key in `App::key`). A number names a row and a `/` or `!` line is a command, so neither filters (`pick::filter_of`). The head cuts the layer's feed to the hits (`App::filter_hits` in `sessions_pane.rs`) over title, slug, project, workspace and id, with the model card's `rank`: letters in order match only when no session contains the line. The feed says `filtered`, and the built-in `sessions` layer then draws every node open, so a hit inside a folded group or a folded project is on screen. A new filter puts the cursor on the top hit; Enter takes the row under the cursor (`App::pick`). The model card's search field is drawn over the list with the match count. `/switch NAME` with no list on screen still refuses an ambiguous name. Tests: `app::tests::session_search` (three characters narrow the list without Enter, a folded hit is drawn, Enter switches to the top hit and to the one the arrows moved to, numbers and commands do not filter, the subsequence fallback) and `a_filtered_feed_opens_every_group_it_holds` in `plugins/builtin/sessions`.
 
-**Left.** No `"phrase"` or `re:` tiers (pi has them). A layer other than the built-in one gets the cut feed but has to read `filtered` itself to unfold. The matched characters are not highlighted in the rows, since the layer draws them.
+**The tiers, 2026-11-25.** `crates/tui/src/app/query.rs` is the parser and the matcher every filtered list now shares. Three spellings: `"a phrase"` is those characters in that order, case folded, and it never reaches the letters-in-order rung; `re:<pattern>` is a real regular expression, with the pattern's own case rules; anything else is the ladder the model card wrote, unchanged. A `re:` that does not compile keeps no row and carries its one-line reason, which the filter line draws - never a panic. `filter_hits` asks the module for the session list over the same five fields, and the ladder's fallback rule is `Query::strict`'s, computed over the whole row set as before. Tests: five in `app::query` (the three spellings told apart, a phrase matching exactly and never the ladder, a pattern's own case rules, a bad pattern keeping nothing and saying why, the ladder and its fallback), and three in `app::tests::session_search` driven through the keys - `a_quoted_phrase_matches_the_words_as_typed`, `a_regex_narrows_the_session_list_by_its_pattern`, `a_bad_regex_empties_the_list_and_says_why_in_the_field`.
+
+**Left.** A layer other than the built-in one gets the cut feed but has to read `filtered` itself to unfold. The matched characters are not highlighted in the rows, since the layer draws them. And the syntax is `crates/tui/src/app/query.rs`'s for now: R385's conversation search has the same three spellings in `crates/transcript/src/search.rs` (the lowest crate both the head and the daemon's store scan already depend on), so when that lands this module should move under it rather than stay a second parser.
 ## R297 - A limit's model switch was a transient line that vanished
 
 **Status:** built, 2026-11-15, branch `limit-notice`. left (sweep 2026-11-16): `limit_hook` and `limit_new_session` are not in `LIMIT_NOTICES` (`tui/src/app/limit_notice.rs:9-14`) - the 5h window is not named because the refusal does not carry it.
@@ -6013,8 +6015,7 @@ than one call. The live check on a real z.ai limit.
 Plan 1.23 (`PLAN-fable-5.2.md`), package J7. `d`, `r`, `n`, `o`, Tab and Enter each had two or three
 meanings across panes, the session list was the only list that paged, and only rooms had a filter.
 
-**Status:** built on branch `j7-verbs`. left (sweep 2026-11-16): no pane has a `/` filter yet (`/` on an empty composer is still a slash command), and the hint bar's conversation half (`ui/hint_bar.rs` `CONVERSATION`) is not read from the table. On main since 6c94d7c47.
-hint bar read from the table.
+**Status:** built on branch `j7-verbs`; the `/` filter and the generated conversation bar 2026-11-25. On main since 6c94d7c47.
 
 **Built:**
 - `VERBS` and `Class` in `crates/tui/src/app/keys/bindings.rs`: Move (arrows), Open (enter), Remove
@@ -6030,12 +6031,27 @@ hint bar read from the table.
 - Tests: `app::tests::bindings::every_pane_keeps_the_verb_table` (each list pane's shared keys hold
   their class, a letter is never a shared verb and means one act on every surface, rano's `SHARED` rows
   keep esc as Leave) and `pgdn_pages_every_list_pane`.
+- **`/`, 2026-11-25.** `Class::Filter` has its act (`Act::Filter`) and every pane whose rows can be
+  narrowed binds it: standing, skills, jobs, monitors and the settings pane. `/` holds the composer's
+  words aside and makes its line the filter (`app::filter`), so what is typed narrows the rows through
+  `app::query` - the same `"phrase"`/`re:`/ladder the session list uses. The filter's own row is drawn
+  above the pane (`pane_window`), saying how many rows it keeps, or why a `re:` is not a pattern. Esc
+  takes the filter down before it takes the pane, and Enter over a filtered list is the row's, never a
+  message. Tests: `app::tests::filter` (standing narrows and Esc gives it back, the jobs pane narrows
+  by a phrase and not by its letters in order, a bad regex says why, Enter takes the row rather than
+  sending the line, and only a pane that narrows binds `/`).
+- **The conversation's half of the bar** is the head's key table now: `bindings::OWN` (a key and what it
+  does) with `key_word`'s spelling, and `ui/hint_bar.rs`'s `CONVERSATION` names the key, never a
+  string. Tests: `the_conversation_bar_is_the_key_table_read_as_words` (each row's word and words are
+  on the bar, every chord on the bar is a row), `every_key_on_the_conversation_bar_does_what_its_words_say`
+  (each row's key driven through `App::key`) and `every_verb_on_the_conversation_bar_is_one_the_head_has`.
 
 **Left:**
-- `/` filter: only rooms (`/search`) and the picker's typed path filter. `/` on an empty composer starts
-  a slash command, so a filter key needs the composer's first `/` decided per pane first.
-- The conversation half of the bar (`ui/hint_bar.rs` `CONVERSATION`) is still literals; the surface
-  half is generated from the tables.
+- `/` narrows five panes. The subagents tree, the todos pane, the queue, a plugin's pane and a
+  command's listing do not bind it yet: the first two enumerate their rows as folded groups whose stop
+  indices are the row indices, the queue has the layer's own `filter`, and a plugin's rows are the
+  layer's document. The session list keeps its typed line as its filter, so `/` there is still `/new`.
+- A filter's line is the composer's, so a pane's filter and a draft cannot be on the screen at once.
 ## R309 - The edge says `1 stuck` and the queue pane it opens is empty
 
 **Status:** built, 2026-11-16.

@@ -87,6 +87,18 @@ fn dir_signature(dir: &std::path::Path) -> Option<(u64, usize)> {
 }
 
 impl App {
+    /// The notes a `/` filter keeps, as indices into [`App::standing`]: every note when nothing
+    /// narrows the pane. A note is filtered by its path and by its abstract - the two facts its row
+    /// shows - with the one query every list here is narrowed by (`app::query`).
+    pub(crate) fn standing_hits(&self) -> Vec<usize> {
+        self.pane_filter_hits(
+            Surface::Standing,
+            self.standing
+                .iter()
+                .map(|e| vec![e.path.as_str(), e.abstract_line.as_deref().unwrap_or("")]),
+        )
+    }
+
     /// The pane row the note at the cursor was drawn on, read out of `standing_stop_rows` - the record
     /// the pane wrote while drawing, never arithmetic over the list it drew from. The clamp is the
     /// jobs pane's: the list can change under the cursor.
@@ -101,7 +113,11 @@ impl App {
     /// because an indexed note is one the prompt does not carry whole, so drawing the prompt's words
     /// would show the index and call it the note. A file that is gone is said, and nothing opens.
     pub(crate) fn open_note(&mut self) {
-        let Some(entry) = self.standing.get(self.standing_sel) else {
+        let Some(entry) = self
+            .standing_hits()
+            .get(self.standing_sel)
+            .and_then(|i| self.standing.get(*i))
+        else {
             return;
         };
         self.open_in_editor(&FileRef::file(&entry.path));

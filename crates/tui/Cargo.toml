@@ -27,6 +27,9 @@ serde.workspace = true
 serde_json.workspace = true
 # `@path` completion in the room composer walks the workspace with grep's `.gitignore` rules.
 ignore = "0.4"
+# A filter's `re:` tier: the pattern a person types is a real regular expression, and one that does
+# not compile says so in the filter line rather than being spelled by hand here.
+regex = "1.13"
 # The daemon's pid off the socket (`getsockopt`, in the driver) and the local clock
 # (`localtime_r`). Raw mode and the window size are rano's now (`rano::term`). `libc` is
 # already in the tree via the token core.

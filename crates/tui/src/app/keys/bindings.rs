@@ -100,6 +100,9 @@ pub(crate) enum Act {
     Page,
     /// The row's act: switch, open, read, change.
     Open,
+    /// The list's `/`: narrow the rows by the line typed into the composer, and draw that line over
+    /// the list. Esc takes it down (see `app::filter`).
+    Filter,
     /// The todos pane's second act on the row (`x`).
     Alt,
     /// Read a subagent's output without leaving.
@@ -211,6 +214,7 @@ impl Act {
             Act::Scroll if on == On::Page => Class::Page,
             Act::Cursor | Act::Scroll => Class::Move,
             Act::Page => Class::Page,
+            Act::Filter => Class::Filter,
             Act::Open | Act::ResendSend => Class::Open,
             Act::Remove | Act::Verb(Verb::Rm) | Act::KillJob | Act::Retire | Act::DismissSend => {
                 Class::Remove
@@ -219,6 +223,48 @@ impl Act {
             _ => Class::Own,
         }
     }
+}
+
+/// The head's own keys, in the order the bar ranks them: the key, and what pressing it does. This is
+/// the table `key_dispatch` is judged by - a row whose key no longer does what its words say is a bar
+/// that names a dead key - and the conversation's half of the hint bar is read from it.
+pub(crate) const OWN: &[(Key, &str)] = &[
+    (Key::CtrlN, "clears notes"),
+    (Key::CtrlV, "newest result"),
+    (Key::AltN, "newest notice"),
+    (Key::CtrlP, "hold"),
+];
+
+/// A head key as the bar and `[keys]` spell it, or `None` for one of the composer's or the editor's
+/// own, which no hint here names. Every word is one [`GLOBAL_CHORDS`] lists, so a hint and a refusal
+/// spell one key.
+pub(crate) fn key_word(k: &Key) -> Option<&'static str> {
+    Some(match k {
+        Key::CtrlS => "ctrl-s",
+        Key::CtrlT => "ctrl-t",
+        Key::CtrlG => "ctrl-g",
+        Key::CtrlQ => "ctrl-q",
+        Key::CtrlN => "ctrl-n",
+        Key::CtrlP => "ctrl-p",
+        Key::CtrlV => "ctrl-v",
+        Key::CtrlR => "ctrl-r",
+        Key::CtrlX => "ctrl-x",
+        Key::CtrlL => "ctrl-l",
+        Key::CtrlO => "ctrl-o",
+        Key::CtrlE => "ctrl-e",
+        Key::CtrlBracket => "ctrl-]",
+        Key::CtrlCaret => "ctrl-^",
+        Key::CtrlC => "ctrl-c",
+        Key::Esc => "esc",
+        Key::AltN => "alt-n",
+        _ => return None,
+    })
+}
+
+/// The words a head key carries, from [`OWN`] - `None` for a key the bar has nothing to say about,
+/// which the bar then leaves off rather than spelling by hand.
+pub(crate) fn own_says(k: &Key) -> Option<&'static str> {
+    OWN.iter().find(|(on, _)| on == k).map(|(_, says)| *says)
 }
 
 /// What the bar and the help say about a binding.
@@ -259,6 +305,9 @@ const UPDOWN: &[On] = &[On::Up, On::Down];
 const PAGE: Binding = b(&[On::Page], Always, Act::Scroll, Text("scroll"));
 const WHEEL: Binding = b(&[On::Wheel], Always, Act::Scroll, Nothing);
 const LIST: Binding = b(UPDOWN, Always, Act::Cursor, Text("moves"));
+// A list's `/`: the line the pane is narrowed by, drawn over it (`app::filter`). The guard is every
+// other letter's, so once the filter has words a `/` among them is just a character.
+const FILTER: Binding = b(&[On::Char('/')], Empty, Act::Filter, Text("filters"));
 // A list's page key moves its cursor a page, so the window that follows the cursor moves with it.
 const LIST_PAGE: Binding = b(&[On::Page], Always, Act::Page, Text("pages"));
 
@@ -301,6 +350,7 @@ const PICKER: &[Binding] = &[
 ];
 const CONFIG: &[Binding] = &[
     LIST,
+    FILTER,
     b(
         &[On::Enter],
         Always,
@@ -411,6 +461,7 @@ const QUEUE_ENTRY: &[Binding] = &[
 ];
 const STANDING: &[Binding] = &[
     LIST,
+    FILTER,
     b(
         &[On::Enter],
         Always,
@@ -424,6 +475,7 @@ const STANDING: &[Binding] = &[
 /// body to the session is its own key, because it starts a turn.
 const SKILLS: &[Binding] = &[
     LIST,
+    FILTER,
     b(
         &[On::Enter],
         Always,
@@ -454,6 +506,7 @@ const SUB_OUT: &[Binding] = &[
 ];
 const JOBS: &[Binding] = &[
     LIST,
+    FILTER,
     b(&[On::Enter], Always, Act::Open, Row),
     b(
         &[On::Delete],
@@ -466,6 +519,7 @@ const JOBS: &[Binding] = &[
 ];
 const MONITORS: &[Binding] = &[
     LIST,
+    FILTER,
     b(
         &[On::Enter],
         Always,

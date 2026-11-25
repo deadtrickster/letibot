@@ -239,6 +239,11 @@ impl App {
     /// it covers keeps its scroll in its entry. This is the stack's half of opening; the surface's
     /// own half - asking the daemon for rows, seeding a cursor - is [`App::open_surface`].
     pub(crate) fn push_surface(&mut self, s: Surface) {
+        // A filter belongs to the pane it narrows: another pane in front ends it, and the composer
+        // gets back the words it was holding (see `app::filter`).
+        if self.filtering.as_ref().is_some_and(|f| f.surface != s) {
+            self.clear_filter();
+        }
         if let Some(top) = self.surfaces.last_mut() {
             top.scroll = self.pane_scroll;
         }
@@ -287,6 +292,14 @@ impl App {
         }
         for g in gone {
             self.forget_surface(g);
+        }
+        // The pane a filter was narrowing is gone, so the filter goes with it.
+        if self
+            .filtering
+            .as_ref()
+            .is_some_and(|f| !self.is_open(f.surface))
+        {
+            self.clear_filter();
         }
         if self.top_surface() != was_top {
             self.pane_scroll = self.surfaces.last().map_or(0, |o| o.scroll);

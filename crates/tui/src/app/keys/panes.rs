@@ -41,6 +41,26 @@ impl App {
     /// `main_area` draws. The key is looked up in that surface's table; a key it does not name falls
     /// through to the shared rules: Esc and ctrl-c pop, and Enter is owned (`Surface::owns_enter`).
     pub(crate) fn key_surface(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        if let Some(s) = self.focused_surface() {
+            // A `/` filter's own two keys, before the pane's: Esc takes the filter down rather than
+            // the pane - the reader wants their rows back - and Enter is the row's, because what is
+            // typed into the composer is a question about the list and not a message.
+            if self.filtering() {
+                match k {
+                    Key::Esc => {
+                        self.clear_filter();
+                        return ControlFlow::Break(None);
+                    }
+                    Key::Enter => {
+                        if let Some(b) = self.binding_for(s, k) {
+                            let _ = self.surface_act(s, b.act, k);
+                        }
+                        return ControlFlow::Break(None);
+                    }
+                    _ => {}
+                }
+            }
+        }
         let Some(s) = self.focused_surface() else {
             return ControlFlow::Continue(());
         };
@@ -191,6 +211,12 @@ impl App {
                 ControlFlow::Break(None)
             }
             Act::Verb(v) => self.queue_verb(v),
+            // `/`: the line the pane is narrowed by. The composer's line becomes the filter, so what
+            // is typed next narrows the rows instead of being a message (see `app::filter`).
+            Act::Filter => {
+                self.start_filter();
+                ControlFlow::Break(None)
+            }
             // A plugin's own keys, read from the view on the screen: a panel's key, `f`, `l`, or
             // an action letter of the selected stop.
             Act::PluginKey => self.plugin_key(k),
@@ -278,7 +304,8 @@ impl App {
                 self.scroll_into_view(self.queue_row_of());
             }
             Surface::Standing => {
-                let n = self.standing.len();
+                // The rows a `/` filter keeps: the cursor walks what is DRAWN, not the whole list.
+                let n = self.standing_hits().len();
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
@@ -286,7 +313,7 @@ impl App {
                 self.scroll_into_view(self.standing_row_of());
             }
             Surface::Skills => {
-                let n = self.skills.len();
+                let n = self.skill_hits().len();
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
@@ -657,7 +684,12 @@ impl App {
                     self.say("not attached to a session yet");
                     return ControlFlow::Break(None);
                 }
-                ControlFlow::Break(self.open_job_out(i))
+                // A stop is a position in the rows on the screen; the job is found through the
+                // filter that put them there.
+                let Some(at) = self.job_hits().get(i).copied() else {
+                    return ControlFlow::Continue(());
+                };
+                ControlFlow::Break(self.open_job_out(at))
             }
         }
     }

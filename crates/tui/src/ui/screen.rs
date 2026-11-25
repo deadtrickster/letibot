@@ -1071,7 +1071,9 @@ impl App {
             }
             Drawn::Surface(Surface::Config) => {
                 let rows = self.config_lines(w);
-                self.pane_window(rows, room)
+                // The settings pane narrows its own rows, so the filter's line counts them there.
+                let kept = self.config_rows().len();
+                self.filtered_window(rows, room, kept)
             }
             Drawn::Surface(Surface::SubOut) => {
                 let mut rows = self.sub_out_lines(room);
@@ -1102,12 +1104,14 @@ impl App {
             }
             Drawn::Surface(Surface::Standing) => {
                 let rows = self.standing_lines(w);
-                self.pane_window(rows, room)
+                let kept = self.standing_hits().len();
+                self.filtered_window(rows, room, kept)
             }
             Drawn::Surface(Surface::Rooms) => self.rooms_lines(w, room),
             Drawn::Surface(Surface::Skills) => {
                 let rows = self.skills_lines(w);
-                self.pane_window(rows, room)
+                let kept = self.skill_hits().len();
+                self.filtered_window(rows, room, kept)
             }
             Drawn::Surface(Surface::Subagents) => {
                 let rows = self.subagents_lines(w);
@@ -1115,11 +1119,13 @@ impl App {
             }
             Drawn::Surface(Surface::Jobs) => {
                 let rows = self.jobs_lines(w);
-                self.pane_window(rows, room)
+                let kept = self.job_hits().len();
+                self.filtered_window(rows, room, kept)
             }
             Drawn::Surface(Surface::Monitors) => {
                 let rows = self.monitors_lines(w);
-                self.pane_window(rows, room)
+                let kept = self.monitor_hits().len();
+                self.filtered_window(rows, room, kept)
             }
             // A plugin's pane, drawn through `pane_window` like every other: its own
             // document is as long as a project's plan is, so it scrolls and pages with the

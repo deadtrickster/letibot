@@ -58,7 +58,7 @@ impl App {
                 else {
                     return None;
                 };
-                let row = self.jobs.get(i)?;
+                let row = self.job_hits().get(i).and_then(|k| self.jobs.get(*k))?;
                 if !row.running {
                     self.say(&format!("`{}` is not running", row.id));
                     return None;
@@ -94,9 +94,12 @@ impl App {
     /// break `ReadJobOutput` or encode structure as words. Until rano adds one, `/job` shows it beside the id (`Harness::job_lines`).
     pub(crate) fn jobs_view(&self) -> JobsPane {
         JobsPane {
+            // The rows a `/` filter keeps: the stops, the cursor and the drawing are one list, so a
+            // stop's index is a position in what is on the screen.
             jobs: self
-                .jobs
-                .iter()
+                .job_hits()
+                .into_iter()
+                .filter_map(|i| self.jobs.get(i))
                 .map(|j| JobRow {
                     id: j.id.clone(),
                     command: j.command.clone(),

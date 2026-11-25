@@ -38,12 +38,16 @@ impl App {
         // the answer, one drawing. While the stack is being built the pane is one line about it.
         let list = self.picker_list(w, h);
         let content = list.content;
-        // The live filter is drawn as the model card's search field, over the list it narrows.
+        // The live filter is drawn as the model card's search field, over the list it narrows. A
+        // `re:` that does not compile says why there instead of counting a list it emptied.
         let field = (!self.picker_filter.is_empty()).then(|| {
             let n = list.rows.iter().filter(|r| r.session.is_some()).count();
-            let note = match n {
-                1 => "1 match".to_string(),
-                n => format!("{n} matches"),
+            let note = match Query::parse(&self.picker_filter).error() {
+                Some(why) => why.to_string(),
+                None => match n {
+                    1 => "1 match".to_string(),
+                    n => format!("{n} matches"),
+                },
             };
             crate::ui::cards::model::query_row(&self.picker_filter, note, w)
         });

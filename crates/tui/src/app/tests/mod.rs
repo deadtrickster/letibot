@@ -1409,6 +1409,7 @@ mod diffcard;
 mod draft;
 mod editor;
 mod feedback;
+mod filter;
 mod ghlinks;
 mod header_ctx;
 mod hits;

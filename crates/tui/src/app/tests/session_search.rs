@@ -168,6 +168,61 @@ fn the_lists_own_line_narrows_it_and_esc_gives_the_draft_back() {
     assert_eq!(drawn_ids(&a), every, "the list is whole again");
 }
 
+/// A phrase is the characters in that order and nothing looser: the letters-in-order fallback that
+/// answers `rwrt` below does not answer `"rwrt"`, which is what quoting one is for.
+#[test]
+fn a_quoted_phrase_matches_the_words_as_typed() {
+    let mut a = a_head();
+    typed(&mut a, "\"rust bench\"");
+    assert_eq!(
+        drawn_ids(&a),
+        vec!["s-bench".to_string()],
+        "the phrase narrowed to the title that holds it"
+    );
+    // The same letters, unquoted, still reach it by the ladder - and the phrase around them does
+    // not, because no title contains `r-b-u-s-t` in that order as words.
+    a.key(Key::Esc);
+    a.key(Key::CtrlS);
+    typed(&mut a, "\"rwrt\"");
+    assert_eq!(
+        drawn_ids(&a),
+        Vec::<String>::new(),
+        "a phrase fell back to letters"
+    );
+}
+
+/// `re:` is a regular expression over the same fields: an id and a title can be asked for at once,
+/// which no tier of the ladder can do.
+#[test]
+fn a_regex_narrows_the_session_list_by_its_pattern() {
+    let mut a = a_head();
+    typed(&mut a, "re:^s-(pkg|far)$");
+    assert_eq!(
+        drawn_ids(&a),
+        vec!["s-pkg".to_string(), "s-far".to_string()],
+        "the pattern matched two ids and the list drew them"
+    );
+    // The same pattern with a case the ids do not have matches nothing at all.
+    a.key(Key::Esc);
+    a.key(Key::CtrlS);
+    typed(&mut a, "re:^S-PKG$");
+    assert_eq!(drawn_ids(&a), Vec::<String>::new());
+}
+
+/// A pattern that does not compile keeps no row and says why in the search field: the line is the
+/// only place the answer can be, since the list it emptied cannot explain itself.
+#[test]
+fn a_bad_regex_empties_the_list_and_says_why_in_the_field() {
+    let mut a = a_head();
+    typed(&mut a, "re:s-(");
+    assert_eq!(drawn_ids(&a), Vec::<String>::new(), "a bad pattern matched");
+    let screen = a.screen(140, 30).join("\n");
+    assert!(
+        screen.contains("unclosed group") || screen.contains("regex"),
+        "the search field does not say why the list is empty:\n{screen}"
+    );
+}
+
 /// The other way out: `ctrl-s` again closes the list, and the search it was narrowed with is not
 /// left in the composer to be sent as a prompt.
 #[test]

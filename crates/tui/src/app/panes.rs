@@ -137,6 +137,18 @@ impl App {
             .min(self.subagent_stops().len().saturating_sub(1));
     }
 
+    /// The jobs a `/` filter keeps, as indices into [`App::jobs`]: every job when nothing narrows
+    /// the pane. The command, the id and the state word are what a row shows, so they are what it
+    /// is filtered by.
+    pub(crate) fn job_hits(&self) -> Vec<usize> {
+        self.pane_filter_hits(
+            Surface::Jobs,
+            self.jobs
+                .iter()
+                .map(|j| vec![j.id.as_str(), j.command.as_str(), j.state.as_str()]),
+        )
+    }
+
     /// The jobs pane's rows, as one enumeration: running first, then one folded `finished (N)` row. Same shape as the
     /// subagents pane, and for the same reason.
     pub(crate) fn job_stops(&self) -> Vec<JobStop> {
@@ -172,6 +184,25 @@ impl App {
         let max = rows.len().saturating_sub(room);
         self.pane_scroll = self.pane_scroll.min(max);
         rows.into_iter().skip(self.pane_scroll).take(room).collect()
+    }
+
+    /// [`App::pane_window`] for a pane whose rows a `/` filter narrows: the filter's own line takes
+    /// the first row of the body, and `kept` is the count it says - the rows the query kept, not the
+    /// lines the pane drew. The window's own numbers stay the BODY's, so the recorded stop rows, the
+    /// keys' scroll and the click map keep one coordinate system.
+    pub(crate) fn filtered_window(
+        &mut self,
+        rows: Vec<String>,
+        room: usize,
+        kept: usize,
+    ) -> Vec<String> {
+        let room = room.saturating_sub(usize::from(self.filter_query().is_some()));
+        let field = self.filter_field(kept, self.cfg.width);
+        let body = self.pane_window(rows, room);
+        match field {
+            Some(field) => std::iter::once(field).chain(body).collect(),
+            None => body,
+        }
     }
 
     /// Keep the cursor on screen after an arrow moved it: `row` is the cursor's index among the pane's rows, and an

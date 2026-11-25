@@ -7,12 +7,15 @@ use rano::agent::monitors::{MonitorRow, MonitorsPane};
 
 impl App {
     /// The monitors pane's facts, in rano's words: the daemon's table and the cursor, and the
-    /// clock the time left is counted against.
+    /// clock the time left is counted against. The rows a `/` filter keeps are the whole list here -
+    /// the stops, the selected row and the drawing all read this one - so a stop's index is a
+    /// position on the screen.
     pub(crate) fn monitors_view(&self) -> MonitorsPane {
         MonitorsPane {
             monitors: self
-                .monitors
-                .iter()
+                .monitor_hits()
+                .into_iter()
+                .filter_map(|i| self.monitors.get(i))
                 .map(|m| MonitorRow {
                     name: m.name.clone(),
                     watching: m.watching.clone(),
@@ -28,6 +31,17 @@ impl App {
             now_ms: letibot_sessionlog::registry::now_ms(),
             selected: self.monitors_sel,
         }
+    }
+
+    /// The monitors a `/` filter keeps, as indices into [`App::monitors`]: every monitor when
+    /// nothing narrows the pane. The name and what it watches are what a row shows.
+    pub(crate) fn monitor_hits(&self) -> Vec<usize> {
+        self.pane_filter_hits(
+            Surface::Monitors,
+            self.monitors
+                .iter()
+                .map(|m| vec![m.name.as_str(), m.watching.as_str()]),
+        )
     }
 
     /// The live monitors the cursor walks - indices into [`App::monitors`].

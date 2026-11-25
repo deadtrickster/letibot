@@ -9,11 +9,17 @@ use rano::render::Line;
 use rano::style::Role;
 
 /// One of the conversation's chords, as the bar names it - read from the table its dispatch
-/// reads where there is one (`Surface::chord`, `Show::chord`), so the two cannot drift.
+/// reads where there is one, so neither can name a key the other does not act on.
 pub(crate) enum Chord {
+    /// A key that opens a surface: the chord and the key are `Surface::chord`'s.
     Surface(Surface, &'static str),
+    /// A key that flips a switch: `Show::chord`'s.
     Show(Show),
-    Says(&'static str, &'static str),
+    /// One of the head's own keys, by the KEY: the word and the words are `bindings::OWN`'s, so a
+    /// key renamed there is renamed here and a row the table has not got is left off the bar.
+    Own(Key),
+    /// A verb typed into the composer, and its own words: nothing here is a key.
+    Verb(&'static str, &'static str),
 }
 
 /// The conversation's chords, in the order the bar names them. The bar is over capacity at
@@ -21,20 +27,20 @@ pub(crate) enum Chord {
 /// reflexes first, `/help` - the index - last.
 pub(crate) const CONVERSATION: &[Chord] = &[
     Chord::Surface(Surface::Picker, "sessions"),
-    Chord::Says("ctrl-n", "clears notes"),
+    Chord::Own(Key::CtrlN),
     Chord::Surface(Surface::Todos, "todos"),
     Chord::Surface(Surface::Subagents, "subagents"),
     Chord::Show(Show::Thinking),
     // `ctrl-v` and `/t` are adjacent on purpose: they are the two things a reader
     // confuses, so the bar states both - one result against all of them. The clipboard's
     // picture is `cmd-v`'s and is no longer this key's first step, so the bar does not say so.
-    Chord::Says("ctrl-v", "newest result"),
-    Chord::Says("/t", "all tool rows"),
+    Chord::Own(Key::CtrlV),
+    Chord::Verb("/t", "all tool rows"),
     // A notice line's details from the keyboard: the click's other half.
-    Chord::Says("alt-n", "newest notice"),
+    Chord::Own(Key::AltN),
     Chord::Surface(Surface::Jobs, "jobs"),
-    Chord::Says("ctrl-p", "hold"),
-    Chord::Says("/help", ""),
+    Chord::Own(Key::CtrlP),
+    Chord::Verb("/help", ""),
 ];
 
 /// The editor pane's own keys while the composer has the keyboard: the pane is on the screen and
@@ -49,8 +55,12 @@ impl App {
             .filter_map(|c| match c {
                 Chord::Surface(s, says) => s.chord().map(|(key, _)| format!("{key} {says}")),
                 Chord::Show(s) => s.chord().map(|(key, _)| format!("{key} {}", s.name())),
-                Chord::Says(key, "") => Some(key.to_string()),
-                Chord::Says(key, says) => Some(format!("{key} {says}")),
+                Chord::Own(k) => {
+                    let (word, says) = (crate::app::key_word(k)?, crate::app::own_says(k)?);
+                    Some(format!("{word} {says}"))
+                }
+                Chord::Verb(word, "") => Some(word.to_string()),
+                Chord::Verb(word, says) => Some(format!("{word} {says}")),
             })
             .collect::<Vec<_>>()
             .join(" · ")

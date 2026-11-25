@@ -427,14 +427,15 @@ impl App {
     }
 }
 
-/// What a composer line filters the session list by, lowercased. A number names a row and a `/` or
-/// `!` line is a command, so neither filters.
+/// What a composer line filters a list by: the line as typed, unless it is empty, a number that
+/// names a row, or a `/` or `!` command. What the words then MEAN is `app::query`'s, which folds
+/// case itself and passes a `re:` pattern through untouched.
 pub(crate) fn filter_of(line: &str) -> String {
     let t = line.trim();
     if t.is_empty() || t.starts_with(['/', '!']) || t.parse::<usize>().is_ok() {
         return String::new();
     }
-    t.to_lowercase()
+    t.to_string()
 }
 
 impl App {
@@ -472,7 +473,7 @@ impl App {
 
     /// The composer's line replaced whole. Not [`App::set_composer`], which kills to the end of one
     /// LINE: a draft is several lines and the rest of it would stay behind the empty search.
-    fn set_the_composer_line(&mut self, text: &str) {
+    pub(crate) fn set_the_composer_line(&mut self, text: &str) {
         self.editor.kill_range(0..self.editor.text().len());
         if !text.is_empty() {
             self.editor.insert(text);

@@ -18,24 +18,43 @@ impl App {
         crate::ui::render::row_strings(&content.lines, self.cfg.palette())
     }
 
+    /// The skills a `/` filter keeps, as indices into [`App::skills`]: every skill when nothing
+    /// narrows the pane, and the name, its one line and where it was found are what it is filtered by.
+    pub(crate) fn skill_hits(&self) -> Vec<usize> {
+        self.pane_filter_hits(
+            Surface::Skills,
+            self.skills
+                .iter()
+                .map(|s| vec![s.name.as_str(), s.description.as_str(), s.source.as_str()]),
+        )
+    }
+
+    /// The pane's rows, and the record of where each stop landed - which is what the
+    /// arrows scroll by, never arithmetic over the list they drew from.
     fn skills_view(&self, _w: usize) -> (PaneLines, Vec<usize>) {
         let mut out = PaneLines::new();
         let mut stops = Vec::new();
-        let n = self.skills.len();
+        // The rows a `/` filter keeps: the title's count, the cursor and the rows are one list.
+        let hits = self.skill_hits();
+        let n = hits.len();
         out.push(pane::title(format!(
             "skills — {n} this box can hand you; enter opens its file, s hands it to the session"
         )));
         out.blank();
-        if self.skills.is_empty() {
-            out.push(pane::faint(
-                "    none. A skill is a `SKILL.md` under `.letibot/skills/`, `.claude/skills/` or \
-                 `~/.config/letibot/skills/`, a layer's — or one this build carries.",
-            ));
+        if n == 0 {
+            out.push(pane::faint(match self.filtering() {
+                true => "    nothing here answers the filter — esc gives the skills back.",
+                false => {
+                    "    none. A skill is a `SKILL.md` under `.letibot/skills/`, `.claude/skills/` or \
+                     `~/.config/letibot/skills/`, a layer's — or one this build carries."
+                }
+            }));
             return (out, stops);
         }
         let cursor = self.skills_sel.min(n.saturating_sub(1));
-        for (i, s) in self.skills.iter().enumerate() {
-            let picked = i == cursor;
+        for (k, at) in hits.iter().enumerate() {
+            let s = &self.skills[*at];
+            let picked = k == cursor;
             let row = out.lines.len();
             out.push(Line::new(vec![
                 Span::raw(format!("{} ", pane::mark(picked))),
@@ -64,8 +83,9 @@ impl App {
 
     /// The skill row the cursor is on.
     fn selected_skill_row(&self) -> Option<&letibot_sessionlog::protocol::SkillRow> {
-        self.skills
-            .get(self.skills_sel.min(self.skills.len().saturating_sub(1)))
+        self.skill_hits()
+            .get(self.skills_sel)
+            .and_then(|i| self.skills.get(*i))
     }
 
     /// Enter: the skill's `SKILL.md` in the editor pane. A skill with no file (built in, on a

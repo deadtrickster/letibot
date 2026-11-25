@@ -43,26 +43,33 @@ impl App {
         if let Some(dir) = &self.standing_dir {
             corpus.watch_dir(std::path::Path::new(dir));
         }
-        let n = self.standing.len();
+        // The rows a `/` filter keeps, in the pane's own order: the count, the cursor and the rows
+        // are one list, so the cursor cannot stop on a note the filter took away.
+        let hits = self.standing_hits();
+        let n = hits.len();
         out.push(pane::title(format!(
             "standing notes — {n} note(s), in the order the prompt carries them"
         )));
         out.blank();
-        if self.standing.is_empty() {
-            out.push(pane::faint(
-                "    none. The harness reads AGENTS.md, the box-wide notes and this project's \
-                 notes repository; it found nothing in any of them. A note is written with \
-                 the `notes` tool.",
-            ));
+        if n == 0 {
+            out.push(pane::faint(match self.filtering() {
+                true => "    nothing here answers the filter — esc gives the notes back.",
+                false => {
+                    "    none. The harness reads AGENTS.md, the box-wide notes and this project's \
+                     notes repository; it found nothing in any of them. A note is written with \
+                     the `notes` tool."
+                }
+            }));
             return (out, corpus);
         }
         let cursor = self.standing_sel.min(n.saturating_sub(1));
         let mut indexed = 0usize;
-        for (i, e) in self.standing.iter().enumerate() {
+        for (k, at) in hits.iter().enumerate() {
+            let e = &self.standing[*at];
             if e.form == NoteForm::Indexed {
                 indexed += 1;
             }
-            let picked = i == cursor;
+            let picked = k == cursor;
             let disk = OnDisk::read(&e.path);
             corpus.note(&e.path, disk.as_ref());
             // The printed path as a link where the terminal speaks OSC 8; `file_url` decides

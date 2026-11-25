@@ -576,7 +576,23 @@ impl App {
                 edit: ConfigEdit::No("a file the guard protects: a person edits it, not a pane"),
             });
         }
-        rows
+        // The rows a `/` filter keeps. A setting is found by the words its row shows - its key, its
+        // value, the section it sits in and where it came from - with the one query every list uses.
+        let hits = self.pane_filter_hits(
+            Surface::Config,
+            rows.iter().map(|r| {
+                vec![
+                    r.key.as_str(),
+                    r.value.as_str(),
+                    r.section,
+                    r.source.as_str(),
+                ]
+            }),
+        );
+        if hits.len() == rows.len() {
+            return rows;
+        }
+        hits.into_iter().map(|i| rows[i].clone()).collect()
     }
 
     /// Enter on the selected row.

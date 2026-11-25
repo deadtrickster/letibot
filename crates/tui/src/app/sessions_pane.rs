@@ -1134,25 +1134,22 @@ impl App {
     }
 
     /// Which rows the session list's filter keeps, over title, slug, project, workspace and id.
-    /// Letters in order are a fallback only when no session contains what was typed, as on the
-    /// model card.
+    /// The line is read by `app::query`, so a `"quoted phrase"` and a `re:` pattern narrow this
+    /// list exactly as they narrow a pane's, and only the ladder's letters-in-order rung is the
+    /// fallback a real containment drops.
     fn filter_hits(&self, place: &[Placement], project_name: &dyn Fn(&str) -> String) -> Hits {
-        let q = self.picker_filter.as_str();
+        let q = Query::parse(&self.picker_filter);
         if q.is_empty() {
             return Hits::default();
         }
         let tier = |s: &SessionBrief, project: String| {
-            [
+            q.best(&[
                 s.title.as_str(),
                 s.slug.as_str(),
                 project.as_str(),
                 s.wiring.workspace.as_str(),
                 s.session_id.as_str(),
-            ]
-            .into_iter()
-            .filter(|f| !f.is_empty())
-            .filter_map(|f| crate::app::model_card::rank(f, q))
-            .min()
+            ])
         };
         let live: Vec<Option<u8>> = self
             .sessions
@@ -1165,16 +1162,12 @@ impl App {
             .iter()
             .map(|s| tier(s, String::new()))
             .collect();
-        let strict = live
-            .iter()
-            .chain(&archived)
-            .flatten()
-            .any(|t| *t < SUBSEQUENCE);
-        let keep = |t: &Option<u8>| t.is_some_and(|t| !strict || t < SUBSEQUENCE);
+        let strict = Query::strict(live.iter().chain(&archived));
+        let keep = |t: &Option<u8>| q.keeps(*t, strict);
         Hits {
             live: live.iter().map(keep).collect(),
             archived: archived.iter().map(keep).collect(),
-            query: Some(q.to_string()),
+            query: q,
         }
     }
 
@@ -1318,18 +1311,19 @@ impl App {
 struct Hits {
     live: Vec<bool>,
     archived: Vec<bool>,
-    query: Option<String>,
+    query: Query,
 }
 
 impl Hits {
     fn fleet(&self, f: &letibot_sessionlog::FleetRow) -> bool {
-        let Some(q) = &self.query else {
+        if self.query.is_empty() {
             return true;
-        };
-        [fleet_name(f), f.id.clone()]
-            .iter()
-            .filter_map(|n| crate::app::model_card::rank(n, q))
-            .any(|t| t < SUBSEQUENCE)
+        }
+        // A fleet row is kept only on a real containment: the letters-in-order rung is not a
+        // reason to draw another box's row.
+        self.query
+            .best(&[fleet_name(f).as_str(), f.id.as_str()])
+            .is_some_and(|t| t < SUBSEQUENCE)
     }
 }
 

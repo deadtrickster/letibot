@@ -132,12 +132,15 @@ impl App {
 
     /// A pane's recorded stop rows, as screen rows - pane row `r` is on the screen at
     /// `top + r - pane_scroll` while it is inside the window. Read once, at draw time, with the
-    /// scroll the draw itself clamped.
+    /// scroll the draw itself clamped. A `/` filter's own line takes the body's first row, so every
+    /// body row is one lower on the screen while it is up.
     fn pane_stops(&self, rows: &[usize], top: usize, room: usize) -> Vec<(usize, usize)> {
+        let field = self.filter_rows();
         rows.iter()
             .enumerate()
             .filter_map(|(k, r)| {
-                r.checked_sub(self.pane_scroll)
+                (field + r)
+                    .checked_sub(self.pane_scroll)
                     .filter(|d| *d < room)
                     .map(|d| (top + d, k))
             })
@@ -183,7 +186,8 @@ impl App {
                         .enumerate()
                         .flat_map(|(k, r)| r.clone().map(move |row| (row, k)))
                         .filter_map(|(row, k)| {
-                            row.checked_sub(self.pane_scroll)
+                            (self.filter_rows() + row)
+                                .checked_sub(self.pane_scroll)
                                 .filter(|d| *d < room)
                                 .map(|d| (top + d, k))
                         })
