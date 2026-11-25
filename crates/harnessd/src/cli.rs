@@ -3262,7 +3262,12 @@ const MIN_LISTING_COLS: usize = 40;
 /// How many rows a folder draws before it counts the rest. Standing in a folder is asking about
 /// it, so that one gets the longer list.
 const HERE_SHOWN: usize = 20;
-const FOLDER_SHOWN: usize = 10;
+/// Another folder answers one question - is the conversation I want in there - and its newest
+/// five rows do, with the header's count for the rest.
+const FOLDER_SHOWN: usize = 5;
+/// How many other folders a plain listing draws before it counts the rest. A 50-line terminal,
+/// less this folder's block, holds about this many; `--all` is the census behind it.
+const FOLDERS_SHOWN: usize = 8;
 
 /// One session in the TSV form: the five fields a script cuts. A data format and not a screen, so
 /// the listing's own rules - the empty-row filter above all - never reach it.
@@ -3395,13 +3400,20 @@ struct Blocks<'a> {
     mine: Vec<&'a StoredSession>,
     mine_more: usize,
     others: Vec<Folder<'a>>,
+    /// Other folders the cap kept off the list. Their count is a line, not a silence.
+    others_more: usize,
+    /// Conversations in a folder that is no longer on this disk, and how many such folders. One
+    /// line for all of them: a place nobody can open is not a place to scan.
+    gone: usize,
+    gone_folders: usize,
     /// Conversations hidden because nothing was ever said in them - counted, never dropped silently.
     empty: usize,
 }
 
 /// The plain listing, as the lines it prints: the header, this folder's conversations, then one
-/// block per other folder. A folder's header is a line of its own rather than a padded blank -
-/// padding it out to the name column is what turned 441 sessions into 1158 lines.
+/// block per other folder, and the counts of what was folded away. A folder's header is a line of
+/// its own rather than a padded blank - padding it out to the name column is what turned 441
+/// sessions into 1158 lines.
 fn plain_lines(
     all: &[StoredSession],
     here: &std::path::Path,
@@ -3433,6 +3445,15 @@ fn plain_lines(
             out.push(list_line(s, "", wid, now));
         }
         more_line(&mut out, f.more);
+    }
+    if blocks.others_more > 0 {
+        out.push(format!("    +{} more folders (--all)", blocks.others_more));
+    }
+    if blocks.gone > 0 {
+        out.push(format!(
+            "    +{} sessions in {} folders that no longer exist (--all)",
+            blocks.gone, blocks.gone_folders
+        ));
     }
     if blocks.empty > 0 {
         out.push(format!("    +{} with no rows (--all)", blocks.empty));
@@ -3499,9 +3520,9 @@ fn census_lines(all: &[StoredSession], cols: usize, now: i64) -> Vec<String> {
     out
 }
 
-/// What a plain listing draws, as the two lists it prints: this folder's conversations and one
-/// block per other folder, each capped at the rows a person can scan. Pure, because a printer
-/// cannot be read back and the ORDER is the whole of this rule.
+/// What a plain listing draws, as the lists it prints: this folder's conversations, one block per
+/// other folder that is still there, and what it folded away. Pure, because a printer cannot be
+/// read back and the ORDER is the whole of this rule.
 fn conversation_blocks<'a>(all: &'a [StoredSession], here: &std::path::Path) -> Blocks<'a> {
     let rows: Vec<&StoredSession> = all
         .iter()
@@ -3520,24 +3541,33 @@ fn conversation_blocks<'a>(all: &'a [StoredSession], here: &std::path::Path) -> 
     // Exact workspace first, then the ones below it. The store's own order is newest activity
     // first and the sort is stable, so each half keeps it.
     mine.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != here);
-    let mut others: Vec<Folder<'a>> = Vec::new();
-    for s in rows
-        .iter()
-        .copied()
-        .filter(|s| !under(&s.workspace_root, here))
-    {
-        match others.iter_mut().find(|f| f.workspace == s.workspace_root) {
+    // A gone folder is not a place a person can pick from the list: its row can still be resumed
+    // by id, and `--all` draws it. Counted, never silently dropped. A folder holding a session
+    // that lives on a host is kept: it is the answer to where that conversation went.
+    let mut folders: Vec<Folder<'a>> = Vec::new();
+    for s in rows.into_iter().filter(|s| !under(&s.workspace_root, here)) {
+        match folders.iter_mut().find(|f| f.workspace == s.workspace_root) {
             Some(f) => f.rows.push(s),
-            None => others.push(Folder {
+            None => folders.push(Folder {
                 workspace: s.workspace_root.as_str(),
                 rows: vec![s],
                 more: 0,
             }),
         }
     }
+    let (gone, mut others): (Vec<Folder<'a>>, Vec<Folder<'a>>) =
+        folders.into_iter().partition(|f| {
+            !std::path::Path::new(f.workspace).exists()
+                && f.rows.iter().all(|s| s.lives_on.is_none())
+        });
+    let gone_rows: usize = gone.iter().map(Folder::total).sum();
     // The folder somebody was last in comes first: its newest member's activity is its recency.
     others.sort_by_key(|f| std::cmp::Reverse(f.rows[0].last_activity_ms));
     let mine_more = cap(&mut mine, HERE_SHOWN);
+    // The cap is on whole FOLDERS, and a folder that is drawn keeps its own newest rows: eight
+    // headers of one row each teach less than two with five, and the rest is one count.
+    let others_more = others.len().saturating_sub(FOLDERS_SHOWN);
+    others.truncate(FOLDERS_SHOWN);
     for f in &mut others {
         f.more = cap(&mut f.rows, FOLDER_SHOWN);
     }
@@ -3545,6 +3575,9 @@ fn conversation_blocks<'a>(all: &'a [StoredSession], here: &std::path::Path) -> 
         mine,
         mine_more,
         others,
+        others_more,
+        gone: gone_rows,
+        gone_folders: gone.len(),
         empty,
     }
 }

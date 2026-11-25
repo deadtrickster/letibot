@@ -1196,39 +1196,46 @@ fn continue_skips_the_queues_own_session_by_id() {
 /// never a task child or a package's own conversation.
 #[test]
 fn a_plain_listing_is_this_folders_conversations_then_one_block_per_other_folder() {
-    let (store, _d) = store_with(&[]);
+    let (store, d) = store_with(&[]);
+    // Real folders: a folder that is still there gets a block, and the ones that are not are
+    // one count at the end (see `a_gone_folder_is_one_line`).
+    let p = d.0.join("p");
+    for rel in ["far", "new", "here", "here/worktrees/x"] {
+        std::fs::create_dir_all(p.join(rel)).expect("a folder");
+    }
+    let at = |rel: &str| p.join(rel).to_str().expect("utf-8").to_string();
     // Written oldest first, so the store's own order is the reverse of this list.
-    session_row(&store, "s-far", "/p/far", Some("far"), None, None);
+    session_row(&store, "s-far", &at("far"), Some("far"), None, None);
     let far = rows_for(&store, "s-far", 1, 0);
     session_row(
         &store,
         "s-wt",
-        "/p/here/worktrees/x",
+        &at("here/worktrees/x"),
         Some("a worktree"),
         None,
         None,
     );
     let wt = rows_for(&store, "s-wt", 1, far);
-    session_row(&store, "s-here", "/p/here", Some("here"), None, None);
+    session_row(&store, "s-here", &at("here"), Some("here"), None, None);
     let here = rows_for(&store, "s-here", 1, wt);
-    session_row(&store, "s-new", "/p/new", Some("new"), None, None);
+    session_row(&store, "s-new", &at("new"), Some("new"), None, None);
     rows_for(&store, "s-new", 1, here);
     // Neither of these two is a conversation a person picks from, though both are sessions in
     // this folder and one of them is the newest row in the store.
     session_row(
         &store,
         "s-child",
-        "/p/here",
+        &at("here"),
         Some("child"),
         None,
         Some("s-here"),
     );
     rows_for(&store, "s-child", 2, here + 1);
-    session_row(&store, "s-pkg", "/p/here", Some("pkg"), None, None);
+    session_row(&store, "s-pkg", &at("here"), Some("pkg"), None, None);
     store.set_session_origin("s-pkg", "package").unwrap();
 
     let all = store.list_sessions().expect("listing");
-    let blocks = conversation_blocks(&all, std::path::Path::new("/p/here"));
+    let blocks = conversation_blocks(&all, std::path::Path::new(&at("here")));
     let ids = |rows: &[&letibot_tokencore::store::StoredSession]| -> Vec<String> {
         rows.iter().map(|s| s.id.clone()).collect()
     };
@@ -1241,14 +1248,15 @@ fn a_plain_listing_is_this_folders_conversations_then_one_block_per_other_folder
         blocks
             .others
             .iter()
-            .map(|f| (f.workspace, ids(&f.rows)))
+            .map(|f| (f.workspace.to_string(), ids(&f.rows)))
             .collect::<Vec<_>>(),
         [
-            ("/p/new", vec!["s-new".to_string()]),
-            ("/p/far", vec!["s-far".to_string()]),
+            (at("new"), vec!["s-new".to_string()]),
+            (at("far"), vec!["s-far".to_string()]),
         ],
         "one block per other folder, the folder used most recently first"
     );
+    assert_eq!(blocks.gone, 0, "every folder in this store is on disk");
 }
 
 /// A session nothing was ever said in is not a conversation a person picks from. The plain listing
@@ -1429,32 +1437,32 @@ fn a_row_from_before_origin_was_recorded_is_a_package_by_its_worktree_or_its_bri
     );
 }
 
-/// A folder draws the newest rows a person can scan and counts the rest: ten in another folder,
+/// A folder draws the newest rows a person can scan and counts the rest: five in another folder,
 /// twenty in this one, and a line saying what it did not draw. A cap that said nothing would read
 /// as a folder that has exactly that many conversations.
 #[test]
 fn a_folder_draws_its_newest_rows_and_counts_the_rest() {
-    let (store, _d) = store_with(&[]);
+    let (store, d) = store_with(&[]);
+    let (here, far) = (d.0.join("here"), d.0.join("far"));
+    std::fs::create_dir_all(&here).expect("a folder");
+    std::fs::create_dir_all(&far).expect("a folder");
+    let (here, far) = (
+        here.to_str().expect("utf-8").to_string(),
+        far.to_str().expect("utf-8").to_string(),
+    );
     let mut at = 0;
     for i in 0..25 {
         let id = format!("s-here-{i}");
-        session_row(
-            &store,
-            &id,
-            "/p/here",
-            Some(&format!("here {i}")),
-            None,
-            None,
-        );
+        session_row(&store, &id, &here, Some(&format!("here {i}")), None, None);
         at = rows_for(&store, &id, 1, at);
     }
     for i in 0..14 {
         let id = format!("s-far-{i}");
-        session_row(&store, &id, "/p/far", Some(&format!("far {i}")), None, None);
+        session_row(&store, &id, &far, Some(&format!("far {i}")), None, None);
         at = rows_for(&store, &id, 1, at);
     }
     let all = store.list_sessions().expect("listing");
-    let blocks = conversation_blocks(&all, std::path::Path::new("/p/here"));
+    let blocks = conversation_blocks(&all, std::path::Path::new(&here));
     assert_eq!(blocks.mine.len(), HERE_SHOWN, "this folder's cap");
     assert_eq!(
         blocks.mine_more,
@@ -1462,18 +1470,18 @@ fn a_folder_draws_its_newest_rows_and_counts_the_rest() {
         "and how many it did not draw"
     );
     assert_eq!(blocks.others.len(), 1);
-    let far = &blocks.others[0];
-    assert_eq!(far.rows.len(), FOLDER_SHOWN, "another folder's cap");
-    assert_eq!(far.more, 14 - FOLDER_SHOWN);
+    let other = &blocks.others[0];
+    assert_eq!(other.rows.len(), FOLDER_SHOWN, "another folder's cap");
+    assert_eq!(other.more, 14 - FOLDER_SHOWN);
     assert_eq!(
-        far.total(),
+        other.total(),
         14,
         "the header counts every conversation in it"
     );
 
-    let lines = plain_lines(&all, std::path::Path::new("/p/here"), 120, at);
+    let lines = plain_lines(&all, std::path::Path::new(&here), 120, at);
     assert!(
-        lines.contains(&"/p/here (25)".to_string()),
+        lines.contains(&format!("{here} (25)")),
         "this folder's header counts them all: {lines:#?}"
     );
     assert!(
@@ -1491,6 +1499,222 @@ fn a_folder_draws_its_newest_rows_and_counts_the_rest() {
     assert!(
         !lines.iter().any(|l| !l.is_empty() && l.trim().is_empty()),
         "no line is padding: a folder's header is a line of its own"
+    );
+}
+
+/// A folder that is no longer on this disk is not a place to scan: its rows can still be resumed
+/// by id, and `--all` draws them, so the plain listing counts them in ONE line. The Mac's listing
+/// spent 124 of its 407 lines on the headers of folders nobody can open.
+#[test]
+fn a_folder_that_no_longer_exists_is_one_line_and_not_a_block() {
+    let (store, d) = store_with(&[]);
+    let here = d.0.join("here");
+    std::fs::create_dir_all(&here).expect("a folder");
+    let here = here.to_str().expect("utf-8").to_string();
+    // Never made: a gone worktree, and one of them twice, so the folders are counted once each.
+    let gone = |rel: &str| {
+        d.0.join("gone")
+            .join(rel)
+            .to_str()
+            .expect("utf-8")
+            .to_string()
+    };
+    let mut at = 0;
+    for (i, rel) in ["worktrees/a", "worktrees/a", "worktrees/b", "worktrees/c"]
+        .iter()
+        .enumerate()
+    {
+        let id = format!("s-gone-{i}");
+        session_row(
+            &store,
+            &id,
+            &gone(rel),
+            Some(&format!("gone {i}")),
+            None,
+            None,
+        );
+        at = rows_for(&store, &id, 1, at);
+    }
+    let live = d.0.join("live");
+    std::fs::create_dir_all(&live).expect("a folder");
+    session_row(
+        &store,
+        "s-live",
+        live.to_str().expect("utf-8"),
+        Some("live"),
+        None,
+        None,
+    );
+    rows_for(&store, "s-live", 1, at);
+
+    let all = store.list_sessions().expect("listing");
+    let blocks = conversation_blocks(&all, std::path::Path::new(&here));
+    assert_eq!(blocks.gone, 4, "every row in a gone folder is counted");
+    assert_eq!(blocks.gone_folders, 3, "and every folder once");
+    assert_eq!(blocks.others.len(), 1, "a folder on disk keeps its block");
+
+    let lines = plain_lines(&all, std::path::Path::new(&here), 140, 0);
+    assert!(
+        lines.contains(&"    +4 sessions in 3 folders that no longer exist (--all)".to_string()),
+        "one line for all of them: {lines:#?}"
+    );
+    for line in &lines {
+        assert!(
+            !line.contains("worktrees/"),
+            "a gone folder is not drawn: {line:?}"
+        );
+        assert!(
+            !line.contains("gone "),
+            "and neither are its rows: {line:?}"
+        );
+    }
+    // `--all` is where they are: the listing folded them, it did not forget them.
+    let census = census_lines(&all, 140, 0);
+    assert!(
+        census.iter().any(|l| l.contains("gone 0")),
+        "--all draws a gone folder's row: {census:#?}"
+    );
+}
+
+/// Eight other folders, then a count of the rest. A screen is the reason: the Mac's 124 blocks of
+/// other folders were what a person could not read.
+#[test]
+fn the_newest_folders_are_drawn_and_the_rest_are_counted() {
+    let (store, d) = store_with(&[]);
+    let here = d.0.join("here");
+    std::fs::create_dir_all(&here).expect("a folder");
+    let here = here.to_str().expect("utf-8");
+    let mut at = 0;
+    for i in 0..12 {
+        let folder = d.0.join(format!("f{i:02}"));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        for j in 0..7 {
+            let id = format!("s-{i}-{j}");
+            session_row(
+                &store,
+                &id,
+                folder.to_str().expect("utf-8"),
+                Some(&format!("f{i} r{j}")),
+                None,
+                None,
+            );
+            at = rows_for(&store, &id, 1, at);
+        }
+    }
+    let all = store.list_sessions().expect("listing");
+    let blocks = conversation_blocks(&all, std::path::Path::new(here));
+    assert_eq!(
+        blocks.others.len(),
+        FOLDERS_SHOWN,
+        "the blocks a screen holds"
+    );
+    assert_eq!(
+        blocks.others_more,
+        12 - FOLDERS_SHOWN,
+        "and the folders it did not draw"
+    );
+    for f in &blocks.others {
+        assert_eq!(f.rows.len(), FOLDER_SHOWN, "each drawn folder's own cap");
+        assert_eq!(f.more, 7 - FOLDER_SHOWN);
+        assert_eq!(f.total(), 7, "the header still counts every row in it");
+    }
+    // The newest folder first: `f11` was written last.
+    assert!(
+        blocks.others[0].workspace.ends_with("f11"),
+        "the folder somebody was last in comes first: {:?}",
+        blocks.others[0].workspace
+    );
+
+    let lines = plain_lines(&all, std::path::Path::new(here), 140, at);
+    assert!(
+        lines.contains(&"    +4 more folders (--all)".to_string()),
+        "the folders kept off the list are counted: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.trim_start() == format!("+{} more (--all)", 7 - FOLDER_SHOWN)),
+        "and so are the rows in the ones that are drawn: {lines:#?}"
+    );
+}
+
+/// The Mac's own listing, after `gc --archive-settled` put 1601 sessions away: 125 folders, 62 of
+/// them worktrees no longer on the disk, this folder holding 9 rows and 148 rows spread over the
+/// others. It was 407 lines in 125 blocks. A 140-column, 50-line terminal is the whole point.
+#[test]
+fn the_mac_shaped_listing_fits_a_fifty_line_screen() {
+    let (store, d) = store_with(&[]);
+    let here = d.0.join("Projects/letibot");
+    std::fs::create_dir_all(&here).expect("this folder");
+    let mut at = 0;
+    let mut write = |store: &Store, id: &str, folder: &std::path::Path, n: usize| {
+        for rel in 0..n {
+            let id = format!("{id}-{rel}");
+            session_row(
+                store,
+                &id,
+                folder.to_str().expect("utf-8"),
+                Some(&format!("a conversation in {}", folder.display())),
+                None,
+                None,
+            );
+            at = rows_for(store, &id, 1, at);
+        }
+    };
+    for i in 0..31 {
+        let cc = d.0.join(format!(
+            "Projects/stroppy-conformity/.claude/worktrees/w{i:02}"
+        ));
+        let git = d.0.join(format!(
+            "Projects/stroppy-io/worktrees/stroppy-rust/w{i:02}"
+        ));
+        write(&store, &format!("s-cc-{i}"), &cc, 1);
+        write(&store, &format!("s-git-{i}"), &git, 1);
+    }
+    // The other live folders, at the density the Mac's store has: 86 rows over 62 folders.
+    for i in 0..62 {
+        let folder = d.0.join(format!("Projects/live/p{i:02}"));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        write(
+            &store,
+            &format!("s-live-{i}"),
+            &folder,
+            1 + usize::from(i < 24),
+        );
+    }
+    write(&store, "s-here", &here, 9);
+
+    let all = store.list_sessions().expect("listing");
+    let here = here.to_str().expect("utf-8");
+    let lines = plain_lines(&all, std::path::Path::new(here), 140, 0);
+    for line in &lines {
+        println!("{line}");
+    }
+    assert_eq!(all.len(), 9 + 62 + 86, "the store is the Mac's shape");
+    assert!(
+        lines.len() <= 50,
+        "the listing is {} lines in a 50-line terminal:\n{}",
+        lines.len(),
+        lines.join("\n")
+    );
+    for line in &lines {
+        assert!(
+            line.chars().count() <= 140,
+            "a line is {} columns wide: {line:?}",
+            line.chars().count()
+        );
+    }
+    assert!(
+        lines.contains(&format!("{here} (9)")),
+        "this folder's block is on the screen: {lines:#?}"
+    );
+    assert!(
+        lines.contains(&"    +54 more folders (--all)".to_string()),
+        "and the folders that were folded are counted: {lines:#?}"
+    );
+    assert!(
+        lines.contains(&"    +62 sessions in 62 folders that no longer exist (--all)".to_string()),
+        "with the gone ones in one line: {lines:#?}"
     );
 }
 
