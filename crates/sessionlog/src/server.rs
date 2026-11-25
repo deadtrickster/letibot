@@ -475,6 +475,18 @@ fn control_seat(
                         continue;
                     }
                 };
+                // A name a person typed is refused HERE, before the session exists, so the head
+                // that asked reads why instead of a row that comes back unnamed a turn later. A
+                // derived name (a package's, a bridge's) is the caller's to dash before it asks.
+                if let Err(why) = registry.name_ok(&id, &workspace, &title) {
+                    writer.lock().unwrap().write(&ServerFrame::Rejected {
+                        client_request_id,
+                        reason: why,
+                        expected_seq: 0,
+                        actual_seq: 0,
+                    })?;
+                    continue;
+                }
                 let wiring = SessionWiring {
                     workspace,
                     ..SessionWiring::default()
@@ -1533,6 +1545,19 @@ pub fn serve_conn_on(
                 // them by asking for a session.
                 if !workspace.is_empty() {
                     wiring.workspace = workspace;
+                }
+                // The name a head typed is refused HERE, before the session exists, so the head
+                // reads why instead of a row that comes back unnamed a turn later - the store's
+                // rule, word for word (`SessionSource::name_taken`).
+                if let Err(why) = registry.name_ok(&id, &wiring.workspace, &title) {
+                    let f = ServerFrame::Rejected {
+                        client_request_id,
+                        reason: why,
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                    continue;
                 }
                 // WHO ASKED, which a session's row cannot otherwise say: a terminal and a package
                 // make the same shape of row. And WHOSE WORK IT IS, when the head named the session

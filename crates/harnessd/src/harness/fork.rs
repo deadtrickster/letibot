@@ -323,6 +323,20 @@ impl Harness {
         let transcript_id = store
             .fork_session_at(&self.cfg.session_id, from, keep as u32, &session_id)
             .map_err(|e| HarnessError::Store(e.to_string()))?;
+        // A fork is a new conversation of the same folder, so it is NAMED like one: the name it
+        // continues, dashed, because two sessions answering to one name are two ways to open the
+        // wrong one. An unnamed parent stays unnamed - there is nothing to derive from.
+        let base = self.cfg.title.trim();
+        if !base.is_empty()
+            && let Ok(name) =
+                store.free_derived_name(&self.cfg.workspace.display().to_string(), base)
+            && let Err(e) = store.set_title(&session_id, &name)
+        {
+            self.warn(
+                "fork_unnamed",
+                format!("the fork {session_id} continues this conversation, but its name could not be written: {e}"),
+            );
+        }
         // A fork of a child is a child, so its own point is a session row: a root's point is the
         // project's row and already there, and writing one for a fork of a root would move every
         // later session in the workspace. The ceiling comes from the parent the row now names.

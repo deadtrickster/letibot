@@ -2305,6 +2305,16 @@ impl<'a> Sessions<'a> {
                 // back `(unnamed)` in `--sessions` after every restart.
                 cfg.title = own.title;
                 prompt = own.prompt;
+            } else {
+                // A session a head CREATED with a title (a package's, a bridge worker's, a
+                // person's `/new NAME`) holds it in the registry entry, which is where the store
+                // row's title comes from - the daemon's own `--title` belongs to its first session
+                // and nobody else's. A resumed row overrides this from its own row at the open.
+                cfg.title = self
+                    .registry
+                    .title_of(session_id)
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or(cfg.title);
             }
             let (tool, cond) = self.seat_tool(session_id);
             // The system prompt is composed at open, for the tools the seat holds, with this
@@ -5636,6 +5646,43 @@ impl SessionSource for StoreSessions {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         g.rename_unique(session_id, title)
             .map_err(|e| e.to_string())
+    }
+
+    /// The name rule, asked before a new session has a row: an address for a name or another live
+    /// session's is refused here, and the sentence names the holder. A frame that carries no
+    /// workspace means this daemon's folder, which is what the open would use.
+    fn name_taken(
+        &self,
+        id: &str,
+        workspace: &str,
+        title: &str,
+        held: &[letibot_sessionlog::registry::HeldName],
+    ) -> Result<(), String> {
+        if title.trim().is_empty() {
+            return Ok(());
+        }
+        let folder = if workspace.trim().is_empty() {
+            self.wiring.workspace.clone()
+        } else {
+            workspace.to_string()
+        };
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.check_name(Some(id), &folder, title)
+            .map_err(|e| e.to_string())?;
+        // And the sessions this daemon has created but not stored yet: a head's new session has
+        // its name in the registry and no row until it opens, so the store alone would answer
+        // that the name is free.
+        let canon = letibot_tokencore::store::canonical_folder(&folder);
+        for other in held {
+            let theirs = letibot_tokencore::store::canonical_folder(&other.workspace);
+            if theirs == canon && letibot_tokencore::store::same_name(&other.title, title) {
+                return Err(format!(
+                    "the name {title:?} is taken in this folder by {} {:?}",
+                    other.id, other.title
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Make it durable who this session is for - see `letibot_sessionlog::SessionOrigin`.

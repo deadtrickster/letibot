@@ -2131,9 +2131,22 @@ impl Harness {
                     // `INSERT OR IGNORE`-shaped by hand: a session row may already be here with no rows behind it, so
                     // re-opening it is a resume of an empty conversation rather than a collision.
                     if stored.is_none() {
+                        // The daemon's OWN seat is the one title nobody typed: a clash there is
+                        // answered with the dash, not with a refusal that would leave the daemon
+                        // with no queue session. Every other title is the caller's, and the store
+                        // refuses a name another live session of the folder holds.
+                        let title = if letibot_sessionlog::is_gatekeeper_session(&cfg.session_id) {
+                            s.free_derived_name(
+                                &cfg.workspace.display().to_string(),
+                                cfg.title.trim(),
+                            )
+                            .map_err(|e| HarnessError::Store(e.to_string()))?
+                        } else {
+                            cfg.title.clone()
+                        };
                         s.put_session(&SessionRecord {
                             id: cfg.session_id.clone(),
-                            title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
+                            title: Some(title).filter(|t| !t.is_empty()),
                             // Who answers, not what the vocabulary binds: `cfg.model` is the local alias whose tokenizer renders
                             // the prompt, while the turns may go to a provider. This row is what the picker draws. `Sessions::wiring`
                             // is the same fact from one expression.
@@ -5102,9 +5115,17 @@ pub(crate) fn unarchive_on_open(
         .map(|r| format!(" ({r})"))
         .unwrap_or_default();
     match store.map(|s| s.set_archived(&stored.id, false, None)) {
-        Some(Ok(())) => notes.push(format!(
-            "this session was archived{reason} — opening it by id took it back into the list"
-        )),
+        Some(Ok(renamed)) => notes.push(match renamed {
+            None => format!(
+                "this session was archived{reason} — opening it by id took it back into the list"
+            ),
+            // An archived session FREES its name, so one that comes back to a name a live session
+            // has taken in the meantime comes back under the counter.
+            Some(name) => format!(
+                "this session was archived{reason} — opening it by id took it back into the list \
+                 as {name:?}, because the name it had is a live session's now"
+            ),
+        }),
         Some(Err(e)) => notes.push(format!(
             "this session was archived{reason}, and the row could not be cleared ({e}) — it stays \
              out of the listing until an unarchive reaches it"
@@ -5144,9 +5165,15 @@ pub(crate) fn unarchive_on_turn(store: Option<&Store>, id: &str) -> Option<Strin
             .unwrap_or_default()
     })?;
     match store.set_archived(id, false, None) {
-        Ok(()) => Some(format!(
-            "this session was archived{reason} — a turn is being run in it, so it is back in the list"
-        )),
+        Ok(renamed) => Some(match renamed {
+            None => format!(
+                "this session was archived{reason} — a turn is being run in it, so it is back in the list"
+            ),
+            Some(name) => format!(
+                "this session was archived{reason} — a turn is being run in it, so it is back in the \
+                 list as {name:?}, because the name it had is a live session's now"
+            ),
+        }),
         Err(e) => Some(format!(
             "this session was archived{reason}, and the row could not be cleared ({e}) — it works \
              out of sight until an unarchive reaches it"

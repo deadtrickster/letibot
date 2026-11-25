@@ -565,6 +565,16 @@ type LiveRow = (
     SessionOrigin,
 );
 
+/// One session this daemon holds a name for but has not stored yet: a head's new session lives in
+/// the registry until it opens, and its name is as real as any row's. What the name rule needs of
+/// it - who it is, what it is called, and the folder that name is unique in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldName {
+    pub id: String,
+    pub title: String,
+    pub workspace: String,
+}
+
 /// Where a registry can find sessions it is not already holding. A trait and not a `Store`: a
 /// dependency on the store crate here would put SQL in the daemon's session list.
 pub trait SessionSource: Send + Sync {
@@ -592,6 +602,22 @@ pub trait SessionSource: Send + Sync {
     /// point: a registry with no source has nowhere to write it.
     fn set_title(&self, _session_id: &str, _title: &str) -> Result<(), String> {
         Err("this daemon has no store, so a name would not survive it".into())
+    }
+    /// Is `title` one this session's folder would take, for a name a person typed - an address
+    /// rather than a name, or another session's? `Err` is the sentence the head is owed, and it
+    /// names the holder. A source with no store has no names to clash and answers `Ok`.
+    ///
+    /// `held` is the sessions THIS daemon created and has not stored yet - a head's new session
+    /// has a name in the registry and no row until it opens, and a check that read only the store
+    /// would let the second one take that name.
+    fn name_taken(
+        &self,
+        _id: &str,
+        _workspace: &str,
+        _title: &str,
+        _held: &[HeldName],
+    ) -> Result<(), String> {
+        Ok(())
     }
     /// Make it durable who this session is for. A no-op rather than a refusal, because the answer
     /// is already on the row that created it.
@@ -2480,6 +2506,32 @@ impl Registry {
         src.set_title(session_id, title)?;
         self.set_title(session_id, title);
         Ok(())
+    }
+
+    /// Would `title` be refused for a session about to be created in `workspace`? Asked BEFORE
+    /// the session exists, so a head that typed a name another session holds is told so by the
+    /// frame that asked, not by a row that came back unnamed a turn later. The source owns the
+    /// rule; the registry contributes what it holds and has not written down yet.
+    pub fn name_ok(&self, id: &str, workspace: &str, title: &str) -> Result<(), String> {
+        let held: Vec<HeldName> = {
+            let g = self.lock();
+            g.entries
+                .iter()
+                .filter(|(other, e)| other != id && !e.title.trim().is_empty())
+                // A child's title is not an address, so it holds no name - the same rule the
+                // store's index keeps.
+                .filter(|(_, e)| e.parent_session_id.is_none())
+                .map(|(other, e)| HeldName {
+                    id: other.clone(),
+                    title: e.title.clone(),
+                    workspace: e.wiring.workspace.clone(),
+                })
+                .collect()
+        };
+        match self.source() {
+            Some(src) => src.name_taken(id, workspace, title, &held),
+            None => Ok(()),
+        }
     }
 
     /// Put a session out of sight, or bring it back, on its row - through the source, because the
