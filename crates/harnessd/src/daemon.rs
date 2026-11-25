@@ -334,6 +334,15 @@ impl Daemon {
                         let pass = std::time::Instant::now();
                         let held = sessions.fill_room_boards();
                         crate::instruments::worker_pass("room", pass, held);
+                        // And a seat's question to the person, onto this daemon's main session: a
+                        // Claude Code seat has no head of its own, and its board is written by
+                        // another process, so this pass is the only clock that notices one.
+                        let pass = std::time::Instant::now();
+                        let asked = sessions.relay_seat_asks();
+                        crate::instruments::worker_pass("seat-ask", pass, asked);
+                        if asked > 0 {
+                            eprintln!("  seat asks -> {asked} card(s) on the main session");
+                        }
                         let pass = std::time::Instant::now();
                         let ran = sessions.deliver_due_nags();
                         crate::instruments::worker_pass("todo-check", pass, ran);

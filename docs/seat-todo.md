@@ -228,11 +228,25 @@ so a daemon from before it says nothing and an older head drops it (the version 
 rows and the file's, and Enter on a seat's row is nothing, because the seat writes its own board
 and the head has no door to it.
 
+## A seat's question is a card on the daemon's main session
+
+A seat has no head of its own, so its question to the person would be seen only by somebody
+opening the todo pane. The daemon relays it instead: `crate::seat_asks` reads every seat's board
+(`Store::seat_boards`), and each open `operator` row becomes a question card on the main session -
+the shape `crate::queue_asks` posts for a queue session's board, because it is the same problem
+one door over. The card names the seat, offers the row's options as its choices, and is typed into
+the daemon's pending asks (`PendingKind::Question`), so a head that attaches later is handed it,
+the waiting line counts it and the desktop notification fires.
+
+The answer goes to the row it was asked on: the relay's sink writes the seat's stored board
+(`operator_ask::settle` over `seat_todos`, then `put_seat_todos`), and the bridge adopts it on its
+own slow tick - `Seat::adopt_answers`, which takes the reply onto the in-memory row and pushes the
+note a waiting `todo-wait` reports. That note is what wakes the session. The relay has a clock of
+its own (`Sessions::relay_seat_asks`, every `seat_asks::TICK` while a seat waits): the board it
+reads belongs to another process, so nothing else in the daemon's pass is armed by it.
+
 ## Not built here
 
-- **A seat's question has no card.** It shows on the board (`sessions_waiting_on_operator` reads
-  session keys, so not even the picker's mark) and in the nag, and it is answered in the
-  conversation.
 - **`/nag pause` has no seat spelling.** The clock's `hold` stays `Running`; a seat that wants
   silence marks its rows.
 
@@ -252,7 +266,8 @@ and the head has no door to it.
 - `a_seat_writing_its_board_is_working_and_the_check_waits` - the other half: a call that does work
   postpones the check, and the notice comes once the seat stops.
 - `a_packages_open_job_is_a_wait_on_that_package_and_ends_with_it`.
-- `a_row_waiting_on_the_operator_is_quiet_until_the_answer_lands`.
+- `a_row_waiting_on_the_operator_is_said_parked_once_and_not_again_until_the_answer_lands` - one
+  line naming the question, never `NOTHING can start`, and the row is work again once answered.
 
 `crates/bridge/tests/seat_nag.rs` drives the monitor with the real `letibot-mcp`:
 
@@ -265,4 +280,13 @@ and the head has no door to it.
   seat, so the notice is on stdout and the channel is silent.
 
 `crates/tokencore`: `a_seat_board_survives_a_store_that_gains_its_table` (a v40 store migrates to 41
-and keeps a seat's rows). `crates/tools`: the moved nag tests, unchanged in what they assert.
+and keeps a seat's rows). `crates/tools`: the moved nag tests, unchanged in what they assert, and
+`a_plan_parked_on_the_operator_says_parked_and_never_that_nothing_can_start` /
+`a_parked_plan_is_said_once_and_not_again_on_the_ladder`.
+
+`crates/harnessd/src/seat_asks/tests.rs` - the question reaching the head and its answer:
+
+- `a_seats_operator_question_is_a_card_on_the_head_and_its_answer_frees_the_row` - the card names
+  the seat and offers its options, it is typed into the pending asks, and the operator's answer
+  lands on the seat's row as `TodoNeed::Answered`.
+- `a_question_the_seat_takes_back_is_withdrawn_from_the_head`.

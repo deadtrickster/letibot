@@ -323,6 +323,61 @@ impl Seat {
         })))
     }
 
+    /// An answer the OPERATOR gave in a head, adopted from the store. The question card is the
+    /// daemon's (see `crate::seat_asks`), and the store is where its answer lands - so this board
+    /// reads its own row back and takes the reply the person chose, once. Each line returned is
+    /// the note a waiting `todo-wait` reports, which is what wakes the session.
+    pub fn adopt_answers(&self) -> Vec<String> {
+        let Ok(store) = opened(&self.store) else {
+            // A store that will not open is not an answer; the next pass asks again.
+            return Vec::new();
+        };
+        let Ok(stored) = store.seat_todos(&self.id) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for row in &self.board.snapshot() {
+            let Some(answered) = stored
+                .iter()
+                .find(|s| s.content.trim() == row.content.trim())
+            else {
+                continue;
+            };
+            for need in &answered.needs {
+                let TodoNeed::Answered {
+                    question, reply, ..
+                } = need
+                else {
+                    continue;
+                };
+                // Only a question THIS board still holds open: an answer to one it never asked,
+                // or to one already settled, must not be written twice.
+                let mine = row
+                    .needs
+                    .iter()
+                    .any(|n| matches!(n, TodoNeed::Operator { question: q, .. } if q.trim() == question.trim()));
+                if !mine {
+                    continue;
+                }
+                if self
+                    .board
+                    .answer_operator(&row.content, question, reply)
+                    .is_err()
+                {
+                    continue;
+                }
+                out.push(format!(
+                    "[answer] on \"{}\": you asked \"{}\" — {}. The row no longer waits on the \
+                     operator; it can start.",
+                    row.content.trim(),
+                    question.trim(),
+                    reply.trim()
+                ));
+            }
+        }
+        out
+    }
+
     /// What a write leaves behind: the board on disk, the clock re-armed, and the tool's own reply.
     fn settled(&self, invocation: Invocation) -> Result<Value, String> {
         use letibot_transcript::ToolOutcome;
@@ -459,6 +514,16 @@ fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
         // the note and the nag travel together.
         if now.saturating_duration_since(swept) >= SWEEP {
             swept = now;
+            // An answer the operator gave in a head lands in the STORE, because the card is the
+            // daemon's (see `letibot_harnessd::seat_asks`): it is adopted here, on the same slow
+            // tick, and the note is what wakes a waiting `todo-wait`.
+            for text in seat.adopt_answers() {
+                let n = seat.notes.fetch_add(1, Ordering::SeqCst);
+                if !seat.nag.note(&text) {
+                    outbox.record(format!("answer:{n}"), nag(seat.handle(), &text));
+                }
+                seat.dirty.store(true, Ordering::SeqCst);
+            }
             if let Some(text) = seat.free_waits() {
                 let n = seat.notes.fetch_add(1, Ordering::SeqCst);
                 outbox.record(format!("wait:{n}"), nag(seat.handle(), &text));
@@ -920,6 +985,99 @@ mod tests {
         assert!(
             !matches!(&said, Some(Some(text)) if text.contains("waits on nothing")),
             "{said:?}"
+        );
+    }
+
+    /// The operator answers a seat's question in a head, which writes the seat's STORE; the board
+    /// in this process adopts it, once, and the note it returns is what wakes the session. A row
+    /// the store has an answer for but this board never asked is not written.
+    #[test]
+    fn an_answer_written_in_a_head_is_adopted_from_the_store_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-seat-adopt-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("sessions.db");
+        // The store is the daemon's file and the bridge never makes one: the fixture does.
+        let opened = Store::open(&path).expect("the store");
+        let mut asked = row(
+            "hand the lab1 hosts to another project",
+            TodoStatus::Pending,
+        );
+        asked.needs = vec![TodoNeed::Operator {
+            question: "hand them over?".into(),
+            options: vec!["go ahead".into(), "hold".into()],
+        }];
+        opened
+            .put_seat_todos("cc@stroppy-io", std::slice::from_ref(&asked))
+            .expect("the board");
+
+        let heads = Arc::new(Mutex::new(HashMap::new()));
+        let seat = Seat::new("cc@stroppy-io", "cc@stroppy-io", path.clone(), heads);
+        assert_eq!(seat.rows().len(), 1);
+        assert!(seat.adopt_answers().is_empty(), "nothing is answered yet");
+
+        // The daemon's answer, exactly as `letibot_harnessd::seat_asks` writes it.
+        let mut answered = asked.clone();
+        answered.needs = vec![TodoNeed::Answered {
+            question: "hand them over?".into(),
+            reply: "the operator chose \"hold\"".into(),
+            ask: None,
+        }];
+        opened
+            .put_seat_todos("cc@stroppy-io", std::slice::from_ref(&answered))
+            .expect("the answer");
+
+        let notes = seat.adopt_answers();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("[answer] on \"hand the lab1"),
+            "{notes:?}"
+        );
+        assert!(
+            notes[0].contains("the row no longer waits on the operator")
+                || notes[0].contains("The row no longer waits on the operator"),
+            "{notes:?}"
+        );
+        assert!(
+            seat.adopt_answers().is_empty(),
+            "an answer already adopted is not written twice"
+        );
+        // The row is out of the plan check now, and the seat can start it.
+        let said = a_pass(
+            &mut TodoNagClock::with_window(Duration::from_millis(50)).keyed_by_plan(),
+            &seat.rows(),
+            &ChildSessions::none(),
+            &RunningJobs::none(),
+            true,
+            Instant::now(),
+            Instant::now() + Duration::from_millis(50),
+        )
+        .expect("the check is due")
+        .expect("the row is open work again");
+        assert!(said.contains("hand the lab1 hosts"), "{said}");
+        assert!(!said.contains("parked"), "{said}");
+
+        // A row the store has an answer for that this board never asked stays as it is.
+        let mut never = row("a row nobody asked about", TodoStatus::Pending);
+        never.needs = vec![TodoNeed::Operator {
+            question: "another question?".into(),
+            options: vec!["yes".into(), "no".into()],
+        }];
+        let mut stray = never.clone();
+        stray.needs = vec![TodoNeed::Answered {
+            question: "a question this board never asked".into(),
+            reply: "the operator chose \"yes\"".into(),
+            ask: None,
+        }];
+        opened
+            .put_seat_todos("cc@stroppy-io", &[answered.clone(), stray, never])
+            .expect("the stray answer");
+        assert!(
+            seat.adopt_answers().is_empty(),
+            "an answer to a question this board does not hold open is not taken"
         );
     }
 

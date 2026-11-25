@@ -194,7 +194,7 @@ fn an_in_progress_row_with_no_wait_is_nagged_once_and_not_again_without_a_change
 }
 
 #[test]
-fn a_row_waiting_on_the_operator_is_quiet_until_the_answer_lands() {
+fn a_row_waiting_on_the_operator_is_said_parked_once_and_not_again_until_the_answer_lands() {
     seat_handle();
     let (_dir, store, folder) = scratch("operator");
     let bridge = bridge(&store, &folder);
@@ -208,10 +208,18 @@ fn a_row_waiting_on_the_operator_is_quiet_until_the_answer_lands() {
              "options": ["sqlite", "per project"]}]}]}),
     )
     .expect("the write is taken");
+    // The plan is parked, not stuck: one line, naming the question, and not one word inviting
+    // the seat to answer it itself.
+    let parked = nags(&rx, WINDOW * 3);
+    assert_eq!(parked.len(), 1, "{parked:?}");
+    let text = nag_text(&parked[0]);
     assert!(
-        nags(&rx, WINDOW * 3).is_empty(),
-        "a row waiting on a person is not nagged while they have not answered"
+        text.contains("parked: waiting on the operator's answer to"),
+        "{text}"
     );
+    assert!(text.contains("sqlite or one file per project?"), "{text}");
+    assert!(!text.contains("NOTHING can start"), "{text}");
+    assert!(!text.contains("try to work the question out"), "{text}");
 
     let answered = call(
         &bridge,

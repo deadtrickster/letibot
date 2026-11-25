@@ -398,6 +398,11 @@ pub struct Sessions<'a> {
     gatekeeper_said: Option<String>,
     /// The queue's relayed asks answered lately (`crate::queue_asks`).
     relay_answered: crate::queue_asks::Answered,
+    /// The seats' relayed asks answered lately (`crate::seat_asks`).
+    seat_relay_answered: crate::seat_asks::Answered,
+    /// When the seat-ask relay looks again, or `None` while no seat waits on the person. Its own
+    /// clock because the board it reads is another process's: nothing in this pass is armed by it.
+    seat_asks_at: Option<Instant>,
     /// Each session's plugin layers - the stack, the recorded inputs and the panes a head has
     /// opened (W4 of `docs/plugins-slice1.md`).
     plugins: HashMap<String, Arc<crate::plugins::PluginHost>>,
@@ -810,6 +815,9 @@ impl<'a> Sessions<'a> {
             bangs: HashMap::new(),
             gatekeeper_said: None,
             relay_answered: Default::default(),
+            seat_relay_answered: Default::default(),
+            // Due at once: a seat that was waiting when this daemon opened is waiting now.
+            seat_asks_at: Some(Instant::now()),
             plugins: HashMap::new(),
             courts: HashMap::new(),
             threaded: false,
@@ -1105,6 +1113,10 @@ impl<'a> Sessions<'a> {
             bangs: HashMap::new(),
             gatekeeper_said: None,
             relay_answered: Default::default(),
+            // A court is not the daemon: the relay reads the store and posts on the main
+            // session's hub, and a court has neither of its own.
+            seat_relay_answered: Default::default(),
+            seat_asks_at: None,
             plugins: HashMap::new(),
             courts: HashMap::new(),
             threaded: false,
@@ -2933,6 +2945,10 @@ impl<'a> Sessions<'a> {
             self.next_limit_at(),
             self.idle_exit_at,
             self.plugins_due_at(),
+            // And the seat-ask relay's own tick, armed only while a seat is waiting on the person
+            // (`crate::seat_asks`): the board it reads lives in another process, so nothing else
+            // in this pass would ever be armed by it.
+            self.seat_asks_at,
         ]
         .into_iter()
         .flatten()
@@ -3165,6 +3181,37 @@ impl<'a> Sessions<'a> {
                 prompt: Some(prompt),
             }),
         )
+    }
+
+    /// The open questions on the Claude Code seats' boards, as cards on this daemon's main
+    /// session - see [`crate::seat_asks`]. A seat has no head of its own, so a row waiting on the
+    /// person is shown where a session's own is. Returns how many were posted, and arms the relay's
+    /// tick while any seat is waiting: the board it reads is another process's.
+    pub fn relay_seat_asks(&mut self) -> usize {
+        self.seat_asks_at = None;
+        let Some(root) = self.registry.get(&self.base.session_id) else {
+            return 0;
+        };
+        let Some(at) = self.base.store_at() else {
+            return 0;
+        };
+        let Ok(store) = at.open_existing() else {
+            return 0;
+        };
+        let asks = crate::seat_asks::open_asks(&store);
+        let posted = crate::seat_asks::relay(
+            &root,
+            &self.registry,
+            Some(at),
+            &asks,
+            &self.seat_relay_answered,
+        );
+        // Armed only while a seat waits, so a daemon with none of its own goes back to sleep:
+        // the relay is the ONLY clock that notices a board written by another process.
+        if !asks.is_empty() {
+            self.seat_asks_at = Some(Instant::now() + crate::seat_asks::TICK);
+        }
+        posted
     }
 
     /// The open asks on the review queue's boards, as cards on this daemon's main session - see
