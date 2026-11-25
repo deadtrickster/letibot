@@ -2,6 +2,7 @@
 //! [`responses`], [`gemini`]) and one preset per door. The seam carries the transcript
 //! ([`messages::convert`]). Cost is `None` for an unpriced model.
 
+pub mod agent;
 pub mod anthropic;
 pub mod catalogue;
 pub mod effort;

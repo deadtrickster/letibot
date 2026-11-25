@@ -432,6 +432,10 @@ fn session_fallback(cfg: &mut Config) {
     cfg.on_limit = cfg.leticode.limit_policy();
     cfg.wait_if_within = cfg.leticode.wait_if_within();
     cfg.limit_probe = cfg.leticode.limit_probe();
+    // Absent leaves the daemon's own hour, so a caller that set its own budget keeps it.
+    if let Some(d) = cfg.leticode.offline_budget() {
+        cfg.http_offline_budget = d;
+    }
     eprintln!(
         "  on a usage limit: {} — {}",
         cfg.on_limit.as_str(),

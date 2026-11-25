@@ -123,7 +123,7 @@ impl AnthropicProvider {
             .timeout_global(None)
             .timeout_recv_body(Some(answer))
             .build();
-        ureq::Agent::new_with_config(config)
+        crate::agent::build(config)
     }
 
     /// How long this provider may take to answer at all, over the default of

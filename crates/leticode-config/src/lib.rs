@@ -664,6 +664,7 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// on_limit = "switch"                            # or "wait"
 /// wait_if_within = "45m"                         # a reset this close is waited for anyway
 /// limit_probe = ["2m", "5m", "15m", "30m", "1h"] # a park re-tries early on these steps
+/// offline_budget = "1h"                          # how long a turn retries while the box is offline
 /// fallback = ["deepseek", "glm-coding/glm-5.3"]  # where a switch goes, in order
 /// slow_notice_seconds = 15                       # silence before the "model slow" notice
 /// first_byte_seconds = 60                        # silence before the round fails
@@ -692,6 +693,11 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// a later one moves it to the fallback until the reset. `0` never waits while a fallback is free.
 /// Absent means [`DEFAULT_WAIT_IF_WITHIN`]; `wait` ignores it.
 ///
+/// `offline_budget` is how long a turn keeps taking the round again while the failure is the box
+/// having no network - name resolution or no route - before it ends saying the box is offline.
+/// Those waits spend no retry. Absent means the daemon's own hour; `0` and a negative span are
+/// refused, since either is a turn that claims to be patient and gives up before the first retry.
+///
 /// The three deadline keys resolve per key: the `provider/model` table, then the preset's table,
 /// then the keys here, then the built-in 15 / 60 / 600 - see [`LeticodeConfig::deadlines`]. A
 /// level's key wins over the same key at the other level. `0` and a `first_byte_seconds` above
@@ -705,6 +711,8 @@ pub struct ProviderKeys {
     pub wait_if_within: Option<std::time::Duration>,
     /// `limit_probe`: the steps a park re-tries on before its reset. `Some(empty)` never probes.
     pub limit_probe: Option<Vec<std::time::Duration>>,
+    /// `offline_budget`: how long a turn retries a no-network failure before it gives up.
+    pub offline_budget: Option<std::time::Duration>,
     pub fallback: Vec<String>,
     /// The deadline keys written directly under `[provider]`.
     pub deadlines: DeadlineKeys,
@@ -832,6 +840,24 @@ fn deadline_keys(
     Ok(out)
 }
 
+/// A no-network budget: a span like `1h`, and never zero or negative - either one is a turn that
+/// says it is patient and gives up before its first retry.
+fn offline_budget_at(s: &str, from: &Origin) -> Result<std::time::Duration, String> {
+    if s.trim().starts_with('-') {
+        return Err(format!(
+            "{from}: [provider] offline_budget = \"{s}\" is negative; a budget is a length of time"
+        ));
+    }
+    let d = parse_span(s).map_err(|why| format!("{from}: [provider] offline_budget = {why}"))?;
+    if d.is_zero() {
+        return Err(format!(
+            "{from}: [provider] offline_budget = 0 would give up before the first retry; write a \
+             span like \"1h\", or leave the key out for the daemon's own hour"
+        ));
+    }
+    Ok(d)
+}
+
 fn provider_keys(
     value: &toml::Value,
     path: &Path,
@@ -839,7 +865,7 @@ fn provider_keys(
     user: bool,
 ) -> Result<ProviderKeys, String> {
     let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `wait_if_within` (\"45m\"), \
-                `limit_probe` ([\"2m\", \"5m\"]), `fallback`, \
+                `limit_probe` ([\"2m\", \"5m\"]), `offline_budget` (\"1h\"), `fallback`, \
                 `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, `[provider.usage_warn]`, \
                 and `[provider.NAME]` tables (a preset or `provider/model`) holding the last three \
                 and a preset's `usage_warn`";
@@ -895,6 +921,15 @@ fn provider_keys(
                     steps.push(d);
                 }
                 out.limit_probe = Some(steps);
+            }
+            "offline_budget" => {
+                let s = v.as_str().ok_or_else(|| {
+                    format!(
+                        "{from}: [provider] offline_budget is a string like \"1h\", not {}",
+                        kind_of(v)
+                    )
+                })?;
+                out.offline_budget = Some(offline_budget_at(s, &from)?);
             }
             "fallback" => {
                 out.fallback = fallback_list(v).map_err(|why| format!("{from}: {why}"))?;
@@ -3765,6 +3800,10 @@ impl LeticodeConfig {
                     .limit_probe
                     .clone()
                     .or_else(|| self.provider.limit_probe.clone()),
+                offline_budget: other
+                    .provider
+                    .offline_budget
+                    .or(self.provider.offline_budget),
                 fallback: if other.provider.fallback.is_empty() {
                     self.provider.fallback.clone()
                 } else {
@@ -3984,6 +4023,12 @@ impl LeticodeConfig {
             .limit_probe
             .clone()
             .unwrap_or_else(|| DEFAULT_LIMIT_PROBE.to_vec())
+    }
+
+    /// How long a turn keeps retrying a no-network failure: the file's span, or `None` when no level
+    /// said, which leaves the daemon's own hour in place.
+    pub fn offline_budget(&self) -> Option<std::time::Duration> {
+        self.provider.offline_budget
     }
 
     /// The usage thresholds for a session on preset `name`: per key, `[provider.name.usage_warn]`,

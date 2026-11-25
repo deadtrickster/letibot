@@ -38,6 +38,7 @@ Usage limits and model API deadlines. A plugin layer answering `limit_decide` de
 | `on_limit` | "wait" \| "switch" | switch with a fallback, else wait | both, project wins | on a usage limit: park until the reset, or move to the next fallback |
 | `wait_if_within` | span (45m, 1h30m, 90s, 2d, 0) | 45m | both, project wins | with switch: a reset this close is waited for anyway; 0 never waits |
 | `limit_probe` | list of spans | [2m, 5m, 15m, 30m, 1h] | both, project wins | a park re-tries the refused request on these steps before its reset, the last repeating; [] never |
+| `offline_budget` | span (1h, 30m, 90s) | 1h | both, project wins | how long a turn keeps retrying while the box has no network (name resolution, no route) before it ends saying so; those waits spend no retry, and 0 or a negative span is refused |
 | `fallback` | list of models | none | as fallback | the top-level fallback list; both set to different lists is refused |
 | `slow_notice_seconds` | int >= 1 | 15 | both, project wins | silence before the "model slow" notice |
 | `first_byte_seconds` | int >= 1 | 60 | both, project wins | silence before the first byte that fails the round |

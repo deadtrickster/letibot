@@ -208,6 +208,23 @@ fn a_sessions_fallback_list_replaces_the_boxs_and_carries_its_budget() {
         "the session's list, not the box's two names and this one"
     );
     assert_eq!(cfg.fallback_after_timeouts, 2);
+
+    // The no-network budget is the file's only when it names one: a caller that set its own -
+    // a fixture with a two-second budget, or a daemon started with a shorter one - keeps it.
+    cfg.http_offline_budget = std::time::Duration::from_secs(2);
+    session_fallback(&mut cfg);
+    assert_eq!(
+        cfg.http_offline_budget,
+        std::time::Duration::from_secs(2),
+        "a file that names no budget leaves the daemon's own"
+    );
+    cfg.leticode.provider.offline_budget = Some(std::time::Duration::from_secs(300));
+    session_fallback(&mut cfg);
+    assert_eq!(
+        cfg.http_offline_budget,
+        std::time::Duration::from_secs(300),
+        "`[provider] offline_budget` is the turn's ladder budget"
+    );
 }
 
 /// The Claude Code listing: the id a person types, then the facts a picker

@@ -1694,6 +1694,62 @@ fn usage_warn_resolves_by_preset_then_table_then_builtin() {
     }
 }
 
+/// `[provider] offline_budget` is read as a span, merged project-over-user, and refused when it is
+/// zero, negative or not a span at all - each is a turn that gives up before its first retry.
+#[test]
+fn the_no_network_budget_is_a_span_and_never_zero() {
+    let dir = project_dir("offline_budget");
+    assert_eq!(
+        LeticodeConfig::default().offline_budget(),
+        None,
+        "no file said, so the daemon's own hour stands"
+    );
+    let user = write_file(&sub(&dir, "user"), "[provider]\noffline_budget = \"1h\"\n");
+    let project = write_file(
+        &sub(&dir, "project"),
+        "[provider]\noffline_budget = \"90s\"\n",
+    );
+    let merged = LeticodeConfig::load_as(&user, Level::User)
+        .unwrap()
+        .overridden_by(&LeticodeConfig::load(&project).unwrap());
+    assert_eq!(
+        merged.offline_budget(),
+        Some(std::time::Duration::from_secs(90)),
+        "the project's span wins"
+    );
+    assert_eq!(
+        LeticodeConfig::load(&user).unwrap().offline_budget(),
+        Some(std::time::Duration::from_secs(3600))
+    );
+    for (tag, body, want) in [
+        (
+            "zero",
+            "[provider]\noffline_budget = \"0\"\n",
+            "before the first retry",
+        ),
+        (
+            "negative",
+            "[provider]\noffline_budget = \"-5m\"\n",
+            "is negative",
+        ),
+        (
+            "word",
+            "[provider]\noffline_budget = \"soon\"\n",
+            "is not a span",
+        ),
+        (
+            "number",
+            "[provider]\noffline_budget = 3600\n",
+            "is a string like",
+        ),
+    ] {
+        let f = write_file(&sub(&dir, tag), body);
+        let e = LeticodeConfig::load(&f).unwrap_err();
+        assert!(e.contains(want), "{tag}: {e}");
+        assert!(e.contains("offline_budget"), "{tag}: {e}");
+    }
+}
+
 /// Nonsense deadlines are refused naming file, line and key.
 #[test]
 fn nonsense_deadlines_are_refused_with_file_line_and_key() {
