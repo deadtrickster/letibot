@@ -168,17 +168,8 @@ impl Harness {
                 if name == here {
                     return self.limit_hook_fell_back(&here, "`switch` named the refusing model");
                 }
-                // The configured fallbacks are the operator's list; any other metered model is a
-                // spend nobody chose.
-                if !input
-                    .candidates
-                    .iter()
-                    .any(|c| format!("{}/{}", c.provider, c.model) == name)
-                {
-                    return self.limit_hook_fell_back(
-                        &here,
-                        &format!("`switch` named `{name}`, which is not one of the candidates"),
-                    );
+                if let Some(why) = Self::off_the_list(&input, "switch", &name) {
+                    return self.limit_hook_fell_back(&here, &why);
                 }
                 match self.switch_on_a_refusal(&name, e) {
                     Ok(next) => Some(AfterTheLadder::Moved {
@@ -191,6 +182,12 @@ impl Harness {
                 }
             }
             limit::Do::NewSession { provider, model } => {
+                // Before the fork: a target nobody listed is a spend nobody chose, and the fork
+                // would already be a session to close.
+                let target = format!("{provider}/{model}");
+                if let Some(why) = Self::off_the_list(&input, "new_session", &target) {
+                    return self.limit_hook_fell_back(&here, &why);
+                }
                 match self.limit_new_session(&provider, &model, &here, &by) {
                     Ok(said) => Some(AfterTheLadder::Stopped { said }),
                     Err(why) => self.limit_hook_fell_back(&here, &why),
@@ -225,6 +222,17 @@ impl Harness {
                 self.limit_hook_fell_back(&here, "a `call` reached the host unresolved")
             }
         }
+    }
+
+    /// A target the hook named, refused unless it is one of the candidates the operator
+    /// configured: the fixed fallback list is the only spend they chose, and `switch` and
+    /// `new_session` are the two acts that spend it.
+    fn off_the_list(input: &limit::Input, verb: &str, name: &str) -> Option<String> {
+        let listed = input
+            .candidates
+            .iter()
+            .any(|c| format!("{}/{}", c.provider, c.model) == name);
+        (!listed).then(|| format!("`{verb}` named `{name}`, which is not one of the candidates"))
     }
 
     /// The hook failed: said on its own row, and the fixed rules decide the rest of the episode.
@@ -489,5 +497,48 @@ mod tests {
         );
         assert_eq!(window_of("Rate limit reached"), None);
         assert_eq!(window_of("waiting for the server, again"), None);
+    }
+
+    /// The list a hook's target is held to is the operator's configured fallbacks, and a name off
+    /// it is refused in the verb's own words: `switch` and `new_session` both spend it.
+    #[test]
+    fn a_target_off_the_candidates_is_refused_by_name() {
+        let input = limit::Input {
+            v: letibot_plugin::V,
+            now_ms: 0,
+            refusal: limit::Refusal {
+                status: 429,
+                provider: "glm".into(),
+                model: "glm-5.3".into(),
+                kind: "rate_limit".into(),
+                window: None,
+                reset_ms: None,
+                attempt: 1,
+                said: String::new(),
+            },
+            usage: None,
+            session: limit::Session {
+                id: "s".into(),
+                seat: "main".into(),
+                parent: None,
+                turn_in_flight: true,
+            },
+            candidates: vec![limit::Candidate {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                limited_until_ms: None,
+            }],
+            state: Value::Null,
+            answered: None,
+        };
+        assert_eq!(
+            Harness::off_the_list(&input, "switch", "deepseek/deepseek-flash"),
+            None,
+            "a configured fallback is the spend the operator chose"
+        );
+        let why = Harness::off_the_list(&input, "new_session", "kimi/kimi-k2")
+            .expect("a model nobody listed is refused");
+        assert!(why.contains("`new_session` named `kimi/kimi-k2`"), "{why}");
+        assert!(why.contains("not one of the candidates"), "{why}");
     }
 }

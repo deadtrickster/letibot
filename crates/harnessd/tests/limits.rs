@@ -1978,6 +1978,67 @@ fn a_limit_hook_switch_outside_the_candidates_falls_back() {
     assert!(rows[0].contains("not one of the candidates"), "{rows:?}");
 }
 
+/// `new_session` is held to the same list as `switch`: a fork onto a model the operator never
+/// configured is a spend nobody chose, and the fork itself would be a session to close.
+#[test]
+fn a_limit_hooks_new_session_outside_the_candidates_falls_back() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("hook-fork-off-list");
+    let glm = model(&[Act::Refuse(300), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(
+        &scratch,
+        &gguf,
+        "hook-fork-off-list",
+        ("glm", "glm-5.3"),
+        Vec::new(),
+    );
+    let (clock, _handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    let workspace = cfg.workspace.clone();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    with_limit_hook(
+        &sessions,
+        &id,
+        &workspace,
+        Arc::new(|_| {
+            Ok(serde_json::json!({"state": {}, "do": "new_session",
+                "provider": "deepseek", "model": "deepseek-flash"}))
+        }),
+    );
+
+    let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
+    assert!(out.to_string().contains("paused until"), "{out}");
+    let forks: Vec<String> = sessions
+        .registry()
+        .live_ids()
+        .into_iter()
+        .filter(|s| *s != id)
+        .collect();
+    assert!(
+        forks.is_empty(),
+        "a fork onto a model nobody listed was opened: {forks:?}"
+    );
+    assert_eq!(
+        deepseek.count(),
+        0,
+        "no request went to a model nobody listed"
+    );
+    assert!(said(&hub, "limit_new_session").is_empty());
+    let rows = said(&hub, "limit_hook_fallback");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0].contains("`new_session` named") && rows[0].contains("not one of the candidates"),
+        "{rows:?}"
+    );
+}
+
 /// `new_session` mid-turn: the conversation is forked into a new session, the
 /// turn continues there on the hook's target, and the old session's row names the fork.
 #[test]
