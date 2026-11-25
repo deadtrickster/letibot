@@ -547,6 +547,9 @@ ran, not what they made - while a checkout loses only `target`, `target-*`, `bui
 branch home; with no row naming it, the tree stays and the pass says so on the spot. Nothing a holding row already
 records is looked at twice - that directory is its owner's business, and the owner's rule is the one above.
 
+The whole set is one ssh call, and a call is one command line: Linux caps a single argument at 128 KiB, so the
+script stops inside 96 KiB and the rest of the directories wait for the next pass (the pass says how many).
+
 **What the operator sees.** The plan (`letibot gc`) lists a settled owner's remote holdings with the size the
 last pass measured and a verdict naming the machine, so the 985G is in somebody's list before anything is
 removed; a live owner's rows are kept whatever their size. `letibot gc --now` prints one line per freed

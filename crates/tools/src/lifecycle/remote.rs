@@ -242,11 +242,19 @@ impl Orphan {
 /// machines' clocks are never subtracted from each other.
 pub const ORPHAN_FLOOR_S: i64 = (DEFAULT_IDLE_TTL_MS + LEASE_GRACE_MS) / 1000;
 
+/// How much of the removal script one ssh call may carry. Linux caps ONE argument at 128 KiB
+/// (`MAX_ARG_STRLEN`) and a script is delivered as one, so a pass over 272 directories is more than
+/// one call: what does not fit waits for the next pass, which is said.
+pub const ORPHANS_SCRIPT_MAX: usize = 96 * 1024;
+
 /// The script that frees what nobody owns on a host: every `/proc/<pid>/cwd` read once for the
 /// whole pass, then each candidate kept while a process stands in it or while anything has written
 /// it inside [`ORPHAN_FLOOR_S`], and otherwise its build output - or, for a checkout this box could
 /// prove the branch of, the tree. A checkout it could not stays, and the line says why.
-pub fn orphans_script(root: &Path, orphans: &[Orphan]) -> String {
+///
+/// It stops adding candidates at [`ORPHANS_SCRIPT_MAX`] and answers how many it took: 272
+/// directories are three passes rather than one call too long to make. The rest wait, said.
+pub fn orphans_script(root: &Path, orphans: &[Orphan]) -> (String, usize) {
     let mut s = format!(
         "root={root}\n\
          # Every cwd a process holds, read once: a tree no process stands in is a tree nothing is\n\
@@ -261,6 +269,7 @@ pub fn orphans_script(root: &Path, orphans: &[Orphan]) -> String {
          done >> \"$cwds\" 2>/dev/null\n",
         root = crate::remote::expand_root(&root.display().to_string())
     );
+    let mut taken = 0;
     for o in orphans {
         let action = match o {
             Orphan::Work { .. } => "n=$(du -sk \"$p\" 2>/dev/null | awk '{print $1}')\n\
@@ -277,7 +286,7 @@ pub fn orphans_script(root: &Path, orphans: &[Orphan]) -> String {
                 format!("{take}{}", sweep_of("\"$p\""))
             }
         };
-        s.push_str(&format!(
+        let block = format!(
             "p={p}\n\
              if [ -d \"$p\" ]; then\n\
              \x20 rp=$(cd \"$p\" 2>/dev/null && pwd -P)\n\
@@ -309,10 +318,17 @@ pub fn orphans_script(root: &Path, orphans: &[Orphan]) -> String {
             p = crate::remote::quote(o.path()),
             floor = ORPHAN_FLOOR_S,
             action = action,
-        ));
+        );
+        // One candidate over the cap is still one call: a script that frees nothing frees nothing,
+        // and the caller says the rest wait.
+        if s.len() + block.len() > ORPHANS_SCRIPT_MAX && taken > 0 {
+            break;
+        }
+        s.push_str(&block);
+        taken += 1;
     }
     s.push_str("rm -f \"$cwds\" 2>/dev/null\n");
-    s
+    (s, taken)
 }
 
 /// What one sweep answered: what it freed, each path with the bytes it was worth, and what it kept
@@ -757,7 +773,15 @@ fn sweep_orphans(
     if orphans.is_empty() {
         return;
     }
-    let said = match hands.host_removal(host, &orphans_script(root, orphans)) {
+    let (script, took) = orphans_script(root, orphans);
+    if took < orphans.len() {
+        pass.kept.push(format!(
+            "{host}: {} directory(ies) nobody owns wait for the next pass, so one call stays inside a \
+             command line",
+            orphans.len() - took
+        ));
+    }
+    let said = match hands.host_removal(host, &script) {
         Ok(said) => said,
         Err(e) => {
             pass.kept.push(format!(
@@ -772,7 +796,7 @@ fn sweep_orphans(
             for (path, bytes) in sweep.freed {
                 // A freed path is a candidate's own dir (a fanout work dir whole) or one of its
                 // build names, so the longest candidate it sits under is the one it belongs to.
-                let owner = orphans
+                let owner = orphans[..took]
                     .iter()
                     .filter(|o| path == o.path() || path.starts_with(&format!("{}/", o.path())))
                     .max_by_key(|o| o.path().len());
@@ -1411,6 +1435,30 @@ mod tests {
             "{listed}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pass over more directories than one command line can carry is split: the script stops
+    /// inside [`ORPHANS_SCRIPT_MAX`] and says how many it took, because the rest are the next pass
+    /// and not a call that fails with `E2BIG`.
+    #[test]
+    fn the_script_stops_inside_one_command_line() {
+        let orphans: Vec<Orphan> = (0..1000)
+            .map(|i| Orphan::Work {
+                path: format!("/r/fanout-call_{i}"),
+            })
+            .collect();
+        let (script, took) = orphans_script(Path::new("/r"), &orphans);
+        assert!(took > 0 && took < orphans.len(), "took {took}");
+        assert!(
+            script.len() <= ORPHANS_SCRIPT_MAX + 4096,
+            "{} bytes in one call",
+            script.len()
+        );
+        assert!(
+            script.contains(&format!("/r/fanout-call_{}", took - 1))
+                && !script.contains("/r/fanout-call_999"),
+            "the ones it did not take are not in it"
+        );
     }
 
     /// One sweep of a fixture's home: the build output goes, the stamp and everything else stay,
