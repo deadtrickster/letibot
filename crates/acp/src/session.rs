@@ -12,7 +12,9 @@ use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{
     DecisionOption, DeltaTarget, Envelope, FinishReason, OptionKind, SessionEvent,
 };
-use letibot_sessionlog::protocol::{Ack, Caps, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::protocol::{
+    Ack, Caps, PROTOCOL_VERSION, PromptDelivery, QUEUE_PROMPT_SINCE, ServerFrame,
+};
 use letibot_transcript::ToolOutcome;
 use serde_json::{Value, json};
 
@@ -63,8 +65,12 @@ struct Session {
     workspace: String,
     client: HeadClient,
     seq: u64,
-    /// The prompt the client is waiting on, while one runs.
-    in_flight: Option<Value>,
+    /// The prompts the client is waiting on, oldest first. More than one only when a client asked
+    /// for the queue lane: a queued prompt is a turn of its own, so each turn end answers one.
+    in_flight: std::collections::VecDeque<Value>,
+    /// The daemon's protocol number, from its `Hello`: the queue lane is refused below
+    /// `QUEUE_PROMPT_SINCE`, where the field parses and steers.
+    protocol: u32,
     /// What the client was told each call is, so an update names the same kind.
     calls: BTreeMap<String, ToolKind>,
     /// The client asked for this turn to stop: the answer is `cancelled` whatever the turn says.
@@ -276,11 +282,13 @@ impl<W: Write> Adapter<W> {
             Caps {
                 can_decide: true,
                 row_bodies: true,
+                // This head sends prompts on the queue lane when its client asks for one.
+                features: vec![letibot_sessionlog::FEATURE_QUEUE_PROMPT.to_string()],
                 ..Caps::default()
             },
         )
         .map_err(|e| format!("{}: {e}", daemon.socket.display()))?;
-        match &hello {
+        let protocol = match &hello {
             ServerFrame::Hello {
                 protocol_version, ..
             } => {
@@ -289,10 +297,11 @@ impl<W: Write> Adapter<W> {
                 {
                     eprintln!("acp: {skew}");
                 }
+                *protocol_version
             }
             ServerFrame::Bye { reason } => return Err(format!("the daemon said: {reason}")),
             other => return Err(format!("expected a hello, got {other:?}")),
-        }
+        };
         let tag = session.clone();
         let tx = self.tx.clone();
         std::thread::Builder::new()
@@ -322,7 +331,8 @@ impl<W: Write> Adapter<W> {
                 workspace,
                 client,
                 seq: 0,
-                in_flight: None,
+                in_flight: std::collections::VecDeque::new(),
+                protocol,
                 calls: BTreeMap::new(),
                 cancelled: false,
                 closed: None,
@@ -349,12 +359,33 @@ impl<W: Write> Adapter<W> {
                 &format!("no session `{}` in this adapter", asked.session_id),
             ));
         };
-        if session.in_flight.is_some() {
+        let delivery = match lane(asked.meta.as_ref()) {
+            Ok(lane) => lane,
+            Err(why) => return self.write(wire::error(id, crate::acp::code::INVALID_PARAMS, &why)),
+        };
+        // One turn at a time is ACP's own rule, and a queued prompt is a turn of its own: it is
+        // taken, while a second STEER is refused because the daemon would fold it into the turn
+        // already running and the two answers could not be told apart.
+        if !session.in_flight.is_empty() && delivery == PromptDelivery::Steer {
             return self.write(wire::error(
                 id,
                 crate::acp::code::INVALID_REQUEST,
-                "a prompt is still running in this session: ACP asks for one turn at a time, and \
-                 the daemon would only queue the second",
+                "a prompt is still running in this session: ACP asks for one turn at a time. Add \
+                 `_meta.letibot.delivery: \"queue\"` to have this one run after that turn instead",
+            ));
+        }
+        // A daemon below the field's version parses it and reads it nowhere, so the line would
+        // steer: the opposite of what the client asked for, and worth a refusal rather than a wait.
+        if delivery == PromptDelivery::Queue && session.protocol < QUEUE_PROMPT_SINCE {
+            let theirs = session.protocol;
+            return self.write(wire::error(
+                id,
+                crate::acp::code::INTERNAL,
+                &format!(
+                    "this session's daemon speaks protocol {theirs} and the queue lane arrived at \
+                     {QUEUE_PROMPT_SINCE}: the prompt would steer the running turn instead. \
+                     Nothing was sent; restart that daemon from the installed build",
+                ),
             ));
         }
         if let Some(why) = session.closed.clone() {
@@ -365,10 +396,10 @@ impl<W: Write> Adapter<W> {
         // second one on a session a person may be typing into, and a prompt must never be dropped.
         match session
             .client
-            .prompt_with_context(0, &text, Vec::new(), context)
+            .prompt_delivered(0, &text, Vec::new(), context, None, delivery)
         {
             Ok(_) => {
-                session.in_flight = Some(id);
+                session.in_flight.push_back(id);
                 session.cancelled = false;
             }
             Err(e) => self.write(wire::error(
@@ -630,7 +661,10 @@ impl<W: Write> Adapter<W> {
                 ends_turn,
                 ..
             } => {
-                if ends_turn {
+                // The hub follows a last round with `TurnEnded` under the same lock, so a daemon at
+                // `TURN_ENDED_SINCE` says the end once: counting both would answer the prompt after
+                // this one too. An older daemon's `ends_turn` is its ending.
+                if ends_turn && session.protocol < letibot_sessionlog::TURN_ENDED_SINCE {
                     let why = match finish_reason {
                         FinishReason::Length => StopReason::MaxTokens,
                         _ => StopReason::EndTurn,
@@ -642,7 +676,7 @@ impl<W: Write> Adapter<W> {
             SessionEvent::TurnEnded { .. } => finish(out, session, StopReason::EndTurn),
             SessionEvent::TurnInterrupted { .. } => finish(out, session, StopReason::Cancelled),
             SessionEvent::TurnFailed { error, .. } => {
-                if let Some(id) = session.in_flight.take() {
+                if let Some(id) = session.in_flight.pop_front() {
                     write(
                         out,
                         wire::error(
@@ -670,7 +704,9 @@ impl<W: Write> Adapter<W> {
         };
         let said = format!("the daemon closed this session: {reason}");
         session.closed = Some(said.clone());
-        if let Some(id) = session.in_flight.take() {
+        // Every prompt still owed an answer gets it: a client waiting on one that can never run is
+        // a client hanging, and the close is the reason.
+        for id in std::mem::take(&mut session.in_flight) {
             self.write(wire::error(id, crate::acp::code::SESSION, &said));
         }
     }
@@ -745,19 +781,40 @@ fn ack(session: &mut Session) {
     });
 }
 
-/// Answer the prompt whose turn just ended. A turn this adapter did not start is left alone: ACP
-/// has no row for a reply nobody asked it for.
+/// Answer the prompt whose turn just ended, oldest first: a queued prompt is a turn of its own. A
+/// turn this adapter did not start is left alone: ACP has no row for a reply nobody asked it for.
 fn finish<W: Write>(out: &mut W, session: &mut Session, why: StopReason) {
-    let Some(id) = session.in_flight.take() else {
+    let Some(id) = session.in_flight.pop_front() else {
         return;
     };
-    let why = if session.cancelled {
+    // The flag is this turn's: a cancel that ended one prompt must not answer the queued next one
+    // as cancelled too.
+    let why = if std::mem::take(&mut session.cancelled) {
         StopReason::Cancelled
     } else {
         why
     };
     let result = serde_json::to_value(PromptResponse { stop_reason: why }).unwrap_or(Value::Null);
     write(out, wire::result(id, result));
+}
+
+/// The lane a client asked for, from ACP's `_meta.letibot.delivery`. ACP has no field for it, so a
+/// client that cares says so; absent is `steer`, which is what every prompt did before the lanes.
+fn lane(meta: Option<&Value>) -> Result<PromptDelivery, String> {
+    let Some(word) = meta
+        .and_then(|m| m.get("letibot"))
+        .and_then(|m| m.get("delivery"))
+    else {
+        return Ok(PromptDelivery::Steer);
+    };
+    match word.as_str() {
+        Some("steer") => Ok(PromptDelivery::Steer),
+        Some("queue") => Ok(PromptDelivery::Queue),
+        _ => Err(format!(
+            "`_meta.letibot.delivery` is `steer` or `queue`, and `{word}` is neither: nothing \
+             was sent"
+        )),
+    }
 }
 
 fn write<W: Write>(out: &mut W, message: Value) {

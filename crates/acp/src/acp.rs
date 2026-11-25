@@ -99,6 +99,10 @@ pub struct NewSessionResponse {
 pub struct PromptRequest {
     pub session_id: String,
     pub prompt: Vec<ContentBlock>,
+    /// ACP's open field for a client's own facts. This adapter reads `letibot.delivery`, which is
+    /// the lane the daemon takes the prompt on; absent is `steer`, as it always was.
+    #[serde(rename = "_meta", default)]
+    pub meta: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]

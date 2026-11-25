@@ -27,6 +27,9 @@ pub enum Answer {
     Say(&'static [&'static str]),
     /// The same, one piece every few hundred milliseconds: slow enough for a client to stop it.
     Slow(&'static [&'static str]),
+    /// The same as [`Answer::Say`], but the round does not answer until [`World::hold`] is released:
+    /// the only way to send a second prompt while a turn is provably still running.
+    Held(&'static [&'static str]),
     /// One tool call, then the turn continues.
     Call {
         name: &'static str,
@@ -34,11 +37,33 @@ pub enum Answer {
     },
 }
 
+/// A gate an [`Answer::Held`] round waits on.
+#[derive(Clone)]
+pub struct Hold(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl Hold {
+    pub fn release(&self) {
+        let (open, bell) = &*self.0;
+        *open.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        bell.notify_all();
+    }
+
+    fn wait(&self) {
+        let (open, bell) = &*self.0;
+        let mut open = open.lock().unwrap_or_else(|e| e.into_inner());
+        while !*open {
+            open = bell.wait(open).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
 pub struct World {
     pub root: PathBuf,
     pub worktree: PathBuf,
     pub fake: Fake,
-    registry: Arc<Registry>,
+    /// The gate every [`Answer::Held`] round waits on. Nothing waits on it unless a script asks.
+    pub hold: Hold,
+    pub registry: Arc<Registry>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -74,7 +99,8 @@ impl World {
         std::fs::create_dir_all(root.join("cache/letibot")).expect("cache dir");
         std::fs::write(root.join("cache/letibot/models.json"), "{}").expect("models.json");
 
-        let fake = Fake::serve(script);
+        let hold = Hold(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+        let fake = Fake::serve(script, hold.clone());
         std::fs::write(
             root.join("config/letibot/providers.toml"),
             format!(
@@ -144,6 +170,7 @@ impl World {
             root,
             worktree,
             fake,
+            hold,
             registry,
             worker: Some(worker),
         }
@@ -382,7 +409,7 @@ pub struct Fake {
 }
 
 impl Fake {
-    fn serve(script: Vec<Answer>) -> Fake {
+    fn serve(script: Vec<Answer>, hold: Hold) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -393,7 +420,7 @@ impl Fake {
                 let body = read_request(stream.try_clone().expect("clone the socket"));
                 record.lock().unwrap().push(body);
                 let answer = script.get(round).cloned().unwrap_or(Answer::Say(&["done"]));
-                let _ = write_sse(stream, &answer);
+                let _ = write_sse(stream, &answer, &hold);
             }
         });
         Fake {
@@ -454,10 +481,13 @@ fn read_request(mut s: TcpStream) -> String {
 }
 
 /// The provider's frames: the answer, a finish reason, the usage block, `[DONE]`.
-fn write_sse(mut stream: TcpStream, answer: &Answer) -> std::io::Result<()> {
+fn write_sse(mut stream: TcpStream, answer: &Answer, hold: &Hold) -> std::io::Result<()> {
     let mut body = String::new();
     match answer {
-        Answer::Say(chunks) => {
+        Answer::Say(chunks) | Answer::Held(chunks) => {
+            if matches!(answer, Answer::Held(_)) {
+                hold.wait();
+            }
             for chunk in *chunks {
                 body.push_str(&format!(
                     "data: {}\n\n",

@@ -51,6 +51,7 @@ both of which a client never passes.
 | `session/prompt` | `ClientFrame::Prompt` | the text blocks are the words; `resource` and `resource_link` blocks become `EditorContext` |
 | resource `#L41-L47` | `ContextRef.range` | `docs/rano-integration.md` §4.2 - the daemon renders it, this never does |
 | `_meta.letibot.unsaved` | `ContextRef.unsaved` | ACP has no unsaved bit, so a client that cares says so |
+| `_meta.letibot.delivery` | `Prompt.delivery` | `queue` waits for the running turn to end and opens one of its own; absent, or `steer`, joins that turn |
 | `session/update` `agent_message_chunk` | `Delta{target: Text}` | one chunk per delta, in order |
 | `session/update` `agent_thought_chunk` | `Delta{target: Reasoning}` | |
 | `session/update` `tool_call` | `ToolCallProposed` | the title is `tool: target`; the kind comes from the tool's name |
@@ -60,6 +61,16 @@ both of which a client never passes.
 | turn end | `TurnEnded`, or `TurnFinished{ends_turn}` from a daemon before 76 | `end_turn`, or `max_tokens` on a length stop |
 | turn interrupted | `TurnInterrupted` | `cancelled` |
 | `Citations` | `resource_link` chunk | `crates/acp/src/marks.rs`, with the lines in the fragment |
+
+### The lane a prompt takes
+
+ACP has no field for "do this after the turn you are in", and the daemon has two lanes
+(`docs/rano-integration.md` §5, `ClientFrame::Prompt`'s `delivery`). A client asks for the second
+one with `_meta.letibot.delivery: "queue"` on `session/prompt`, which is the same `_meta.letibot`
+room `unsaved` lives in. Absent, or `"steer"`, is the lane a prompt always had: it joins the turn
+that is running. A daemon below `QUEUE_PROMPT_SINCE` is refused by name rather than sent the field
+it would drop, because a prompt that steers where the client asked it to wait is the bug the lanes
+exist to fix.
 
 ### A resource with lines
 
@@ -106,6 +117,8 @@ adapter changes for it.
   later package and not a mapping.
 - **MCP servers.** `session/new` requires the field and this adapter ignores it: a leticode
   session's tools are seated by the daemon's config.
-- **One prompt at a time.** ACP clients send one `session/prompt` per session; a second while one
-  runs is refused with an error rather than queued, because the daemon would queue it and the
-  client would have no way to tell the two replies apart.
+- **One prompt at a time.** ACP clients send one `session/prompt` per session; a second STEER
+  while one runs is refused with an error, because the daemon would fold it into the turn already
+  running and the client would have no way to tell the two replies apart. A second prompt on the
+  queue lane is taken: it is a turn of its own, so the answers arrive in that order, one per turn
+  end.
