@@ -428,6 +428,7 @@ impl GeminiProvider {
                     body_bytes,
                     request_bytes: payload.len(),
                     shape: Some(what_was_sent),
+                    budget: crate::budget::Budget::NONE,
                 },
             );
             return Err(BackendError::Refused {
@@ -1122,7 +1123,7 @@ fn picture_fate_part(
     if eyes.takes_images() && blob.is_none() {
         return Err(NOT_INLINE.into());
     }
-    if let Some(why) = messages::picture_fate(data_ref, eyes, withheld) {
+    if let Some(why) = messages::picture_fate(data_ref, eyes, withheld, None) {
         return Err(why);
     }
     let (mime, data) = blob.ok_or_else(|| NOT_INLINE.to_string())?;

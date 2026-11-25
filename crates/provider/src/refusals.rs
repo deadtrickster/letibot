@@ -29,6 +29,9 @@ pub struct Refusal {
     /// What was sent as its SHAPE - roles in order, which fields each message carries, and how long
     /// they are - where the client composes one. Never the content: this is not a second transcript.
     pub shape: Option<String>,
+    /// The picture budget the refused request was assembled under, so a record read later says how
+    /// many pictures were allowed rather than how many happened to be in it.
+    pub budget: crate::budget::Budget,
 }
 
 impl Refusal {
@@ -50,6 +53,7 @@ impl Refusal {
             "body_truncated": self.body_bytes > self.body.len(),
             "request_bytes": self.request_bytes,
             "request_shape": self.shape,
+            "budget": {"images": self.budget.images, "bytes": self.budget.bytes},
         })
     }
 }
@@ -141,6 +145,10 @@ mod tests {
             body_bytes: body.len(),
             request_bytes: 5_900_000,
             shape: Some("508 message(s)".into()),
+            budget: crate::budget::Budget {
+                images: Some(40),
+                bytes: None,
+            },
         }
     }
 
@@ -154,6 +162,10 @@ mod tests {
         assert_eq!(json["body_truncated"], false);
         assert_eq!(json["headers"]["x-request-id"], "req_9");
         assert_eq!(json["request_shape"], "508 message(s)");
+        assert_eq!(
+            json["budget"]["images"], 40,
+            "which budget it was built under"
+        );
         assert!(json.get("authorization").is_none());
     }
 

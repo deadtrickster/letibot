@@ -603,6 +603,7 @@ impl Harness {
                     self.cfg.deadlines_for(Some(&pc)),
                     self.cfg.effort.as_deref(),
                     Some(crate::harness::open::provider_refusals(&self.cfg)),
+                    self.cfg.image_budget_for(Some(&pc)),
                 )
                 .map_err(HarnessError::Setup)?;
                 let mut line = format!(
@@ -812,6 +813,7 @@ impl Harness {
             self.cfg.deadlines_for(Some(&pc)),
             Some(&word),
             Some(crate::harness::open::provider_refusals(&self.cfg)),
+            self.cfg.image_budget_for(Some(&pc)),
         ) {
             Ok(p) => p,
             Err(why) => return refuse(why),

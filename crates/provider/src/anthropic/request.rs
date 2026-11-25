@@ -158,7 +158,8 @@ pub(super) fn messages(
                             data_ref,
                         } => {
                             images += 1;
-                            match picture_fate(data_ref, policy.senses.eyes, policy.withheld) {
+                            match picture_fate(data_ref, policy.senses.eyes, policy.withheld, None)
+                            {
                                 None => push(m, image_block(media_type, data_ref), false),
                                 Some(why) => push(
                                     m,
@@ -281,7 +282,7 @@ pub(super) fn messages(
                         // A picture the call read rides the result that read it: the API takes an
                         // image block inside `tool_result.content`, and a model that does not get
                         // pictures is told what it is missing instead.
-                        match picture_fate(&m.data_ref, policy.senses.eyes, policy.withheld) {
+                        match picture_fate(&m.data_ref, policy.senses.eyes, policy.withheld, None) {
                             None => content.push(image_block(&m.mime, &m.data_ref)),
                             Some(why) => content.push(json!({
                                 "type": "text",

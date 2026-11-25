@@ -54,6 +54,8 @@ pub const LETICODE: File = File {
                 k("slow_notice_seconds", "int >= 1", "15", PW, "silence before the \"model slow\" notice", "15"),
                 k("first_byte_seconds", "int >= 1", "60", PW, "silence before the first byte that fails the round", "60"),
                 k("answer_seconds", "int >= 1", "600", PW, "budget for the whole answer", "600"),
+                k("max_images", "int >= 1", "none", PW, "the most pictures one request may carry; the newest are sent and the rest are named in place", "40"),
+                k("max_image_bytes", "size (8M, 512K)", "none", PW, "the most decoded picture bytes one request may carry", "\"8M\""),
             ],
         },
         Table {
@@ -64,6 +66,8 @@ pub const LETICODE: File = File {
                 k("slow_notice_seconds", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "90"),
                 k("first_byte_seconds", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "120"),
                 k("answer_seconds", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "900"),
+                k("max_images", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "20"),
+                k("max_image_bytes", "size (8M, 512K)", "[provider]'s", PW, "as [provider], for this preset or model", "\"4M\""),
             ],
         },
         Table {

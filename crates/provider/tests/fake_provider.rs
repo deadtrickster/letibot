@@ -421,6 +421,86 @@ fn a_session() -> (
     (marks, held)
 }
 
+/// The Mac seat's shape: a long conversation of screenshots. Under the operator's cap the request
+/// carries the NEWEST pictures and names every older one in place, so the model is told what it did
+/// not get instead of the whole request being refused.
+#[test]
+fn a_request_sends_only_the_newest_pictures_and_names_the_rest() {
+    let f = fake(SCRIPT, 200);
+    let p = provider(&f.url).with_image_budget(letibot_provider::budget::Budget {
+        images: Some(40),
+        bytes: None,
+    });
+    let items: Vec<TranscriptItem> = (0..60u32)
+        .map(|i| TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![
+                UserPart::Text {
+                    text: format!("screenshot {i}"),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: picture_ref(8 + i, 8),
+                },
+            ],
+        })
+        .collect();
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    p.complete(&req, &mut |_| StreamFlow::Continue).unwrap();
+    let seen = f.seen.lock().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
+    let messages = v["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 60, "one message per turn");
+    let (mut sent, mut named) = (0, 0);
+    for m in messages {
+        // A message of words is a plain string, which is exactly what a turn of one named picture
+        // becomes: the placeholder makes the whole turn text.
+        if let Some(text) = m["content"].as_str() {
+            named += usize::from(text.contains("pictures fit this request"));
+            continue;
+        }
+        let Some(parts) = m["content"].as_array() else {
+            continue;
+        };
+        for part in parts {
+            match part["type"].as_str() {
+                Some("image_url") => sent += 1,
+                Some("text")
+                    if part["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("pictures fit this request") =>
+                {
+                    named += 1
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(sent, 40, "the budget is what goes");
+    assert_eq!(named, 20, "and every other picture is named");
+    // The NEWEST are kept: the first turn is a placeholder and the last still carries its bytes.
+    let first = messages[0]["content"].as_str().unwrap_or_default();
+    assert!(
+        first.contains("only the newest 40 of 60 pictures fit this request (at most 40 pictures)"),
+        "the oldest picture is named, with the cap and the count: {first}"
+    );
+    let last = &messages[59]["content"];
+    assert!(
+        last.as_array()
+            .is_some_and(|a| a.iter().any(|p| p["type"] == "image_url")),
+        "the newest picture is sent: {last}"
+    );
+}
+
 /// A model that refuses the picture is LEARNED, and the same request goes again without it:
 /// mark the model text-only for the session, say so once, retry once with placeholders. The
 /// retry is the request that failed, so the compaction that would have made room succeeds too.

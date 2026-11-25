@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod anthropic;
+pub mod budget;
 pub mod catalogue;
 pub mod effort;
 pub mod gemini;

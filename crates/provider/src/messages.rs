@@ -297,18 +297,23 @@ pub fn carries_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>)
     !pictures(items).is_empty()
 }
 
-/// What one picture becomes: sent, or the reason not, checked by scope: model, bytes, then what a
-/// provider said. `pub(crate)` so every protocol answers the same way.
+/// What one picture becomes: sent, or the reason not, checked by scope: model, bytes, this
+/// request's own budget, then what a provider said. `pub(crate)` so every protocol answers the same
+/// way, and `dropped` is the budget's reason where a door has one ([`crate::budget::Budget`]).
 pub(crate) fn picture_fate(
     data_ref: &str,
     eyes: Eyes<'_>,
     withheld: Withheld<'_>,
+    dropped: Option<&str>,
 ) -> Option<String> {
     if !eyes.takes_images() {
         return Some(eyes.why_not().unwrap_or_default());
     }
     if !letibot_transcript::media::data_ref_is_image(data_ref) {
         return Some(NOT_A_PICTURE.to_string());
+    }
+    if let Some(why) = dropped {
+        return Some(why.to_string());
     }
     withheld.why(data_ref)
 }
@@ -446,6 +451,41 @@ fn size_said(bytes: usize) -> String {
     }
 }
 
+/// The pictures a chat-completions request carries, in the order the walk meets them: a user part's
+/// image, and a tool result's media unless it is a DOCUMENT (whose own fate is `document_said`).
+/// Not [`pictures`], which counts a tool result's document as a picture - that is the question a
+/// refusal retry asks, and it is a different one.
+fn carried_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            TranscriptItem::User { parts, .. } => {
+                for p in parts {
+                    if let UserPart::Image { data_ref, .. } = p {
+                        out.push(data_ref.as_str());
+                    }
+                }
+            }
+            TranscriptItem::ToolResult { media: Some(m), .. } if !m.is_document() => {
+                out.push(m.data_ref.as_str())
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The reason this request drops the picture it is looking at, if it does: the budget's sentence,
+/// or `None` when this one is kept (or there is no budget at all).
+fn budget_drop<'a>(kept: &[bool], said: Option<&'a str>, at: &mut usize) -> Option<&'a str> {
+    let goes = kept.get(*at).copied().unwrap_or(true);
+    *at += 1;
+    match goes {
+        true => None,
+        false => said,
+    }
+}
+
 /// The `messages` array. `system` is prepended when non-empty and no `System` item leads the
 /// transcript. `echo_reasoning` is this harness's own choice about how much to send: the caller
 /// computes it, because the caller knows whether `tools` is about to go.
@@ -456,12 +496,21 @@ pub fn convert(
     senses: Senses<'_>,
     withheld: Withheld<'_>,
 ) -> Vec<Value> {
-    convert_with_tail(system, items, &[], echo_reasoning, senses, withheld)
+    convert_with_tail(
+        system,
+        items,
+        &[],
+        echo_reasoning,
+        senses,
+        withheld,
+        crate::budget::Budget::NONE,
+    )
 }
 
 /// The same conversion, with items the request carries and the transcript does not
 /// (`TurnRequest::tail`). The tail goes through the SAME walk, because a tail with its own
 /// converter could disagree with the transcript's, and it goes last as an unrefused shape.
+/// `budget` is how many pictures this door will carry: the newest that fit, the rest named.
 pub fn convert_with_tail(
     system: &str,
     items: &[TranscriptItem],
@@ -469,7 +518,19 @@ pub fn convert_with_tail(
     echo_reasoning: bool,
     senses: Senses<'_>,
     withheld: Withheld<'_>,
+    budget: crate::budget::Budget,
 ) -> Vec<Value> {
+    // Which pictures this request can carry, decided ONCE and before the walk: the newest are the
+    // ones kept, and the walk meets the oldest first.
+    let carried = carried_pictures(items.iter().chain(tail.iter()));
+    let sizes: Vec<Option<u64>> = carried
+        .iter()
+        .map(|d| data_ref_bytes(d).map(|n| n as u64))
+        .collect();
+    let kept = budget.keeps(&sizes);
+    let kept_count = kept.iter().filter(|k| **k).count();
+    let budget_said = (kept_count < kept.len()).then(|| budget.said(kept_count, kept.len()));
+    let mut at_picture = 0usize;
     let mut out = Vec::with_capacity(items.len() + tail.len() + 1);
     let leads_with_system = matches!(items.first(), Some(TranscriptItem::System { .. }));
     if !system.trim().is_empty() && !leads_with_system {
@@ -513,8 +574,11 @@ pub fn convert_with_tail(
                             images += 1;
                             // A picture that will not be sent is NAMED instead, with the reason
                             // [`picture_fate`] gives: the model takes text only, the bytes are not
-                            // an image, or a provider refused these bytes.
-                            match picture_fate(data_ref, senses.eyes, withheld) {
+                            // an image, this request's budget kept only the newest, or a provider
+                            // refused these bytes.
+                            let dropped =
+                                budget_drop(&kept, budget_said.as_deref(), &mut at_picture);
+                            match picture_fate(data_ref, senses.eyes, withheld, dropped) {
                                 None => content.push(
                                     json!({"type": "image_url", "image_url": {"url": data_ref}}),
                                 ),
@@ -679,7 +743,8 @@ pub fn convert_with_tail(
                     } else {
                         // The same predicate as a head's own picture: the row carrying the bytes that
                         // were refused is history, so the renderer is where it stops being sent.
-                        match picture_fate(&m.data_ref, senses.eyes, withheld) {
+                        let dropped = budget_drop(&kept, budget_said.as_deref(), &mut at_picture);
+                        match picture_fate(&m.data_ref, senses.eyes, withheld, dropped) {
                             None => out.push(json!({
                                 "role": "user",
                                 "content": [

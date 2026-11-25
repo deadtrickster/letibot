@@ -45,6 +45,7 @@ fn the_tail_is_the_last_message_and_is_not_the_transcript() {
         true,
         Senses::of(Eyes::Sees),
         Withheld::nothing(),
+        crate::budget::Budget::NONE,
     );
     assert_eq!(msgs.len(), 3, "system, the prompt, the offer");
     let last = msgs.last().expect("messages");

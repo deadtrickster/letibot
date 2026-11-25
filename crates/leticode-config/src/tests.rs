@@ -1643,6 +1643,72 @@ fn provider_deadlines_resolve_by_model_then_preset_then_table_then_builtin() {
     );
 }
 
+/// The picture caps parse and resolve model over preset over table, per key; nothing anywhere is
+/// NO cap, which is what every door starts with; and a cap of zero or a share of free memory is
+/// refused by file and line rather than read as `none`.
+#[test]
+fn the_picture_caps_resolve_by_model_then_preset_then_table() {
+    let dir = project_dir("pictures");
+    let none = LeticodeConfig::default().image_budget("glm-coding", Some("glm-5.4"));
+    assert!(none.is_none(), "no key anywhere is no cap: {none:?}");
+    let user = write_file(
+        &sub(&dir, "user"),
+        "[provider]\nmax_images = 40\nmax_image_bytes = \"8M\"\n\
+         [provider.glm-coding]\nmax_images = 20\n\
+         [provider.\"glm-coding/glm-5.4\"]\nmax_image_bytes = \"512K\"\n",
+    );
+    let project = write_file(
+        &sub(&dir, "project"),
+        "[provider.glm-coding]\nmax_images = 25\n",
+    );
+    let merged = LeticodeConfig::load_as(&user, Level::User)
+        .unwrap()
+        .overridden_by(&LeticodeConfig::load(&project).unwrap());
+    let b = |name, model| {
+        let b = merged.image_budget(name, model);
+        (b.images, b.bytes)
+    };
+    assert_eq!(
+        b("glm-coding", Some("glm-5.4")),
+        (Some(25), Some(512 * 1024)),
+        "the model's bytes, the preset's count (the project's), the table's"
+    );
+    assert_eq!(
+        b("glm-coding", Some("other")),
+        (Some(25), Some(8 * 1024 * 1024)),
+        "the preset's count, the table's bytes"
+    );
+    assert_eq!(
+        b("deepseek", None),
+        (Some(40), Some(8 * 1024 * 1024)),
+        "the table's"
+    );
+}
+
+/// A cap is a positive number of pictures, and a size is a size: `0`, a share of memory and a word
+/// are refused where they are written.
+#[test]
+fn a_picture_cap_that_is_not_a_cap_is_refused_by_line() {
+    let dir = project_dir("pictures_bad");
+    for (body, named) in [
+        ("[provider]\nmax_images = 0\n", "max_images"),
+        ("[provider]\nmax_images = \"40\"\n", "max_images"),
+        ("[provider]\nmax_image_bytes = \"50%\"\n", "max_image_bytes"),
+        (
+            "[provider]\nmax_image_bytes = \"lots\"\n",
+            "max_image_bytes",
+        ),
+        (
+            "[provider.glm-coding]\nmax_image_bytes = 0\n",
+            "max_image_bytes",
+        ),
+    ] {
+        let file = write_file(&sub(&dir, "bad"), body);
+        let err = LeticodeConfig::load(&file).expect_err(body);
+        assert!(err.contains(named), "{body}: {err}");
+    }
+}
+
 /// `usage_warn` resolves per key: the preset's table, then `[provider.usage_warn]`, then the
 /// built-in lists; the project's key beats the user's, and a bad list is refused by name.
 #[test]

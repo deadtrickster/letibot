@@ -422,7 +422,7 @@ fn input_items(
                             )),
                         }
                     }
-                    Some(m) => match picture_fate(&m.data_ref, senses.eyes, withheld) {
+                    Some(m) => match picture_fate(&m.data_ref, senses.eyes, withheld, None) {
                         None => json!([
                             {"type": "input_text", "text": payload},
                             {"type": "input_image", "image_url": m.data_ref},
@@ -496,7 +496,7 @@ fn user_message(
                 data_ref,
             } => {
                 images += 1;
-                match picture_fate(data_ref, senses.eyes, withheld) {
+                match picture_fate(data_ref, senses.eyes, withheld, None) {
                     None => content.push(json!({"type": "input_image", "image_url": data_ref})),
                     Some(why) => content.push(json!({
                         "type": "input_text",
@@ -1377,6 +1377,7 @@ impl ResponsesProvider {
                     body_bytes,
                     request_bytes: payload.len(),
                     shape: Some(what_was_sent),
+                    budget: crate::budget::Budget::NONE,
                 },
             );
             return Err(BackendError::Refused {

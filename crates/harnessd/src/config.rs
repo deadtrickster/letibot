@@ -1551,6 +1551,18 @@ impl Config {
         d
     }
 
+    /// How many pictures one request to `pc` may carry: `[provider] max_images`, per preset or
+    /// model. No key anywhere is NO cap, which is every door's default - the local route included.
+    pub fn image_budget_for(
+        &self,
+        pc: Option<&ProviderConfig>,
+    ) -> letibot_provider::budget::Budget {
+        match pc {
+            Some(pc) => self.leticode.image_budget(&pc.name, pc.model.as_deref()),
+            None => letibot_provider::budget::Budget::NONE,
+        }
+    }
+
     /// How much of the window must stay free for a turn to be safe to start. A compaction is itself a
     /// turn, so firing it with no room left fails like the turn it was meant to prevent. The session
     /// that died was at 93% and the 500 arrived on the NEXT turn.

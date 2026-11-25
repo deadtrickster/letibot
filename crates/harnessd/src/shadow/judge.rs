@@ -234,8 +234,15 @@ pub fn build_timed(
         };
         // A judge's refusal is the judge's answer, not the session's log: it is said where the
         // judge's verdict is read.
-        let backend =
-            crate::harness::build_provider(&pc, providers_file, notes, deadlines, None, None)?;
+        let backend = crate::harness::build_provider(
+            &pc,
+            providers_file,
+            notes,
+            deadlines,
+            None,
+            None,
+            letibot_provider::budget::Budget::NONE,
+        )?;
         return Ok(Arc::new(ProviderJudge {
             label: m.label,
             backend,

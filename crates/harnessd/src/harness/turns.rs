@@ -5856,6 +5856,7 @@ mod endpoint_retry {
             d,
             None,
             None,
+            letibot_provider::budget::Budget::NONE,
         );
         assert!(built.is_ok(), "{:?}", built.err());
         cfg.provider_timeout = Some(std::time::Duration::from_secs(30));
@@ -5886,6 +5887,7 @@ mod endpoint_retry {
             },
             None,
             None,
+            letibot_provider::budget::Budget::NONE,
         )
         .expect("a gemini provider");
         assert_eq!(built.name(), "gemini");

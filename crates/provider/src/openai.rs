@@ -53,6 +53,9 @@ pub struct OpenAiProvider {
     /// Where a refusal's whole answer - status, headers, every byte of the body - is kept: the
     /// session's log, one crate up. `None` keeps it on stderr only, which is what a fixture wants.
     refusals: Option<crate::refusals::RefusalLog>,
+    /// How many pictures one request may carry: the door's own, over the operator's `[provider]
+    /// max_images`, over none at all.
+    budget: crate::budget::Budget,
 }
 
 /// Where a provider says something a person has to read. `Arc<dyn Fn>` because the
@@ -87,7 +90,15 @@ impl OpenAiProvider {
             effort_note: None,
             effort_said: std::sync::atomic::AtomicBool::new(false),
             refusals: None,
+            budget: preset.budget,
         }
+    }
+
+    /// The picture budget this door's requests run under: the operator's, which is where a number
+    /// comes from at all - no door in this tree has a documented limit to default to.
+    pub fn with_image_budget(mut self, budget: crate::budget::Budget) -> Self {
+        self.budget = budget;
+        self
     }
 
     /// Install where a refusal is recorded: the daemon appends it to the session's own log, and a
@@ -184,17 +195,24 @@ impl OpenAiProvider {
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
-        self.body_for(req, self.senses(req), crate::messages::Withheld::nothing())
+        self.body_for(
+            req,
+            self.senses(req),
+            crate::messages::Withheld::nothing(),
+            self.budget,
+        )
     }
 
     /// The same body, with what the model gets pictures as given rather than decided: the retry
     /// after a refusal is the one caller, and it must not re-ask a question it has just answered.
-    /// `withheld` is the other half, the pictures a retry tries without and does not record.
+    /// `withheld` is the other half, the pictures a retry tries without and does not record, and
+    /// `budget` is how many pictures this request may carry at all.
     fn body_for(
         &self,
         req: &TurnRequest<'_>,
         senses: crate::messages::Senses<'_>,
         withheld: crate::messages::Withheld<'_>,
+        budget: crate::budget::Budget,
     ) -> Result<Value, BackendError> {
         // `tools` is built first because it is part of the request, NOT because it decides whether
         // the reasoning echo is required: `carries_tools` is our switch for how much to send, not a
@@ -218,6 +236,7 @@ impl OpenAiProvider {
                 echo,
                 senses,
                 withheld,
+                budget,
             ),
             "stream": true,
             "stream_options": {"include_usage": true},
@@ -421,7 +440,15 @@ impl MessagesBackend for OpenAiProvider {
         }
         let senses = self.senses(req);
         let eyes = senses.eyes;
-        let first = self.round(req, on_delta, senses, crate::messages::Withheld::nothing());
+        // What this request may carry, when the operator set a cap: `[provider] max_images`.
+        let budget = self.budget;
+        let first = self.round(
+            req,
+            on_delta,
+            senses,
+            crate::messages::Withheld::nothing(),
+            budget,
+        );
         // A refusal is read off the wire, never assumed: the status is 400 and the request ACTUALLY
         // carried a picture. Two different refusals answer that shape and they are two different
         // facts. The compaction takes these paths too, which is why they exist.
@@ -462,6 +489,7 @@ impl MessagesBackend for OpenAiProvider {
                 on_delta,
                 text_only,
                 crate::messages::Withheld::nothing(),
+                budget,
             );
         }
         let carried = crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter()));
@@ -491,6 +519,7 @@ impl MessagesBackend for OpenAiProvider {
                 on_delta,
                 crate::messages::Senses::of(crate::messages::Eyes::TextOnly(&self.model)),
                 crate::messages::Withheld::nothing(),
+                budget,
             );
         }
         // The second refusal is a different fact: the PICTURE is what it would not take. Answering
@@ -516,6 +545,7 @@ impl MessagesBackend for OpenAiProvider {
             on_delta,
             senses,
             crate::messages::Withheld::trying(&trying),
+            budget,
         );
         let said = match &second {
             Ok(_) => {
@@ -574,8 +604,9 @@ impl OpenAiProvider {
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
         senses: crate::messages::Senses<'_>,
         withheld: crate::messages::Withheld<'_>,
+        budget: crate::budget::Budget,
     ) -> Result<Completion, BackendError> {
-        let body = self.body_for(req, senses, withheld)?;
+        let body = self.body_for(req, senses, withheld, budget)?;
         // Serialised once and kept, so a refusal can say how large the request was
         // without paying for a second pass over a body that may be megabytes.
         let payload = body.to_string();
@@ -664,6 +695,7 @@ impl OpenAiProvider {
                     body_bytes,
                     request_bytes: payload.len(),
                     shape: Some(what_was_sent),
+                    budget,
                 },
             );
             return Err(BackendError::Refused {

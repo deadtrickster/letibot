@@ -353,6 +353,8 @@ impl AnthropicProvider {
                     body_bytes,
                     request_bytes: payload.len(),
                     shape: None,
+                    // This door assembles no picture budget: the cap is the chat-completions one.
+                    budget: crate::budget::Budget::NONE,
                 },
             );
             return Err(BackendError::Refused {

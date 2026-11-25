@@ -49,6 +49,7 @@ mod tests {
             body_bytes: body.len(),
             request_bytes: 5_900_000,
             shape: None,
+            budget: letibot_provider::budget::Budget::NONE,
         }
     }
 

@@ -4064,6 +4064,7 @@ impl Harness {
                 cfg.deadlines_for(Some(pc)),
                 cfg.effort.as_deref(),
                 Some(provider_refusals(&cfg)),
+                cfg.image_budget_for(Some(pc)),
             ) {
                 Ok(p) => Some(scoped_provider(
                     p,
@@ -4907,8 +4908,9 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
 
 /// A provider backend from its config; a missing key is refused naming variable and file. The
 /// one place a protocol is chosen: the preset names the wire, and every client takes the same
-/// switches. `notes` keeps the provider below the session log; `effort` is `--effort`, and
-/// `refusals` is where a refused answer is kept whole.
+/// switches. `notes` keeps the provider below the session log; `effort` is `--effort`,
+/// `refusals` is where a refused answer is kept whole, and `budget` is how many pictures this
+/// door's requests may carry.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     profiles: Option<&std::path::Path>,
@@ -4916,6 +4918,7 @@ pub fn build_provider(
     deadlines: crate::leticode_config::Deadlines,
     effort: Option<&str>,
     refusals: Option<letibot_provider::refusals::RefusalLog>,
+    budget: letibot_provider::budget::Budget,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::registry::lookup(&pc.name, profiles)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), profiles)
@@ -4927,7 +4930,8 @@ pub fn build_provider(
                 .with_notes(notes)
                 .with_effort(effort)
                 .with_first_byte(deadlines.first_byte)
-                .with_response_timeout(deadlines.answer);
+                .with_response_timeout(deadlines.answer)
+                .with_image_budget(budget);
             p.thinking = pc.thinking;
             p.sampling = sampling;
             Ok(Box::new(match refusals {

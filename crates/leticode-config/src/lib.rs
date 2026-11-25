@@ -643,12 +643,53 @@ impl DeadlineKeys {
     }
 }
 
+impl PictureKeys {
+    /// Keys `other` sets win, the rest stay.
+    fn overridden_by(self, other: PictureKeys) -> PictureKeys {
+        PictureKeys {
+            images: other.images.or(self.images),
+            image_bytes: other.image_bytes.or(self.image_bytes),
+        }
+    }
+}
+
+impl TableKeys {
+    /// Keys `other` sets win, the rest stay - one table's worth at a time, so the picture caps and
+    /// the deadlines cannot be merged by two rules that disagree.
+    fn overridden_by(self, other: TableKeys) -> TableKeys {
+        TableKeys {
+            deadlines: self.deadlines.overridden_by(other.deadlines),
+            pictures: self.pictures.overridden_by(other.pictures),
+        }
+    }
+}
+
 /// The deadlines one provider/model runs under, every key resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadlines {
     pub slow_notice: std::time::Duration,
     pub first_byte: std::time::Duration,
     pub answer: std::time::Duration,
+}
+
+/// The picture caps one `[provider]` table sets: `max_images` and `max_image_bytes`, each absent
+/// until some level says it. No level saying anything is no cap at all, which is every door's
+/// default: no vendor documents a limit, so a number here is the operator's own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PictureKeys {
+    /// `max_images`: the most pictures one request may carry.
+    pub images: Option<u64>,
+    /// `max_image_bytes`: the most decoded picture bytes one request may carry.
+    pub image_bytes: Option<u64>,
+}
+
+/// One `[provider]` table as the file wrote it: the model API's three deadlines and its two picture
+/// caps. They travel together because they resolve the same three ways - the model's table, then
+/// the preset's, then `[provider]` - so one map holds both rather than two that can disagree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TableKeys {
+    pub deadlines: DeadlineKeys,
+    pub pictures: PictureKeys,
 }
 
 /// Today's numbers, for a key no level sets. They mirror `letibot_provider::openai::DEFAULT_*`
@@ -669,9 +710,11 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// slow_notice_seconds = 15                       # silence before the "model slow" notice
 /// first_byte_seconds = 60                        # silence before the round fails
 /// answer_seconds = 600                           # the whole answer's budget
+/// max_images = 40                                # the most pictures one request may carry
+/// max_image_bytes = "8M"                         # the most picture bytes one request may carry
 ///
-/// [provider.glm]                                 # one preset: the same three keys
-/// slow_notice_seconds = 90
+/// [provider.glm-coding]                          # one preset: the same five keys
+/// max_images = 20
 ///
 /// [provider."glm-coding/glm-5.3"]                # one model: wins over its preset
 /// first_byte_seconds = 120
@@ -703,6 +746,11 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// level's key wins over the same key at the other level. `0` and a `first_byte_seconds` above
 /// `answer_seconds` in one table are refused by file and line.
 ///
+/// `max_images` and `max_image_bytes` resolve the same three ways and have NO default: a request
+/// carries every picture it is given until the operator caps it, because no provider documents a
+/// limit - see [`LeticodeConfig::image_budget`] and [`PictureKeys`]. Over the cap, a request sends
+/// the NEWEST pictures and names the rest in place, so the model is told what it did not get.
+///
 /// `usage_warn` resolves per key: the preset's table, then `[provider.usage_warn]`, then the
 /// built-in lists - see [`LeticodeConfig::usage_warn`].
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -714,10 +762,10 @@ pub struct ProviderKeys {
     /// `offline_budget`: how long a turn retries a no-network failure before it gives up.
     pub offline_budget: Option<std::time::Duration>,
     pub fallback: Vec<String>,
-    /// The deadline keys written directly under `[provider]`.
-    pub deadlines: DeadlineKeys,
+    /// The keys written directly under `[provider]`.
+    pub api: TableKeys,
     /// `[provider.NAME]` tables: NAME is a preset or `provider/model`.
-    pub overrides: BTreeMap<String, DeadlineKeys>,
+    pub overrides: BTreeMap<String, TableKeys>,
     /// `[provider.usage_warn]`.
     pub usage_warn: UsageWarnKeys,
     /// `[provider.NAME.usage_warn]`, NAME a preset.
@@ -798,21 +846,23 @@ fn line_after(text: &str, after: &str, key: &str) -> usize {
         .map_or(start, |(i, _)| i + 1)
 }
 
-/// The three deadline keys of one table (`scope` is its name in a refusal, `after` where to
-/// start looking for its lines).
-fn deadline_keys(
+/// The five model API keys of one table (`scope` is its name in a refusal, `after` where to start
+/// looking for its lines): three deadlines and two picture caps.
+fn table_keys(
     table: &toml::Table,
     path: &Path,
     text: &str,
     user: bool,
     scope: &str,
     after: &str,
-) -> Result<DeadlineKeys, String> {
-    let mut out = DeadlineKeys::default();
+) -> Result<TableKeys, String> {
+    let mut out = TableKeys::default();
     for key in [
         "slow_notice_seconds",
         "first_byte_seconds",
         "answer_seconds",
+        "max_images",
+        "max_image_bytes",
     ] {
         let Some(v) = table.get(key) else { continue };
         let from = Origin {
@@ -820,16 +870,26 @@ fn deadline_keys(
             line: line_after(text, after, key),
             user,
         };
-        let n = seconds_at(v, &from, scope, key)?;
         match key {
-            "slow_notice_seconds" => out.slow_notice_seconds = Some(n),
-            "first_byte_seconds" => out.first_byte_seconds = Some(n),
-            _ => out.answer_seconds = Some(n),
+            "max_images" => out.pictures.images = Some(pictures_at(v, &from, scope, key)?),
+            "max_image_bytes" => out.pictures.image_bytes = Some(bytes_at(v, &from, scope, key)?),
+            _ => {
+                let n = seconds_at(v, &from, scope, key)?;
+                match key {
+                    "slow_notice_seconds" => out.deadlines.slow_notice_seconds = Some(n),
+                    "first_byte_seconds" => out.deadlines.first_byte_seconds = Some(n),
+                    _ => out.deadlines.answer_seconds = Some(n),
+                }
+            }
         }
     }
-    if let (Some(f), Some(a)) = (out.first_byte_seconds, out.answer_seconds)
-        && f > a
-    {
+    let (Some(f), Some(a)) = (
+        out.deadlines.first_byte_seconds,
+        out.deadlines.answer_seconds,
+    ) else {
+        return Ok(out);
+    };
+    if f > a {
         return Err(format!(
             "{}:{}: [{scope}] first_byte_seconds = {f} is above answer_seconds = {a} - the first \
              byte is part of the answer, so it cannot be given longer than the whole",
@@ -858,6 +918,45 @@ fn offline_budget_at(s: &str, from: &Origin) -> Result<std::time::Duration, Stri
     Ok(d)
 }
 
+/// `max_images`: a whole count of at least one. Zero is refused rather than read as "no cap",
+/// which is what leaving the key out says.
+fn pictures_at(v: &toml::Value, from: &Origin, table: &str, key: &str) -> Result<u64, String> {
+    let n = v.as_integer().ok_or_else(|| {
+        format!(
+            "{from}: [{table}] {key} is a whole number of pictures, not {}",
+            kind_of(v)
+        )
+    })?;
+    u64::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
+        format!(
+            "{from}: [{table}] {key} = {n} — a cap of zero is no request at all; leave the key \
+             out to carry every picture"
+        )
+    })
+}
+
+/// `max_image_bytes`: a size, written as a string with a unit (`8M`, `512K`) or as whole bytes.
+fn bytes_at(v: &toml::Value, from: &Origin, table: &str, key: &str) -> Result<u64, String> {
+    let said = || {
+        format!(
+            "{from}: [{table}] {key} is a size like \"8M\" or \"512K\", not {}",
+            kind_of(v)
+        )
+    };
+    if let Some(n) = v.as_integer() {
+        return u64::try_from(n)
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("{from}: [{table}] {key} = {n} is not a size"));
+    }
+    let text = v.as_str().ok_or_else(said)?;
+    match letibot_tools::exec::memory::Amount::parse(text) {
+        // A share of what is free is a memory policy's vocabulary, not a request's size.
+        Ok(letibot_tools::exec::memory::Amount::Bytes(n)) if n > 0 => Ok(n),
+        _ => Err(said()),
+    }
+}
+
 fn provider_keys(
     value: &toml::Value,
     path: &Path,
@@ -866,8 +965,9 @@ fn provider_keys(
 ) -> Result<ProviderKeys, String> {
     let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `wait_if_within` (\"45m\"), \
                 `limit_probe` ([\"2m\", \"5m\"]), `offline_budget` (\"1h\"), `fallback`, \
-                `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, `[provider.usage_warn]`, \
-                and `[provider.NAME]` tables (a preset or `provider/model`) holding the last three \
+                `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, `max_images`, \
+                `max_image_bytes`, `[provider.usage_warn]`, \
+                and `[provider.NAME]` tables (a preset or `provider/model`) holding the last five \
                 and a preset's `usage_warn`";
     let table = table_at(value, path, text, "provider", keys)?;
     let mut out = ProviderKeys::default();
@@ -934,7 +1034,11 @@ fn provider_keys(
             "fallback" => {
                 out.fallback = fallback_list(v).map_err(|why| format!("{from}: {why}"))?;
             }
-            "slow_notice_seconds" | "first_byte_seconds" | "answer_seconds" => {}
+            "slow_notice_seconds"
+            | "first_byte_seconds"
+            | "answer_seconds"
+            | "max_images"
+            | "max_image_bytes" => {}
             "usage_warn" => {
                 out.usage_warn =
                     usage_warn_keys(v, path, text, "provider.usage_warn", "usage_warn")?;
@@ -949,12 +1053,15 @@ fn provider_keys(
                         "slow_notice_seconds"
                             | "first_byte_seconds"
                             | "answer_seconds"
+                            | "max_images"
+                            | "max_image_bytes"
                             | "usage_warn"
                     ) {
                         return Err(format!(
                             "{}:{}: [provider.{name}] `{k}` is not a key here; a preset or model \
                              table holds `slow_notice_seconds`, `first_byte_seconds`, \
-                             `answer_seconds` and a preset's `usage_warn`",
+                             `answer_seconds`, `max_images`, `max_image_bytes` and a preset's \
+                             `usage_warn`",
                             path.display(),
                             line_after(text, name, k)
                         ));
@@ -970,12 +1077,12 @@ fn provider_keys(
                 }
                 out.overrides.insert(
                     name.to_string(),
-                    deadline_keys(sub, path, text, user, &scope, name)?,
+                    table_keys(sub, path, text, user, &scope, name)?,
                 );
             }
         }
     }
-    out.deadlines = deadline_keys(table, path, text, user, "provider", "[provider]")?;
+    out.api = table_keys(table, path, text, user, "provider", "[provider]")?;
     Ok(out)
 }
 
@@ -3820,10 +3927,7 @@ impl LeticodeConfig {
                 } else {
                     other.provider.fallback.clone()
                 },
-                deadlines: self
-                    .provider
-                    .deadlines
-                    .overridden_by(other.provider.deadlines),
+                api: self.provider.api.overridden_by(other.provider.api),
                 overrides: {
                     let mut m = self.provider.overrides.clone();
                     for (name, k) in &other.provider.overrides {
@@ -4066,9 +4170,9 @@ impl LeticodeConfig {
         let pick = |f: fn(&DeadlineKeys) -> Option<u64>, default: u64| {
             model
                 .and_then(|m| p.overrides.get(&format!("{name}/{m}")))
-                .and_then(f)
-                .or_else(|| p.overrides.get(name).and_then(f))
-                .or_else(|| f(&p.deadlines))
+                .and_then(|t| f(&t.deadlines))
+                .or_else(|| p.overrides.get(name).and_then(|t| f(&t.deadlines)))
+                .or_else(|| f(&p.api.deadlines))
                 .unwrap_or(default)
         };
         let secs = std::time::Duration::from_secs;
@@ -4077,6 +4181,28 @@ impl LeticodeConfig {
             slow_notice: secs(pick(|k| k.slow_notice_seconds, DEFAULT_SLOW_NOTICE_SECS)),
             first_byte: secs(pick(|k| k.first_byte_seconds, DEFAULT_FIRST_BYTE_SECS)).min(answer),
             answer,
+        }
+    }
+
+    /// The picture caps for a session on `name` and `model`, resolved the way the deadlines are:
+    /// per key, the model's table, the preset's, then `[provider]`. No level saying anything is NO
+    /// cap - a request carries every picture it is given - because no provider documents a limit.
+    pub fn image_budget(
+        &self,
+        name: &str,
+        model: Option<&str>,
+    ) -> letibot_provider::budget::Budget {
+        let p = &self.provider;
+        let pick = |f: fn(&PictureKeys) -> Option<u64>| {
+            model
+                .and_then(|m| p.overrides.get(&format!("{name}/{m}")))
+                .and_then(|t| f(&t.pictures))
+                .or_else(|| p.overrides.get(name).and_then(|t| f(&t.pictures)))
+                .or_else(|| f(&p.api.pictures))
+        };
+        letibot_provider::budget::Budget {
+            images: pick(|k| k.images).map(|n| n as usize),
+            bytes: pick(|k| k.image_bytes),
         }
     }
 

@@ -55,6 +55,12 @@ pub struct Preset {
     pub usage_url: Option<&'static str>,
     /// How this door's request body differs from plain chat completions.
     pub compat: Compat,
+    /// How many pictures one request may carry, when a door has a limit of its own. `NONE` - no
+    /// cap - on every preset here, because no vendor documents one: the Mac seat's `glm-5.4`
+    /// session was refused `1210 "Invalid API parameter"` at 51 pictures and ~5.8 MB after ~50
+    /// were accepted, which is an observation and not a limit anybody published. A number comes
+    /// from the operator's `[provider] max_images`; this field is where a measured one would live.
+    pub budget: crate::budget::Budget,
 }
 
 /// Where a door came from: compiled in, changed or added by providers.toml, or an env base URL.
@@ -231,6 +237,7 @@ pub const DEEPSEEK: Preset = Preset {
     window: None,
     usage_url: None,
     compat: JSON_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 pub const GLM: Preset = Preset {
@@ -251,6 +258,7 @@ pub const GLM: Preset = Preset {
     window: None,
     usage_url: None,
     compat: GLM_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own model list and
@@ -274,6 +282,7 @@ pub const GLM_CODING: Preset = Preset {
     window: None,
     usage_url: Some(crate::usage::ZAI_QUOTA),
     compat: GLM_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -293,6 +302,7 @@ pub const GLM_CODING_CN: Preset = Preset {
     window: None,
     usage_url: Some(crate::usage::ZAI_QUOTA),
     compat: GLM_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 pub const GROK: Preset = Preset {
@@ -311,6 +321,7 @@ pub const GROK: Preset = Preset {
     window: None,
     usage_url: None,
     compat: JSON_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// Anthropic's own API, speaking Messages, keyed by `x-api-key`. `ANTHROPIC_AUTH_TOKEN` is not an
@@ -332,6 +343,7 @@ pub const ANTHROPIC: Preset = Preset {
     window: None,
     usage_url: None,
     compat: Compat::PLAIN,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// DeepSeek's Anthropic-compatible door at `/anthropic`: the same models as [`DEEPSEEK`], so the
@@ -353,6 +365,7 @@ pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     window: None,
     usage_url: None,
     compat: Compat::PLAIN,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// Z.ai's Anthropic-compatible door, the one their Claude Code instructions use: the same
@@ -373,6 +386,7 @@ pub const GLM_ANTHROPIC: Preset = Preset {
     window: None,
     usage_url: None,
     compat: Compat::PLAIN,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// Moonshot's Kimi Code plan on Messages. The URL is the whole endpoint, since this client posts
@@ -395,6 +409,7 @@ pub const KIMI_CODING: Preset = Preset {
     window: None,
     usage_url: Some(KIMI_USAGES),
     compat: KIMI_GATE,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's examples use;
@@ -417,6 +432,7 @@ pub const OPENAI: Preset = Preset {
     window: None,
     usage_url: None,
     compat: Compat::PLAIN,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// Google's Gemini: the model is in the path, so [`Preset::url`] is a base; [`crate::gemini`] is
@@ -438,6 +454,7 @@ pub const GEMINI: Preset = Preset {
     window: None,
     usage_url: None,
     compat: Compat::PLAIN,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// Kimi's coding plan (Moonshot): chat completions on the plan's own host. Not the pay-per-token
@@ -459,6 +476,7 @@ pub const KIMI_CODE: Preset = Preset {
     window: None,
     usage_url: Some(KIMI_USAGES),
     compat: KIMI_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 /// The same plan on the global host. One key works on one region's host only, so this is a
@@ -479,6 +497,7 @@ pub const KIMI_CODE_GLOBAL: Preset = Preset {
     window: None,
     usage_url: Some(KIMI_USAGES),
     compat: KIMI_COMPAT,
+    budget: crate::budget::Budget::NONE,
 };
 
 pub const ALL: &[&Preset] = &[
@@ -694,6 +713,20 @@ impl Prices {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture cap is the OPERATOR's to set: no door in this tree caps one, because no vendor
+    /// documents a limit. A preset that started capping would silently drop a session's pictures.
+    #[test]
+    fn no_door_caps_pictures_by_default() {
+        for preset in ALL {
+            assert!(
+                preset.budget.is_none(),
+                "{} carries a picture cap: {:?}",
+                preset.name,
+                preset.budget
+            );
+        }
+    }
 
     #[test]
     fn a_price_table_counts_cached_tokens_at_the_cached_rate() {

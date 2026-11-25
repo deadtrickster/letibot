@@ -581,6 +581,9 @@ fn intern(spec: Spec) -> &'static Preset {
         origin: spec.origin,
         window: spec.window,
         usage_url: spec.usage_url.as_deref().map(leak),
+        // A `[provider.NAME]` entry in providers.toml defines a door and never a picture cap: the
+        // cap is leticode.toml's `[provider] max_images`, handed to the client per session.
+        budget: crate::budget::Budget::NONE,
         compat: Compat {
             max_tokens_field: leak(&spec.max_tokens_field),
             thinking_locked: list(&spec.thinking_locked),

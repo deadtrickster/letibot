@@ -43,6 +43,8 @@ Usage limits and model API deadlines. A plugin layer answering `limit_decide` de
 | `slow_notice_seconds` | int >= 1 | 15 | both, project wins | silence before the "model slow" notice |
 | `first_byte_seconds` | int >= 1 | 60 | both, project wins | silence before the first byte that fails the round |
 | `answer_seconds` | int >= 1 | 600 | both, project wins | budget for the whole answer |
+| `max_images` | int >= 1 | none | both, project wins | the most pictures one request may carry; the newest are sent and the rest are named in place |
+| `max_image_bytes` | size (8M, 512K) | none | both, project wins | the most decoded picture bytes one request may carry |
 
 ## `[provider.<name>]`
 
@@ -53,6 +55,8 @@ NAME is a preset or `provider/model`. Resolves per key: model, preset, [provider
 | `slow_notice_seconds` | int >= 1 | [provider]'s | both, project wins | as [provider], for this preset or model |
 | `first_byte_seconds` | int >= 1 | [provider]'s | both, project wins | as [provider], for this preset or model |
 | `answer_seconds` | int >= 1 | [provider]'s | both, project wins | as [provider], for this preset or model |
+| `max_images` | int >= 1 | [provider]'s | both, project wins | as [provider], for this preset or model |
+| `max_image_bytes` | size (8M, 512K) | [provider]'s | both, project wins | as [provider], for this preset or model |
 
 ## `[provider.usage_warn]`
 
