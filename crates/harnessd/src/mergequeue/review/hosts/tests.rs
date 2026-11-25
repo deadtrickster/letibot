@@ -179,6 +179,9 @@ fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
         reserve: 24,
         flags: Vec::new(),
         never_touch: Vec::new(),
+        rustc_wrapper: None,
+        sccache_dir: None,
+        cargo_home: None,
     };
     let spare = host
         .spare_cores(32, "0.5")
