@@ -1713,14 +1713,8 @@ impl Harness {
                 spawn,
             )
         };
-        let (
-            backend,
-            backend_described,
-            backend_writable,
-            monitors,
-            granted_roots,
-            mcp_spawn,
-        ) = placed;
+        let (backend, backend_described, backend_writable, monitors, granted_roots, mcp_spawn) =
+            placed;
 
         // `backend_confined`, asked of the backend that was actually built: a VM is a boundary by
         // construction, and a host or ssh backend is one only where a confinement was measured. A
