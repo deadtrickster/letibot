@@ -35,7 +35,7 @@ fn stored(rows: &[(&str, Option<&str>)]) -> Vec<letibot_tokencore::store::Stored
 }
 
 #[test]
-fn a_name_resolves_exact_then_unique_prefix_and_an_id_is_unchanged() {
+fn a_name_resolves_exact_and_an_id_is_unchanged_and_a_prefix_is_offered() {
     let all = stored(&[
         ("s-1", Some("stroppy-rust")),
         ("s-2", Some("stroppy-go")),
@@ -45,8 +45,14 @@ fn a_name_resolves_exact_then_unique_prefix_and_an_id_is_unchanged() {
     let r = |n: &str| resolve_session_name(&all, n, None);
     assert_eq!(r("STROPPY-Rust").unwrap(), "s-1", "exact, any case");
     assert_eq!(r("stroppy").unwrap(), "s-3", "exact beats prefix");
-    assert_eq!(r("stroppy-g").unwrap(), "s-2", "unique prefix");
     assert_eq!(r("s-4").unwrap(), "s-4", "an id is an id");
+    // A prefix names nothing: it is OFFERED, with the candidate, because the answer decides which
+    // conversation the next thing typed lands in.
+    let e = r("stroppy-g").unwrap_err();
+    assert!(
+        e.contains("s-2") && e.contains("stroppy-go") && e.contains("longer name"),
+        "{e}"
+    );
 }
 
 /// Rows for the global resolver: (id, title, workspace, origin, parent).
@@ -88,10 +94,13 @@ fn a_name_in_this_folder_wins_and_another_folders_is_found_only_without_one() {
         f => panic!("{f:?}"),
     }
     match find_session(&all, "FAR-ONLY", here).unwrap() {
-        Found::Elsewhere(r) => {
-            assert_eq!(r.len(), 1);
+        Found::Offer {
+            kind: "there",
+            rows,
+        } => {
+            assert_eq!(rows.len(), 1);
             assert_eq!(
-                (r[0].id.as_str(), r[0].workspace_root.as_str()),
+                (rows[0].id.as_str(), rows[0].folder.as_str()),
                 ("s-3", "/p/far")
             );
         }
@@ -109,7 +118,10 @@ fn a_folder_below_this_one_is_elsewhere_so_home_moves() {
     ]);
     let home = std::path::Path::new("/u");
     match find_session(&all, "stroppy.io", home).unwrap() {
-        Found::Elsewhere(r) => assert_eq!(r[0].id, "s-2"),
+        Found::Offer {
+            kind: "there",
+            rows,
+        } => assert_eq!(rows[0].id, "s-2"),
         f => panic!("a session in a subfolder of ~ is not here: {f:?}"),
     }
     match find_session(&all, "wt", home).unwrap() {
@@ -125,7 +137,7 @@ fn a_name_in_several_other_folders_gives_all_of_them() {
         ("s-2", "stroppy.io-old", "/p/b", None, None),
     ]);
     match find_session(&all, "stroppy", std::path::Path::new("/p/here")).unwrap() {
-        Found::Elsewhere(r) => assert_eq!(r.len(), 2),
+        Found::Offer { rows, .. } => assert_eq!(rows.len(), 2),
         f => panic!("{f:?}"),
     }
 }

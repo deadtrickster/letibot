@@ -569,9 +569,11 @@ letibot --continue
 
   --continue s-ID   an id is read as `--session s-ID` and the reading is said out loud
   --continue NAME   a session name (its /rename title) opens that session, as `--session NAME`.
-                    Looked up in this workspace first, then in every folder. A match in another
-                    folder is offered with "Open it there? [Y/n]", and yes opens it in its own
-                    folder. With no terminal it is refused with the folder and the command to run.
+                    An exact name of this workspace opens; a name that only BEGINS like one is
+                    offered with the sessions it could be, and an archived session is offered
+                    with the word - opening it by id brings it back into the list. A match in
+                    another folder is offered too. With no terminal every offer is a refusal
+                    that names the command to run instead.
 
   example:
     letibot --continue
@@ -583,11 +585,12 @@ letibot --session ID|NAME
   Reopen one stored session, starting this folder's daemon if none is up.
 
   ID   the session id (`letibot --sessions` lists them, and so does ctrl-s in the head)
-  NAME a /rename title: exact (any case), else a unique prefix. This workspace is searched
-       first, then every folder; a match elsewhere is offered ("Open it there? [Y/n]", or a
-       numbered list for several) and opens in that folder. An ambiguous or unknown name is
-       refused with the candidates. A program cannot change its shell's directory, so the
-       `cd` line is printed for you.
+  NAME a /rename title (any case, and its slug is the same name). One session of this
+       workspace answers to a name: an exact match opens it, and a prefix or an archived
+       session is OFFERED, never opened silently - the answer decides which conversation the
+       next thing typed lands in. A match in another folder is offered the same way, and opens
+       in that folder. An ambiguous or unknown name is refused with the candidates. A program
+       cannot change its shell's directory, so the `cd` line is printed for you.
 
   example:
     letibot --session s-1789919514688401228
@@ -1843,8 +1846,9 @@ retarget() {
   [ -n "${LETIBOT_LOG:-}" ] || LOG="$HOME/logs/harnessd-$KEY.log"
 }
 # A session NAME (its /rename title or slug) to SESSION, this folder first and then every
-# folder in the store. A hit elsewhere is offered, never taken: the answer decides where the
-# daemon runs and what its tools can touch. Defined after `retarget`, which it calls.
+# folder in the store. A prefix, an archived session and a hit elsewhere are all OFFERED, never
+# taken: the answer decides where the daemon runs, what its tools can touch, and which
+# conversation the next thing typed lands in. Defined after `retarget`, which it calls.
 tilde() { # tilde PATH -- $HOME shown as ~
   # shellcheck disable=SC2088 # the literal ~ is the display form
   case "$1" in
@@ -1853,9 +1857,32 @@ tilde() { # tilde PATH -- $HOME shown as ~
     *) echo "$1" ;;
   esac
 }
+# Are two paths one folder? Symlinks and a trailing slash are spellings, not folders, and the
+# store answers names per canonical folder - so this has to agree with it.
+same_dir() { # same_dir A B
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  [ "$(cd "$1" 2>/dev/null && pwd -P)" = "$(cd "$2" 2>/dev/null && pwd -P)" ]
+}
+# open_in ID TITLE FOLDER [WHY] -- make ID this run's session. A FOLDER that is not the one this
+# shell is in moves the launcher there and says so; the same folder opens in place.
+open_in() { # open_in ID TITLE FOLDER [WHY]
+  local id="$1" title="$2" folder="$3" why="${4:-}"
+  [ -d "$folder" ] || die "$folder is gone. Nothing was opened."
+  if same_dir "$folder" "$WORKSPACE"; then
+    SESSION="$id"
+    echo "letibot: opening $title${why}" >&2
+    return 0
+  fi
+  retarget "$folder"
+  [ -z "${LETIBOT_SOCKET:-}" ] || SOCKET="$LETIBOT_SOCKET"
+  cd "$WORKSPACE" || die "cannot enter $WORKSPACE"
+  SESSION="$id"
+  echo "letibot: opening $title in $(tilde "$WORKSPACE")${why}. A program cannot change its parent shell's directory, so yours stays put. To follow: cd $(printf '%q' "$WORKSPACE")" >&2
+}
 resolve_named() { # resolve_named NAME -- sets SESSION; may retarget WORKSPACE and cd there
   local name="$1" out kind id title ws age n=0 i rec ans state
   local -a ids=() titles=() wss=() ages=()
+  local -a pids=() ptitles=() a_ids=() a_titles=() a_wss=()
   case "$name" in
     s-[0-9]* | cc-*)
       SESSION="$name"
@@ -1869,19 +1896,75 @@ resolve_named() { # resolve_named NAME -- sets SESSION; may retarget WORKSPACE a
          $ME --sessions lists what is on disk here, and --session ID opens one by id"
   fi
   while IFS=$'\t' read -r kind id title ws age; do
-    [ "$kind" = here ] || [ "$kind" = there ] || continue
-    if [ "$kind" = here ]; then
-      SESSION="$id"
-      return 0
-    fi
-    ids+=("$id")
-    titles+=("$title")
-    wss+=("$ws")
-    ages+=("$age")
-    n=$((n + 1))
+    case "$kind" in
+      here)
+        SESSION="$id"
+        return 0
+        ;;
+      prefix)
+        pids+=("$id")
+        ptitles+=("$title")
+        ;;
+      archived)
+        a_ids+=("$id")
+        a_titles+=("$title")
+        a_wss+=("$ws")
+        ;;
+      there)
+        ids+=("$id")
+        titles+=("$title")
+        wss+=("$ws")
+        ages+=("$age")
+        n=$((n + 1))
+        ;;
+    esac
   done <<EOF
 $out
 EOF
+  # A name that only STARTS like a session's is a question, never an answer.
+  if [ "${#pids[@]}" -gt 0 ]; then
+    if [ -t 0 ]; then
+      echo "letibot: '$name' names no session here; these begin with it:" >&2
+      i=0
+      while [ "$i" -lt "${#pids[@]}" ]; do
+        printf '  %d) %s  %s\n' "$((i + 1))" "${ptitles[$i]}" "${pids[$i]}" >&2
+        i=$((i + 1))
+      done
+      printf 'Open which? [1-%d, Enter cancels] ' "${#pids[@]}" >&2
+      read -r ans || ans=
+      case "$ans" in
+        '' | *[!0-9]* | 0*)
+          echo "letibot: nothing opened." >&2
+          exit 0
+          ;;
+      esac
+      [ "$ans" -le "${#pids[@]}" ] || die "no choice $ans. Nothing was opened."
+      i=$((ans - 1))
+      open_in "${pids[$i]}" "${ptitles[$i]}" "$WORKSPACE" " (named in full)"
+      return 0
+    fi
+    die "'$name' names no session here; these begin with it: ${ptitles[*]} (${pids[*]})
+         name one of them in full, or open it by id: $ME --session ID"
+  fi
+  # An archived session has freed its name; it is offered WITH the word, so a person who did not
+  # know it was out of sight learns why the name was unknown a moment ago.
+  if [ "${#a_ids[@]}" -gt 0 ]; then
+    if [ -t 0 ]; then
+      printf '%s is archived (%s). Open it and put it back in the list? [y/N] ' "${a_titles[0]}" "${a_ids[0]}" >&2
+      read -r ans || ans=
+      case "$ans" in
+        [Yy] | [Yy][Ee][Ss]) ;;
+        *)
+          echo "letibot: nothing opened." >&2
+          exit 0
+          ;;
+      esac
+      open_in "${a_ids[0]}" "${a_titles[0]}" "${a_wss[0]}" " (archived, and back in the list)"
+      return 0
+    fi
+    die "${a_titles[0]} is archived (${a_ids[0]}), so it is not in the list. Nothing was opened.
+         open it and put it back: cd $(printf '%q' "${a_wss[0]}") && $ME --session ${a_ids[0]}"
+  fi
   [ "$n" -gt 0 ] || die "no session named '$name'"
   if [ "$n" -eq 1 ]; then
     if [ -t 0 ]; then
@@ -1924,12 +2007,7 @@ EOF
       die "nothing was opened. there, run: cd FOLDER && $ME --session ID (ids: ${ids[*]})"
     fi
   fi
-  [ -d "${wss[$i]}" ] || die "${wss[$i]} is gone. Nothing was opened."
-  retarget "${wss[$i]}"
-  [ -z "${LETIBOT_SOCKET:-}" ] || SOCKET="$LETIBOT_SOCKET"
-  cd "$WORKSPACE" || die "cannot enter $WORKSPACE"
-  SESSION="${ids[$i]}"
-  echo "letibot: opening ${titles[$i]} in $(tilde "$WORKSPACE"). A program cannot change its parent shell's directory, so yours stays put. To follow: cd $(printf '%q' "$WORKSPACE")" >&2
+  open_in "${ids[$i]}" "${titles[$i]}" "${wss[$i]}"
 }
 # Is this pid gone, waited for, bounded. The one place the launcher decides whether a daemon
 # stopped. "stopped" is said after the process is gone, never after the signal: a daemon can

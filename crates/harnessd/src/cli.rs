@@ -51,7 +51,7 @@ use crate::config::{
 };
 use crate::{Daemon, Dialect, Outcome, OutcomeSaid, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
-use letibot_tokencore::store::StoredSession;
+use letibot_tokencore::store::{Meaning, StoredSession};
 use letibot_turn::Endpoint;
 
 /// Resolve the credentials and open the seat. Every refusal in here names what was looked
@@ -3108,13 +3108,21 @@ fn run_query(
             Ok(0)
         }
         Query::Unarchive(id) => {
-            store.set_archived(&id, false, None).map_err(|e| match e {
+            let renamed = store.set_archived(&id, false, None).map_err(|e| match e {
                 letibot_tokencore::store::StoreError::NotFound(_) => {
                     no_such_session(format!("no such session: {id}"))
                 }
                 e => format!("unarchiving {id}: {e}"),
             })?;
-            println!("{id} is in the list again");
+            match renamed {
+                None => println!("{id} is in the list again"),
+                // The name it had is a live session's now: the row comes back under the counter,
+                // and saying which name is the difference between that and a silent rename.
+                Some(name) => println!(
+                    "{id} is in the list again as {name:?} — the name it had belongs to a live \
+                     session now"
+                ),
+            }
             Ok(0)
         }
         Query::Show(id) => {
@@ -3137,18 +3145,15 @@ fn run_query(
             let all = store.list_sessions().map_err(|e| e.to_string())?;
             match find_session(&all, &name, here)? {
                 Found::Here(id) => println!("here\t{id}"),
-                Found::Elsewhere(rows) => {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0);
+                Found::Offer { kind, rows } => {
+                    let now = now_ms();
                     for s in rows {
                         // Tabs in a title would shift the columns the launcher cuts.
-                        let title = s.title.as_deref().unwrap_or_default().replace('\t', " ");
+                        let title = s.title.replace('\t', " ");
                         println!(
-                            "there\t{}\t{title}\t{}\t{}",
+                            "{kind}\t{}\t{title}\t{}\t{}",
                             s.id,
-                            s.workspace_root,
+                            s.folder,
                             age(now - s.last_activity_ms)
                         );
                     }
@@ -3327,9 +3332,10 @@ fn scoped_archived(
         .collect())
 }
 
-/// The session a name means in this project: an id as typed, else the exact name
-/// (case-insensitive) or its slug, else a unique prefix. Ambiguity and absence are refused with the
-/// candidates.
+/// The session a name means in this project, by the same rule the launcher's `-r` uses: an id as
+/// typed, else the exact name (case-insensitive) or its slug. A prefix and an archived session are
+/// refused with the candidates rather than opened - a name that only starts like a session's is a
+/// question, and the answer decides which conversation a turn lands in.
 fn resolve_session_name(
     all: &[letibot_tokencore::store::StoredSession],
     name: &str,
@@ -3338,81 +3344,44 @@ fn resolve_session_name(
     if let Some(s) = all.iter().find(|s| s.id == name) {
         return Ok(s.id.clone());
     }
-    let named: Vec<_> = all
-        .iter()
-        .filter(|s| is_conversation(s))
-        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
-        .collect();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let list = |rows: &[&letibot_tokencore::store::StoredSession]| {
+    let named: Vec<_> = all.iter().filter(|s| is_conversation(s)).cloned().collect();
+    match letibot_tokencore::store::meaning_of(&named, name) {
+        Meaning::One(one) => Ok(one.id),
+        Meaning::Ambiguous(rows) => Err(ambiguous(name, &rows)),
+        Meaning::Prefixes(rows) => Err(offer("begin with it", name, &rows)),
+        Meaning::Archived(rows) => Err(offer("is archived", name, &rows)),
+        Meaning::Nothing => Err(no_name(name, scope, &named)),
+    }
+}
+
+/// Candidates a name could mean, as the sentence a caller with no screen to ask on is owed.
+fn offer(what: &str, name: &str, rows: &[letibot_tokencore::store::Named]) -> String {
+    format!(
+        "no session is named {name:?}; {} {what}: {}. Use the id{}",
+        rows.len(),
         rows.iter()
-            .map(|s| {
-                format!(
-                    "  {}  {}  {} ago",
-                    s.title.as_deref().unwrap_or_default(),
-                    s.id,
-                    age(now - s.last_activity_ms)
-                )
-            })
+            .map(|r| format!("{} {:?}", r.id, r.title))
             .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let hits = name_hits(&named, name);
-    match hits.as_slice() {
-        [one] => Ok(one.id.clone()),
-        [] => {
-            let here = scope
-                .map(|p| format!(" under {}", p.display()))
-                .unwrap_or_default();
-            Err(if named.is_empty() {
-                format!("no session named {name:?}{here}, and none here has a name")
-            } else {
-                format!(
-                    "no session named {name:?}{here}. Named sessions:\n{}",
-                    list(&named)
-                )
-            })
+            .join(", "),
+        if what == "is archived" {
+            " and it comes back into the list"
+        } else {
+            ", or a longer name"
         }
-        many => Err(format!(
-            "{name:?} names {} sessions. Use an id or a longer name:\n{}",
-            many.len(),
-            list(many)
-        )),
-    }
+    )
 }
 
-/// The named rows a name means: the exact title or slug, else every title it prefixes.
-fn name_hits<'a>(
-    named: &[&'a letibot_tokencore::store::StoredSession],
-    name: &str,
-) -> Vec<&'a letibot_tokencore::store::StoredSession> {
-    let want = name.to_lowercase();
-    let title = |s: &letibot_tokencore::store::StoredSession| {
-        s.title.as_deref().unwrap_or_default().to_lowercase()
-    };
-    let exact: Vec<_> = named
-        .iter()
-        .copied()
-        .filter(|s| letibot_tokencore::store::same_name(&title(s), &want))
-        .collect();
-    if !exact.is_empty() {
-        return exact;
-    }
-    named
-        .iter()
-        .copied()
-        .filter(|s| title(s).starts_with(&want))
-        .collect()
-}
-
-/// Where a name was found.
+/// Where a name was found, which decides what the launcher may do with it: open it, or ask.
 #[derive(Debug)]
 enum Found {
+    /// One live session of this folder: opened without a question.
     Here(String),
-    Elsewhere(Vec<letibot_tokencore::store::StoredSession>),
+    /// Candidates the name could mean. OFFERED, never taken - `prefix` and `archived` are the
+    /// words the launcher prints, and `there` is a row in another folder.
+    Offer {
+        kind: &'static str,
+        rows: Vec<letibot_tokencore::store::Named>,
+    },
 }
 
 /// A name under `here` first; only when nothing there matches, the operator's own top-level
@@ -3424,37 +3393,111 @@ fn same_folder(ws: &std::path::Path, here: &std::path::Path) -> bool {
         || ws.starts_with(here.join(".claude/worktrees"))
 }
 
+/// What a typed name means for `--continue`/`-r`, by the store's ONE rule
+/// ([`letibot_tokencore::store::meaning_of`]): an exact live name of this folder is opened; a
+/// prefix, an archived session or a session of another folder is OFFERED, because opening the
+/// wrong conversation is worse than a question. An id is an id and skips the search.
 fn find_session(
     all: &[letibot_tokencore::store::StoredSession],
     name: &str,
     here: &std::path::Path,
 ) -> Result<Found, String> {
+    if let Some(s) = all.iter().find(|s| s.id == name) {
+        return Ok(Found::Here(s.id.clone()));
+    }
+    let canon = letibot_tokencore::store::canonical_folder(&here.to_string_lossy());
+    let here_path = std::path::Path::new(&canon);
     let local: Vec<_> = all
         .iter()
-        .filter(|s| same_folder(std::path::Path::new(&s.workspace_root), here))
+        .filter(|s| is_conversation(s))
+        .filter(|s| {
+            let ws = s
+                .workspace_canon
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .map(std::path::Path::new)
+                .unwrap_or_else(|| std::path::Path::new(&s.workspace_root));
+            same_folder(ws, here_path) || same_folder(std::path::Path::new(&s.workspace_root), here)
+        })
         .cloned()
         .collect();
-    let local_named: Vec<_> = local
-        .iter()
-        .filter(|s| is_conversation(s))
-        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
-        .collect();
-    if local.iter().any(|s| s.id == name) || !name_hits(&local_named, name).is_empty() {
-        return resolve_session_name(&local, name, Some(here)).map(Found::Here);
+    match letibot_tokencore::store::meaning_of(&local, name) {
+        Meaning::One(one) => return Ok(Found::Here(one.id)),
+        Meaning::Ambiguous(rows) => return Err(ambiguous(name, &rows)),
+        Meaning::Prefixes(rows) => {
+            return Ok(Found::Offer {
+                kind: "prefix",
+                rows,
+            });
+        }
+        Meaning::Archived(rows) => {
+            return Ok(Found::Offer {
+                kind: "archived",
+                rows,
+            });
+        }
+        Meaning::Nothing => {}
     }
-    let named: Vec<_> = all
+    let anywhere: Vec<_> = all
         .iter()
         .filter(|s| is_conversation(s) && is_operators(s))
-        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
+        .cloned()
         .collect();
-    let hits = name_hits(&named, name);
-    if hits.is_empty() {
-        return match resolve_session_name(&local, name, Some(here)) {
-            Ok(id) => Ok(Found::Here(id)),
-            Err(e) => Err(format!("{e}\n(every folder was searched too)")),
-        };
+    match letibot_tokencore::store::meaning_of(&anywhere, name) {
+        Meaning::One(one) => Ok(Found::Offer {
+            kind: "there",
+            rows: vec![one],
+        }),
+        Meaning::Ambiguous(rows) => Err(ambiguous(name, &rows)),
+        Meaning::Prefixes(rows) => Ok(Found::Offer {
+            kind: "there",
+            rows,
+        }),
+        Meaning::Archived(rows) => Ok(Found::Offer {
+            kind: "archived",
+            rows,
+        }),
+        Meaning::Nothing => Err(no_name(name, Some(here), &local)),
     }
-    Ok(Found::Elsewhere(hits.into_iter().cloned().collect()))
+}
+
+/// One name, several live sessions: a store that predates the unique name can still hold this, and
+/// a caller that picked one would be picking at random.
+fn ambiguous(name: &str, rows: &[letibot_tokencore::store::Named]) -> String {
+    format!(
+        "{name:?} names {} sessions: {}. Use the id, or a longer name.",
+        rows.len(),
+        rows.iter()
+            .map(|r| format!("{} {:?}", r.id, r.title))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// Nothing anywhere answers to it. The names this folder DOES have are the answer a person can act
+/// on, so they are printed rather than a bare "no such session".
+fn no_name(
+    name: &str,
+    here: Option<&std::path::Path>,
+    local: &[letibot_tokencore::store::StoredSession],
+) -> String {
+    let now = now_ms();
+    let under = here
+        .map(|p| format!(" under {}", p.display()))
+        .unwrap_or_default();
+    let listed: Vec<String> = local
+        .iter()
+        .filter_map(|s| s.title.as_deref().filter(|t| !t.is_empty()).map(|t| (t, s)))
+        .map(|(t, s)| format!("  {t}  {}  {} ago", s.id, age(now - s.last_activity_ms)))
+        .collect();
+    if listed.is_empty() {
+        format!("no session named {name:?}{under}, and none here has a name")
+    } else {
+        format!(
+            "no session named {name:?}{under}. Named sessions:\n{}",
+            listed.join("\n")
+        )
+    }
 }
 
 /// Is this row a conversation a person can be brought back to? `--continue` promises to reopen
