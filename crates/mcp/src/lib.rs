@@ -311,9 +311,11 @@ impl Entry {
         Entry {
             spec: spec.clone(),
             tools: RwLock::new(Vec::new()),
+            // A failure already known is a down entry like any other, so the next call is the
+            // one that retries it rather than a `/mcp` verb.
             link: Mutex::new(Link {
                 client: None,
-                down: None,
+                down: why.clone().map(|why| (why, 0, Instant::now())),
             }),
             info: Mutex::new(Info {
                 failed: why,
@@ -341,7 +343,10 @@ impl Entry {
             }
             Err(why) => {
                 link.client = None;
-                link.down = None;
+                // The next call retries at once, then on the ladder: a start failure is the same
+                // kind of trouble as a death, and waiting for a daemon restart is the one answer
+                // that leaves the tools missing for hours.
+                link.down = Some((why.clone(), 0, Instant::now()));
                 self.set_tools(Vec::new());
                 *lock(&self.info) = Info {
                     pid: None,
@@ -394,13 +399,20 @@ impl Entry {
         }
     }
 
-    /// A live client, reconnecting one that went down once its backoff has passed.
+    /// A live client, reconnecting one that went down or never came up once its backoff passed.
     fn up<'a>(&self, link: &'a mut Link) -> Result<&'a mut Client, McpError> {
         if let Some((why, failed, next)) = link.down.clone() {
             let now = Instant::now();
+            // Both go through this ladder; only the sentence differs, so an operator knows whether
+            // a process that used to work has gone or one never got started.
+            let what = if self.failed().is_some() {
+                "the server did not start"
+            } else {
+                "the server is down"
+            };
             if now < next {
                 return Err(McpError::Transport(format!(
-                    "the server is down ({why}); the next restart is in {:.1}s",
+                    "{what} ({why}); the next restart is in {:.1}s",
                     (next - now).as_secs_f64()
                 )));
             }
@@ -412,9 +424,15 @@ impl Entry {
                     let wait = backoff(failed);
                     link.client = None;
                     link.down = Some((why.clone(), failed, Instant::now() + wait));
+                    // `/mcp` and the start failures read this: the latest words, not the first.
+                    {
+                        let mut info = lock(&self.info);
+                        if info.failed.is_some() {
+                            info.failed = Some(e.clone());
+                        }
+                    }
                     return Err(McpError::Transport(format!(
-                        "the server is down ({why}) and did not restart: {e}; the next restart \
-                         is in {:.1}s",
+                        "{what} ({why}) and did not restart: {e}; the next restart is in {:.1}s",
                         wait.as_secs_f64()
                     )));
                 }
@@ -427,12 +445,6 @@ impl Entry {
 
     fn call(&self, tool: &str, args: &Value) -> Result<McpCallResult, McpError> {
         let mut link = lock(&self.link);
-        if let Some(why) = self.failed() {
-            return Err(McpError::Transport(format!(
-                "the server did not start ({why}); `/mcp restart {}` tries again",
-                self.spec.name
-            )));
-        }
         self.refresh(&mut link);
         let client = self.up(&mut link)?;
         let out = client.call(tool, args);

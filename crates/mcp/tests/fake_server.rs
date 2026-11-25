@@ -232,6 +232,56 @@ fn a_restart_that_fails_waits_out_its_backoff_before_the_next() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A server that did not start is retried on the ladder a died one uses, on the next call: the
+/// alternative is tools missing until somebody restarts the daemon.
+#[test]
+fn a_server_that_failed_at_start_is_retried_without_a_restart() {
+    let dir = std::env::temp_dir().join(format!("letibot-mcp-startretry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("started");
+    // `--once` refuses to run while the marker is there, which is a start that fails for a reason
+    // the client can do nothing about and the test can remove.
+    std::fs::write(&marker, b"").unwrap();
+    let cat = Catalog::start(&[fake("fake", &["--once", marker.to_str().unwrap()])]);
+    let failures = cat.failures();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].why.contains("started once already"),
+        "{failures:?}"
+    );
+    assert!(cat.servers().is_empty(), "a failed server offers nothing");
+
+    std::fs::remove_file(&marker).unwrap();
+    // No reconcile, no restart verb: the call itself is what brings it back.
+    let mut text = String::new();
+    wait_until("the server that failed to start to come up", || {
+        match cat.call("fake", "echo", &serde_json::json!({"text": "up"})) {
+            Ok(r) => {
+                text = r.text;
+                true
+            }
+            Err(e) => {
+                text = format!("{e:?}");
+                false
+            }
+        }
+    });
+    assert_eq!(text, "up");
+    assert!(cat.failures().is_empty(), "{:?}", cat.failures());
+    // The server's own tools, and not a count: the fake grows a tool whenever a test needs one
+    // (`write` arrived after this), so name the one this test calls.
+    let listed: Vec<String> = cat.servers()[0]
+        .tools
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    assert!(
+        listed.contains(&"echo".to_string()),
+        "listed on the retry: {listed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_list_changed_notice_lists_the_tools_again() {
     let cat = Arc::new(Catalog::start(&[fake("fake", &[])]));
