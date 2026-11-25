@@ -12,11 +12,17 @@ fn a_command_carries_no_door_but_keeps_the_apparatus_and_what_the_test_sets() {
     let mut g = EnvGuard::lock();
     g.set("LETIBOT_SOCKET", "/operator/live.sock")
         .set("LETIBOT_SESSION", "s-live")
-        .set("LETIBOT_VOCAB_GGUF", "/models/v.gguf");
+        .set("LETIBOT_VOCAB_GGUF", "/models/v.gguf")
+        .set(letibot_paths::REFUSE_DEFAULT_STORE, "1");
     let said = child_env(&mut command("env"));
     assert!(!said.contains("/operator/live.sock"), "{said}");
     assert!(!said.contains("LETIBOT_SESSION="), "{said}");
     assert!(said.contains("LETIBOT_VOCAB_GGUF=/models/v.gguf"), "{said}");
+    // The store guard is kept, not dropped: a daemon a test starts is under test too.
+    assert!(
+        said.contains(&format!("{}=1", letibot_paths::REFUSE_DEFAULT_STORE)),
+        "{said}"
+    );
     let said = child_env(command("env").env("LETIBOT_SOCKET", "/test/own.sock"));
     assert!(said.contains("LETIBOT_SOCKET=/test/own.sock"), "{said}");
 }

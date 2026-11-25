@@ -18,6 +18,9 @@ pub const KEPT: &[&str] = &[
     "LETIBOT_REQUIRE_APPARATUS",
     "LETIBOT_APPARATUS_REFUSALS",
     "LETIBOT_CHECK_REAL_STORE",
+    // Kept so a child a test starts is under test too: the store doors refuse the default data
+    // directory while it is set, and a spawned daemon is the process most able to leak a row.
+    letibot_paths::REFUSE_DEFAULT_STORE,
 ];
 
 /// Whether `name` is a door: a `LETIBOT_*` variable not in [`KEPT`].
@@ -129,6 +132,9 @@ pub fn isolate() -> &'static Path {
             std::fs::create_dir_all(&p).expect("the scratch XDG dir");
             g.set(var, &p);
         }
+        // Belt and braces: the XDG dirs above already keep a store out of the operator's data
+        // directory, and a child spawned with an emptied environment would otherwise not know.
+        g.set(letibot_paths::REFUSE_DEFAULT_STORE, "1");
         // Kept for the life of the process: the guard would put the doors back.
         g.saved.clear();
         dir

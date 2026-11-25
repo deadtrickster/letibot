@@ -361,3 +361,13 @@ step still passes. `crates/turn/tests/restore.rs`'s real-store tests
 read the operator's `sessions.db` and run only with `LETIBOT_CHECK_REAL_STORE=1`, by hand. The
 acceptance specs (`tests/acceptance/run.sh`, the real head in tmux) need a terminal, a release build
 and, for `--local`, firecode; run them by hand when a change reaches the head.
+
+## A test cannot write the operator's store
+
+`letibot_tokencore`'s store doors refuse a store in the default data directory
+(`letibot_paths::refuse_the_default_store`): a debug build refuses by itself, because a debug build
+of this tree is a test or a debugging session and the installed daemon and head are release bins, so
+an agent's `cargo test` needs no ceremony. `LETIBOT_REFUSE_DEFAULT_STORE=1` says the same for a
+release build, and `=0` says a debug run means the operator's store. The refusal comes before the
+open, so it creates nothing: a test that forgot its own data directory fails, rather than leaving
+rows that `letibot --sessions` afterwards shows beside the real ones.

@@ -1816,12 +1816,14 @@ impl Store {
     /// missing, routing every call by [`split::place_of`] so no caller has to know. See
     /// [`Store::write_tx_at`] for a body that writes both.
     pub fn open_set(dir: &Path, key: &str) -> Result<Self> {
+        letibot_paths::refuse_the_default_store(dir);
         split::open_handle(dir, key, true)
     }
 
     /// [`Store::open_set`] for a caller that must not create anything: a listing, or a question
     /// about a session. A file that is not there is not opened, and a data directory with no
-    /// `shared.db` is refused by [`split::refuse_unsplit`].
+    /// `shared.db` is refused by [`split::refuse_unsplit`]. Not `refuse_the_default_store`: this
+    /// door creates no row, and a listing of the operator's own store is a thing to ask for.
     pub fn open_set_existing(dir: &Path, key: &str) -> Result<Self> {
         split::open_handle(dir, key, false)
     }
@@ -1863,6 +1865,7 @@ impl Store {
     }
 
     fn open_sharing(path: &Path, share: bool, file: Option<split::StoreFile>) -> Result<Self> {
+        letibot_paths::refuse_the_default_store(path);
         split::refuse_creating_beside_legacy(path)?;
         if !share {
             return Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()), file);

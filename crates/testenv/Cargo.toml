@@ -7,3 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# For the name of the variable that keeps a store out of the operator's data directory: the tree
+# spells it once, so a test helper cannot keep a second spelling that stops working.
+letibot-paths.workspace = true

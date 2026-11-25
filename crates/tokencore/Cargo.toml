@@ -9,6 +9,9 @@ repository.workspace = true
 [dependencies]
 letibot-transcript.workspace = true
 letibot-dialect.workspace = true
+# The one rule for where this box's data directory is: a store door refuses the default one under
+# test, and a second copy of the resolver here would be a second answer to disagree with.
+letibot-paths.workspace = true
 # The tree's one wall clock: `metrics` owns the millisecond whose unit `ts_ms` is.
 letibot-metrics.workspace = true
 serde.workspace = true

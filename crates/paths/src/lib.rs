@@ -2,7 +2,7 @@
 //! daemon, the head and the bridge cannot read different files.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The variables the rule reads, taken once so a test names its own instead of setting the
 /// process's, which is global.
@@ -73,6 +73,74 @@ pub fn data_dir() -> Option<PathBuf> {
     data_dir_in(&Env::of_process())
 }
 
+/// Says whether a process under test refuses the default data directory. A debug build answers yes
+/// on its own, because a debug build of this tree is a test or a debugging session - the daemon
+/// and the head are installed as release bins - so an agent's `cargo test` needs no ceremony.
+pub const REFUSE_DEFAULT_STORE: &str = "LETIBOT_REFUSE_DEFAULT_STORE";
+
+/// May this process not fall back to the default data directory? Unset, a debug build says yes and
+/// a release build no; `0` says no to both, so a debug run that means the operator's store says so
+/// in one word, and `1` guards a release test run.
+pub fn refuses_default_store() -> bool {
+    refuses_default_store_given(std::env::var(REFUSE_DEFAULT_STORE).ok().as_deref())
+}
+
+/// [`refuses_default_store`] with the reading handed in rather than read - the seam its test
+/// uses, so the test never sets a variable the run may have set for real.
+fn refuses_default_store_given(flag: Option<&str>) -> bool {
+    match flag {
+        Some("0") => false,
+        Some(v) if !v.is_empty() => true,
+        _ => cfg!(debug_assertions),
+    }
+}
+
+/// Panic when `path` is this process's default data directory or anything inside it, and this run
+/// may not open the store there. [`refuse_default_store_at`] with both facts read from the process.
+pub fn refuse_the_default_store(path: &Path) {
+    refuse_default_store_at(path, data_dir().as_deref(), refuses_default_store());
+}
+
+/// What [`refuse_the_default_store`] decides, with the path, the default data directory and the
+/// answer handed in. A path that does not exist yet is compared as its parent resolves, because a
+/// store's first open is the one that creates it.
+pub fn refuse_default_store_at(path: &Path, default: Option<&Path>, refuse: bool) {
+    if !refuse {
+        return;
+    }
+    let Some(default) = default else {
+        return;
+    };
+    let default = resolve(default);
+    let at = resolve(path);
+    assert!(
+        !(at == default || at.starts_with(&default)),
+        "`{}` is the default data directory `{}`, which a process under test must not open the \
+         store in: the rows would outlive the test and read as real ones. Give the test its own \
+         data directory (a tempdir in `XDG_DATA_HOME`, or `--store`), or set \
+         {REFUSE_DEFAULT_STORE}=0 to mean this directory.",
+        path.display(),
+        default.display()
+    );
+}
+
+/// `path` with its directory resolved where it exists: `..` and a symlinked parent cannot make the
+/// operator's store look like somebody else's. The file itself is not canonicalised - a store
+/// being opened for the first time is not there yet.
+fn resolve(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    match (std::fs::canonicalize(parent), path.file_name()) {
+        (Ok(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +173,75 @@ mod tests {
         assert_eq!(config_dir_in(&env(None, None)), None);
         assert_eq!(config_dir_in(&env(Some(""), Some(""))), None);
         assert_eq!(config_dir_in(&env(None, Some("rel"))), None);
+    }
+
+    /// The flag answers yes and no outright; with nothing said, the build profile answers - a debug
+    /// build is a test or a debugging session, a release build is the installed product.
+    #[test]
+    fn the_flag_answers_outright_and_the_profile_answers_when_it_is_unset() {
+        assert!(refuses_default_store_given(Some("1")));
+        assert!(refuses_default_store_given(Some("true")));
+        assert!(!refuses_default_store_given(Some("0")));
+        assert_eq!(refuses_default_store_given(None), cfg!(debug_assertions));
+        assert_eq!(
+            refuses_default_store_given(Some("")),
+            cfg!(debug_assertions)
+        );
+    }
+
+    /// The store's own directory, a file of it and a project file under it are all refused; a
+    /// scratch of the test's own - even one whose name starts the same - is not.
+    #[test]
+    fn the_default_data_directory_and_what_is_under_it_are_refused() {
+        let default = Path::new("/home/op/.local/share/letibot");
+        let cases: [&str; 4] = [
+            "/home/op/.local/share/letibot",
+            "/home/op/.local/share/letibot/sessions.db",
+            "/home/op/.local/share/letibot/shared.db",
+            "/home/op/.local/share/letibot/projects/abc123.db",
+        ];
+        for case in cases {
+            let said = std::panic::catch_unwind(|| {
+                refuse_default_store_at(Path::new(case), Some(default), true)
+            });
+            let why = said.expect_err("the default data directory is refused");
+            let why = why.downcast_ref::<String>().cloned().unwrap_or_default();
+            assert!(why.contains(REFUSE_DEFAULT_STORE), "{why}");
+            assert!(why.contains(case), "{why}");
+        }
+        for case in [
+            "/home/op/.local/share/letibot-other/sessions.db",
+            "/tmp/x/sessions.db",
+        ] {
+            refuse_default_store_at(Path::new(case), Some(default), true);
+        }
+        // The same paths with the flag off: nothing is refused, which is how the operator's own
+        // daemon opens the store it is meant to open.
+        refuse_default_store_at(default, Some(default), false);
+        refuse_default_store_at(
+            Path::new("/home/op/.local/share/letibot/sessions.db"),
+            Some(default),
+            false,
+        );
+    }
+
+    /// A `..` or a symlinked parent cannot make the default directory look like someone else's.
+    #[test]
+    fn a_path_is_compared_with_its_directory_resolved() {
+        let scratch = std::env::temp_dir().join(format!("letibot-paths-{}", std::process::id()));
+        let store = scratch.join("real/letibot");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(scratch.join("real/letibot-other")).unwrap();
+        let through_dots = scratch.join("real/letibot/../letibot/sessions.db");
+        let said = std::panic::catch_unwind(|| {
+            refuse_default_store_at(&through_dots, Some(&scratch.join("real/letibot")), true)
+        });
+        assert!(said.is_err(), "a `..` spelling of the default is refused");
+        refuse_default_store_at(
+            &scratch.join("real/letibot-other/sessions.db"),
+            Some(&store),
+            true,
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }
