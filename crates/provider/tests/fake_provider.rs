@@ -501,6 +501,135 @@ fn a_request_sends_only_the_newest_pictures_and_names_the_rest() {
     );
 }
 
+/// GLM's `1210` names no field at all. On a request that carried pictures, one retry at half of
+/// them is the only guess worth making - and it says so, with the provider's own words, because
+/// the next refusal may be about something else entirely.
+#[test]
+fn a_generic_parameter_refusal_on_pictures_is_retried_once_with_half_of_them() {
+    const REFUSAL: &str = "{\"error\":{\"code\":\"1210\",\"message\":\"Invalid API parameter\"}}";
+    // The real door refuses the rich request and answers the smaller one. `type` is once per
+    // picture, where the word alone is twice: the part type and the key that carries the bytes.
+    let f = fake_answering(
+        |body| match body.matches("\"type\":\"image_url\"").count() > 3 {
+            true => (400, REFUSAL.to_string()),
+            false => (200, SCRIPT.to_string()),
+        },
+    );
+    let notices: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = notices.clone();
+    let p = provider(&f.url).with_notes(Arc::new(move |said| sink.lock().unwrap().push(said)));
+    let items: Vec<TranscriptItem> = (0..6u32)
+        .map(|i| TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![UserPart::Image {
+                media_type: "image/png".into(),
+                data_ref: picture_ref(8 + i, 8),
+            }],
+        })
+        .collect();
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let done = p
+        .complete(&req, &mut |_| StreamFlow::Continue)
+        .expect("the retry is answered");
+    assert_eq!(done.text, "Hello");
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one retry, never a ladder");
+    let pictures = |body: &str| body.matches("\"type\":\"image_url\"").count();
+    assert_eq!(pictures(&seen[0].1), 6, "everything the transcript carried");
+    assert_eq!(pictures(&seen[1].1), 3, "half of them, the newest");
+    let said = notices.lock().unwrap();
+    assert!(
+        said.iter()
+            .any(|n| n.contains("GUESS") && n.contains("1210") && n.contains("6 picture(s)")),
+        "the operator is told the budget used and that it is a guess: {said:?}"
+    );
+}
+
+/// A `1210` on a request carrying no picture is not this guess: there is nothing to halve, and the
+/// retry would be the same request again. The refusal is the answer, its code kept.
+#[test]
+fn a_generic_parameter_refusal_without_pictures_is_not_retried() {
+    const REFUSAL: &str = "{\"error\":{\"code\":\"1210\",\"message\":\"Invalid API parameter\"}}";
+    let f = fake_refusing(400, "Content-Type: application/json\r\n", REFUSAL);
+    let p = provider(&f.url);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Text {
+            text: "no pictures here".into(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
+    match err {
+        BackendError::Refused { status, body, .. } => {
+            assert_eq!(status, 400);
+            assert!(
+                body.contains("1210"),
+                "the refusal's own words are kept: {body}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.seen.lock().unwrap().len(), 1, "asked exactly once");
+}
+
+/// A refusal that names a FIELD (`1213`, `1214`) is not this guess: the door has said what it
+/// objects to, the pictures are what they always were, and asking again changes nothing.
+#[test]
+fn a_refusal_that_names_a_field_is_not_guessed_about() {
+    const REFUSAL: &str =
+        "{\"error\":{\"code\":\"1213\",\"message\":\"messages.role is invalid\"}}";
+    let f = fake_refusing(400, "Content-Type: application/json\r\n", REFUSAL);
+    let p = provider(&f.url);
+    let items: Vec<TranscriptItem> = (0..4u32)
+        .map(|i| TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![UserPart::Image {
+                media_type: "image/png".into(),
+                data_ref: picture_ref(8 + i, 8),
+            }],
+        })
+        .collect();
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
+    match err {
+        BackendError::Refused { status, body, .. } => {
+            assert_eq!(status, 400);
+            assert!(body.contains("1213"), "{body}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        f.seen.lock().unwrap().len(),
+        1,
+        "a named field is not guessed about"
+    );
+}
+
 /// A model that refuses the picture is LEARNED, and the same request goes again without it:
 /// mark the model text-only for the session, say so once, retry once with placeholders. The
 /// retry is the request that failed, so the compaction that would have made room succeeds too.

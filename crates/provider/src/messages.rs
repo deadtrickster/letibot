@@ -451,6 +451,28 @@ fn size_said(bytes: usize) -> String {
     }
 }
 
+/// Does this refusal name no FIELD at all? GLM's `1210` is "Invalid API parameter" for a body it
+/// would not read, and says nothing about which one - so anything built on it is a guess, which is
+/// why the one caller says so. `1213` and `1214` name the field; they are not this.
+pub fn generic_parameter_refusal(body: &str) -> bool {
+    body.contains("(1210)")
+}
+
+/// How many pictures a request sends under `budget`: the ones it keeps, which is what a generic
+/// refusal's "half" is half of. Counted the same way the conversion counts them, from the carriers
+/// in order, so a retry's sentence and the request it describes cannot disagree.
+pub fn sent_pictures<'a>(
+    items: impl IntoIterator<Item = &'a TranscriptItem>,
+    budget: crate::budget::Budget,
+) -> usize {
+    let carried = carried_pictures(items);
+    let sizes: Vec<Option<u64>> = carried
+        .iter()
+        .map(|d| data_ref_bytes(d).map(|n| n as u64))
+        .collect();
+    budget.keeps(&sizes).iter().filter(|kept| **kept).count()
+}
+
 /// The pictures a chat-completions request carries, in the order the walk meets them: a user part's
 /// image, and a tool result's media unless it is a DOCUMENT (whose own fate is `document_said`).
 /// Not [`pictures`], which counts a tool result's document as a picture - that is the question a

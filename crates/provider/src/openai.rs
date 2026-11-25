@@ -522,6 +522,33 @@ impl MessagesBackend for OpenAiProvider {
                 budget,
             );
         }
+        // A code that names no field, on a request carrying pictures: the one guess left is that the
+        // pictures are what it would not take. One retry at HALF of what went - the only number the
+        // refusal could be about - and nothing is remembered, because a guess that worked once is not
+        // a fact about the next turn.
+        let sent = crate::messages::sent_pictures(req.items.iter().chain(req.tail.iter()), budget);
+        if crate::messages::generic_parameter_refusal(why) && sent > 0 {
+            let tighter = budget.half_of(sent);
+            let said = format!(
+                "{} refused the request with a generic parameter error (the provider said: {why}), \
+                 and it carried {sent} picture(s). That names no field, so this is a GUESS: it goes \
+                 again once with {} - the newest - and every older one named instead of sent. The \
+                 refusal's own body is in this session's `model-refusals.jsonl`.",
+                self.model,
+                tighter.images.unwrap_or_default()
+            );
+            eprintln!("  {said}");
+            if let Some(notes) = &self.notes {
+                notes(said);
+            }
+            return self.round(
+                req,
+                on_delta,
+                senses,
+                crate::messages::Withheld::nothing(),
+                tighter,
+            );
+        }
         // The second refusal is a different fact: the PICTURE is what it would not take. Answering
         // it with a text-only mark would withhold every picture this model was sent, so the marks go
         // against the pictures and nothing is recorded until the retry answers.
