@@ -1441,7 +1441,7 @@ impl<'a> Sessions<'a> {
                     },
                 }
             }
-            Slash::Fork(at) => {
+            Slash::Fork(point) => {
                 let h = match self.harness(session_id) {
                     Ok(h) => h,
                     Err(e) => {
@@ -1451,7 +1451,12 @@ impl<'a> Sessions<'a> {
                         };
                     }
                 };
-                match h.fork_at(at) {
+                let forked = match point {
+                    crate::slash::ForkPoint::List => h.fork_at(None),
+                    crate::slash::ForkPoint::Message(n) => h.fork_at(Some(n)),
+                    crate::slash::ForkPoint::Row(row) => h.fork_at_row(&row),
+                };
+                match forked {
                     Ok(r) => SlashReply {
                         lines: crate::harness::fork_reply(&r),
                         ok: true,

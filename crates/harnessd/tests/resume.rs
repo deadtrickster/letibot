@@ -424,6 +424,194 @@ fn a_fork_resumes_with_the_rows_up_to_the_point_and_the_original_still_resumes()
     assert_eq!(hub.snapshot().items.len(), 20);
 }
 
+/// A session a compaction split in the shape `fork_onto` really writes: the note it made, then the
+/// parent's last rows verbatim, then what came after. `t0` is the uncompacted conversation.
+struct Split {
+    /// Held so the temp tree outlives the test.
+    _dir: TempDir,
+    store: PathBuf,
+    session_id: String,
+    t0: String,
+    /// The rows of `t0`, in order.
+    rows: Vec<TranscriptItem>,
+}
+
+/// Five rows before the compaction, two of them carried into the compacted transcript, then two new
+/// ones: `u0 a0 u1 a1 u2` becomes `[note] a1 u2 u3 a2`.
+fn split(tag: &str, parts: &Parts) -> Split {
+    let dir = TempDir::new(tag);
+    let store_path = dir.path().join("sessions.db");
+    let store = Store::open(&store_path).expect("opening the store");
+    let session_id = "s-split".to_string();
+    let workspace_dir = dir.path().join("ws");
+    std::fs::create_dir_all(&workspace_dir).expect("the session's own tree");
+    store
+        .put_session(&SessionRecord {
+            id: session_id.clone(),
+            title: Some("a conversation a compaction split".into()),
+            model_id: WANTED.name().into(),
+            dialect_sha: renders_template(parts),
+            workspace_root: workspace_dir.display().to_string(),
+            owner: "dead".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("putting the session");
+    let prefix_tokens: Vec<u32> = vec![7, 8, 9];
+    let prefix_id = store
+        .put_stable_prefix(&StablePrefixRecord {
+            dialect_sha: renders_template(parts),
+            system: "you are letibot".into(),
+            tools_json: vec![],
+            tokens: prefix_tokens.clone(),
+            h_init: hash_tokens(&prefix_tokens),
+            vocab_source: parts.vocab.source().to_string(),
+            effort: None,
+        })
+        .expect("putting the prefix");
+    let t0 = format!("{session_id}#t0");
+    store
+        .put_transcript(&t0, &session_id, &prefix_id)
+        .expect("putting t0");
+    let rows = vec![
+        user("prompt 0"),
+        assistant("answer 0"),
+        user("prompt 1"),
+        assistant("answer 1"),
+        user("prompt 2"),
+    ];
+    write_rows(&store, &t0, &prefix_tokens, &rows);
+    let current = format!("{session_id}#t1");
+    store
+        .put_fork(&current, &session_id, &prefix_id, &t0, rows.len() as u32)
+        .expect("forking");
+    let mut carried: Vec<TranscriptItem> = vec![TranscriptItem::System {
+        text: "[summary of the conversation so far]".into(),
+        origin: letibot_transcript::SystemOrigin::Update,
+    }];
+    carried.extend_from_slice(&rows[3..]);
+    carried.push(user("prompt 3"));
+    carried.push(assistant("answer 2"));
+    write_rows(&store, &current, &prefix_tokens, &carried);
+    Split {
+        _dir: dir,
+        store: store_path,
+        session_id,
+        t0,
+        rows,
+    }
+}
+
+fn open_split(s: &Split) -> Harness {
+    let cfg = config(&s.store, &s.session_id, "/tmp");
+    let parts = empty_modes(Parts::load(&cfg).expect("the wiring must load"));
+    Harness::open(&parts, cfg, Hub::new(&s.session_id)).expect("the session must resume")
+}
+
+/// A fork at a message from before a compaction carries the rows that are still stored, not the
+/// summary that replaced them: the list spans both transcripts and the carried tail is listed once.
+#[test]
+fn a_fork_before_a_compaction_carries_the_uncompacted_rows() {
+    let probe =
+        Parts::load(&config(Path::new("unused"), "", "/tmp")).expect("the wiring must load");
+    let s = split("harnessd-fork-uncompacted", &probe);
+    let mut h = open_split(&s);
+    let listed = h.fork_at(None).expect("listing");
+    let letibot_harnessd::harness::ForkOutcome::Listed(messages) = listed else {
+        panic!("a bare /fork lists: {listed:?}");
+    };
+    assert_eq!(
+        messages,
+        ["prompt 0", "prompt 1", "prompt 2", "prompt 3"],
+        "the messages above the compaction, then the one after it, each once"
+    );
+
+    let forked = h
+        .fork_at(Some(2))
+        .expect("forking at a pre-compaction message");
+    let letibot_harnessd::harness::ForkOutcome::Forked {
+        session_id,
+        transcript_id,
+        rows,
+        ..
+    } = forked
+    else {
+        panic!("not forked: {forked:?}");
+    };
+    assert_eq!(rows, 4, "prompt 1's whole exchange");
+    assert_eq!(
+        h.items().len(),
+        5,
+        "the open session still speaks the compacted transcript"
+    );
+    drop(h);
+
+    let store = Store::open(&s.store).expect("reopening");
+    let kept: Vec<TranscriptItem> = store
+        .load_transcript(&transcript_id)
+        .expect("the fork's transcript")
+        .items
+        .into_iter()
+        .map(|(item, _, _)| item)
+        .collect();
+    assert_eq!(kept, s.rows[..4], "the uncompacted rows, verbatim");
+    assert!(
+        !kept
+            .iter()
+            .any(|i| matches!(i, TranscriptItem::System { .. })),
+        "the summary a compaction wrote is not the history a fork carries: {kept:?}"
+    );
+    assert_eq!(
+        store
+            .load_transcript(&transcript_id)
+            .expect("the fork's transcript")
+            .parent_transcript_id
+            .as_deref(),
+        Some(s.t0.as_str()),
+        "the fork names the transcript its rows came from"
+    );
+    // The fork is a session of its own, and the source is only read.
+    assert!(store.session(&session_id).expect("a session").is_some());
+    assert_eq!(
+        store
+            .item_count(&format!("{}#t1", s.session_id))
+            .expect("counting"),
+        5,
+        "the source's transcript was rewritten, which the append-only store refuses"
+    );
+}
+
+/// The rows above the current transcript can be gone, and then a fork refuses in words rather than
+/// carrying the summary of a conversation whose beginning is no longer stored.
+#[test]
+fn a_fork_at_rows_the_store_no_longer_holds_refuses_and_says_why() {
+    let probe =
+        Parts::load(&config(Path::new("unused"), "", "/tmp")).expect("the wiring must load");
+    let s = split("harnessd-fork-gone", &probe);
+    // What a carve or a repair leaves: the transcript row is there and its rows are not.
+    {
+        let store = Store::open(&s.store).expect("reopening");
+        let conn = store.connection_of("transcript");
+        conn.execute_batch("DROP TRIGGER IF EXISTS transcript_item_no_delete")
+            .expect("dropping the append-only trigger");
+        conn.execute(
+            "DELETE FROM transcript_item WHERE transcript_id = ?1",
+            [&s.t0],
+        )
+        .expect("removing the rows");
+    }
+    let mut h = open_split(&s);
+    let err = h
+        .fork_at(Some(1))
+        .expect_err("the uncompacted history is gone");
+    let said = err.to_string();
+    assert!(
+        said.contains("gone from the store") && said.contains(&s.t0),
+        "the refusal says which rows are missing: {said}"
+    );
+}
+
 /// Ten lines rather than a dev-dependency.
 struct TempDir(std::path::PathBuf);
 

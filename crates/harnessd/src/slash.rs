@@ -94,9 +94,9 @@ pub enum Slash {
         /// bare `/clear`.
         next: Option<String>,
     },
-    /// `/fork [N]` - a new session that is this conversation up to message N. Bare lists the
-    /// messages. See `harness/fork.rs`.
-    Fork(Option<usize>),
+    /// `/fork [N|ROW]` - a new session that is this conversation up to message N, or up to a row
+    /// the head drew by id. Bare lists the messages. See `harness/fork.rs`.
+    Fork(ForkPoint),
     /// `/listen [-REPO] [+REPO] [only REPO|this] [all]` - which repositories of a folder project
     /// this folder's sessions hear gate news of. No words lists them.
     Listen(Vec<String>),
@@ -191,6 +191,19 @@ pub enum Slash {
         verb: String,
         line: String,
     },
+}
+
+/// Where a `/fork` is asked for: at nothing (list the messages), at the n-th message of the
+/// conversation, or at a row of it by the id a head holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkPoint {
+    /// `/fork` alone: the messages it can be taken at.
+    List,
+    /// `/fork N`: the N-th message of the conversation's stored history.
+    Message(usize),
+    /// `/fork <transcript>.<row>`: a row the head drew. A message from before a compaction is
+    /// held by a head but cannot be numbered by it, so the head names the row it drew.
+    Row(String),
 }
 
 /// What the operator is asking of the merge queue. A person's verdict on what the review
@@ -345,10 +358,17 @@ impl Slash {
                     .map(str::to_string),
             },
             Some("prune") => Slash::Prune,
-            Some("fork") => match words.get(1).map(|w| w.parse::<usize>()) {
-                None => Slash::Fork(None),
-                Some(Ok(n)) if n > 0 => Slash::Fork(Some(n)),
-                Some(_) => Slash::Help("`/fork N` names a message by its number; `/fork` lists them".into()),
+            Some("fork") => match words.get(1) {
+                None => Slash::Fork(ForkPoint::List),
+                // A row id is how a head names a message it holds but cannot number, and the
+                // daemon resolves it against the conversation's stored history.
+                Some(w) if w.contains('.') => Slash::Fork(ForkPoint::Row(w.to_string())),
+                Some(w) => match w.parse::<usize>() {
+                    Ok(n) if n > 0 => Slash::Fork(ForkPoint::Message(n)),
+                    _ => Slash::Help(
+                        "`/fork N` names a message by its number; `/fork` lists them".into(),
+                    ),
+                },
             },
             Some("listen") => Slash::Listen(words[1..].iter().map(|w| w.to_string()).collect()),
             Some("tools") => Slash::Tools,
@@ -2247,9 +2267,14 @@ mod the_verb_table_is_the_parser {
     }
 
     #[test]
-    fn fork_takes_a_message_number() {
-        assert_eq!(Slash::parse("fork"), Slash::Fork(None));
-        assert_eq!(Slash::parse("fork 3"), Slash::Fork(Some(3)));
+    fn fork_takes_a_message_number_or_a_row() {
+        assert_eq!(Slash::parse("fork"), Slash::Fork(ForkPoint::List));
+        assert_eq!(Slash::parse("fork 3"), Slash::Fork(ForkPoint::Message(3)));
+        assert_eq!(
+            Slash::parse("fork s-abc#t0.12"),
+            Slash::Fork(ForkPoint::Row("s-abc#t0.12".into())),
+            "a head names the row it drew, which no number can"
+        );
         assert!(matches!(Slash::parse("fork 0"), Slash::Help(_)));
         assert!(matches!(Slash::parse("fork x"), Slash::Help(_)));
     }
