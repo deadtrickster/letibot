@@ -92,12 +92,13 @@ holds the session is somebody else's. A reviewer child needs its own attach on i
 
 **Steering one.** `leticode_send` is stored as this seat's line and queued behind a running turn
 as the head's own prompt, so it never loses a race with what the model is doing; the daemon starts
-a turn for it when the current one ends. Correcting a child is this, not stopping it. A session of
-another project is prompted through its own daemon with a dm's consent: it needs `because`, the
-seq of the operator's message you are acting on. `leticode_todo` writes rows on the board of a
-session this bridge drives, under this seat's handle and never as the operator's or the model's;
-a row named again takes the new status and the rows take the order given, and the model is told at
-its next turn.
+a turn for it when the current one ends. Correcting a child is this, not stopping it. `queue`
+names the other lane: the line waits for the running turn to end and opens a turn of its own, which
+is what "do that after this" means. A session of another project is prompted through its own daemon
+with a dm's consent: it needs `because`, the seq of the operator's message you are acting on.
+`leticode_todo` writes rows on the board of a session this bridge drives, under this seat's handle
+and never as the operator's or the model's; a row named again takes the new status and the rows
+take the order given, and the model is told at its next turn.
 
 **Reading one.** `leticode_status` is the state, the last assistant message, the todos, the
 pending asks, `last_trouble` (the last time the provider itself was stuck: a rate limit with its

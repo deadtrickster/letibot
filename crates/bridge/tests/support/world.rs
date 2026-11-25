@@ -41,18 +41,54 @@ impl Drop for TempDir {
     }
 }
 
+/// A gate over the fake's first answer: the turn stays in its round until the test opens it, which
+/// is the only way to speak to a session mid-turn on a fake that answers in a millisecond.
+#[derive(Clone, Default)]
+pub struct Hold(Option<Arc<(Mutex<bool>, std::sync::Condvar)>>);
+
+impl Hold {
+    fn armed() -> Hold {
+        Hold(Some(Arc::new((
+            Mutex::new(false),
+            std::sync::Condvar::new(),
+        ))))
+    }
+
+    pub fn release(&self) {
+        let Some(gate) = &self.0 else { return };
+        let (open, bell) = &**gate;
+        *open.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        bell.notify_all();
+    }
+
+    fn wait(&self) {
+        let Some(gate) = &self.0 else { return };
+        let (open, bell) = &**gate;
+        let mut open = open.lock().unwrap_or_else(|e| e.into_inner());
+        while !*open {
+            open = bell.wait(open).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
 /// A fake provider on loopback: one sentence per request, every body kept.
 pub struct Fake {
     pub url: String,
     seen: Arc<Mutex<Vec<String>>>,
+    hold: Hold,
 }
 
 impl Fake {
     pub fn serve() -> Fake {
+        Fake::serve_held(Hold::default())
+    }
+
+    fn serve_held(hold: Hold) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let record = seen.clone();
+        let gate = hold.clone();
         std::thread::spawn(move || {
             loop {
                 let Ok((stream, _)) = listener.accept() else {
@@ -60,12 +96,14 @@ impl Fake {
                 };
                 let body = read_request(stream.try_clone().expect("clone the socket"));
                 record.lock().unwrap().push(body);
+                gate.wait();
                 let _ = write_sse(stream);
             }
         });
         Fake {
             url: format!("http://127.0.0.1:{port}/v1/chat/completions"),
             seen,
+            hold,
         }
     }
 
@@ -148,6 +186,21 @@ pub struct World {
 
 impl World {
     pub fn start(tag: &str) -> World {
+        World::start_with(tag, Hold::default())
+    }
+
+    /// A world whose provider holds its first answer until [`Hold::release`]: the brief's turn runs
+    /// until the test says so, which is what makes a prompt sent mid-turn sendable at all.
+    pub fn start_held(tag: &str) -> World {
+        World::start_with(tag, Hold::armed())
+    }
+
+    /// The gate the fake is holding on, for a test that has to open it.
+    pub fn hold(&self) -> Hold {
+        self.fake.hold.clone()
+    }
+
+    fn start_with(tag: &str, hold: Hold) -> World {
         let dir = TempDir::new(tag);
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
@@ -162,7 +215,7 @@ impl World {
         }
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree");
-        let fake = Fake::serve();
+        let fake = Fake::serve_held(hold);
         std::fs::write(
             root.join("config/letibot/providers.toml"),
             format!(

@@ -160,6 +160,10 @@ mod tests {
             "queued behind a running turn",
         ),
         (
+            "`queue` waits for the turn to end and opens its own",
+            "waits for the running turn to end and opens a turn of its own",
+        ),
+        (
             "another project's session needs the operator's seq",
             "it needs `because`, the seq of the operator's message",
         ),

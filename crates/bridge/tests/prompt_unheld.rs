@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use letibot_bridge::tools::Bridge;
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::{Daemon, Dialect, Parts, Sessions};
+use letibot_sessionlog::PromptDelivery;
 use letibot_sessionlog::registry::Registry;
 use serde_json::{Value, json};
 
@@ -335,7 +336,7 @@ fn a_session_this_bridge_does_not_hold_runs_a_prompt_stored_as_the_bridges_line(
 
     // Another project's session, and no operator word cited: refused, with the reason.
     let refused = bridge
-        .send_because(&session, PROMPT, None)
+        .send_because(&session, PROMPT, None, PromptDelivery::Steer)
         .expect_err("no consent yet");
     assert!(
         refused.contains("because") && refused.contains(&session),
@@ -359,7 +360,7 @@ fn a_session_this_bridge_does_not_hold_runs_a_prompt_stored_as_the_bridges_line(
         other => panic!("said: {other:?}"),
     };
     let sent = bridge
-        .send_because(&session, PROMPT, Some(seq))
+        .send_because(&session, PROMPT, Some(seq), PromptDelivery::Steer)
         .expect("the room consents and the daemon queues it");
     assert_eq!(sent["queued"], json!(true), "{sent}");
     assert_eq!(sent["held"], json!(false), "{sent}");

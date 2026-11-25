@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::client::HeadClient;
-use letibot_sessionlog::protocol::{Caps, ServerFrame};
+use letibot_sessionlog::protocol::{Caps, PromptDelivery, ServerFrame};
 use letibot_sessionlog::registry::SessionBrief;
 use letibot_sessionlog::{Fleet, FleetRow, FleetState, SessionOrigin};
 
@@ -190,11 +190,13 @@ pub(crate) fn prompt_once(
     text: &str,
     from: &str,
     timeout: Duration,
+    delivery: PromptDelivery,
 ) -> Result<u64, String> {
     // Recorded before anything is sent: a timed-out call may still be in flight, so a second
     // submit of the same words is refused rather than run twice. A daemon's refusal is an
-    // answer, and forgetting the id then lets a corrected prompt through.
-    let id = prompt_id(session, from, text);
+    // answer, and forgetting the id then lets a corrected prompt through. The lane is part of
+    // the identity: `do this now` and `do this after the turn` are two prompts, not one.
+    let id = prompt_id(session, from, text, delivery);
     remember(&id)?;
     let where_to = session.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -207,7 +209,7 @@ pub(crate) fn prompt_once(
     let spawned = std::thread::Builder::new()
         .name("prompt-once".into())
         .spawn(move || {
-            let _ = tx.send(prompt_through(&socket, &session, &text, &from));
+            let _ = tx.send(prompt_through(&socket, &session, &text, &from, delivery));
         });
     if let Err(e) = spawned {
         forget(&id);
@@ -240,9 +242,13 @@ fn prompts() -> &'static Mutex<std::collections::BTreeMap<String, Instant>> {
     PROMPTS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
 }
 
-/// One prompt's identity: who said it, into which session, in what words. FNV-1a, because the map
-/// is local and the value only has to differ between different prompts.
-fn prompt_id(session: &str, from: &str, text: &str) -> String {
+/// One prompt's identity: who said it, into which session, in what words, on which lane. FNV-1a,
+/// because the map is local and the value only has to differ between different prompts.
+fn prompt_id(session: &str, from: &str, text: &str, delivery: PromptDelivery) -> String {
+    let lane = match delivery {
+        PromptDelivery::Steer => "steer",
+        PromptDelivery::Queue => "queue",
+    };
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in session
         .bytes()
@@ -250,6 +256,8 @@ fn prompt_id(session: &str, from: &str, text: &str) -> String {
         .chain(from.bytes())
         .chain([0])
         .chain(text.bytes())
+        .chain([0])
+        .chain(lane.bytes())
     {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
@@ -288,14 +296,25 @@ enum Said {
     After(String),
 }
 
-fn prompt_through(socket: &Path, session: &str, text: &str, from: &str) -> Result<u64, Said> {
+fn prompt_through(
+    socket: &Path,
+    session: &str,
+    text: &str,
+    from: &str,
+    delivery: PromptDelivery,
+) -> Result<u64, Said> {
     let (mut client, hello, mut reader) = HeadClient::attach(
         socket,
         session,
         0,
         crate::daemon::HEAD_KIND,
         crate::daemon::IDENTITY,
-        Caps::default(),
+        Caps {
+            // This head sends prompts on the queue lane; the daemon echoes the name back when it
+            // reads the field.
+            features: vec![letibot_sessionlog::FEATURE_QUEUE_PROMPT.to_string()],
+            ..Caps::default()
+        },
     )
     .map_err(|e| Said::Before(e.to_string()))?;
     // The line is sent as this seat's, and `Prompt.from` arrived at 74: below it the daemon keeps
@@ -312,8 +331,23 @@ fn prompt_through(socket: &Path, session: &str, text: &str, from: &str) -> Resul
             letibot_sessionlog::PROMPT_FROM_SINCE
         )));
     }
+    // The queue lane arrived at `QUEUE_PROMPT_SINCE`, and a daemon below it parses the field and
+    // reads it nowhere: the line would steer, which is the opposite of what was asked.
+    if delivery == PromptDelivery::Queue
+        && let ServerFrame::Hello {
+            protocol_version, ..
+        } = &hello
+        && *protocol_version < letibot_sessionlog::QUEUE_PROMPT_SINCE
+    {
+        return Err(Said::Before(format!(
+            "`{session}`'s daemon speaks protocol {protocol_version} and the queue lane arrived \
+             at {}: the line would steer the running turn instead. Nothing was sent; restart that \
+             daemon from the installed build.",
+            letibot_sessionlog::QUEUE_PROMPT_SINCE
+        )));
+    }
     let id = client
-        .prompt_from(0, text, Vec::new(), None, Some(from.to_string()))
+        .prompt_delivered(0, text, Vec::new(), None, Some(from.to_string()), delivery)
         .map_err(|e| Said::Before(e.to_string()))?;
     let out = loop {
         match reader.read::<ServerFrame>() {
@@ -396,18 +430,41 @@ mod tests {
             }
         });
         let timeout = Duration::from_secs(1);
-        let first = prompt_once(&socket, "s-x", "carry on", "cc@seat", timeout).unwrap_err();
+        let first = prompt_once(
+            &socket,
+            "s-x",
+            "carry on",
+            "cc@seat",
+            timeout,
+            PromptDelivery::Steer,
+        )
+        .unwrap_err();
         assert!(
             first.contains("may have taken the prompt"),
             "a timeout may not say the prompt never arrived: {first}"
         );
-        let second = prompt_once(&socket, "s-x", "carry on", "cc@seat", timeout).unwrap_err();
+        let second = prompt_once(
+            &socket,
+            "s-x",
+            "carry on",
+            "cc@seat",
+            timeout,
+            PromptDelivery::Steer,
+        )
+        .unwrap_err();
         assert!(
             second.contains("already sent"),
             "the retry is refused rather than run twice: {second}"
         );
         // A different prompt is a different id, so it still goes.
-        let _ = prompt_once(&socket, "s-x", "and again", "cc@seat", timeout);
+        let _ = prompt_once(
+            &socket,
+            "s-x",
+            "and again",
+            "cc@seat",
+            timeout,
+            PromptDelivery::Steer,
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline && seen.lock().unwrap().len() < 2 {
             std::thread::sleep(Duration::from_millis(20));

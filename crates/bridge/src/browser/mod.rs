@@ -401,7 +401,12 @@ fn ask_route(stream: &mut TcpStream, server: &Server, cache: &Mutex<Option<Listi
     // The question is the prompt's words and the page rides beside it: the daemon stores what was
     // captured as a context row of its own, so nothing the page wrote is the operator's words.
     let (text, context) = ask::prompt(&id, &body, &server.limits);
-    if let Err(why) = head.prompt_with_context(&text, attachments, Some(context)) {
+    if let Err(why) = head.prompt_with_context(
+        &text,
+        attachments,
+        Some(context),
+        letibot_sessionlog::PromptDelivery::Steer,
+    ) {
         return http::error(stream, 409, allow, &why);
     }
     if http::sse_head(stream, &server.origin).is_err() {

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use letibot_sessionlog::PromptDelivery;
 use letibot_tools::builtins::task::Placement;
 use letibot_tools::remote::Hosts;
 
@@ -950,19 +951,21 @@ impl Bridge {
             .cloned()
     }
 
-    /// A line into a session the bridge holds. Queued behind a running turn, as a head's
-    /// own prompt is - the daemon never rejects it.
+    /// A line into a session the bridge holds. Steered into a running turn at its next step
+    /// boundary, as a head's own prompt is - the daemon never rejects it.
     pub fn send(&self, session: &str, text: &str) -> Result<Value, String> {
-        self.send_because(session, text, None)
+        self.send_because(session, text, None, PromptDelivery::Steer)
     }
 
     /// [`Bridge::send`] that also reaches a session this bridge does not hold, citing `because`,
-    /// the seq of the operator's message it acts on, when the session is another project's.
+    /// the seq of the operator's message it acts on, when the session is another project's, and on
+    /// the lane asked for: `Queue` waits for the running turn to end and opens one of its own.
     pub fn send_because(
         &self,
         session: &str,
         text: &str,
         because: Option<u64>,
+        delivery: PromptDelivery,
     ) -> Result<Value, String> {
         if text.trim().is_empty() {
             return Err("`text` is empty: an empty prompt starts no turn".into());
@@ -972,12 +975,16 @@ impl Bridge {
             Err(_) if self.is_gone(session) => self.reopen_gone(session)?,
             Err(why) => {
                 return self
-                    .send_unheld(session, text, because)
+                    .send_unheld(session, text, because, delivery)
                     .map_err(|e| format!("{why}. {e}"));
             }
         };
-        h.prompt(text)?;
-        Ok(json!({ "queued": true, "session": session }))
+        h.prompt_on(text, delivery)?;
+        Ok(json!({
+            "queued": true,
+            "session": session,
+            "lane": lane_word(delivery),
+        }))
     }
 
     /// A prompt into a session another head drives, through its own daemon, stored as this
@@ -987,6 +994,7 @@ impl Bridge {
         session: &str,
         text: &str,
         because: Option<u64>,
+        delivery: PromptDelivery,
     ) -> Result<Value, String> {
         let store = match &self.names_from {
             Some((store, _)) => store.clone(),
@@ -1019,8 +1027,15 @@ impl Bridge {
             text,
             &crate::rooms::handle(),
             crate::fleet::ATTACH_TIMEOUT,
+            delivery,
         )?;
-        Ok(json!({ "queued": true, "session": session, "held": false, "seq": seq }))
+        Ok(json!({
+            "queued": true,
+            "session": session,
+            "held": false,
+            "seq": seq,
+            "lane": lane_word(delivery),
+        }))
     }
 
     /// Rows on a held session's board under this seat's handle: created, moved to the order given,
@@ -1783,12 +1798,14 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_send",
-            "Queue a line into a session behind its running turn, stored as this seat's.",
+            "Send a line into a session as this seat's: steer the running turn, or `queue` it \
+             for a turn of its own after that one.",
             json!({
                 "type": "object",
                 "properties": {
                     "session": { "type": "string", "description": "The id `leticode_start` answered, or the session's name (the `/rename` title or its slug) in this folder. Another folder's session by id." },
                     "text": { "type": "string", "description": "What to say to the session." },
+                    "queue": { "type": "boolean", "description": "Omitted, the line steers: a running turn takes it at its next step boundary. True, it waits for that turn to end and opens a turn of its own. Nothing changes when no turn is running." },
                     "because": { "type": "integer", "description": "The seq of the operator's message this acts on: needed for a session of another project that this bridge does not hold." }
                 },
                 "required": ["session", "text"]
@@ -2151,7 +2168,15 @@ struct Prepared {
     path: std::path::PathBuf,
 }
 
-/// A string argument, or a refusal naming the field.
+/// The lane a send took, as the answer spells it back to the caller.
+fn lane_word(delivery: PromptDelivery) -> &'static str {
+    match delivery {
+        PromptDelivery::Steer => "steer",
+        PromptDelivery::Queue => "queue",
+    }
+}
+
+/// A tool argument that must be a string, or a refusal naming the field.
 fn arg_str(args: &Value, key: &str) -> Result<String, String> {
     match args.get(key) {
         Some(Value::String(s)) => Ok(s.clone()),
@@ -2262,6 +2287,11 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             &session_arg(bridge, args)?,
             &arg_str(args, "text")?,
             args.get("because").and_then(Value::as_u64),
+            if arg_bool(args, "queue", false)? {
+                PromptDelivery::Queue
+            } else {
+                PromptDelivery::Steer
+            },
         ),
         "leticode_todo" => bridge.todo(
             &session_arg(bridge, args)?,

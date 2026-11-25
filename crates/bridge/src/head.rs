@@ -26,7 +26,7 @@ use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{
     DeltaTarget, Envelope, PrefixCheck, SessionEvent, TodoEntry, TodoStatus,
 };
-use letibot_sessionlog::protocol::{Ack, Caps, PeekShape, ServerFrame};
+use letibot_sessionlog::protocol::{Ack, Caps, PeekShape, PromptDelivery, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
 };
@@ -1654,6 +1654,9 @@ impl Head {
         let caps = Caps {
             can_decide,
             row_bodies: true,
+            // This head sends prompts on the queue lane, so it says so: a daemon echoes the name
+            // back only when it reads the field.
+            features: vec![letibot_sessionlog::FEATURE_QUEUE_PROMPT.to_string()],
             ..Caps::default()
         };
         let (client, hello, reader) =
@@ -1946,7 +1949,13 @@ impl Head {
         text: &str,
         attachments: Vec<letibot_sessionlog::protocol::Attachment>,
     ) -> Result<String, String> {
-        self.prompt_with_context(text, attachments, None)
+        self.prompt_with_context(text, attachments, None, PromptDelivery::Steer)
+    }
+
+    /// A prompt on the lane asked for: `Steer` joins a running turn at its next step boundary,
+    /// `Queue` waits for that turn to end and opens one of its own.
+    pub fn prompt_on(&self, text: &str, delivery: PromptDelivery) -> Result<String, String> {
+        self.prompt_with_context(text, Vec::new(), None, delivery)
     }
 
     /// A prompt with what the operator pointed at beside it. The DAEMON renders the context into one
@@ -1956,6 +1965,7 @@ impl Head {
         text: &str,
         attachments: Vec<letibot_sessionlog::protocol::Attachment>,
         context: Option<letibot_sessionlog::protocol::EditorContext>,
+        delivery: PromptDelivery,
     ) -> Result<String, String> {
         self.may_write()?;
         // `Prompt.from` arrived under 74 with no bump, so a daemon below it parses the frame and
@@ -1977,12 +1987,32 @@ impl Head {
                 letibot_sessionlog::PROMPT_FROM_SINCE
             ));
         }
+        // A daemon below the field's version parses `delivery` and reads it nowhere, so the line
+        // would steer: the opposite of what was asked, and worth a refusal rather than a surprise.
+        if delivery == PromptDelivery::Queue
+            && theirs.is_none_or(|p| p < letibot_sessionlog::QUEUE_PROMPT_SINCE)
+        {
+            return Err(format!(
+                "this session's daemon speaks protocol {} and the queue lane arrived at {}: the \
+                 line would steer the running turn instead. Nothing was sent. Restart the daemon \
+                 from the installed build (`letibot --stop`, then `letibot`).",
+                theirs.unwrap_or(0),
+                letibot_sessionlog::QUEUE_PROMPT_SINCE
+            ));
+        }
         let mut c = self.said_client()?;
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
         // head on a session a person may be typing into, so it must never drop what it was told.
-        c.prompt_from(0, text, attachments, context, self.speaks_as.clone())
-            .map_err(|e| e.to_string())
+        c.prompt_delivered(
+            0,
+            text,
+            attachments,
+            context,
+            self.speaks_as.clone(),
+            delivery,
+        )
+        .map_err(|e| e.to_string())
     }
 
     /// Answer a card, by an option the card itself offered. The check is the bridge's as
