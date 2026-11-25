@@ -51,6 +51,7 @@ use crate::config::{
 };
 use crate::{Daemon, Dialect, Outcome, OutcomeSaid, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
+use letibot_tokencore::store::StoredSession;
 use letibot_turn::Endpoint;
 
 /// Resolve the credentials and open the seat. Every refusal in here names what was looked
@@ -3198,8 +3199,9 @@ fn run_query(
             let all = scoped_archived(&store, scope, show_archived)?;
             if tsv {
                 // TSV is a data format and it does not change. Five fields, tab-separated, one
-                // conversation per line: that is what a script cuts, and a sixth column or a group header
-                // line in the middle would break every reader for a fact a reader can compute.
+                // conversation per line: that is what a script cuts, and a sixth column, a header or
+                // a truncation would break every reader for a fact a reader can compute. The width,
+                // the caps and the folder blocks below are the SCREEN's, and none of them reach here.
                 for s in all.iter().filter(|s| is_conversation(s)) {
                     println!(
                         "{}\t{}\t{}\t{}\t{}",
@@ -3229,73 +3231,16 @@ fn run_query(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            // The name leads: it is what a person types for `--session`. An unnamed session leads
-            // with its id, which is its only handle; a named one keeps the id on the line below.
-            let wid = all
-                .iter()
-                .map(|s| list_label(s).chars().count() + 2)
-                .max()
-                .unwrap_or(8);
-            println!(
-                "{:<wid$}  {:>5}  {:>7}  (ID / WORKSPACE below)",
-                "NAME", "ROWS", "AGE"
-            );
             // The plain list is the conversations this folder's person can pick from: this
             // folder first, then one block per other folder. `--all` is the census, grouped by
             // what each session is, and it is what this used to draw for every listing.
-            if !list_all {
-                let here = scope.unwrap_or(&cfg.workspace);
-                list_conversations(&all, here, wid, now);
-                return Ok(0);
-            }
-            let groups = grouped(&all);
-            // The same rows `grouped()` built, for the one question the printing asks that the
-            // grouping does not
-            let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all
-                .iter()
-                .map(|s| letibot_sessionlog::GroupRow {
-                    id: &s.id,
-                    parent: s.parent_session_id.as_deref(),
-                    origin: s
-                        .origin
-                        .as_deref()
-                        .and_then(letibot_sessionlog::SessionOrigin::parse)
-                        .unwrap_or_default(),
-                    role: s.role.as_deref(),
-                    title: s.title.as_deref().unwrap_or(""),
-                })
-                .collect();
-            for (group, members) in &groups {
-                // No empty group line, for the reason the picker draws none: a header saying
-                // `(0)` teaches a reader to skip headers.
-                if members.is_empty() {
-                    continue;
-                }
-                // A group's line, and the count that is the whole reason for it. It is a header rather
-                // than a column: a reader scanning for their own conversation stops at `mine`, and the
-                // four lines under it answer *what else is here* in four numbers instead of forty rows.
-                println!();
-                println!(
-                    "{:<wid$}  {} ({}) — {}",
-                    "",
-                    group.title(),
-                    members.len(),
-                    group.legend()
-                );
-                for s in members {
-                    // Inside a group a child is indented under a parent that is on the same
-                    // list, which is the same nesting the picker draws.
-                    let indent = if s.parent_session_id.as_deref().is_some_and(|p| {
-                        all.iter().any(|o| {
-                            o.id == p && letibot_sessionlog::group_of(&rows, &o.id) == *group
-                        })
-                    }) {
-                        "  "
-                    } else {
-                        ""
-                    };
-                    list_row(s, indent, wid, now);
-                }
+            let cols = listing_cols();
+            let lines = match list_all {
+                true => census_lines(&all, cols, now),
+                false => plain_lines(&all, scope.unwrap_or(&cfg.workspace), cols, now),
+            };
+            for line in lines {
+                println!("{line}");
             }
             Ok(0)
         }
@@ -3303,37 +3248,118 @@ fn run_query(
 }
 
 /// The name a listing row leads with: the session's own, or its id when nobody named it.
-fn list_label(s: &letibot_tokencore::store::StoredSession) -> String {
+fn list_label(s: &StoredSession) -> String {
     match s.title.as_deref() {
         Some(t) if !t.is_empty() => t.to_string(),
         _ => s.id.clone(),
     }
 }
 
-/// One session as the listing draws it: a line of facts, and under it the id and the folder.
-fn list_row(s: &letibot_tokencore::store::StoredSession, indent: &str, wid: usize, now: i64) {
-    println!(
-        "{:<wid$}  {:>5}  {:>7}{}{}",
-        format!("{indent}{}", list_label(s)),
+/// What every listing row spends on the columns after the name: two gaps, ROWS, AGE, and the gap
+/// before the id.
+const ROW_FIXED_COLS: usize = 2 + 5 + 2 + 7 + 2;
+/// The narrowest name column that still says who a row is.
+const MIN_NAME_COLS: usize = 24;
+/// The width a listing falls back to with no terminal and no `COLUMNS`: a listing read in a log
+/// wraps exactly as one on a screen does, and a log is read at 120 columns.
+const LISTING_COLS: usize = 120;
+/// The narrowest terminal a listing believes: below this `COLUMNS` is a stray export, not a width.
+const MIN_LISTING_COLS: usize = 40;
+
+/// How many rows a folder draws before it counts the rest. Standing in a folder is asking about
+/// it, so that one gets the longer list.
+const HERE_SHOWN: usize = 20;
+const FOLDER_SHOWN: usize = 10;
+
+/// One row on ONE line: the name, its rows, how long ago it moved, and the short id `--session`
+/// takes. An untitled session leads with its id already, so its id is not printed a second time.
+fn list_line(s: &StoredSession, indent: &str, wid: usize, now: i64) -> String {
+    let named = s.title.as_deref().is_some_and(|t| !t.is_empty());
+    let mut line = format!(
+        "{}  {:>5}  {:>7}",
+        fit(&format!("{indent}{}", list_label(s)), wid),
         s.items,
         age(now - s.last_activity_ms),
-        // Where it LIVES, when that is not here. A row whose live copy is on a host is not a
-        // session this box is appending to, and a listing that offered it unmarked would be
-        // offering a conversation that stopped the day it moved (`docs/remote-hosts.md` RH4).
-        match &s.lives_on {
-            Some(on) => format!("  [lives on {on}]"),
-            None => String::new(),
-        },
-        // Out of sight, when the listing was asked for those: the word is what says why
-        // this row is here at all, under a flag that also drew the ones still in mind.
-        match (s.archived_ms, s.archived_reason.as_deref()) {
-            (Some(_), Some(why)) if !why.is_empty() => format!("  [archived: {why}]"),
-            (Some(_), _) => "  [archived]".to_string(),
-            (None, _) => String::new(),
-        },
     );
-    // Details: the id (the handle `--session` also takes) and the workspace.
-    println!("{indent}  {}  {}", s.id, s.workspace_root);
+    if named {
+        line.push_str("  ");
+        line.push_str(&letibot_sessionlog::registry::short_id(&s.id));
+    }
+    // Where it LIVES, when that is not here. A row whose live copy is on a host is not a
+    // session this box is appending to, and a listing that offered it unmarked would be
+    // offering a conversation that stopped the day it moved (`docs/remote-hosts.md` RH4).
+    if let Some(on) = &s.lives_on {
+        line.push_str(&format!("  [lives on {on}]"));
+    }
+    // Out of sight, when the listing was asked for those: the word is what says why this row
+    // is here at all, under a flag that also drew the ones still in mind.
+    match (s.archived_ms, s.archived_reason.as_deref()) {
+        (Some(_), Some(why)) if !why.is_empty() => line.push_str(&format!("  [archived: {why}]")),
+        (Some(_), _) => line.push_str("  [archived]"),
+        (None, _) => {}
+    }
+    line
+}
+
+/// The width a listing may use: `COLUMNS`, else the terminal's, else [`LISTING_COLS`].
+fn listing_cols() -> usize {
+    let said = std::env::var_os("COLUMNS")
+        .and_then(|v| v.to_str().and_then(|s| s.trim().parse::<usize>().ok()));
+    if let Some(n) = said
+        && n >= MIN_LISTING_COLS
+    {
+        return n;
+    }
+    term_cols_or(LISTING_COLS)
+}
+
+/// The name column's width: the longest label among the rows about to be PRINTED, and never more
+/// than leaves a whole row inside `cols`. Measured over every row in the store it was the longest
+/// brief on the box, which padded every line to 350 columns and wrapped it at 140.
+fn name_width(labels: &[String], cols: usize, id_w: usize) -> usize {
+    let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    // The name is what is left after the four fixed columns; the floor keeps a narrow terminal
+    // from drawing a blank name column.
+    let room = cols
+        .saturating_sub(ROW_FIXED_COLS + id_w)
+        .max(MIN_NAME_COLS);
+    longest.max("NAME".len()).min(room)
+}
+
+/// A label in its column: cut to `width` with an ellipsis when it does not fit - a title too long
+/// for the terminal is truncated rather than wrapped - and padded to it otherwise, so the facts
+/// after it line up down the page.
+fn fit(label: &str, width: usize) -> String {
+    let mut out = match label.chars().count() <= width {
+        true => label.to_string(),
+        false => {
+            let mut cut: String = label.chars().take(width.saturating_sub(1)).collect();
+            cut.push('…');
+            cut
+        }
+    };
+    let drawn = out.chars().count();
+    out.extend(std::iter::repeat_n(' ', width.saturating_sub(drawn)));
+    out
+}
+
+/// The header over the listing, in the same columns as the rows under it.
+fn head_line(wid: usize) -> String {
+    format!("{:<wid$}  {:>5}  {:>7}  ID", "NAME", "ROWS", "AGE")
+}
+
+/// The id column's width over the rows a listing prints: the widest short id it shows. An
+/// untitled row leaves the column empty, since its name IS its id.
+fn id_width(rows: &[&StoredSession]) -> usize {
+    rows.iter()
+        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
+        .map(|s| {
+            letibot_sessionlog::registry::short_id(&s.id)
+                .chars()
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Is this session's folder the one asked about, or below it? `Path::starts_with` compares whole
@@ -3342,52 +3368,135 @@ fn under(workspace: &str, here: &std::path::Path) -> bool {
     std::path::Path::new(workspace).starts_with(here)
 }
 
-/// `session list`: the conversations a person can pick from, this folder's first - its own
-/// workspace ahead of the worktrees below it - then one block per other folder, newest first.
-fn list_conversations(
-    all: &[letibot_tokencore::store::StoredSession],
-    here: &std::path::Path,
-    wid: usize,
-    now: i64,
-) {
-    let (mine, others) = conversation_blocks(all, here);
-    println!();
-    println!("{:<wid$}  {}", "", folder_head(here, mine.len()));
-    if mine.is_empty() {
-        println!("{:<wid$}  nothing here yet", "");
-    }
-    for s in &mine {
-        list_row(s, "", wid, now);
-    }
-    for (workspace, members) in &others {
-        println!();
-        println!(
-            "{:<wid$}  {}",
-            "",
-            folder_head(std::path::Path::new(*workspace), members.len())
-        );
-        for s in members {
-            list_row(s, "", wid, now);
-        }
+/// One folder in a plain listing: the rows it draws, and how many its cap kept back.
+struct Folder<'a> {
+    workspace: &'a str,
+    rows: Vec<&'a StoredSession>,
+    more: usize,
+}
+
+impl Folder<'_> {
+    /// Every conversation the folder holds, drawn or counted.
+    fn total(&self) -> usize {
+        self.rows.len() + self.more
     }
 }
 
-/// What a plain listing draws, as the two lists it prints: this folder's conversations (its own
-/// workspace, then whatever is below it) and one block per other folder. Pure, because a printer
+/// What a plain listing draws, as data: this folder's conversations (its own workspace, then
+/// whatever is below it) and one block per other folder, each capped. Pure, because a printer
 /// cannot be read back and the ORDER is the whole of this rule.
-#[allow(clippy::type_complexity)]
-fn conversation_blocks<'a>(
-    all: &'a [letibot_tokencore::store::StoredSession],
+struct Blocks<'a> {
+    mine: Vec<&'a StoredSession>,
+    mine_more: usize,
+    others: Vec<Folder<'a>>,
+}
+
+/// The plain listing, as the lines it prints: the header, this folder's conversations, then one
+/// block per other folder. A folder's header is a line of its own rather than a padded blank -
+/// padding it out to the name column is what turned 441 sessions into 1158 lines.
+fn plain_lines(
+    all: &[StoredSession],
     here: &std::path::Path,
-) -> (
-    Vec<&'a letibot_tokencore::store::StoredSession>,
-    Vec<(&'a str, Vec<&'a letibot_tokencore::store::StoredSession>)>,
-) {
-    let rows: Vec<&letibot_tokencore::store::StoredSession> = all
+    cols: usize,
+    now: i64,
+) -> Vec<String> {
+    let blocks = conversation_blocks(all, here);
+    let printed: Vec<&StoredSession> = blocks
+        .mine
+        .iter()
+        .copied()
+        .chain(blocks.others.iter().flat_map(|f| f.rows.iter().copied()))
+        .collect();
+    let labels: Vec<String> = printed.iter().map(|s| list_label(s)).collect();
+    let wid = name_width(&labels, cols, id_width(&printed));
+    let mut out = vec![head_line(wid)];
+    out.push(folder_head(here, blocks.mine.len() + blocks.mine_more));
+    if blocks.mine.is_empty() {
+        out.push("nothing here yet".to_string());
+    }
+    for s in &blocks.mine {
+        out.push(list_line(s, "", wid, now));
+    }
+    more_line(&mut out, blocks.mine_more);
+    for f in &blocks.others {
+        out.push(String::new());
+        out.push(folder_head(std::path::Path::new(f.workspace), f.total()));
+        for s in &f.rows {
+            out.push(list_line(s, "", wid, now));
+        }
+        more_line(&mut out, f.more);
+    }
+    out
+}
+
+/// The line a folder's cap owes its reader: how many it did not draw, and the listing that draws
+/// them. A cap that said nothing would read as a folder that has exactly this many rows.
+fn more_line(out: &mut Vec<String>, more: usize) {
+    if more > 0 {
+        out.push(format!("    +{more} more (--all)"));
+    }
+}
+
+/// `--all`: the census, one group per kind of session with its count and legend, drawing the same
+/// one-line rows the plain listing does - every session in the store, grouped by what it is.
+fn census_lines(all: &[StoredSession], cols: usize, now: i64) -> Vec<String> {
+    let groups = grouped(all);
+    let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all.iter().map(group_row).collect();
+    // The indent is a fact about the whole list - a child is indented only under a parent that is
+    // on it - so it is settled before anything is measured or drawn.
+    let mut drawn: Vec<(
+        &StoredSession,
+        &'static str,
+        letibot_sessionlog::SessionGroup,
+    )> = Vec::new();
+    for (group, members) in &groups {
+        for s in members {
+            let indent = if s.parent_session_id.as_deref().is_some_and(|p| {
+                all.iter()
+                    .any(|o| o.id == p && letibot_sessionlog::group_of(&rows, &o.id) == *group)
+            }) {
+                "  "
+            } else {
+                ""
+            };
+            drawn.push((s, indent, *group));
+        }
+    }
+    let printed: Vec<&StoredSession> = drawn.iter().map(|(s, _, _)| *s).collect();
+    let labels: Vec<String> = drawn
+        .iter()
+        .map(|(s, indent, _)| format!("{indent}{}", list_label(s)))
+        .collect();
+    let wid = name_width(&labels, cols, id_width(&printed));
+    let mut out = vec![head_line(wid)];
+    let mut shown: Option<letibot_sessionlog::SessionGroup> = None;
+    for (s, indent, group) in &drawn {
+        if shown != Some(*group) {
+            // A group's line, and the count that is the whole reason for it. No line for an empty
+            // group, for the reason the picker draws none: a header saying `(0)` teaches a reader
+            // to skip headers.
+            let n = groups
+                .iter()
+                .find(|(g, _)| g == group)
+                .map_or(0, |(_, members)| members.len());
+            out.push(String::new());
+            out.push(format!("{} ({n}) — {}", group.title(), group.legend()));
+            shown = Some(*group);
+        }
+        out.push(list_line(s, indent, wid, now));
+    }
+    out
+}
+
+/// What a plain listing draws, as the two lists it prints: this folder's conversations and one
+/// block per other folder, each capped at the rows a person can scan. Pure, because a printer
+/// cannot be read back and the ORDER is the whole of this rule.
+fn conversation_blocks<'a>(all: &'a [StoredSession], here: &std::path::Path) -> Blocks<'a> {
+    let rows: Vec<&StoredSession> = all
         .iter()
         .filter(|s| is_conversation(s) && is_operators(s))
         .collect();
-    let mut mine: Vec<&letibot_tokencore::store::StoredSession> = rows
+    let mut mine: Vec<&StoredSession> = rows
         .iter()
         .copied()
         .filter(|s| under(&s.workspace_root, here))
@@ -3395,20 +3504,39 @@ fn conversation_blocks<'a>(
     // Exact workspace first, then the ones below it. The store's own order is newest activity
     // first and the sort is stable, so each half keeps it.
     mine.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != here);
-    let mut others: Vec<(&str, Vec<&letibot_tokencore::store::StoredSession>)> = Vec::new();
+    let mut others: Vec<Folder<'a>> = Vec::new();
     for s in rows
         .iter()
         .copied()
         .filter(|s| !under(&s.workspace_root, here))
     {
-        match others.iter_mut().find(|(ws, _)| *ws == s.workspace_root) {
-            Some((_, members)) => members.push(s),
-            None => others.push((s.workspace_root.as_str(), vec![s])),
+        match others.iter_mut().find(|f| f.workspace == s.workspace_root) {
+            Some(f) => f.rows.push(s),
+            None => others.push(Folder {
+                workspace: s.workspace_root.as_str(),
+                rows: vec![s],
+                more: 0,
+            }),
         }
     }
     // The folder somebody was last in comes first: its newest member's activity is its recency.
-    others.sort_by_key(|(_, members)| std::cmp::Reverse(members[0].last_activity_ms));
-    (mine, others)
+    others.sort_by_key(|f| std::cmp::Reverse(f.rows[0].last_activity_ms));
+    let mine_more = cap(&mut mine, HERE_SHOWN);
+    for f in &mut others {
+        f.more = cap(&mut f.rows, FOLDER_SHOWN);
+    }
+    Blocks {
+        mine,
+        mine_more,
+        others,
+    }
+}
+
+/// Draw at most `shown` rows, and answer how many were left back.
+fn cap(rows: &mut Vec<&StoredSession>, shown: usize) -> usize {
+    let over = rows.len().saturating_sub(shown);
+    rows.truncate(shown);
+    over
 }
 
 /// A folder's header line: which folder, and how many conversations are in it.
@@ -3583,10 +3711,10 @@ fn find_session(
     Ok(Found::Elsewhere(hits.into_iter().cloned().collect()))
 }
 
-/// Is this row a conversation a person can be brought back to? `--continue` promises to
-/// reopen *your conversation*, and a store holds three kinds of row that are sessions
-/// without being one
-fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
+/// Is this row a conversation a person can be brought back to? `--continue` promises to reopen
+/// *your conversation*, and a store holds four kinds of row that are sessions without being one:
+/// a task child, the queue's reviewer, a one-shot's leftover and a package's own session.
+fn is_conversation(s: &StoredSession) -> bool {
     // The queue's own session is known by its id, which never changes: its seat is a default one
     // and its title may be re-worded, so neither can tell it from the operator's conversation.
     s.parent_session_id.is_none()
@@ -3601,12 +3729,37 @@ fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
             .title
             .as_deref()
             .is_some_and(|t| t.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX))
+        && !is_old_package_row(s)
 }
 
-/// Is this row the operator's own top-level session - what `--continue` reopens. A package's,
-/// a one-shot's, the queue's and a subagent's are conversations to name, never to continue.
-fn is_operators(s: &letibot_tokencore::store::StoredSession) -> bool {
-    letibot_sessionlog::is_operator_top_level(&letibot_sessionlog::GroupRow {
+/// How a package's or a reviewer's brief opens. A child's title is the brief's first line
+/// (`subagent_title`), and these are the openings a package or a review brief is written with.
+const BRIEF_OPENINGS: [&str; 4] = [
+    "Package ",         // `Package R19. Read the brief …`
+    "Repo ",            // `Repo letibot (Rust), branch agent/x …` - a reviewer's brief
+    "You are reviewer", // `You are reviewer 1 of 3`
+    "Run `",            // a brief whose first line is the command to run
+];
+
+/// A package's or a reviewer's row written before `session.origin` was recorded: the store cannot
+/// say what the row is, so its own marks must. Without this a listing offers a finished package's
+/// worktree, and its brief, as a conversation to continue - which is most of what made one
+/// machine's listing read as noise. `--session ID` and `--sessions --all` still reach such a row.
+fn is_old_package_row(s: &StoredSession) -> bool {
+    if s.origin.as_deref().is_some_and(|o| !o.is_empty()) {
+        return false;
+    }
+    letibot_tools::lifecycle::is_package_worktree(&s.workspace_root)
+        || BRIEF_OPENINGS
+            .iter()
+            .any(|o| s.title.as_deref().unwrap_or("").starts_with(o))
+}
+
+/// One stored row as the grouping rule reads it. The store's row carries both marks, so a reviewer
+/// parented on the operator's own conversation - the layout before the queue had a session of its
+/// own - is the queue's work and not one of their subagents.
+fn group_row(s: &StoredSession) -> letibot_sessionlog::GroupRow<'_> {
+    letibot_sessionlog::GroupRow {
         id: &s.id,
         parent: s.parent_session_id.as_deref(),
         origin: s
@@ -3616,41 +3769,24 @@ fn is_operators(s: &letibot_tokencore::store::StoredSession) -> bool {
             .unwrap_or_default(),
         role: s.role.as_deref(),
         title: s.title.as_deref().unwrap_or(""),
-    })
+    }
+}
+
+/// Is this row the operator's own top-level session - what `--continue` reopens. A package's,
+/// a one-shot's, the queue's and a subagent's are conversations to name, never to continue.
+fn is_operators(s: &StoredSession) -> bool {
+    letibot_sessionlog::is_operator_top_level(&group_row(s))
 }
 
 /// The stored sessions, in the groups a person reads them in - `mine` first, then one
 /// entry per automatic kind, each with its members in the store's own order (newest
 /// activity first).
-fn grouped(
-    all: &[letibot_tokencore::store::StoredSession],
-) -> Vec<(
-    letibot_sessionlog::SessionGroup,
-    Vec<&letibot_tokencore::store::StoredSession>,
-)> {
-    let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all
-        .iter()
-        .map(|s| letibot_sessionlog::GroupRow {
-            id: &s.id,
-            parent: s.parent_session_id.as_deref(),
-            origin: s
-                .origin
-                .as_deref()
-                .and_then(letibot_sessionlog::SessionOrigin::parse)
-                .unwrap_or_default(),
-            // The store's row has both marks, so a reviewer parented on the operator's own
-            // conversation - the layout before the queue had a session of its own - is the queue's
-            // work and not one of their subagents.
-            role: s.role.as_deref(),
-            title: s.title.as_deref().unwrap_or(""),
-        })
-        .collect();
-    let mine =
-        |s: &letibot_tokencore::store::StoredSession| letibot_sessionlog::group_of(&rows, &s.id);
+fn grouped(all: &[StoredSession]) -> Vec<(letibot_sessionlog::SessionGroup, Vec<&StoredSession>)> {
+    let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all.iter().map(group_row).collect();
+    let mine = |s: &StoredSession| letibot_sessionlog::group_of(&rows, &s.id);
     let mut out = Vec::new();
     for group in letibot_sessionlog::SessionGroup::ALL {
-        let members: Vec<&letibot_tokencore::store::StoredSession> =
-            all.iter().filter(|s| mine(s) == group).collect();
+        let members: Vec<&StoredSession> = all.iter().filter(|s| mine(s) == group).collect();
         out.push((group, members));
     }
     out
@@ -3911,13 +4047,19 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
 /// The terminal width, when there is a terminal. Eighty when there is not - a log
 /// file has no width and eighty is the width a log file is read at.
 fn term_cols() -> usize {
+    term_cols_or(80)
+}
+
+/// [`term_cols`] with the fallback said out loud: a listing read in a log wants the width a log is
+/// read at, and a banner wants the eighty columns a terminal that answers nothing is assumed to have.
+fn term_cols_or(fallback: usize) -> usize {
     // SAFETY: `winsize` is plain integers, so all-zero is valid, and TIOCGWINSZ writes only into
     // the struct passed.
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
         ws.ws_col as usize
     } else {
-        80
+        fallback
     }
 }
 

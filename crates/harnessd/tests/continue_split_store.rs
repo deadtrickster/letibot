@@ -222,8 +222,13 @@ fn the_plain_listing_is_this_folder_first_and_all_is_the_census() {
         .unwrap_or_else(|| panic!("the other folder has a block of its own:\n{listed}"));
     assert!(here < there, "this folder comes first:\n{listed}");
     assert!(
-        listed.contains("s-a  ") && listed.contains("s-b  "),
-        "both conversations are in it:\n{listed}"
+        listed
+            .lines()
+            .any(|l| l.split_whitespace().last() == Some("s-a"))
+            && listed
+                .lines()
+                .any(|l| l.split_whitespace().last() == Some("s-b")),
+        "both conversations are in it, one line each:\n{listed}"
     );
     // `--all` is the census: grouped by what each session is, which is where a conversation that
     // knows nothing about folders goes.

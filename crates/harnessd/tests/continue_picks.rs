@@ -199,13 +199,11 @@ fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
         if current != Some(group) {
             continue;
         }
-        // A session's details line is `<id>  <workspace>` under its name; the name line is skipped
-        // because an unnamed session leads with its id too.
-        let mut words = line.split_whitespace();
-        if let (Some(id), Some(ws)) = (words.next(), words.next())
-            && id.starts_with("s-")
-            && ws.starts_with('/')
-        {
+        // A row is ONE line now - `NAME  ROWS  AGE  ID` - so the id is its last word. These
+        // fixtures name their sessions in a few characters, so the short id `short_id` draws is
+        // the whole id.
+        let id = line.split_whitespace().last().unwrap_or_default();
+        if id.starts_with("s-") {
             out.push(id.to_string());
         }
     }
@@ -309,10 +307,11 @@ fn a_workspace_holding_nothing_but_children_says_so_and_exits_one() {
     );
 }
 
-/// `--sessions` leads each row with the name and keeps the id in the details line below it. An
-/// unnamed session leads with its id, its only handle.
+/// Every session is ONE line: the name, its rows, how long ago it moved, and - for a row somebody
+/// named - the short id `--session` also takes. An unnamed session leads with its id, which is its
+/// only handle, so its id is not printed a second time.
 #[test]
-fn the_listing_leads_with_the_name_and_keeps_the_id_below() {
+fn the_listing_is_one_line_per_row_and_never_repeats_an_id() {
     let scratch = Scratch::new("names");
     let path = scratch.store();
     let store = Store::open(&path).expect("opening");
@@ -327,16 +326,30 @@ fn the_listing_leads_with_the_name_and_keeps_the_id_below() {
         .iter()
         .position(|l| l.starts_with("stroppy-conformity"))
         .unwrap_or_else(|| panic!("the name leads its row:\n{listed}"));
-    assert!(
-        !lines[at].contains("s-named"),
-        "the id is not on the name's line:\n{listed}"
+    assert_eq!(
+        lines[at].split_whitespace().last(),
+        Some("s-named"),
+        "the name leads and the id closes the same line:\n{listed}"
+    );
+    assert_eq!(
+        lines[at]
+            .split_whitespace()
+            .filter(|w| *w == "s-named")
+            .count(),
+        1,
+        "a row prints its id once:\n{listed}"
+    );
+    let bare = lines
+        .iter()
+        .find(|l| l.starts_with("s-bare"))
+        .unwrap_or_else(|| panic!("an unnamed session leads with its id:\n{listed}"));
+    assert_eq!(
+        bare.split_whitespace().filter(|w| *w == "s-bare").count(),
+        1,
+        "and an untitled row leads with its id, so it prints it once:\n{listed}"
     );
     assert!(
-        lines[at + 1].trim_start().starts_with("s-named") && lines[at + 1].contains(WS),
-        "the id and the workspace are the details line:\n{listed}"
-    );
-    assert!(
-        lines.iter().any(|l| l.starts_with("s-bare")),
-        "an unnamed session leads with its id:\n{listed}"
+        !lines.iter().any(|l| l.trim_start().starts_with(WS)),
+        "the workspace is not on a line of its own:\n{listed}"
     );
 }

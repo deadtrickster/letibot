@@ -193,6 +193,8 @@ fn a_daemon_writes_the_index_and_the_history_to_two_files() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
+        // This session was never named, so its row leads with its id - the whole of it, since
+        // that is its only handle.
         listed.contains(ROOT),
         "a listing that read a project file cannot answer without one:\n{listed}"
     );

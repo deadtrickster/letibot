@@ -1228,25 +1228,221 @@ fn a_plain_listing_is_this_folders_conversations_then_one_block_per_other_folder
     store.set_session_origin("s-pkg", "package").unwrap();
 
     let all = store.list_sessions().expect("listing");
-    let (mine, others) = conversation_blocks(&all, std::path::Path::new("/p/here"));
+    let blocks = conversation_blocks(&all, std::path::Path::new("/p/here"));
     let ids = |rows: &[&letibot_tokencore::store::StoredSession]| -> Vec<String> {
         rows.iter().map(|s| s.id.clone()).collect()
     };
     assert_eq!(
-        ids(&mine),
+        ids(&blocks.mine),
         ["s-here", "s-wt"],
         "this folder's own conversation, then the one in its worktree"
     );
     assert_eq!(
-        others
+        blocks
+            .others
             .iter()
-            .map(|(ws, members)| (*ws, ids(members)))
+            .map(|f| (f.workspace, ids(&f.rows)))
             .collect::<Vec<_>>(),
         [
             ("/p/new", vec!["s-new".to_string()]),
             ("/p/far", vec!["s-far".to_string()]),
         ],
         "one block per other folder, the folder used most recently first"
+    );
+}
+
+/// A row's name is cut to what fits the terminal, and the column is measured over the rows a
+/// listing PRINTS. Measured over the whole store it was the longest brief on the box: 350-column
+/// rows that wrapped to three lines each.
+#[test]
+fn a_long_name_is_cut_to_the_terminal_and_never_widens_the_column() {
+    let (store, _d) = store_with(&[]);
+    let long = "a conversation about ".repeat(40);
+    session_row(&store, "s-long", "/p/here", Some(&long), None, None);
+    session_row(&store, "s-short", "/p/here", Some("short"), None, None);
+    let all = store.list_sessions().expect("listing");
+
+    let lines = plain_lines(&all, std::path::Path::new("/p/here"), 140, 0);
+    for line in &lines {
+        assert!(
+            line.chars().count() <= 140,
+            "a line is {} columns wide in a 140-column terminal: {line:?}",
+            line.chars().count()
+        );
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("a conversation about ") && l.contains('…')),
+        "the long name is cut with an ellipsis rather than wrapped: {lines:#?}"
+    );
+    // The cap is the terminal's, not a fixed number of characters: at a width nothing wraps at the
+    // whole name is drawn.
+    let labels: Vec<String> = all.iter().map(list_label).collect();
+    assert_eq!(
+        name_width(&labels, 1000, 9),
+        long.chars().count(),
+        "a wide terminal draws the whole name"
+    );
+    assert_eq!(
+        name_width(&labels, 80, 9),
+        80 - ROW_FIXED_COLS - 9,
+        "and a narrow one caps the column so the row still fits"
+    );
+}
+
+/// A package's or a reviewer's row from before `session.origin` was recorded is not a
+/// conversation: its worktree and its brief are the marks left, and offering one as a
+/// conversation to continue is most of what made a 441-session listing read as noise.
+#[test]
+fn a_row_from_before_origin_was_recorded_is_a_package_by_its_worktree_or_its_brief() {
+    let (store, _d) = store_with(&[]);
+    session_row(
+        &store,
+        "s-wt",
+        "/build/letibot/lab/s-1/wt/pkg-a",
+        Some("a package's work"),
+        None,
+        None,
+    );
+    session_row(
+        &store,
+        "s-sibling",
+        "/build/letibot/lab/s-1/wt-2",
+        Some("a second tree"),
+        None,
+        None,
+    );
+    session_row(
+        &store,
+        "s-reviewer",
+        "/p/here",
+        Some("You are reviewer 1 of 3"),
+        None,
+        None,
+    );
+    session_row(
+        &store,
+        "s-brief",
+        "/p/here",
+        Some("Repo letibot (Rust), branch agent/x"),
+        None,
+        None,
+    );
+    session_row(
+        &store,
+        "s-command",
+        "/p/here",
+        Some("Run `cargo test -p letibot-tools`"),
+        None,
+        None,
+    );
+    session_row(
+        &store,
+        "s-mine",
+        "/p/here",
+        Some("the cache key work"),
+        None,
+        None,
+    );
+    // A folder called `wt` that is nobody's worktree: a gc cache's `wt` sits under a session id,
+    // and without one this is an ordinary project directory.
+    session_row(
+        &store,
+        "s-plain-wt",
+        "/Users/op/Projects/foo/wt",
+        Some("a folder called wt"),
+        None,
+        None,
+    );
+    let all = store.list_sessions().expect("listing");
+    let conversation = |id: &str| {
+        all.iter()
+            .find(|s| s.id == id)
+            .map(is_conversation)
+            .unwrap_or_else(|| panic!("{id} is in the store"))
+    };
+    for id in ["s-wt", "s-sibling", "s-reviewer", "s-brief", "s-command"] {
+        assert!(!conversation(id), "{id} is a package's or a reviewer's row");
+    }
+    assert!(conversation("s-mine"), "an ordinary conversation is one");
+    assert!(
+        conversation("s-plain-wt"),
+        "a folder named `wt` under no owner is a person's"
+    );
+
+    // A recorded origin settles it: the store said what the row is, and no guess overrules that.
+    store.set_session_origin("s-wt", "operator").unwrap();
+    let all = store.list_sessions().expect("listing");
+    assert_eq!(
+        all.iter().find(|s| s.id == "s-wt").map(is_conversation),
+        Some(true),
+        "a row the store records as the operator's is theirs wherever it was opened"
+    );
+}
+
+/// A folder draws the newest rows a person can scan and counts the rest: ten in another folder,
+/// twenty in this one, and a line saying what it did not draw. A cap that said nothing would read
+/// as a folder that has exactly that many conversations.
+#[test]
+fn a_folder_draws_its_newest_rows_and_counts_the_rest() {
+    let (store, _d) = store_with(&[]);
+    let mut at = 0;
+    for i in 0..25 {
+        let id = format!("s-here-{i}");
+        session_row(
+            &store,
+            &id,
+            "/p/here",
+            Some(&format!("here {i}")),
+            None,
+            None,
+        );
+        at = rows_for(&store, &id, 1, at);
+    }
+    for i in 0..14 {
+        let id = format!("s-far-{i}");
+        session_row(&store, &id, "/p/far", Some(&format!("far {i}")), None, None);
+        at = rows_for(&store, &id, 1, at);
+    }
+    let all = store.list_sessions().expect("listing");
+    let blocks = conversation_blocks(&all, std::path::Path::new("/p/here"));
+    assert_eq!(blocks.mine.len(), HERE_SHOWN, "this folder's cap");
+    assert_eq!(
+        blocks.mine_more,
+        25 - HERE_SHOWN,
+        "and how many it did not draw"
+    );
+    assert_eq!(blocks.others.len(), 1);
+    let far = &blocks.others[0];
+    assert_eq!(far.rows.len(), FOLDER_SHOWN, "another folder's cap");
+    assert_eq!(far.more, 14 - FOLDER_SHOWN);
+    assert_eq!(
+        far.total(),
+        14,
+        "the header counts every conversation in it"
+    );
+
+    let lines = plain_lines(&all, std::path::Path::new("/p/here"), 120, at);
+    assert!(
+        lines.contains(&"/p/here (25)".to_string()),
+        "this folder's header counts them all: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.trim_start() == format!("+{} more (--all)", 25 - HERE_SHOWN)),
+        "and the cap owes the reader a count: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.trim_start() == format!("+{} more (--all)", 14 - FOLDER_SHOWN)),
+        "the other folder's cap says its own: {lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| !l.is_empty() && l.trim().is_empty()),
+        "no line is padding: a folder's header is a line of its own"
     );
 }
 

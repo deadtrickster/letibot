@@ -86,8 +86,9 @@ fn the_listing_names_the_host_a_moved_session_lives_on() {
         "a session that is here is not marked:\n{listed}"
     );
     assert!(
-        listed.contains("s-migrated-1"),
-        "the row stays in the list — the rows are here:\n{listed}"
+        listed.contains(&letibot_sessionlog::registry::short_id(MOVED)),
+        "the row stays in the list, under the short id `--session` takes — the rows are \
+         here:\n{listed}"
     );
 }
 
