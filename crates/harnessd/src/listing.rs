@@ -358,18 +358,33 @@ pub fn paint(lines: &[Line], palette: Palette) -> String {
 
 /// A folder's header line: which folder, and how many conversations are in it. The folder being
 /// listed is the one the reader is standing in, and it is told apart by its hue.
-fn folder_head(here: &Path, n: usize, mine: bool) -> Line {
+fn folder_head(here: &Path, n: usize, mine: bool, cols: usize) -> Line {
+    let count = format!(" ({n})");
     Line::new(vec![
         Span::role(
-            here.display().to_string(),
+            fit_path(
+                &here.display().to_string(),
+                cols.saturating_sub(count.chars().count()),
+            ),
             if mine {
                 Role::Heading
             } else {
                 Role::Subheading
             },
         ),
-        Span::role(format!(" ({n})"), Role::Faint),
+        Span::role(count, Role::Faint),
     ])
+}
+
+/// A folder cut to `width` from the left: the end of a path is the part that names it, so a long
+/// one keeps its tail behind an ellipsis rather than wrapping the header onto two lines.
+fn fit_path(path: &str, width: usize) -> String {
+    let n = path.chars().count();
+    if n <= width || width == 0 {
+        return path.to_string();
+    }
+    let tail: String = path.chars().skip(n - width.saturating_sub(1)).collect();
+    format!("…{tail}")
 }
 
 /// The header over the listing, in the same columns as the rows under it - indented by the tree's
@@ -599,6 +614,7 @@ pub fn plain(
         here,
         blocks.mine.len() + blocks.mine_more,
         true,
+        cols,
     ));
     if blocks.mine.is_empty() {
         out.push(Line::new(vec![
@@ -615,7 +631,7 @@ pub fn plain(
     }
     for f in &blocks.others {
         out.push(Line::default());
-        out.push(folder_head(Path::new(f.workspace), f.total(), false));
+        out.push(folder_head(Path::new(f.workspace), f.total(), false, cols));
         let total = f.drawn();
         for (i, s) in f.rows.iter().enumerate() {
             out.push(row(s, branch(i, total), "", wid, now, marks.of(&s.id)));
