@@ -13,9 +13,19 @@ use crate::leticode_config::McpServerKeys;
 /// Each server a session may start, or why it cannot, by name.
 pub type Tables = BTreeMap<String, Result<McpServerKeys, String>>;
 
+/// What the last read would pin: the `.mcp.json` a warning named, and the sha256 of the bytes it
+/// was read at. `/mcp pin` spends this, so a file that moved after the warning is refused rather
+/// than trusted unseen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinOffer {
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
 /// The user's `[mcp]` tables, joined by the workspace's `.mcp.json` when `[mcp_projects] pinned`
-/// holds its path and bytes, and a warning for each project server left unstarted. The user's table wins a name.
-pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
+/// holds its path and bytes, a warning for each project server left unstarted, and the line that
+/// would pin the file where there is one. The user's table wins a name.
+pub fn servers(cfg: &Config) -> (Tables, Vec<String>, Option<PinOffer>) {
     let mut tables: Tables = cfg
         .leticode_user
         .mcp
@@ -24,19 +34,26 @@ pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
         .collect();
     let mut warnings = Vec::new();
     if !cfg.read_project_config {
-        return (tables, warnings);
+        return (tables, warnings, None);
     }
     let read = match crate::leticode_config::mcp_json(&cfg.workspace) {
         Ok(Some(r)) if !r.servers.is_empty() => r,
-        Ok(_) => return (tables, warnings),
+        Ok(_) => return (tables, warnings, None),
         Err(why) => {
             warnings.push(format!("{why}. Its MCP servers are not started."));
-            return (tables, warnings);
+            return (tables, warnings, None);
         }
     };
     let file = read.path.display().to_string();
     let names = read.servers.keys().cloned().collect::<Vec<_>>().join(", ");
-    let pin_line = format!("[mcp_projects.pinned] \"{file}\" = \"{}\"", read.sha256);
+    let offer = PinOffer {
+        path: read.path.clone(),
+        sha256: read.sha256.clone(),
+    };
+    let pin_line = format!(
+        "[mcp_projects.pinned] \"{file}\" = \"{}\", or `/mcp pin` writes it",
+        read.sha256
+    );
     // Trusted by these bytes at this path: an edit, or the same file in another worktree, is
     // a file nobody read yet.
     use crate::leticode_config::McpPin;
@@ -49,7 +66,7 @@ pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
                  leticode.toml: {pin_line}.",
                 read.sha256
             ));
-            return (tables, warnings);
+            return (tables, warnings, Some(offer));
         }
         McpPin::Unpinned => {
             let under = if crate::leticode_config::mcp_trusts(
@@ -65,7 +82,7 @@ pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
                  the user leticode.toml pins the file's bytes.{under} After reading it: \
                  {pin_line}."
             ));
-            return (tables, warnings);
+            return (tables, warnings, Some(offer));
         }
     }
     let project = read.servers;
@@ -79,7 +96,7 @@ pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
         }
         tables.insert(name, k.map(|k| in_checkout(k, &cfg.workspace)));
     }
-    (tables, warnings)
+    (tables, warnings, None)
 }
 
 /// A relative command path is the checkout's, not the daemon's working directory.
@@ -229,12 +246,32 @@ impl Mark {
 /// A reload's change lines and warnings, or why the config did not read.
 pub type Read = Result<(Vec<String>, Vec<String>), String>;
 
+/// The sha256 of a file's bytes, as `[mcp_projects.pinned]` holds it.
+fn sha256_of(path: &Path) -> Option<String> {
+    use sha2::Digest;
+    std::fs::read(path)
+        .ok()
+        .map(|b| format!("{:x}", sha2::Sha256::digest(&b)))
+}
+
+/// A path as the operator typed it: a leading `~/` is their home, as the reference spells it.
+fn expand_home(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(p)
+}
+
 /// What `/mcp` acts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verb {
     List,
     Reload,
     Restart(String),
+    /// The `.mcp.json` to pin, by path; `None` is this checkout's own.
+    Pin(Option<String>),
 }
 
 /// One session's MCP servers and the files they were read from. Reconciled by `/mcp reload`,
@@ -250,6 +287,8 @@ pub struct Live {
     marks: Vec<Mark>,
     /// The last read's warnings, such as an unpinned `.mcp.json`.
     warnings: Vec<String>,
+    /// What `/mcp pin` would write, from the read that warned: the file and the bytes it had.
+    pin_offer: Option<PinOffer>,
 }
 
 impl Live {
@@ -263,7 +302,7 @@ impl Live {
     /// read's, a table refused before any start, and the start failures of servers this open
     /// started.
     pub fn open(cfg: &Config) -> (Live, Vec<String>) {
-        let (tables, warnings) = servers(cfg);
+        let (tables, warnings, pin_offer) = servers(cfg);
         let (specs, bad) = specs(&tables);
         let refused = refused_lines(&bad);
         let (catalog, failed) = pool().catalog(&specs, bad);
@@ -273,6 +312,7 @@ impl Live {
         let live = Live {
             catalog: Arc::new(catalog),
             tables,
+            pin_offer,
             user_names: cfg.leticode_user.mcp.keys().cloned().collect(),
             user_file: user_file(cfg),
             project_file: cfg.workspace.join(crate::leticode_config::MCP_JSON),
@@ -296,7 +336,7 @@ impl Live {
             cfg.leticode_user.mcp_pinned = user.mcp_pinned;
             cfg.leticode_user.mcp_trusted = user.mcp_trusted;
         }
-        let (tables, warnings) = servers(cfg);
+        let (tables, warnings, pin_offer) = servers(cfg);
         let (specs, bad) = specs(&tables);
         let mut changes = self.catalog.reconcile(&specs, bad);
         for name in self.catalog.stale() {
@@ -307,6 +347,7 @@ impl Live {
             }
         }
         self.tables = tables;
+        self.pin_offer = pin_offer;
         self.user_names = cfg.leticode_user.mcp.keys().cloned().collect();
         self.warnings = warnings.clone();
         Ok((changes.iter().map(ToString::to_string).collect(), warnings))
@@ -343,7 +384,7 @@ impl Live {
         }
     }
 
-    /// `/mcp`, `/mcp reload`, `/mcp restart NAME`.
+    /// `/mcp`, `/mcp reload`, `/mcp restart NAME`, `/mcp pin [PATH]`.
     pub fn verb(&mut self, cfg: &mut Config, verb: &Verb) -> crate::slash::SlashReply {
         use crate::slash::SlashReply;
         match verb {
@@ -378,6 +419,100 @@ impl Live {
                     "mcp: no running server `{name}`; /mcp lists them"
                 )]),
             },
+            Verb::Pin(path) => self.pin(cfg, path.as_deref()),
+        }
+    }
+
+    /// `/mcp pin [PATH]`: write the `[mcp_projects.pinned]` line the warning printed, so the
+    /// checkout's servers start, and start them here rather than at the next daemon start. The
+    /// bytes pinned are the ones the warning was about; a file that moved since is refused rather
+    /// than trusted unseen, because pinning is the operator saying they read what is there.
+    fn pin(&mut self, cfg: &mut Config, asked: Option<&str>) -> crate::slash::SlashReply {
+        use crate::slash::SlashReply;
+        let refuse = |why: String| SlashReply::refused(vec![format!("mcp: {why}")]);
+        let Some(user) = self.user_file.clone() else {
+            return refuse(
+                "this session has no user leticode.toml to pin anything in; there is no [mcp_projects] \
+                 table to write"
+                    .into(),
+            );
+        };
+        let target = match asked {
+            Some(p) => expand_home(p),
+            None => cfg.workspace.join(crate::leticode_config::MCP_JSON),
+        };
+        let Ok(target) = target.canonicalize() else {
+            return refuse(format!(
+                "{} is not there, so there is nothing to pin. A checkout's servers are declared in \
+                 its own .mcp.json, and a plugin LAYER is pinned by `/plugin trust NAME`",
+                target.display()
+            ));
+        };
+        // Pinning the file a warning named is the ordinary act; any other path is pinned at the
+        // bytes it has now, which is the same statement and the same refusals.
+        let warned = self
+            .pin_offer
+            .as_ref()
+            .filter(|o| o.path.canonicalize().is_ok_and(|p| p == target));
+        let sha256 = match warned {
+            Some(offer) => {
+                if sha256_of(&target).as_deref() != Some(offer.sha256.as_str()) {
+                    return refuse(format!(
+                        "{} changed since it was read, so pinning it now would trust bytes nobody \
+                         looked at. `/mcp` reads it again and names the line",
+                        target.display()
+                    ));
+                }
+                offer.sha256.clone()
+            }
+            None => match crate::leticode_config::mcp_json_at(&target) {
+                Ok(read) if !read.servers.is_empty() => read.sha256,
+                Ok(_) => {
+                    return refuse(format!(
+                        "{} declares no MCP server, so there is nothing to pin it for",
+                        target.display()
+                    ));
+                }
+                Err(why) => return refuse(why),
+            },
+        };
+        let key = format!(
+            "mcp_projects.pinned.{}",
+            letibot_config_ref::edit::quote_segment(&target.display().to_string())
+        );
+        let edits = letibot_config_ref::edit::Edits {
+            set: [(key, format!("\"{sha256}\""))].into_iter().collect(),
+            remove: Vec::new(),
+        };
+        use letibot_tools::builtins::config::ConfigDesk;
+        let desk = crate::config_desk::SessionConfig::at(
+            user.parent().unwrap_or(std::path::Path::new("/")),
+        );
+        let name = crate::leticode_config::FILE_NAME;
+        if let Err(why) = desk
+            .propose(name, &edits)
+            .and_then(|p| desk.write(name, &p.before, &p.text))
+        {
+            return refuse(format!("nothing was pinned: {why}"));
+        }
+        // The servers start now: the pin is the only thing the start was waiting for.
+        let mut lines = vec![format!(
+            "mcp: pinned {} at sha256 {sha256} in {}",
+            target.display(),
+            user.display()
+        )];
+        match self.reload(cfg) {
+            Ok((changes, warnings)) => {
+                lines.extend(changes.iter().map(|c| format!("mcp: {c}")));
+                lines.extend(warnings);
+                SlashReply::listing(lines)
+            }
+            Err(why) => {
+                lines.push(format!(
+                    "mcp: pinned, and the config did not read back: {why}"
+                ));
+                SlashReply::listing(lines)
+            }
         }
     }
 
@@ -454,6 +589,7 @@ fn marks_at(user: Option<&Path>, cfg: &Config) -> Vec<Mark> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use letibot_tools::builtins::external::mcp::McpCatalog;
 
     fn checkout(test: &str) -> std::path::PathBuf {
         let d =
@@ -478,7 +614,7 @@ mod tests {
     #[test]
     fn an_untrusted_checkouts_servers_are_named_and_not_started() {
         let ws = checkout("untrusted");
-        let (tables, warnings) = servers(&cfg_at(&ws));
+        let (tables, warnings, _) = servers(&cfg_at(&ws));
         assert!(tables.is_empty(), "{tables:?}");
         assert!(
             !configured(&tables),
@@ -512,7 +648,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let (tables, warnings) = servers(&cfg);
+        let (tables, warnings, _) = servers(&cfg);
         assert!(configured(&tables));
         assert_eq!(
             tables["fs"].as_ref().unwrap().command.as_deref(),
@@ -544,7 +680,7 @@ mod tests {
         .unwrap();
         let mut cfg = cfg_at(&ws);
         pin(&mut cfg, &ws);
-        let (tables, warnings) = servers(&cfg);
+        let (tables, warnings, _) = servers(&cfg);
         assert!(warnings.is_empty(), "a held pin says nothing: {warnings:?}");
         let why = tables["fs"].as_ref().unwrap_err();
         assert!(
@@ -575,7 +711,7 @@ mod tests {
             r#"{"mcpServers": {"evil": {"command": "sh", "args": ["-c", "id"]}}}"#,
         )
         .unwrap();
-        let (tables, warnings) = servers(&cfg);
+        let (tables, warnings, _) = servers(&cfg);
         assert!(
             tables.is_empty(),
             "an edit under a trusted dir started: {tables:?}"
@@ -595,7 +731,7 @@ mod tests {
         let mut cfg = cfg_at(&ws);
         cfg.read_project_config = false;
         pin(&mut cfg, &ws);
-        let (tables, warnings) = servers(&cfg);
+        let (tables, warnings, _) = servers(&cfg);
         assert!(tables.is_empty() && warnings.is_empty());
     }
 
@@ -773,5 +909,115 @@ mod tests {
         assert_eq!(pid_of(&live, "rsb"), b);
         let reply = live.verb(&mut cfg, &Verb::Restart("nobody".into()));
         assert!(!reply.ok);
+    }
+
+    /// A checkout whose `.mcp.json` names one fake server, and a user file beside it that names
+    /// nothing.
+    fn project_with_mcp_json(test: &str) -> (Config, PathBuf, PathBuf) {
+        let (mut cfg, user) = live_cfg(test, "");
+        let ws = cfg.workspace.clone();
+        let exe = std::env::current_exe().unwrap();
+        let body = serde_json::json!({"mcpServers": {"local": {
+            "command": exe.display().to_string(),
+            "args": ["mcp::tests::fake_mcp_server", "--exact", "--nocapture", "--test-threads=1"],
+            "env": {"LETIBOT_FAKE_MCP": "1"}
+        }}});
+        std::fs::write(ws.join(".mcp.json"), body.to_string()).unwrap();
+        cfg.read_project_config = true;
+        (cfg, user, ws.join(".mcp.json"))
+    }
+
+    /// `/mcp pin` writes the line the warning printed, says which file at which hash, and the
+    /// servers start without a daemon restart.
+    #[test]
+    fn a_pin_writes_the_line_the_warning_printed_and_starts_the_servers() {
+        let (mut cfg, user, json) = project_with_mcp_json("pin");
+        let (mut live, said) = Live::open(&cfg);
+        assert!(
+            said.iter().any(|w| w.contains("/mcp pin")),
+            "the warning offers the verb: {said:?}"
+        );
+        assert!(live.catalog().servers().is_empty(), "not started yet");
+
+        let reply = live.verb(&mut cfg, &Verb::Pin(None));
+        assert!(reply.ok, "{}", reply.lines.join(" / "));
+        let text = reply.lines.join("\n");
+        let pin = crate::leticode_config::mcp_json_at(&json).unwrap();
+        assert!(text.contains(&pin.sha256), "it says what it pinned: {text}");
+        assert!(
+            text.contains(&json.canonicalize().unwrap().display().to_string()),
+            "and the path: {text}"
+        );
+        let written = std::fs::read_to_string(&user).unwrap();
+        assert!(written.contains("[mcp_projects.pinned]"), "{written}");
+        assert!(
+            written.contains(&pin.sha256),
+            "the file holds the hash, not a hand-made line: {written}"
+        );
+        // The table the daemon would read at its next start now holds it too, and the server ran.
+        assert_eq!(
+            cfg.leticode_user.mcp_pinned.values().next(),
+            Some(&pin.sha256)
+        );
+        pid_of(&live, "local");
+    }
+
+    /// Pinning is the operator saying they read what is there, so a file that moved after the
+    /// warning is refused rather than trusted unseen.
+    #[test]
+    fn a_pin_refuses_a_file_that_changed_since_the_warning() {
+        let (mut cfg, user, json) = project_with_mcp_json("pin-moved");
+        let (mut live, said) = Live::open(&cfg);
+        assert!(said.iter().any(|w| w.contains("/mcp pin")), "{said:?}");
+        std::fs::write(&json, r#"{"mcpServers": {"evil": {"command": "sh"}}}"#).unwrap();
+        let before = std::fs::read_to_string(&user).unwrap();
+        let reply = live.verb(&mut cfg, &Verb::Pin(None));
+        assert!(!reply.ok, "{}", reply.lines.join(" / "));
+        assert!(
+            reply.lines.join(" ").contains("changed since it was read"),
+            "{}",
+            reply.lines.join(" / ")
+        );
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), before);
+        assert!(
+            live.catalog().servers().is_empty(),
+            "and nothing was started"
+        );
+    }
+
+    /// A path the operator names is pinned at its own bytes, and a path that is not a `.mcp.json`
+    /// with servers in it is refused by name.
+    #[test]
+    fn a_pin_of_a_named_file_reads_it_first() {
+        let (mut cfg, user, _) = project_with_mcp_json("pin-path");
+        std::fs::remove_file(cfg.workspace.join(".mcp.json")).unwrap();
+        let elsewhere = cfg.workspace.join("other");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let file = elsewhere.join(".mcp.json");
+        std::fs::write(&file, r#"{"mcpServers": {"a": {"command": "npx"}}}"#).unwrap();
+        let (mut live, _) = Live::open(&cfg);
+        let reply = live.verb(&mut cfg, &Verb::Pin(Some(file.display().to_string())));
+        assert!(reply.ok, "{}", reply.lines.join(" / "));
+        let written = std::fs::read_to_string(&user).unwrap();
+        assert!(written.contains(&file.canonicalize().unwrap().display().to_string()));
+
+        std::fs::write(elsewhere.join("plain.json"), "{}").unwrap();
+        let reply = live.verb(
+            &mut cfg,
+            &Verb::Pin(Some(elsewhere.join("plain.json").display().to_string())),
+        );
+        assert!(!reply.ok, "{}", reply.lines.join(" / "));
+        assert!(
+            reply.lines.join(" ").contains("declares no MCP server"),
+            "{}",
+            reply.lines.join(" / ")
+        );
+        let reply = live.verb(&mut cfg, &Verb::Pin(Some("/nowhere/.mcp.json".into())));
+        assert!(!reply.ok, "{}", reply.lines.join(" / "));
+        assert!(
+            reply.lines.join(" ").contains("is not there"),
+            "{}",
+            reply.lines.join(" / ")
+        );
     }
 }

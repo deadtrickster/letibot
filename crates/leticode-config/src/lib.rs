@@ -1318,7 +1318,18 @@ pub fn mcp_json(workspace: &Path) -> Result<Option<McpJson>, String> {
     if !path.is_file() {
         return Ok(None);
     }
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    mcp_json_at(&path).map(Some)
+}
+
+/// One `.mcp.json` by its own path, for a verb that pins the file an operator named rather than
+/// the one this checkout holds. Its relative command paths are joined to the file's directory.
+/// `Err` for a path that is not there: a pin on a file nobody can read is a pin on nothing.
+pub fn mcp_json_at(path: &Path) -> Result<McpJson, String> {
+    if !path.is_file() {
+        return Err(format!("{}: there is no such file", path.display()));
+    }
+    let workspace = path.parent().unwrap_or(Path::new("/"));
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let sha256 = sha256_hex(&bytes);
     let text = String::from_utf8(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     let v: serde_json::Value =
@@ -1332,11 +1343,11 @@ pub fn mcp_json(workspace: &Path) -> Result<Option<McpJson>, String> {
             out.insert(name.clone(), mcp_json_server(name, s, workspace));
         }
     }
-    Ok(Some(McpJson {
-        path,
+    Ok(McpJson {
+        path: path.to_path_buf(),
         sha256,
         servers: out,
-    }))
+    })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

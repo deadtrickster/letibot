@@ -73,7 +73,7 @@ pub fn apply(text: &str, edits: &Edits) -> Result<String, String> {
 /// A table whose last key a removal took is taken out with it: a `[queue]` header over nothing
 /// is a suggestion that the table is still there. Only along the chain the removal emptied, so a
 /// table the operator wrote empty stays theirs.
-fn drop_emptied(doc: &mut toml_edit::DocumentMut, removed: &[&str]) {
+fn drop_emptied(doc: &mut toml_edit::DocumentMut, removed: &[String]) {
     for depth in (1..removed.len()).rev() {
         let path = &removed[..depth];
         let empty = table_at(doc, path).is_some_and(|t| t.is_empty());
@@ -82,12 +82,12 @@ fn drop_emptied(doc: &mut toml_edit::DocumentMut, removed: &[&str]) {
         }
         let (parent, leaf) = path.split_at(path.len() - 1);
         if let Some(p) = table_at_mut(doc, parent) {
-            p.remove(leaf[0]);
+            p.remove(&leaf[0]);
         }
     }
 }
 
-fn table_at<'d>(doc: &'d toml_edit::DocumentMut, path: &[&str]) -> Option<&'d toml_edit::Table> {
+fn table_at<'d>(doc: &'d toml_edit::DocumentMut, path: &[String]) -> Option<&'d toml_edit::Table> {
     let mut table = doc.as_table();
     for seg in path {
         table = table.get(seg)?.as_table()?;
@@ -97,7 +97,7 @@ fn table_at<'d>(doc: &'d toml_edit::DocumentMut, path: &[&str]) -> Option<&'d to
 
 fn table_at_mut<'d>(
     doc: &'d mut toml_edit::DocumentMut,
-    path: &[&str],
+    path: &[String],
 ) -> Option<&'d mut toml_edit::Table> {
     let mut table = doc.as_table_mut();
     for seg in path {
@@ -106,21 +106,56 @@ fn table_at_mut<'d>(
     Some(table)
 }
 
-fn segments(path: &str) -> Result<Vec<&str>, String> {
-    let parts: Vec<&str> = path.split('.').collect();
+fn segments(path: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // A quoted segment is one key whatever it holds: `[mcp_projects.pinned]`'s keys are
+            // paths, and splitting `.mcp.json` on its dots would name five keys.
+            '"' => {
+                if quoted && chars.peek() == Some(&'"') {
+                    let _ = chars.next();
+                    cur.push('"');
+                    continue;
+                }
+                quoted = !quoted;
+            }
+            '.' if !quoted => parts.push(std::mem::take(&mut cur)),
+            other => cur.push(other),
+        }
+    }
+    if quoted {
+        return Err(format!(
+            "`{path}` is not a key path: a quoted key is missing its closing quote"
+        ));
+    }
+    parts.push(cur);
     if parts.iter().any(|p| p.trim().is_empty()) {
         return Err(format!(
-            "`{path}` is not a key path: write it dotted, as `shadow.answer_reads`"
+            "`{path}` is not a key path: write it dotted, as `shadow.answer_reads`, and quote a key \
+             that holds a dot"
         ));
     }
     Ok(parts)
+}
+
+/// One key as a dotted path spells it, quoted when it holds a dot a path would split on. The
+/// inverse of [`segments`], so a caller building a path from a file's key cannot misspell it.
+pub fn quote_segment(key: &str) -> String {
+    match key.contains(['.', '"']) {
+        true => format!("\"{}\"", key.replace('"', "\"\"")),
+        false => key.to_string(),
+    }
 }
 
 /// The item at `segments`, created along the way when `create` is set: a proposal may name a
 /// table the file does not have yet, and refusing that would refuse the ordinary edit.
 fn at<'d>(
     doc: &'d mut toml_edit::DocumentMut,
-    segments: &[&str],
+    segments: &[String],
     create: bool,
 ) -> Option<&'d mut toml_edit::Item> {
     let (first, rest) = segments.split_first()?;
@@ -230,6 +265,27 @@ foreground_seconds = 60
         assert!(!out.contains("foreground_seconds"), "{out}");
         // The table the file wrote for nothing is gone with the key that was under it.
         assert!(!out.contains("[exec]"), "{out}");
+    }
+
+    /// A key that holds a dot is one segment when it is quoted, which is how a file's own path is
+    /// addressed under `[mcp_projects.pinned]`.
+    #[test]
+    fn a_quoted_key_that_holds_a_dot_is_one_key() {
+        let path = "/home/u/mine/.mcp.json";
+        let key = format!("mcp_projects.pinned.{}", quote_segment(path));
+        let out = apply("", &edits(&[(&key, "\"abc\"")], &[])).unwrap();
+        assert!(
+            out.contains(&format!("\"{path}\" = \"abc\"")),
+            "the whole path is one key: {out}"
+        );
+        // And it reads back as the same key, so a second pin sets it rather than adding a table
+        // beside it.
+        let again = apply(&out, &edits(&[(&key, "\"def\"")], &[])).unwrap();
+        assert_eq!(again.matches("[mcp_projects.pinned]").count(), 1, "{again}");
+        assert_eq!(again.matches(path).count(), 1, "{again}");
+        assert!(again.contains("\"def\""), "{again}");
+        let e = apply("", &edits(&[("a.\"b", "1")], &[])).unwrap_err();
+        assert!(e.contains("closing quote"), "{e}");
     }
 
     /// A value that is not TOML, a path that is not dotted, and a removal of nothing are refused.

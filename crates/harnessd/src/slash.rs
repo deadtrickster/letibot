@@ -617,8 +617,14 @@ impl Slash {
                 (Some("restart"), None) => {
                     Slash::Help("/mcp restart NAME - one of the names /mcp lists".into())
                 }
+                // No path is this checkout's own `.mcp.json`, which is the file a warning names;
+                // a path pins one the operator read elsewhere.
+                (Some("pin"), path) => {
+                    Slash::Mcp(crate::mcp::Verb::Pin(path.map(|p| (*p).to_string())))
+                }
                 (Some(other), _) => Slash::Help(format!(
-                    "/mcp {other}: the verbs are /mcp, /mcp reload and /mcp restart NAME"
+                    "/mcp {other}: the verbs are /mcp, /mcp reload, /mcp restart NAME and \
+                     /mcp pin [PATH]"
                 )),
             },
             Some(other) => Slash::Unknown {
