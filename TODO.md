@@ -262,6 +262,7 @@ Older backlog:
 | R384 | A dm to a peer in another project goes through only with the operator's consent | Design work | open: rules from the operator, for the LAN-wide rooms work; see the section |
 | R386 | Session names: one rule for every path, and the file enforces it | Code work | built; left: a package's title arriving over the bridge is refused rather than dashed (the frame's rule), and a build older than 62 leaves a row with no name key until the next open repairs it |
 | R387 | Conversation search in the head: `ctrl-f` over the open conversation, and over the project's sessions | Code work | built; left: a hit inside a folded run is counted and its own window is opened, the run's fold is not; the sessions scope pages one page of hits |
+| R388 | Three gate asks that should never have reached the operator: the checkout's own paths, a read-only grep, and a value a reader produced | Code work | built (see the section); left: a read naming the real path is still `host_other`, `bash_segments` still refuses a line with a substitution |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3285,6 +3286,92 @@ archive in the answer, a daemon with no store); `letibot-tui`'s `app::tests::fin
 `esc_closes_the_bar_and_keeps_the_scroll`, `a_role_token_and_the_cycle_narrow_the_same_rows`,
 `a_project_search_draws_the_hits_and_opens_the_one_under_the_cursor`). Each fails without the
 change: removing `paint_find` reds the first, removing the jump reds the second, and so on.
+## R388 - Three gate asks that should never have reached the operator
+
+**Status:** built, 2026-11-26. The operator answered three packages' asks on xmg and named three kinds that should not have been questions at all: a write inside the session's own checkout, a read-only `grep`, and a command whose only unknown was a value a reader produced. One commit per kind.
+
+**1. The session's own checkout, under the name the placement gives it.** With `stable_paths` a
+remote session's checkout is mounted at `/run/letibot/work` while the machine keeps it at
+`/home/dead/letibot-remote/<repo>/<short>`, and `cfg.workspace` - which is what `surroundings_for`
+read - is the LOCAL repository the placement sent as a bundle. So the gate placed every write to
+the session's own tree as `host_other`: neither spelling matched, automode's ownership screen refused
+(`effects()` reads the write target, `admits` the workspace), and the card was "`edit` wants write
+access".
+
+A second cause sat in the same path: `GateCall.workspace` was built as
+`{workspace} (on {host} over ssh)`, and that one string is what `path_is_inside` compares, what a
+relative argument is joined to (`ssh_resolution_hit`, `never_hit_resolved`) and what the corpus
+`project` column stores. Every absolute path in a remote session therefore read as outside its own
+tree, and every relative one resolved against a directory that does not exist.
+
+*Built.* The gate's surroundings take the workspace from the BACKEND (`open.rs`, `workspace_path()`),
+not from the config; `ExecBackend::workspace_aliases()` names the checkout's other spelling
+(`SshBackend` answers its real worktree when `stable_paths` rebound it) and the gate owns both
+(`with_owned_roots`, `Owned::with_worktree`); and the machine is a fact of the card again
+(`with_host_label`), never part of the path.
+
+**2. A read-only grep whose pattern ends at a colon.** `grep -v "mcp.rs:"` was placed as a call to
+the host `mcp.rs` - `looks_remote` reads `host:` with an empty tail as scp's home directory - so a
+read-only grep met `network_egress_to_an_unseen_host`, an always-ask rule, and no session grant
+could be offered (`not offered for the session: this is on the always-ask list`).
+
+*Built.* Whether an empty tail is a machine is the PROGRAM's fact (`names_a_remote`): a program that
+reaches the network keeps the reading (`scp report.txt lab2x1.example:` is still a host), and one
+that cannot is holding a file name. `Surroundings::region_of_word` is the operand-shaped door.
+
+**3. `$(…)`, `<(…)` and `"$var"` made a read unresolvable.** Every one offered `allow once` and
+nothing else, because `Grant::covers` refuses an unresolved action. The four the operator named were
+`gd=$(git rev-parse --git-dir) && cat "$gd/rebase-merge/done"`, `diff <(sed 's/x/y/' a) <(sed
+'s/x/y/' b)`, `echo "HOME=$HOME"; echo "TARGET=$CARGO_TARGET_DIR"` and `rustfmt --check $(git diff
+--name-only HEAD~3..HEAD | grep '\.rs$')`.
+
+*Built.* `intent::resolved_by_rule`: a command substitution or process substitution resolves to its
+inner command's class when every command inside it only produces text (a reader, plus the vehicle
+whose body this build did not read - `sed`'s script language is not parsed), every construct inside
+it resolves on the same terms (depth cap 3), and the value is consumed by a program that only reads.
+A plain `$VAR` in a reader's argument resolves the same way. What stays unresolved, with its old
+message: a substitution in command position, one in a redirect's target, one consumed by a writing
+program (`rm -rf $(cat list.txt)`), one whose producer reaches a host, one whose known prefix is
+already in a secret store, and one nested past the cap. Nothing is widened less than it was: the
+word still contributes `Region::Unbounded`, `reads_only` is still false, and the tier is unchanged -
+what the ruling buys is the standing grant rung, not a claim about the value.
+
+The reviewer's word screen had a hole that only unreadability was covering (`shadow::oracle`):
+`words_pass` ran only for a reading that did NOT resolve, and a relative key-store path is what layer
+A cannot place (`cat .config/letibot/keys/x` is a workspace read to it). So `cat
+.config/letibot/keys/x $(date)` was refused and `cat .config/letibot/keys/x` was admitted - the
+protection was an accident of the `$(date)`. Now a call whose reading NAMES a secret store is
+screened word by word whatever its resolution (`X=~/.ssh/id_ed25519; cat "$X"` places the store on
+the assignment and nothing on the use), and every other resolved reading gets the key store alone
+(`guard::key_store_pass`) - asking every word of a resolved command refuses a project's own `keys/`
+directory under the home. The operator's own five-construct inspection is READ
+(`shadow::oracle_tests::the_operators_inspection_is_read_before_it_is_judged`).
+
+**Tests.** `intent::tests::a_read_only_grep_whose_pattern_ends_at_a_colon_is_not_a_first_contact` and
+`only_a_program_that_reaches_a_machine_reads_a_bare_colon_as_one`; the four operator commands and
+the six that must stay unread in `a_value_a_reader_produced_does_not_make_the_call_unreadable` and
+`a_value_that_decides_what_runs_or_where_bytes_go_stays_unreadable`;
+`adjudicate::tests::card::a_plain_variable_in_a_readers_argument_is_offered_the_session_grant`;
+`adjudicate::tests::owned_tree` (both spellings admitted, a sibling checkout and `/etc` still asked);
+`remote_confine::a_stable_host_mounts_the_checkout_and_its_build_directory_at_the_fixed_names`
+(`workspace_aliases`) and `without_stable_paths_...` (one name, not two);
+`shadow::oracle_tests::{an_unresolved_inspection_reaches_the_reviewer_at_exec,
+the_operators_inspection_is_read_before_it_is_judged, an_unresolved_read_of_a_key_store_is_refused_without_the_model,
+an_unresolved_command_naming_the_key_store_is_refused_at_the_shadow}`. Tests that encoded the old
+rule now ask the TEXT instead of `resolved` - the splice is what they were about - and the two that
+needed an unresolved command use a redirect's target (`card.rs`, `outcomes.rs`, `authorise/tests.rs`,
+`intent::tests`, `intent::env_tests`, `tools/tests/session_env.rs`, `corpus_replay`'s fixture gains one
+row). Each of the three kinds was shown red by reverting its own fix in place: the local repo as the
+workspace, no second name, `looks_remote` back on the operand, and `resolved_by_rule` returning
+nothing.
+
+**Left.** A `bash` call that NAMES the checkout's real path is still placed `host_other` by layer A
+(the ownership screen owns writes, not reads): the reviewer's `reads` stage sees it and it asks as it
+did. `Surroundings` has one workspace, so an alias is not a `Region::Workspace`.
+`Owned::with_worktree` compares by `view::key`, which canonicalises: a daemon whose own filesystem
+has `/run/letibot/work` bound to another tree would key the fixed name there. `bash_segments` still
+refuses any line with a substitution, so a preapproved `rustfmt --check*` rule does not admit
+`rustfmt --check $(…)` - the durable rung there is untouched by this row.
 
 ## R383 - A VCS command drew as nine hand edits
 
