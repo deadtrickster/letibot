@@ -920,6 +920,63 @@ fn confined_is_a_fact_read_off_the_backend() {
 /// command lines: the ssh this box spawns, and the shell the far side runs.
 const TOKEN: &str = "ghs_r130fixtureSECRETvalue0123456789";
 
+/// `cargo_home` is the machine's cargo home, shared by every session placed there, so the view has to
+/// hold it WRITABLE — and the ordinary spelling of it, `~/.cargo`, is a directory the toolchain grants
+/// have already bound read-only. This is the one grant that upgrades what the view already has.
+#[test]
+fn a_shared_cargo_home_is_the_one_writable_grant_in_the_view() {
+    let mut rig = Rig::new("cargohome", FAKE_READBACK, true);
+    rig.host.cargo_home = Some("~/.cargo".into());
+    let b = rig.place(Egress::Denied);
+    assert!(b.is_confined(), "the fake host answered the probe");
+    let home = std::fs::canonicalize(&rig.home).unwrap_or_else(|_| rig.home.clone());
+    assert_eq!(
+        b.boundary()
+            .expect("a confined backend reports its boundary")
+            .view
+            .granted()
+            .into_iter()
+            .filter(|(p, _)| p.as_path() == home.join(".cargo"))
+            .collect::<Vec<_>>(),
+        vec![(home.join(".cargo"), true)],
+        "the toolchain's read-only grant is upgraded, not bound twice"
+    );
+
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf '%s' \"$CARGO_HOME\"".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    assert_eq!(out.exit, 0, "{:?}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        home.join(".cargo").display().to_string(),
+        "the command is told the cargo home the host resolved, not the spelling the file used"
+    );
+
+    let calls = rig.bwrap_calls();
+    let argv = calls.last().expect("the command's call");
+    let cargo = home.join(".cargo").display().to_string();
+    assert!(
+        argv.contains(&format!("--bind-try {cargo} {cargo}")),
+        "a registry a fetch writes has to be writable:\n{argv}"
+    );
+    assert!(
+        !argv.contains(&format!("--ro-bind-try {cargo} {cargo}")),
+        "and not ALSO read-only, which a later bind would be:\n{argv}"
+    );
+    assert!(
+        argv.contains(&format!("--setenv CARGO_HOME {cargo}")),
+        "the view and the variable name one path:\n{argv}"
+    );
+}
+
 fn token_env() -> Vec<(String, String)> {
     vec![
         ("GH_TOKEN".to_string(), TOKEN.to_string()),

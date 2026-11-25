@@ -31,12 +31,13 @@ flags       = ["heavy", "tmpfs"]               # what the machine is for
 never_touch = ["etcd", "pgfuzz"]               # names letibot must never signal, stop or remove
 rustc_wrapper = "~/.cargo/bin/sccache-rustc"    # cargo's RUSTC_WRAPPER there: the compile cache
 sccache_dir  = "~/.cache/sccache"               # the cache it writes, bound read-write in the view
+cargo_home   = "~/.cargo"                       # the registry and git db every session there shares
 
 [local]                                        # THIS box, and not a placement
 never_touch = ["etcd", "pgfuzz"]
 ```
 
-Eleven keys, and an unknown one is **refused by name** rather than ignored: a typo places a session on a
+Twelve keys, and an unknown one is **refused by name** rather than ignored: a typo places a session on a
 machine nobody named, or points ssh at a key nobody meant. `reserve` is a whole number of cores and
 anything else is refused rather than defaulted - a `reserve = "two"` read as zero is a scheduler that
 believes a busy machine is empty. `flags` and `never_touch` use the `path` grammar (quoted strings on one
@@ -318,7 +319,7 @@ because sshd runs it with no login shell at all.
 `hosts {probe: true}` reports the mise version and `mise ls --current` in the host's root **instead of** *cargo
 on PATH* - on a host with mise that question has no meaning - and falls back to `PATH` without it.
 
-## The build wrapper: one compile cache per machine
+## The build cache: one compile cache and one cargo home per machine
 
 A session placed on a host gets a private `$HOME` there, so `cargo` finds no `~/.cargo/config.toml` of the
 operator's and no wrapper it names: every package placed there compiles the whole workspace **cold**, and two
@@ -327,9 +328,9 @@ and every command of the session - a `bash` call, a job's launcher, a confined s
 `RUSTC_WRAPPER=<that path>`. Local sessions are untouched: they read this box's own `~/.cargo/config.toml`.
 
 * **Asked once, at placement, and never assumed.** One round trip at `place` asks the host whether the
-  wrapper is an executable file and whether `sccache_dir` is a directory there (`readlink -f`, because a bind
-  has to land where the writes go). Nothing is asked when the key is absent, and a host with no `rustc_wrapper`
-  behaves exactly as it did.
+  wrapper is an executable file, whether `sccache_dir` is a directory there, and whether `cargo_home` is a
+  directory it can write (`readlink -f`, because a bind has to land where the writes go). Nothing is asked
+  when none of the three keys is set, and such a host behaves exactly as it did.
 * **A wrapper that is configured and missing is SKIPPED, with one note per session.** Not a fallback of the
   wrapper's own: cargo refuses a `RUSTC_WRAPPER` that names nothing (`could not execute process … (never
   executed)`), so a stale line in `hosts.toml` would break every build on that host. The placement instead
@@ -346,13 +347,14 @@ and every command of the session - a `bash` call, a job's launcher, a confined s
   `exec` has already handed over). So a session that IS measured a boundary and has no network gets no
   `RUSTC_WRAPPER`, one note saying which of the two it was, and cold builds - which is exactly what it had
   before the key existed. A session with egress, and an unconfined one, both get the cache.
-* **The confinement is widened by exactly what the two keys name, and nothing else.** A confined remote view
+* **The confinement is widened by exactly what the keys name, and nothing else.** A confined remote view
   holds the checkout, the system roots and the toolchain read-only, `$HOME` as the session's own, and the
   operator's grants. The wrapper's own directory is added **read-only** (redundant when it is inside the
-  toolchain grants, `-try` so a missing one is skipped), and `sccache_dir` is the one **read-write** grant:
-  a cache nobody can write is a build that falls back anyway. `SCCACHE_DIR` is exported with the resolved
-  path so a wrapper that reads its cache from the environment and one that bakes it in agree with the view.
-  Both binds are `-try`, so a directory that vanished between the probe and the argv does not fail the open.
+  toolchain grants, `-try` so a missing one is skipped), and `sccache_dir` and `cargo_home` are the
+  **read-write** grants: a cache or a registry nobody can write is a build that falls back anyway.
+  `SCCACHE_DIR` and `CARGO_HOME` are exported with the resolved path, so a wrapper that reads its cache from
+  the environment and one that bakes it in agree with the view. Both binds are `-try`, so a directory that
+  vanished between the probe and the argv does not fail the open.
 * **A note says it worked**, once, in the same place:
 
       builds on xmg share one compile cache: `/home/dead/.cargo/bin/sccache-rustc` writing
@@ -361,6 +363,57 @@ and every command of the session - a `bash` call, a job's launcher, a confined s
 A wrapper that decides for itself to fall back - its own `sccache` binary missing, or its cache unwritable -
 `exec`s the compiler and says nothing: the build still works, it is just cold. That check is the wrapper's,
 and this side does not duplicate it; `rustc_wrapper` only answers *is the wrapper file there at all*.
+
+### The shared cargo home: one registry per machine, and the cache that depends on it
+
+A wrapper alone does not make a session's build hit: sccache hashes the compiler's whole invocation, and a
+crate's **source file** is one of the things in it. With `CARGO_HOME` unset, every session gets its own
+`$HOME/.cargo/registry/src/<registry>/<crate>-<version>/`, so the same dependency is a different input in
+each of them. Measured on xmg, one small crate on `serde_json`'s five registry crates: two builds at two
+different paths, one shared `CARGO_HOME` and one target-directory spelling, hit the cache for **all five
+dependencies** (5 hits, 0 dependency misses); with a cargo home each they hit **nothing** (0 hits, 10
+misses).
+
+The registry is not the only input. `--out-dir`, `-L dependency=` and every `--extern <name>=<path>` name
+the **target directory**, so two builds whose target directories are at different paths miss whatever else
+they share - measured as 0 hits with one shared `CARGO_HOME` and a target directory each, which is what two
+sessions have, because a placement builds in its own checkout. What this key buys is the registry: one
+fetch per machine instead of one per session, and the source path out of the way. A compile cache shared
+between the sessions of one repository would additionally need their target directories to agree, and the
+placement does not share those on purpose - see below.
+
+`cargo_home` names the machine's cargo home - `~/.cargo` by every convention - and every session placed
+there shares it: `CARGO_HOME` is on every command, resolved by the host's own `readlink -f`, and the view
+holds it **read-write** so `registry/` and `git/` are fetched once and read by everyone. That last part is
+the interesting half: `~/.cargo` is already a **read-only toolchain grant** in every confined view, and this
+is the one grant that upgrades it rather than being skipped as a duplicate. The wrapper's own directory is
+still bound read-only *after* it, so a wrapper inside the shared home is a file a session may read and not
+replace.
+
+* **Concurrent `cargo` processes may share one `CARGO_HOME`.** This is cargo's own supported arrangement: it
+takes an exclusive lock on `$CARGO_HOME/.package-cache` for as long as it is touching the cache, so two
+sessions fetching at once queue and one of them does the fetch. Nothing here has to coordinate.
+* **The target directory is NOT shared**, and must not be: cargo locks it for the length of a build, so
+  two sessions would serialise on each other, and two builds of one package with different flags thrash
+  each other's fingerprints in it. Each session keeps its own checkout and so its own target; what is
+  shared is the registry, and the compile cache, which is read-through.
+* **Asked once, at placement, with the wrapper.** One round trip asks `[ -d ]`, `[ -w ]` and `readlink -f`
+  on it, as the user ssh logs in as. A path the machine has not got, a path that user cannot write, or a path
+  inside `<root>/.letibot-home/` is skipped with one note per session:
+
+      `cargo_home` on xmg is not writable by the user ssh logs in as: a fetch could not land there,
+      so every session keeps a cargo home of its own
+
+  The last rule is the owner homes: every session there has its `$HOME` to itself, so a cargo home inside one
+  is nobody's shared cache - and it would be counted and cleaned as that session's own data, which is the
+  next rule.
+* **It is never a session's own data.** The host's reaper removes two directories from an owner's home, `tmp`
+  and `.cache`; nothing else in it is a cache it touches, and `lifecycle::remote::removable_shape` refuses any
+  path that is not an owner home, a jobs ledger or a fanout dir - a shared `~/.cargo` is none of those, and the
+  placement writes no holding row for it. So the disk plan does not count it and the reaper cannot remove it.
+* **It survives a boundary with no network**, unlike the wrapper: a registry already fetched is exactly what
+  a session with no egress needs, and reading it wants no socket. Only `RUSTC_WRAPPER` and `SCCACHE_DIR` are
+  withheld there.
 
 ## The supervisor, and work across hosts
 

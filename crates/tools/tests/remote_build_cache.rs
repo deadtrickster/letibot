@@ -82,14 +82,16 @@ fn executable(at: &Path) {
     std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).expect("its mode");
 }
 
-/// What a command of this session sees of the two variables.
+/// What a command of this session sees of the three variables.
 fn seen(backend: &SshBackend) -> String {
     let out = backend
         .run(&Command {
             argv: vec![
                 "sh".into(),
                 "-c".into(),
-                "printf 'W=[%s] C=[%s]' \"$RUSTC_WRAPPER\" \"$SCCACHE_DIR\"".into(),
+                "printf 'W=[%s] C=[%s] H=[%s]' \"$RUSTC_WRAPPER\" \"$SCCACHE_DIR\" \
+                 \"$CARGO_HOME\""
+                    .into(),
             ],
             cwd: String::new(),
             env: Vec::new(),
@@ -97,6 +99,15 @@ fn seen(backend: &SshBackend) -> String {
         .expect("a command on the fake host");
     assert_eq!(out.exit, 0, "{}", String::from_utf8_lossy(&out.stdout));
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The one path a placement's build keys resolve to on the fake host: `readlink -f` there, because a
+/// bind has to land where the writes go and this box's temp directory may be a symlink.
+fn resolved(at: &Path) -> String {
+    std::fs::canonicalize(at)
+        .expect("the path exists")
+        .display()
+        .to_string()
 }
 
 /// The wrapper and the cache the operator declared reach every command, and the placement says so
@@ -131,7 +142,7 @@ fn a_declared_wrapper_and_cache_reach_the_remote_command() {
     assert_eq!(
         seen(&backend),
         format!(
-            "W=[{}] C=[{}]",
+            "W=[{}] C=[{}] H=[]",
             wrapper_real.display(),
             cache_real.display()
         ),
@@ -161,7 +172,7 @@ fn a_wrapper_that_is_not_there_is_skipped_and_named_once() {
     let backend = place(&rig, &repo, host);
     assert_eq!(
         seen(&backend),
-        "W=[] C=[]",
+        "W=[] C=[] H=[]",
         "a wrapper that is not an executable file must not be set"
     );
     let said = backend.placement_notes().join("\n");
@@ -171,18 +182,121 @@ fn a_wrapper_that_is_not_there_is_skipped_and_named_once() {
     );
 }
 
-/// A host that declares neither is exactly what every host was before this key: no variable, no
-/// grant, and nothing said about it.
+/// A shared cargo home reaches every command of the session, resolved on the host: this is what makes
+/// two sessions' builds of the same dependency compile the same bytes at the same path, which is the
+/// only way a compile cache keyed by source path can hit.
+#[test]
+fn a_declared_cargo_home_reaches_the_remote_command() {
+    let rig = fake_remote::Rig::new("cargo-on", &["xmg"]);
+    let repo = repo_at(&rig.remote_root().join("..").join("loc"));
+    let home = rig
+        .remote_root()
+        .parent()
+        .expect("the fake home")
+        .join("cargo-home");
+    std::fs::create_dir_all(&home).expect("the cargo home");
+    let host = host_with(&rig, "xmg", &format!("cargo_home = \"{}\"", home.display()));
+    let backend = place(&rig, &repo, host);
+    assert_eq!(
+        seen(&backend),
+        format!("W=[] C=[] H=[{}]", resolved(&home)),
+        "the cargo home is the one the file named, resolved on the host"
+    );
+    let said = backend.placement_notes().join("\n");
+    assert!(
+        said.contains("share one cargo home") && said.contains(&resolved(&home)),
+        "{said}"
+    );
+}
+
+/// A cargo home the machine has not got is skipped with one note: `CARGO_HOME` pointing at nothing is
+/// a `cargo` that makes a directory it cannot make, or worse silently writes somewhere else.
+#[test]
+fn a_cargo_home_that_is_not_there_is_skipped_and_named_once() {
+    let rig = fake_remote::Rig::new("cargo-missing", &["xmg"]);
+    let repo = repo_at(&rig.remote_root().join("..").join("loc"));
+    let gone = rig.remote_root().join("no-such-cargo-home");
+    let host = host_with(&rig, "xmg", &format!("cargo_home = \"{}\"", gone.display()));
+    let backend = place(&rig, &repo, host);
+    assert_eq!(seen(&backend), "W=[] C=[] H=[]");
+    let said = backend.placement_notes().join("\n");
+    assert!(
+        said.contains("cargo_home") && said.contains("is not a directory"),
+        "{said}"
+    );
+}
+
+/// A cargo home inside the host's owner homes is refused: every session's `$HOME` there is its own, so
+/// nothing would be shared, and the registry would be counted and cleaned as that session's data.
+#[test]
+fn a_cargo_home_inside_the_owner_homes_is_refused() {
+    let rig = fake_remote::Rig::new("cargo-private", &["xmg"]);
+    let repo = repo_at(&rig.remote_root().join("..").join("loc"));
+    // Canonical, because the placement compares the host's own `readlink -f` answer with the owner
+    // homes under `$HOME`, and a temp directory behind a symlink would spell it two ways.
+    let private =
+        PathBuf::from(resolved(&rig.remote_root())).join(".letibot-home/s-cache01/.cargo");
+    std::fs::create_dir_all(&private).expect("a session's own cargo home");
+    let host = host_with(
+        &rig,
+        "xmg",
+        &format!("cargo_home = \"{}\"", private.display()),
+    );
+    let backend = place(&rig, &repo, host);
+    assert_eq!(
+        seen(&backend),
+        "W=[] C=[] H=[]",
+        "a path under the owner homes is one session's, never the machine's"
+    );
+    let said = backend.placement_notes().join("\n");
+    assert!(
+        said.contains("cargo_home") && said.contains("session's own home"),
+        "{said}"
+    );
+}
+
+/// A cargo home the ssh user cannot write is skipped too: a fetch that cannot land there is a build
+/// that fails, and this box's own writability is not the question — the host's user's is.
+#[test]
+fn a_cargo_home_that_the_host_cannot_write_is_skipped() {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = fake_remote::Rig::new("cargo-ro", &["xmg"]);
+    let repo = repo_at(&rig.remote_root().join("..").join("loc"));
+    let home = rig
+        .remote_root()
+        .parent()
+        .expect("the fake home")
+        .join("cargo-ro");
+    std::fs::create_dir_all(&home).expect("the cargo home");
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).expect("its mode");
+    // Root writes whatever the mode says, so the question this test asks has no answer there.
+    if std::fs::write(home.join("probe"), b"").is_ok() {
+        let _ = std::fs::remove_file(home.join("probe"));
+        eprintln!("skipped: this test runs as a user the mode bits do not bind");
+        return;
+    }
+    let host = host_with(&rig, "xmg", &format!("cargo_home = \"{}\"", home.display()));
+    let backend = place(&rig, &repo, host);
+    assert_eq!(seen(&backend), "W=[] C=[] H=[]");
+    let said = backend.placement_notes().join("\n");
+    assert!(
+        said.contains("cargo_home") && said.contains("is not writable"),
+        "{said}"
+    );
+}
+
+/// A host that declares none of the three is exactly what every host was before these keys: no
+/// variable, no grant, and nothing said about it.
 #[test]
 fn a_host_with_no_wrapper_carries_nothing() {
     let rig = fake_remote::Rig::new("cache-none", &["xmg"]);
     let repo = repo_at(&rig.remote_root().join("..").join("loc"));
     let host = host_with(&rig, "xmg", "");
     let backend = place(&rig, &repo, host);
-    assert_eq!(seen(&backend), "W=[] C=[]");
+    assert_eq!(seen(&backend), "W=[] C=[] H=[]");
     let said = backend.placement_notes().join("\n");
     assert!(
-        !said.contains("rustc_wrapper") && !said.contains("sccache"),
+        !said.contains("rustc_wrapper") && !said.contains("sccache") && !said.contains("cargo"),
         "a host that declares nothing must not be told a wrapper was skipped: {said}"
     );
 }

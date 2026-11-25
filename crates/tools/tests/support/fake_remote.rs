@@ -52,6 +52,10 @@ impl Rig {
         // One name in the argv is a machine that is down; everything else runs the command here,
         // with `HOME` on the fake remote. Matched on the HOSTNAME and never on the bare word: a
         // job directory named after the call would otherwise take a healthy host down.
+        //
+        // The four build variables are UNSET first: the far side is a machine of its own, and this
+        // process's `CARGO_HOME` is a fact about the box the test builds on, not about that host. A
+        // placement that sets one of them sets it on the command line, which is what a test reads.
         let script = format!(
             "#!/bin/bash\n\
              [ $# -eq 0 ] && exit 0\n\
@@ -61,6 +65,7 @@ impl Rig {
              \x20   echo 'ssh: Could not resolve hostname gone.invalid: Name or service not known' >&2\n\
              \x20   exit 255;;\n\
              esac\n\
+             unset CARGO_HOME RUSTC_WRAPPER SCCACHE_DIR CARGO_TARGET_DIR\n\
              export PATH={bin}:\"$PATH\"\n\
              export HOME={home}\n\
              for last; do :; done\n\

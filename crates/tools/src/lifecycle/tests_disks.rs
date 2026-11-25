@@ -1039,6 +1039,38 @@ fn only_homes_ledgers_and_fanout_dirs_are_removable() {
     assert!(!remote::removable_shape("/home/dead"));
 }
 
+/// The cargo home every session on a host shares is the MACHINE's, so it is not one of the three
+/// shapes a reaper removes and no holding row is ever written for it. The one spelling that would be
+/// a removable shape is the spelling the placement refuses, which is why it refuses it.
+#[test]
+fn a_shared_cargo_home_is_never_a_sessions_own_data() {
+    assert!(
+        !remote::removable_shape("/home/dead/.cargo"),
+        "a shared cargo home outside the owner homes is not a shape the reaper removes"
+    );
+    assert!(
+        remote::removable_shape("/r/.letibot-home/shared-cargo"),
+        "and one INSIDE the owner homes is, which is why `cargo_home` there is refused at the \
+         placement: the home would be counted and removed as one session's data"
+    );
+    // What a reaper does to a session's own home: `tmp` and `.cache`, and nothing else in it.
+    let owner = remote::RemoteOwner {
+        owner: "s-1".into(),
+        box_id: "lab2x1".into(),
+        kind: "session".into(),
+        created_ms: 1,
+        lease_ms: 2,
+        idle_ttl_ms: Some(1_800_000),
+        work: None,
+        ledger: None,
+    };
+    let script = remote::reap_script(Path::new("/r"), "/r/.letibot-home/s-1", &owner, 10);
+    assert!(
+        !script.contains(".cargo") && !script.contains("registry"),
+        "a reaper that named a cargo home would be reaping the one every session shares:\n{script}"
+    );
+}
+
 /// The gate build caches a box's roots hold are in the plan a person and a bridge agent read: a
 /// gate leaves no owner row, so without this the 223 GB of 2026-11-24 is in nobody's list.
 #[test]

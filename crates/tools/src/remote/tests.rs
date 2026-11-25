@@ -589,6 +589,46 @@ fn hosts_toml_reads_the_build_wrapper_and_its_cache() {
     assert!(why.contains("sccache_dir"), "{why}");
 }
 
+/// `cargo_home`: one path, the machine's, left as written for the far shell to expand — and unset by
+/// default, which is every session fetching its own copy of every crate.
+#[test]
+fn hosts_toml_reads_the_shared_cargo_home() {
+    let h = Hosts::parse("[host.xmg]\nhostname = \"xmg\"\ncargo_home = \"~/.cargo\"\n")
+        .expect("it parses");
+    assert_eq!(
+        h.get("xmg").expect("xmg").cargo_home.as_deref(),
+        Some("~/.cargo")
+    );
+
+    let plain = Hosts::parse("[host.a]\nhostname = \"a\"\n").expect("it parses");
+    assert!(plain.get("a").expect("a").cargo_home.is_none());
+    // It is read beside the two build-wrapper keys and not instead of them.
+    let both = Hosts::parse(
+        "[host.b]\nrustc_wrapper = \"/opt/bin/w\"\nsccache_dir = \"/c\"\ncargo_home = \"/r\"\n",
+    )
+    .expect("it parses");
+    let b = both.get("b").expect("b");
+    assert_eq!(b.cargo_home.as_deref(), Some("/r"));
+    assert_eq!(b.sccache_dir.as_deref(), Some("/c"));
+    assert_eq!(b.rustc_wrapper.as_deref(), Some("/opt/bin/w"));
+
+    // A typo is refused by name, and the list it is refused against names this key.
+    let why = Hosts::parse("[host.a]\ncargo_hom = \"/x\"\n").expect_err("a typo's refusal");
+    assert!(why.contains("cargo_hom"), "{why}");
+    assert!(why.contains("cargo_home"), "{why}");
+}
+
+/// A path is "under" a directory by its components and not by its bytes: `/a/cargo-bin` is not
+/// inside `/a/cargo`, and getting this wrong would leave a shared cargo home read-only.
+#[test]
+fn a_path_is_under_a_directory_by_its_components() {
+    assert!(super::under("/h/.cargo", "/h"));
+    assert!(super::under("/h/.cargo", "/h/.cargo"));
+    assert!(super::under("/h/.cargo/", "/h/.cargo"));
+    assert!(!super::under("/h/cargo-bin", "/h/cargo"));
+    assert!(!super::under("/h", "/h/.cargo"));
+}
+
 /// A link into the ssh directory is the ssh directory, after every symlink and for a path that
 /// does not exist yet: the rule is about the bytes, not the spelling.
 #[test]

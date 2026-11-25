@@ -25,6 +25,7 @@ pub const HOSTS: File = File {
                 k("never_touch", "list of names", "[]", "", "processes, compose projects and containers letibot never stops there", "[\"postgres\"]"),
                 k("rustc_wrapper", "path", "unset", "", "cargo's RUSTC_WRAPPER there, an sccache wrapper; unset means every build compiles cold", "\"~/.cargo/bin/sccache-rustc\""),
                 k("sccache_dir", "path", "unset", "", "the cache a confined session's view may write for that wrapper", "\"~/.cache/sccache\""),
+                k("cargo_home", "path", "unset", "", "that machine's cargo home, shared by every session placed there so one fetch and one compile cache serve them all; unset means each session keeps its own", "\"~/.cargo\""),
             ],
         },
         Table {
