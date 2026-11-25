@@ -25,6 +25,9 @@ fn inbox_seqs(link: &RoomLink) -> BTreeSet<u64> {
 
 #[test]
 fn gap_rows_older_than_the_open_cap_are_not_acked_away() {
+    // The data directory is this binary's own: the link keeps its cursor under it, and a test that
+    // leaves it unsaid writes into the operator's.
+    letibot_testenv::isolate_data();
     // SAFETY: first thing in the only test of this file, before the handle is read.
     unsafe { std::env::set_var(rooms::NAME_ENV, "cc@gapper") };
     let dir = std::env::temp_dir().join(format!("letibot-room-gap-{}", std::process::id()));

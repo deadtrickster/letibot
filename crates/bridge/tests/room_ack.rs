@@ -39,6 +39,9 @@ fn inbox(link: &RoomLink) -> Vec<u64> {
 
 #[test]
 fn a_row_the_model_has_not_taken_stays_in_the_inbox_until_it_is_seen() {
+    // The data directory is this binary's own: the link keeps its cursor under it, and a test that
+    // leaves it unsaid writes into the operator's.
+    letibot_testenv::isolate_data();
     // SAFETY: the first statement of the only test in this file, before the handle is read.
     unsafe { std::env::set_var(rooms::NAME_ENV, "cc@acker") };
     let dir = std::env::temp_dir().join(format!("letibot-room-ack-{}", std::process::id()));

@@ -95,33 +95,40 @@ fn refuses_default_store_given(flag: Option<&str>) -> bool {
     }
 }
 
-/// Panic when `path` is this process's default data directory or anything inside it, and this run
-/// may not open the store there. [`refuse_default_store_at`] with both facts read from the process.
+/// End the process when `path` is this process's default data directory or anything inside it, and
+/// this run may not open the store there.
+///
+/// It ends the process rather than panicking, because a store is opened from watcher, link and
+/// client threads nobody joins: there a panic is a test waiting for an answer that never comes.
 pub fn refuse_the_default_store(path: &Path) {
-    refuse_default_store_at(path, data_dir().as_deref(), refuses_default_store());
-}
-
-/// What [`refuse_the_default_store`] decides, with the path, the default data directory and the
-/// answer handed in. A path that does not exist yet is compared as its parent resolves, because a
-/// store's first open is the one that creates it.
-pub fn refuse_default_store_at(path: &Path, default: Option<&Path>, refuse: bool) {
-    if !refuse {
-        return;
-    }
-    let Some(default) = default else {
+    let Some(why) = refusal_at(path, data_dir().as_deref(), refuses_default_store()) else {
         return;
     };
-    let default = resolve(default);
+    // Printed before the abort, since an abort has no hook to say anything of its own.
+    eprintln!("\nletibot: {why}");
+    std::process::abort();
+}
+
+/// The refusal [`refuse_the_default_store`] acts on, with the path, the default data directory and
+/// the answer handed in: `None` means the open may go ahead. A path that does not exist yet is
+/// compared as its parent resolves, because a store's first open is the one that creates it.
+pub fn refusal_at(path: &Path, default: Option<&Path>, refuse: bool) -> Option<String> {
+    if !refuse {
+        return None;
+    }
+    let default = resolve(default?);
     let at = resolve(path);
-    assert!(
-        !(at == default || at.starts_with(&default)),
+    if at != default && !at.starts_with(&default) {
+        return None;
+    }
+    Some(format!(
         "`{}` is the default data directory `{}`, which a process under test must not open the \
          store in: the rows would outlive the test and read as real ones. Give the test its own \
          data directory (a tempdir in `XDG_DATA_HOME`, or `--store`), or set \
          {REFUSE_DEFAULT_STORE}=0 to mean this directory.",
         path.display(),
         default.display()
-    );
+    ))
 }
 
 /// `path` with its directory resolved where it exists: `..` and a symlinked parent cannot make the
@@ -201,11 +208,8 @@ mod tests {
             "/home/op/.local/share/letibot/projects/abc123.db",
         ];
         for case in cases {
-            let said = std::panic::catch_unwind(|| {
-                refuse_default_store_at(Path::new(case), Some(default), true)
-            });
-            let why = said.expect_err("the default data directory is refused");
-            let why = why.downcast_ref::<String>().cloned().unwrap_or_default();
+            let why = refusal_at(Path::new(case), Some(default), true)
+                .unwrap_or_else(|| panic!("{case} is the default data directory"));
             assert!(why.contains(REFUSE_DEFAULT_STORE), "{why}");
             assert!(why.contains(case), "{why}");
         }
@@ -213,15 +217,27 @@ mod tests {
             "/home/op/.local/share/letibot-other/sessions.db",
             "/tmp/x/sessions.db",
         ] {
-            refuse_default_store_at(Path::new(case), Some(default), true);
+            assert_eq!(
+                refusal_at(Path::new(case), Some(default), true),
+                None,
+                "{case}"
+            );
         }
         // The same paths with the flag off: nothing is refused, which is how the operator's own
         // daemon opens the store it is meant to open.
-        refuse_default_store_at(default, Some(default), false);
-        refuse_default_store_at(
-            Path::new("/home/op/.local/share/letibot/sessions.db"),
-            Some(default),
-            false,
+        assert_eq!(refusal_at(default, Some(default), false), None);
+        assert_eq!(
+            refusal_at(
+                Path::new("/home/op/.local/share/letibot/sessions.db"),
+                Some(default),
+                false
+            ),
+            None
+        );
+        // And nothing said about the default at all is nothing to refuse.
+        assert_eq!(
+            refusal_at(Path::new("/home/op/.local/share/letibot/x.db"), None, true),
+            None
         );
     }
 
@@ -233,15 +249,59 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         std::fs::create_dir_all(scratch.join("real/letibot-other")).unwrap();
         let through_dots = scratch.join("real/letibot/../letibot/sessions.db");
-        let said = std::panic::catch_unwind(|| {
-            refuse_default_store_at(&through_dots, Some(&scratch.join("real/letibot")), true)
-        });
-        assert!(said.is_err(), "a `..` spelling of the default is refused");
-        refuse_default_store_at(
-            &scratch.join("real/letibot-other/sessions.db"),
-            Some(&store),
-            true,
+        assert!(
+            refusal_at(&through_dots, Some(&store), true).is_some(),
+            "a `..` spelling of the default is refused"
+        );
+        assert_eq!(
+            refusal_at(
+                &scratch.join("real/letibot-other/sessions.db"),
+                Some(&store),
+                true
+            ),
+            None
         );
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// The door ENDS the process: a store is opened from threads a test never joins, and a refusal
+    /// there has to be a failure of the run rather than a thread somebody waits on for ever. Run as
+    /// a child of this binary, because an abort's only observable is how the process went.
+    #[test]
+    fn the_door_ends_the_process_rather_than_unwinding() {
+        const CHILD: &str = "LETIBOT_PATHS_ABORT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            // The child: `HOME` is the fixture, so the default data directory is the one below.
+            let dir = data_dir().expect("a data directory in this child");
+            refuse_the_default_store(&dir.join("shared.db"));
+            unreachable!("the door ends the process");
+        }
+        let root = std::env::temp_dir().join(format!("letibot-paths-abort-{}", std::process::id()));
+        let store = root.join(".local/share/letibot");
+        std::fs::create_dir_all(&store).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args([
+                "--exact",
+                "tests::the_door_ends_the_process_rather_than_unwinding",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", &root)
+            .env(REFUSE_DEFAULT_STORE, "1")
+            .env_remove("XDG_DATA_HOME")
+            .output()
+            .expect("the child runs");
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && out.status.code().is_none(),
+            "an abort, not an exit status: {:?} {said}",
+            out.status
+        );
+        assert!(said.contains("must not open the store in"), "{said}");
+        assert!(
+            said.contains(&store.join("shared.db").display().to_string()),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

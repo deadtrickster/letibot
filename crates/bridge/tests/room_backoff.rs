@@ -37,6 +37,9 @@ struct Fake {
 
 impl Fake {
     fn start(tag: &str, speaks: u16) -> Fake {
+        // The data directory is this binary's own: a bridge resolves its store and its seat marks
+        // from it, and a test that leaves it unsaid reaches the operator's.
+        letibot_testenv::isolate_data();
         // The handle is read once per process: these tests speak as the legacy handle.
         static NAME: std::sync::Once = std::sync::Once::new();
         NAME.call_once(|| {

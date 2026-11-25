@@ -58,6 +58,9 @@ struct Fixture {
 }
 
 fn fixture(tag: &str) -> Fixture {
+    // The data directory is this binary's own: the bridge resolves its store, its seat marks and
+    // its waiter files from it, and a test that leaves it unsaid reaches the operator's.
+    letibot_testenv::isolate_data();
     let root = testing::scratch_root().join(format!("lb-br-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let run = root.join("run");

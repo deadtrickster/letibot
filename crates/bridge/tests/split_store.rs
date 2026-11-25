@@ -38,6 +38,9 @@ impl Drop for TempDir {
 /// disagree with the split about what a set is. The folder is absolute and need not exist: the
 /// key is its path's hash, which is all a project file is named by.
 fn split_store(name: &str, folder: &Path) -> (TempDir, PathBuf) {
+    // The data directory is this binary's own: a bridge resolves its store and its seat marks from
+    // it, and a test that leaves it unsaid reaches the operator's.
+    letibot_testenv::isolate_data();
     let dir = TempDir(std::env::temp_dir().join(format!(
         "letibot-bridge-split-{name}-{}",
         std::process::id()

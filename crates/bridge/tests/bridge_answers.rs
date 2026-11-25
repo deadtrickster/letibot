@@ -70,6 +70,9 @@ struct World {
 }
 
 fn world(tag: &str, started_by_a_package: bool) -> World {
+    // The data directory is this binary's own: a bridge resolves its seat marks and its store from
+    // it, and a test that leaves it unsaid reaches the operator's.
+    letibot_testenv::isolate_data();
     let socket: PathBuf = letibot_sessionlog::testing::scratch_root()
         .join(format!("bridge-answers-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket);

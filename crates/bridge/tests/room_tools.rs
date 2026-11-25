@@ -123,6 +123,9 @@ impl Fake {
     /// The same, with the welcome held back - a coordinator that is slow to answer a hello, and
     /// the window in which a push could otherwise reach the socket first.
     fn start_after(tag: &str, greet_after: Duration) -> Fake {
+        // The data directory is this binary's own: a bridge resolves its store, its seat marks and
+        // its waiter files from it, and a test that leaves it unsaid reaches the operator's.
+        letibot_testenv::isolate_data();
         // The handle is read once per process: these tests speak as the legacy handle.
         static NAME: std::sync::Once = std::sync::Once::new();
         NAME.call_once(|| {

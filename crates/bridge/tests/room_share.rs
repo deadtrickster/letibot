@@ -12,6 +12,9 @@ use letibot_room::{Event, Request, Room, Seat, Speaker, room_name};
 
 #[test]
 fn the_waiter_joins_its_bridge_and_a_second_seat_is_suffixed() {
+    // The data directory is this binary's own: a seat's id and its marks are kept under it, and a
+    // test that leaves it unsaid writes into the operator's.
+    letibot_testenv::isolate_data();
     // SAFETY: first thing in the only test of this file, before the handle is read.
     unsafe { std::env::set_var(rooms::NAME_ENV, "cc@letibot") };
     let dir = std::env::temp_dir().join(format!("letibot-room-share-{}", std::process::id()));

@@ -102,6 +102,9 @@ struct Fake {
 
 impl Fake {
     fn start(tag: &str) -> Fake {
+        // The data directory is this binary's own: a bridge resolves its store, its seat marks and
+        // its waiter files from it, and a test that leaves it unsaid reaches the operator's.
+        letibot_testenv::isolate_data();
         // The handle is read once per process: these tests speak as the legacy handle, which is
         // the one the pushes below address.
         static NAME: std::sync::Once = std::sync::Once::new();
@@ -278,6 +281,7 @@ fn verdicts(lines: &[Value]) -> Vec<Value> {
 /// for one - and present when it is on.
 #[test]
 fn the_capability_is_declared_only_when_the_config_asks() {
+    letibot_testenv::isolate_data();
     let off = with_client(&Bridge::new(), |input, _| {
         input.send(INIT);
     });

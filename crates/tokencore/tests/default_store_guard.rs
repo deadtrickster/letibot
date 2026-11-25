@@ -1,57 +1,43 @@
 //! The guard: a process under test cannot open a store in the default data directory, because a
-//! row written there outlives the test and every later reader counts it as real. One test in the
-//! file, and it is the only one that sets a variable, so libtest's threads cannot race it.
+//! row written there outlives the test and every later reader counts it as real.
+//!
+//! A refusal ENDS the process, so a refusal is proved by running this binary once more as a child:
+//! an abort's only observable is how that process went. The doors that open are proved here.
 
 use letibot_tokencore::Store;
 
-/// The whole guard, through the doors the daemon and every fixture go through: the default data
-/// directory is refused by a test run and by the flag, the test's own directory never is, and a
-/// word from the run lets a debug build mean the default store.
+/// How a child was asked to open the store, and where its data directory is.
+const CHILD: &str = "LETIBOT_GUARD_CHILD";
+
 #[test]
-fn a_store_in_the_default_data_directory_is_refused_under_test() {
+fn a_store_in_the_default_data_directory_ends_the_process_and_creates_nothing() {
     let root = std::env::temp_dir().join(format!("letibot-store-guard-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("data/letibot")).unwrap();
-    std::fs::create_dir_all(root.join("scratch")).unwrap();
-    // SAFETY: this test binary has one test, so nothing else here reads the environment.
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", root.join("data"));
-        std::env::remove_var("LETIBOT_REFUSE_DEFAULT_STORE");
+
+    // `open`: the file's own door. `set`: the data DIRECTORY a daemon is handed.
+    for door in ["open", "set"] {
+        let out = run_child(Some(door), Some("1"), &root);
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && out.status.code().is_none(),
+            "{door} was refused by ending the process, not by an exit status: {:?} {said}",
+            out.status
+        );
+        assert!(
+            said.contains("must not open the store in")
+                && said.contains("LETIBOT_REFUSE_DEFAULT_STORE"),
+            "{door}: the refusal names the directory and the way out: {said}"
+        );
+        assert!(
+            !root.join("data/letibot/sessions.db").exists()
+                && !root.join("data/letibot/shared.db").exists(),
+            "{door}: nothing was created - the refusal comes before the open"
+        );
     }
 
-    // Unsaid, the profile answers: a debug build is a test or a debugging session, so it needs no
-    // ceremony from the agent running `cargo test`. A release build is the installed product.
-    let unsaid = std::panic::catch_unwind(|| Store::open(&root.join("data/letibot/unsaid.db")));
-    assert_eq!(
-        unsaid.is_err(),
-        cfg!(debug_assertions),
-        "the build profile decides when the flag says nothing"
-    );
-
-    // SAFETY: as above.
-    unsafe { std::env::set_var("LETIBOT_REFUSE_DEFAULT_STORE", "1") };
-    let refused = std::panic::catch_unwind(|| {
-        Store::open(&root.join("data/letibot/sessions.db")).map(|_| ())
-    })
-    .expect_err("the default data directory is refused");
-    let said = refused
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        said.contains("LETIBOT_REFUSE_DEFAULT_STORE"),
-        "the refusal says how to mean it: {said}"
-    );
-    assert!(
-        !root.join("data/letibot/sessions.db").exists(),
-        "nothing was created: the refusal comes before the open"
-    );
-    // The set's door, which is what a daemon is handed: a data DIRECTORY.
-    let set_refused =
-        std::panic::catch_unwind(|| Store::open_set(&root.join("data/letibot"), "abc"));
-    assert!(set_refused.is_err(), "a data directory is refused too");
-
     // The test's own directory is the whole point: it opens, and its file is there.
+    std::fs::create_dir_all(root.join("scratch")).unwrap();
     let own = Store::open(&root.join("scratch/sessions.db")).expect("a store of the test's own");
     assert_eq!(
         own.path().map(|p| p.file_name().unwrap().to_owned()),
@@ -59,16 +45,63 @@ fn a_store_in_the_default_data_directory_is_refused_under_test() {
     );
     drop(own);
 
-    // And the operator's own run: the same path, with the run saying this is meant.
-    // SAFETY: as above.
-    unsafe { std::env::set_var("LETIBOT_REFUSE_DEFAULT_STORE", "0") };
-    Store::open(&root.join("data/letibot/sessions.db"))
-        .expect("a person who means the default store may open it");
-
-    // SAFETY: as above; the test is over.
-    unsafe {
-        std::env::remove_var("LETIBOT_REFUSE_DEFAULT_STORE");
-        std::env::remove_var("XDG_DATA_HOME");
-    }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A run that MEANS the default store opens it: the same path, with the word that says so - which
+/// is how the operator's own daemon opens the directory it was installed for.
+#[test]
+fn a_run_that_means_the_default_store_opens_it() {
+    let root = std::env::temp_dir().join(format!("letibot-store-meant-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("data/letibot")).unwrap();
+    let out = run_child(Some("set"), Some("0"), &root);
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{said}");
+    assert!(
+        root.join("data/letibot/shared.db").is_file(),
+        "the set the run meant was opened: {said}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// This binary as a child: it opens the store through `door` and must not come back. Run here in
+/// the parent too, where nothing is asked of it, so the name is one test and not a second program.
+#[test]
+fn a_refused_door_comes_back_only_if_it_did_not_refuse() {
+    let Ok(door) = std::env::var(CHILD) else {
+        return;
+    };
+    let dir = letibot_paths::data_dir().expect("a data directory in this child");
+    match door.as_str() {
+        "open" => {
+            drop(Store::open(&dir.join("sessions.db")));
+        }
+        "set" => {
+            drop(Store::open_set(&dir, "abc"));
+        }
+        other => panic!("this child was asked to open through {other}"),
+    }
+}
+
+/// The child, with its data directory and the word the guard reads.
+fn run_child(
+    door: Option<&str>,
+    refuse: Option<&str>,
+    root: &std::path::Path,
+) -> std::process::Output {
+    std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "a_refused_door_comes_back_only_if_it_did_not_refuse",
+            "--nocapture",
+        ])
+        .env(CHILD, door.unwrap_or_default())
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env(
+            letibot_paths::REFUSE_DEFAULT_STORE,
+            refuse.unwrap_or_default(),
+        )
+        .output()
+        .expect("the child runs")
 }

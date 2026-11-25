@@ -371,3 +371,9 @@ an agent's `cargo test` needs no ceremony. `LETIBOT_REFUSE_DEFAULT_STORE=1` says
 release build, and `=0` says a debug run means the operator's store. The refusal comes before the
 open, so it creates nothing: a test that forgot its own data directory fails, rather than leaving
 rows that `letibot --sessions` afterwards shows beside the real ones.
+
+A refusal ENDS the process (the sentence on stderr, then an abort) rather than panicking. A store is
+opened from watcher, link and client threads a test never joins, where a panic is a test waiting for
+an answer that never comes; an abort cannot be missed by being on the wrong thread. Fix it by giving
+the test the data directory it means - `letibot_testenv::isolate_data()` for a bridge's seat, a
+tempdir in `XDG_DATA_HOME`, or `--store`.

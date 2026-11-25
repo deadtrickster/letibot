@@ -20,6 +20,9 @@ const WINDOW: Duration = Duration::from_millis(1000);
 fn seat_handle() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
+        // The data directory is this binary's own: a seat's board, its marks and its waiter files
+        // are all resolved from it, and a test that leaves it unsaid reaches the operator's.
+        letibot_testenv::isolate_data();
         // SAFETY: called before any test reads the handle, and only once in this process.
         unsafe {
             std::env::set_var(letibot_bridge::rooms::NAME_ENV, "cc@seat-todo");

@@ -35,6 +35,9 @@ impl Drop for Dir {
 
 /// A repository with a pushed `main`, an unpushed branch `ik/work`, and the daemon's store.
 fn fixture(tag: &str) -> (Dir, PathBuf, PathBuf, Bridge) {
+    // The data directory is this binary's own: a bridge resolves its store and its seat marks from
+    // it, and a test that leaves it unsaid reaches the operator's.
+    letibot_testenv::isolate_data();
     let dir = Dir(
         std::env::temp_dir().join(format!("letibot-bridge-queue-{tag}-{}", std::process::id()))
     );

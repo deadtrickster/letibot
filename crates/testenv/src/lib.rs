@@ -114,6 +114,9 @@ impl Drop for EnvGuard {
 /// Take the doors off this process and point its XDG dirs at a scratch of its own, once per test
 /// binary; answers the scratch. `HOME` stays, so read-only apparatus under it is found. For spawns
 /// this crate cannot reach (a tool, a shell, a library) and for config read through XDG.
+///
+/// [`isolate_data`] is the half that matters for the store, alone, for a test that means to read
+/// the operator's config.
 pub fn isolate() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -136,6 +139,26 @@ pub fn isolate() -> &'static Path {
         // directory, and a child spawned with an emptied environment would otherwise not know.
         g.set(letibot_paths::REFUSE_DEFAULT_STORE, "1");
         // Kept for the life of the process: the guard would put the doors back.
+        g.saved.clear();
+        dir
+    })
+}
+
+/// `$XDG_DATA_HOME` at a scratch of this binary's own, once per process, and the store doors saying
+/// they are under test; answers the scratch. The store, a room's marks and a daemon's socket key
+/// are all resolved from it, so a test that forgot it opens the operator's directory.
+///
+/// `XDG_CONFIG_HOME` is left alone on purpose: a test that reads the user's config means it.
+pub fn isolate_data() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("letibot-testenv-data-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the scratch XDG data dir");
+        let mut g = EnvGuard::lock();
+        g.set("XDG_DATA_HOME", &dir);
+        // A child spawned from here is under test too, and a release test build needs the word the
+        // debug profile answers by itself.
+        g.set(letibot_paths::REFUSE_DEFAULT_STORE, "1");
         g.saved.clear();
         dir
     })
