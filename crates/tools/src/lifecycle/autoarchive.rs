@@ -140,13 +140,14 @@ fn rule_for(s: &SessionStub, f: &Facts, now_ms: i64) -> Option<(Settled, i64)> {
             None => (Settled::Abandoned, at),
         });
     }
-    // A package whose worktree is gone: nothing on this box can open it again, and no owner row is
-    // needed - an old package predates the origin column and its row, so the tree it was opened in
-    // is the only fact left. A gone folder that is NOT a worktree is never one of these: it may be a
-    // conversation somebody moved off this disk, and hiding that is not a rule's to do. The
-    // disappearance has no timestamp, so the session's own start stands for it.
+    // A worktree that is gone: nothing on this box can open it again, and no owner row is needed -
+    // an old package predates the origin column and its row, so the tree it was opened in is the
+    // only fact left. Every worktree shape counts (`is_worktree_path`), a Claude Code one included.
+    // A gone folder that is NOT a worktree is never one of these: it may be a conversation somebody
+    // moved off this disk, and hiding that is not a rule's to do. The disappearance has no
+    // timestamp, so the session's own start stands for it.
     if !Path::new(&s.workspace_root).exists()
-        && super::worktree::is_package_worktree(&s.workspace_root)
+        && super::worktree::is_worktree_path(&s.workspace_root)
     {
         return Some((Settled::WorktreeGone, s.created_ms));
     }

@@ -545,3 +545,55 @@ fn a_gone_worktree_is_archived_and_a_live_or_plain_folder_is_kept() {
     assert_eq!(out.len(), 1, "one row was picked: {out:?}");
     assert_eq!(out[0].rule, Settled::WorktreeGone);
 }
+
+/// Every shape a worktree is made in on this box, gone and live. A package's worktree is
+/// `wt/<pkg>` or its `wt-*` sibling; git puts one under `worktrees/`, and Claude Code under
+/// `.claude/worktrees/<branch>` - the 60 folders that filled the Mac's listing. Live is work and
+/// stays; a gone folder of no shape at all is still nobody's rule.
+#[test]
+fn every_worktree_shape_is_archived_when_gone_and_kept_when_live() {
+    let d = Dir::new("worktree-shapes");
+    let shapes = [
+        ("pkg", "lab/s-1/wt/pkg-a"),
+        ("sibling", "lab/s-1/wt-2"),
+        ("git", "Projects/stroppy-io/worktrees/stroppy-rust"),
+        (
+            "claude",
+            "Projects/stroppy-conformity/.claude/worktrees/tidy-3",
+        ),
+        ("plain", "Projects/letibot/gone"),
+        // Named `worktrees` but with nothing under it: the directory, not a tree cut from one.
+        ("bare", "Projects/worktrees"),
+    ];
+    let live = d.0.join("live");
+    for (_, rel) in shapes {
+        std::fs::create_dir_all(live.join(rel)).expect("one live tree of each shape");
+    }
+    let store = Store::open_set(&d.0, "aaaaaaaaaaaa").expect("a set");
+    for (tag, rel) in shapes {
+        session(
+            &store,
+            &format!("s-{tag}-gone"),
+            None,
+            d.0.join("gone").join(rel).to_str().expect("utf-8"),
+        );
+        session(
+            &store,
+            &format!("s-{tag}-live"),
+            None,
+            live.join(rel).to_str().expect("utf-8"),
+        );
+    }
+    let out = run(&store, &autoarchive::no_daemon, true);
+    for (tag, _) in shapes {
+        let gone = reason_of(&store, &format!("s-{tag}-gone"));
+        let live = reason_of(&store, &format!("s-{tag}-live"));
+        let is_worktree = !matches!(tag, "plain" | "bare");
+        assert_eq!(
+            gone.as_deref(),
+            is_worktree.then_some("worktree gone"),
+            "`{tag}`, gone: {out:?}"
+        );
+        assert_eq!(live, None, "`{tag}`, live: a tree on disk is work: {out:?}");
+    }
+}

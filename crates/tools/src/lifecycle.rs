@@ -59,8 +59,8 @@ pub use remote::{
 pub use systemd::{NoManager, Systemd, UnitManager, UnitTable};
 pub use worktree::{
     Archived, OWNER_FILE, Place, Restored, STAMP_KEY, WIP_MAX_BYTES, archive_and_remove, archives,
-    branch_name, drop_archive, is_package_worktree, make as make_worktree, package_dir,
-    proved as worktree_proved, refs_under, restore as restore_worktree, restore_path,
+    branch_name, drop_archive, is_package_worktree, is_worktree_path, make as make_worktree,
+    package_dir, proved as worktree_proved, refs_under, restore as restore_worktree, restore_path,
     stamp as stamp_worktree, stamped_owner, under as worktrees_under,
 };
 /// The file an owner root carries: the owner id, this box, the kind and the lease. It is what a

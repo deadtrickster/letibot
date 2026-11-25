@@ -74,6 +74,25 @@ pub fn is_package_worktree(workspace: &str) -> bool {
     })
 }
 
+/// Is this a path a worktree lives at, by the conventions this box meets? [`is_package_worktree`]
+/// plus the two every other tool uses: `worktrees/<name>` (git's) and `.claude/worktrees/<name>`
+/// (Claude Code's, where the folder is a branch). Only a GONE folder is a rule's to act on, and
+/// the caller decides that - a shape test cannot see a disk.
+pub fn is_worktree_path(workspace: &str) -> bool {
+    if is_package_worktree(workspace) {
+        return true;
+    }
+    // A `worktrees` component with something under it. Both conventions name the worktree itself
+    // below that directory, so the pair is what says "a tree cut from another one".
+    let parts: Vec<&std::ffi::OsStr> = Path::new(workspace)
+        .components()
+        .map(|c| c.as_os_str())
+        .collect();
+    parts
+        .windows(2)
+        .any(|w| w[0].to_string_lossy() == "worktrees")
+}
+
 /// What making or adopting one left.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
