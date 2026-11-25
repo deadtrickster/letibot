@@ -1282,6 +1282,236 @@ fn held_live_and_unsettled_owners_keep_their_remote_dirs() {
         .status();
 }
 
+/// Age a directory and the build names in it past the pass's own floor, so a test never waits the
+/// hour and a half a real pass does: the gate is read on the host's clock, from `stat`.
+fn backdate(p: &Path) {
+    let secs = (std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs();
+    let mut at: Vec<PathBuf> = vec![p.to_path_buf()];
+    for name in ["target", "build", "tmp", ".cache"] {
+        at.push(p.join(name));
+    }
+    for one in at.iter().filter(|one| one.exists()) {
+        let out = std::process::Command::new("touch")
+            .args(["-d", &format!("@{secs}"), &one.display().to_string()])
+            .output()
+            .expect("touch");
+        assert!(out.status.success(), "touch {}: {out:?}", one.display());
+    }
+}
+
+/// A host this store has holdings on, whose one recorded owner is HELD: the pass reaches the host,
+/// keeps everything that owner recorded, and the only dirs left for it to act on are the ones no
+/// row and no home explains.
+fn host_with_a_held_owner(f: &Fixture, store: &Store, id: &str) -> Vec<PathBuf> {
+    let paths = remote_fixture(f, store, id, OwnerState::Settled);
+    let mut row = store.owner(id).unwrap().expect("its owner row");
+    row.held_until_ms = Some(0);
+    store.put_owner(&row).unwrap();
+    paths
+}
+
+/// **Done when** a checkout whose owner home is gone loses its build output in one pass and keeps
+/// every file of its tree: what xmg held 650G of was these `target`s, and a source is not output.
+/// The checkout itself stays - no row here proves its branch is home - and the pass says so.
+#[test]
+fn an_orphan_checkouts_build_output_goes_and_its_sources_stay() {
+    let f = Fixture::new("orphan-checkout");
+    let places = f.places();
+    let store = f.store();
+    host_with_a_held_owner(&f, &store, "s-20");
+    // A placement whose home was removed - by an older build, or by hand - leaves the tree behind
+    // and no stamp that explains it.
+    let orphan = host_checkout(&f, "s-77");
+    let short = crate::remote::short_branch_id("s-77");
+    assert!(
+        !remote::owner_root(Path::new(&f.at("host").display().to_string()), "s-77").exists(),
+        "no home names this checkout"
+    );
+    f.file(&format!("host/repo/{short}/src/main.rs"), 512);
+    f.file(&format!("host/repo/{short}/target/debug/blob"), 8192);
+    backdate(&orphan);
+
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+
+    assert!(
+        !orphan.join("target").exists(),
+        "its build output is gone: {:#?}",
+        report.acts
+    );
+    assert!(
+        orphan.join("src/main.rs").exists(),
+        "a file in the tree is not output"
+    );
+    assert!(
+        orphan.join("a.txt").exists(),
+        "nor is a tracked file, dirty or not"
+    );
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains("no owner row on this box names that checkout"),
+        "the pass says why the tree stays: {kept}"
+    );
+    let act = report
+        .acts
+        .iter()
+        .find(|a| a.owner == short)
+        .unwrap_or_else(|| panic!("no act for {short}: {:#?}", report.acts));
+    assert_eq!(act.kind, "target", "{act:#?}");
+    assert!(act.bytes >= 8192, "{act:#?}");
+    assert_eq!(act.host.as_deref(), Some("lubuntu2"));
+    // Logged in the journal every other act goes through, with what it was worth.
+    let events = store.reap_events_of(&short).expect("the journal");
+    let event = events
+        .iter()
+        .find(|e| e.act == "remove")
+        .unwrap_or_else(|| panic!("nothing journalled for {short}: {events:#?}"));
+    assert!(
+        event.said.contains("KiB")
+            && event
+                .handle
+                .as_deref()
+                .is_some_and(|h| h.ends_with("/target")),
+        "{event:#?}"
+    );
+}
+
+/// A checkout a live process stands in is being worked in, whatever its build output's age says: the
+/// cwd is read before the clock, and the line names the pid that kept it.
+#[test]
+fn a_checkout_a_process_stands_in_is_kept() {
+    let f = Fixture::new("orphan-held");
+    let places = f.places();
+    let store = f.store();
+    host_with_a_held_owner(&f, &store, "s-24");
+    let orphan = host_checkout(&f, "s-78");
+    let short = crate::remote::short_branch_id("s-78");
+    let blob = f.file(&format!("host/repo/{short}/target/debug/blob"), 8192);
+    backdate(&orphan);
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .current_dir(&orphan)
+        .spawn()
+        .expect("a process standing in the checkout");
+
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+    let pid = child.id();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        blob.exists(),
+        "nothing removed a tree a process stands in: {:#?}",
+        report.acts
+    );
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains(&format!("a process works in it (pid {pid})")),
+        "{kept}"
+    );
+}
+
+/// A checkout a fresh lease covers is the home box's business, whatever its age: the lease is the
+/// owner's own clock, and a box that is renewing it is a box whose build output is still needed.
+#[test]
+fn a_checkout_inside_a_live_lease_is_kept() {
+    let f = Fixture::new("orphan-leased");
+    let places = f.places();
+    let store = f.store();
+    let paths = remote_fixture(&f, &store, "s-25", OwnerState::Closed);
+    let checkout = host_checkout_path(&f, "s-25");
+    let short = crate::remote::short_branch_id("s-25");
+    let blob = f.file(&format!("host/repo/{short}/target/debug/blob"), 8192);
+    backdate(&checkout);
+
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+
+    assert!(
+        blob.exists() && checkout.join("target").exists(),
+        "a live lease keeps its build output: {:#?}",
+        report.acts
+    );
+    assert!(
+        paths[0].join("target").exists() && paths[0].join(OWNER_JSON).exists(),
+        "and its home, stamp and all"
+    );
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains("its lease on that host was renewed"),
+        "{kept}"
+    );
+}
+
+/// **Done when** a fanout call's work dir that no row records is reaped once nothing works in it and
+/// it is past the floor, while one a process stands in stays - and a dir a held owner recorded is
+/// that owner's business, not the pass's.
+#[test]
+fn a_fanout_dir_nobody_records_is_reaped_and_a_live_one_kept() {
+    let f = Fixture::new("fanout-orphan");
+    let places = f.places();
+    let store = f.store();
+    let recorded = host_with_a_held_owner(&f, &store, "s-26")[2].clone();
+    let old = f.at("host/fanout-call_1");
+    f.file("host/fanout-call_1/out.log", 4096);
+    let live = f.at("host/fanout-call_2");
+    f.file("host/fanout-call_2/out.log", 4096);
+    backdate(&old);
+    backdate(&live);
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .current_dir(&live)
+        .spawn()
+        .expect("a branch standing in its work dir");
+
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+    let pid = child.id();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        !old.exists(),
+        "the work dir of a fanout whose job is over is gone: {:#?}",
+        report.acts
+    );
+    assert!(
+        live.join("out.log").exists(),
+        "one a branch still stands in stays"
+    );
+    assert!(
+        recorded.exists(),
+        "{} is recorded, so it is its owner's business",
+        recorded.display()
+    );
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains(&format!("a process works in it (pid {pid})")),
+        "{kept}"
+    );
+    let act = report
+        .acts
+        .iter()
+        .find(|a| a.owner == "fanout-call_1")
+        .unwrap_or_else(|| panic!("no act for fanout-call_1: {:#?}", report.acts));
+    assert_eq!(act.kind, "fanout", "{act:#?}");
+    assert!(act.bytes >= 4096, "{act:#?}");
+    assert_eq!(
+        store
+            .reap_events_of("fanout-call_1")
+            .expect("the journal")
+            .iter()
+            .filter(|e| e.act == "remove")
+            .count(),
+        1,
+        "one line, and it says what it was worth"
+    );
+}
+
 /// The host's shared paths are never removed, however a row spells them: `cargo_home` is the
 /// registry every session on that machine fetches into, and a reaped one is everybody's cold build.
 #[test]

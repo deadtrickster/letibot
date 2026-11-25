@@ -530,11 +530,32 @@ the tree and says which of the three failed: **a merged and clean checkout is st
 not home**, and uncommitted work is never traded for bytes. That is why the checkout is not needed for
 `letibot gc --restore` - what restore reads is `refs/letibot/archive/<owner>/…` in *this* box's repository.
 
+**What no home and no row explains is found by listing the root, not by reading a stamp.** `owner.json` is what
+names an owner home, so a checkout whose home was removed by hand (or by a build that removed whole homes), and a
+checkout made before the owner scheme, were named by nothing at all: on xmg 2026-11-25, 22 of them held about
+650G - `sessions-list-tidy-2/08150654/target` alone was 276G - and about 250 `fanout-call_*` dirs sat beside them.
+The host's own pass therefore lists every directory at the root too - `<root>/<repo>/<short>` (a `.git` in it) and
+`<root>/fanout-<call>` - and never a mirror (`*.git`), the merge gate's own `<root>/gate/`, an `askpass` helper or
+a hidden directory.
+
+Such a directory is reaped only under both of two rules, and both are read on that machine: **no process's cwd is
+inside it** (one `/proc/*/cwd` scan for the whole pass, compared against the directory and its resolved path), and
+**nothing has written it for `idle_ttl + 1 h`** (`stat` against that host's own `date`, never this box's clock). A
+directory whose own mtime cannot be read is kept. Then a fanout work dir goes whole - it is where its branches
+ran, not what they made - while a checkout loses only `target`, `target-*`, `build`, `tmp` and `.cache`:
+**its sources stay**. The checkout itself goes only under the rule above, which needs a store row to prove the
+branch home; with no row naming it, the tree stays and the pass says so on the spot. Nothing a holding row already
+records is looked at twice - that directory is its owner's business, and the owner's rule is the one above.
+
 **What the operator sees.** The plan (`letibot gc`) lists a settled owner's remote holdings with the size the
 last pass measured and a verdict naming the machine, so the 985G is in somebody's list before anything is
 removed; a live owner's rows are kept whatever their size. `letibot gc --now` prints one line per freed
 path (`s-… target on xmg remove — a build regenerates it, and its branch is home (549G)`), and the pass's
-summary counts it in `freed`. The journal keeps every one of them.
+summary counts it in `freed`. The journal keeps every one of them, with the bytes.
+
+A directory no row records has no owner to name its line after, so its own name stands in that place
+(`08150654 target on xmg remove — no owner home on that host names it (276G)`); that is what a search of the
+journal finds it by, and it is not a session id.
 
 ## The supervisor, and work across hosts
 

@@ -619,12 +619,24 @@ pub(super) fn remote_hosts(
         }
         by_host.entry(host.clone()).or_default().push(row);
     }
+    // The rows a checkout's branch is proved home against. A pass that is one owner's sweeps nothing
+    // of nobody's: it holds no row for the others' checkouts, and a directory it cannot prove is one
+    // it does not touch.
+    let owners = store.owners()?;
+    let provable = if only.is_none() {
+        Some(owners.as_slice())
+    } else {
+        None
+    };
     for (host, rows) in by_host {
         let root = remote::root_of(&rows).unwrap_or_default();
         // What this host shares with every session on it: `cargo_home`, `sccache_dir` and the
         // wrapper's own directory. A row naming one is refused by name, never by shape alone.
         let shared = ops.hands.shared_paths(&host);
-        match remote::host_pass(&host, &root, &*ops.hands, now) {
+        // What this store already records there: a recorded dir is its owner's business, and the
+        // orphan half of the pass leaves it to that owner.
+        let known: Vec<String> = rows.iter().map(|r| r.handle.clone()).collect();
+        match remote::host_pass(&host, &root, &*ops.hands, &known, provable, now) {
             Ok(pass) => {
                 absorb(store, &pass, now, report)?;
                 // The bundle comes home in the same pass when the owner's repository is known
@@ -925,7 +937,7 @@ fn sweep_home(
     report: &mut Pass,
 ) -> StoreResult<Sweeped> {
     let checkout = match store.owner(owner)? {
-        Some(row) => checkout_state(host, &row),
+        Some(row) => remote::owner_checkout(host, &row),
         None => remote::Checkout::Stays("no owner row here says whose branch to look for"),
     };
     let script = remote::sweep_script(owner, home, ledgers, Some(checkout));
@@ -941,7 +953,13 @@ fn sweep_home(
         Ok(sweep) => {
             for (path, bytes) in sweep.freed {
                 let kind = remote::freed_kind(&path).to_string();
-                let why = "a build regenerates it, and its branch is home";
+                let why = match kind.as_str() {
+                    "checkout" => {
+                        "its branch is home, its tree is clean, and no other branch holds a commit \
+                         it lacks"
+                    }
+                    _ => "a build regenerates it, and nothing in it is work",
+                };
                 report.acts.push(Act {
                     owner: owner.to_string(),
                     kind: kind.clone(),
@@ -972,21 +990,6 @@ fn sweep_home(
             report.kept.push(format!("{owner} on {host}: {why}"));
             Ok(Sweeped::Refused(why))
         }
-    }
-}
-
-/// What a settled owner's checkout on `host` may do, as this box can prove it: its branch is home
-/// here, or the checkout is the only copy of that work and stays.
-fn checkout_state(host: &str, owner: &OwnerRow) -> remote::Checkout {
-    let Some(repo) = owner.repo.as_deref() else {
-        return remote::Checkout::Stays(
-            "this owner names no repository here to prove its branch in",
-        );
-    };
-    if crate::remote::branch_home(Path::new(repo), host, &owner.id) {
-        remote::Checkout::MayGo
-    } else {
-        remote::Checkout::Stays("its branch is not home here yet, so the checkout is the only copy")
     }
 }
 
@@ -1042,6 +1045,14 @@ fn measure_remote(
 fn absorb(store: &Store, pass: &HostPass, now: i64, report: &mut Pass) -> StoreResult<()> {
     for a in &pass.acts {
         report.acts.push(a.clone());
+        // A removal is journalled with what it freed: a line that says only `removed` cannot be
+        // argued with a month later, and the size is the whole reason the pass ran.
+        let said = match (a.act, a.bytes) {
+            (ReapAct::Remove | ReapAct::Down, bytes) if bytes > 0 => {
+                format!("{} ({})", a.said, human_bytes(bytes))
+            }
+            _ => a.said.clone(),
+        };
         store.put_reap_event(&ReapEvent {
             at_ms: now,
             owner_id: a.owner.clone(),
@@ -1049,7 +1060,7 @@ fn absorb(store: &Store, pass: &HostPass, now: i64, report: &mut Pass) -> StoreR
             host: Some(pass.host.clone()),
             handle: Some(a.handle.clone()),
             act: a.act.word().into(),
-            said: a.said.clone(),
+            said,
             by: format!("the host's own pass on {}", pass.host),
         })?;
     }

@@ -13,13 +13,19 @@
 //! stays so the home is still attributable to an owner. The checkout goes only when every commit in
 //! it is somewhere else and its tree is clean, because the branch is the work.
 //!
+//! **What no home and no row explains is found by listing the root.** A checkout whose home was
+//! removed, or one made before the owner scheme, and a `fanout-<call>` dir whose row was never
+//! written, are [`Orphan`]s: [`list_script`] names every directory beside the homes, and
+//! [`orphans_script`] frees one only where no process's cwd is inside it and nothing has written it
+//! for an idle TTL plus an hour - both read on that host's clock. A checkout keeps its sources.
+//!
 //! Leases are compared as "seconds since the last renewal by this box's clock", so clock skew
 //! between two machines does not matter: what is compared is an age, never two wall clocks.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use letibot_tokencore::store::{HoldingRow, ReapAct};
+use letibot_tokencore::store::{HoldingRow, OwnerRow, ReapAct};
 
 use super::reap::{Act, Hands};
 
@@ -166,9 +172,12 @@ pub fn sweep_script(
                 Checkout::MayGo => checkout_of("\"$work\"", None),
                 Checkout::Stays(why) => checkout_of("\"$work\"", Some(why)),
             };
+            // The checkout's own build output too: a tree kept for the work a bundle cannot carry
+            // still holds the `target` that filled the disk, and nothing regenerates it from there.
             format!(
                 "work=$(sed -n 's/.*\"work\":\"\\([^\"]*\\)\".*/\\1/p' \"$home/owner.json\" \
-                 2>/dev/null)\nif [ -n \"$work\" ]; then\n{block}fi\n"
+                 2>/dev/null)\nif [ -n \"$work\" ]; then\n{block}{free}fi\n",
+                free = sweep_of("\"$work\"")
             )
         }
     };
@@ -183,6 +192,127 @@ pub fn sweep_script(
         sweep = sweep_of("\"$home\""),
         tree = tree,
     )
+}
+
+/// A directory at a host root that no owner home explains, and the rule that frees it. No em dash
+/// of an owner's: a checkout keeps its sources unless this box can prove the branch is home, and a
+/// fanout's work dir is scratch that holds no branch at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Orphan {
+    /// A fanout call's work dir, `<root>/fanout-<call>`: where its branches ran, not what they made.
+    Work { path: String },
+    /// A placement's checkout: its build output goes, and the tree itself only when this box proved
+    /// the branch is home.
+    Checkout {
+        path: String,
+        may_go: Checkout,
+        why: &'static str,
+    },
+}
+
+impl Orphan {
+    pub fn path(&self) -> &str {
+        match self {
+            Orphan::Work { path } | Orphan::Checkout { path, .. } => path,
+        }
+    }
+
+    /// What the journal calls what went: `fanout` for a work dir whole, and the name of the output
+    /// for a checkout, whose tree may have gone whole as `checkout`.
+    fn kind(&self, freed: &str) -> &'static str {
+        match self {
+            Orphan::Work { .. } => "fanout",
+            Orphan::Checkout { .. } => freed_kind(freed),
+        }
+    }
+
+    fn why(&self) -> &'static str {
+        match self {
+            Orphan::Work { .. } => {
+                "no process works in it and nothing has written it for the least a pass waits: a \
+                 fanout's work dir is where its branches ran, not what they made"
+            }
+            Orphan::Checkout { why, .. } => why,
+        }
+    }
+}
+
+/// How long a directory no owner record explains is left alone: the idle TTL every stamp names plus
+/// the same hour's grace a lease gets. Read on the HOST's own clock (`date` against `stat`), so two
+/// machines' clocks are never subtracted from each other.
+pub const ORPHAN_FLOOR_S: i64 = (DEFAULT_IDLE_TTL_MS + LEASE_GRACE_MS) / 1000;
+
+/// The script that frees what nobody owns on a host: every `/proc/<pid>/cwd` read once for the
+/// whole pass, then each candidate kept while a process stands in it or while anything has written
+/// it inside [`ORPHAN_FLOOR_S`], and otherwise its build output - or, for a checkout this box could
+/// prove the branch of, the tree. A checkout it could not stays, and the line says why.
+pub fn orphans_script(root: &Path, orphans: &[Orphan]) -> String {
+    let mut s = format!(
+        "root={root}\n\
+         # Every cwd a process holds, read once: a tree no process stands in is a tree nothing is\n\
+         # building in, and a 250-directory pass must not walk /proc 250 times.\n\
+         cwds=$(mktemp 2>/dev/null || echo \"${{TMPDIR:-/tmp}}/letibot-cwds-$$\")\n\
+         : > \"$cwds\"\n\
+         for f in /proc/[0-9]*/cwd; do\n\
+         \x20 t=$(readlink \"$f\" 2>/dev/null) || continue\n\
+         \x20 [ -n \"$t\" ] || continue\n\
+         \x20 k=${{f#/proc/}}\n\
+         \x20 printf '%s\\t%s\\n' \"${{k%/cwd}}\" \"$t\"\n\
+         done >> \"$cwds\" 2>/dev/null\n",
+        root = crate::remote::expand_root(&root.display().to_string())
+    );
+    for o in orphans {
+        let action = match o {
+            Orphan::Work { .. } => "n=$(du -sk \"$p\" 2>/dev/null | awk '{print $1}')\n\
+                 chmod -R u+w \"$p\" 2>/dev/null\n\
+                 rm -rf \"$p\" 2>/dev/null\n\
+                 if [ -e \"$p\" ]; then printf 'KEPT %s could not be removed\\n' \"$p\"\n\
+                 else printf 'FREED %s %s\\n' \"${n:-0}\" \"$p\"; fi\n"
+                .to_string(),
+            Orphan::Checkout { may_go, .. } => {
+                let take = match may_go {
+                    Checkout::MayGo => checkout_of("\"$p\"", None),
+                    Checkout::Stays(why) => checkout_of("\"$p\"", Some(why)),
+                };
+                format!("{take}{}", sweep_of("\"$p\""))
+            }
+        };
+        s.push_str(&format!(
+            "p={p}\n\
+             if [ -d \"$p\" ]; then\n\
+             \x20 rp=$(cd \"$p\" 2>/dev/null && pwd -P)\n\
+             \x20 held=$(awk -F'\\t' -v p=\"$p\" -v r=\"$rp\" \
+\
+             '$2==p || index($2, p \"/\")==1 || (r != \"\" && ($2==r || index($2, r \"/\")==1)) {{print $1; exit}}' \
+\
+             \"$cwds\" 2>/dev/null)\n\
+             \x20 newest=$(stat -c %Y \"$p\" 2>/dev/null)\n\
+             \x20 if [ -n \"$held\" ]; then\n\
+             \x20   printf 'KEPT %s a process works in it (pid %s)\\n' \"$p\" \"$held\"\n\
+             \x20 elif [ -z \"$newest\" ]; then\n\
+             \x20   printf 'KEPT %s its own last write could not be read, and not being able to tell \
+             is a reason to keep\\n' \"$p\"\n\
+             \x20 else\n\
+             \x20   for c in \"$p\"/target \"$p\"/target-* \"$p\"/build \"$p\"/tmp \"$p\"/.cache; do\n\
+             \x20     [ -e \"$c\" ] || [ -L \"$c\" ] || continue\n\
+             \x20     n=$(stat -c %Y \"$c\" 2>/dev/null) || continue\n\
+             \x20     [ -n \"$n\" ] && [ \"$n\" -gt \"$newest\" ] && newest=$n\n\
+             \x20   done\n\
+             \x20   age=$(( $(date +%s) - newest ))\n\
+             \x20   if [ \"$age\" -lt {floor} ]; then\n\
+             \x20     printf 'KEPT %s nothing has written it for %s s, and {floor} s is the least\\n' \
+             \"$p\" \"$age\"\n\
+             \x20   else\n\
+             {action}\x20   fi\n\
+             \x20 fi\n\
+             fi\n",
+            p = crate::remote::quote(o.path()),
+            floor = ORPHAN_FLOOR_S,
+            action = action,
+        ));
+    }
+    s.push_str("rm -f \"$cwds\" 2>/dev/null\n");
+    s
 }
 
 /// What one sweep answered: what it freed, each path with the bytes it was worth, and what it kept
@@ -297,8 +427,11 @@ pub fn owner_root(root: &Path, owner: &str) -> PathBuf {
     root.join(crate::remote::HOME_DIR).join(owner)
 }
 
-/// The one round trip that lists a host's owner roots: every `owner.json` under `.letibot-home`,
-/// with its path on one line and its content on the next.
+/// The one round trip that lists a host's owner roots and what sits beside them: every `owner.json`
+/// under `.letibot-home`, with its path on one line and its content on the next, then every
+/// directory a placement or a fanout left at the root - `<root>/<repo>/<short>` and
+/// `<root>/fanout-<call>`. The second half is the whole point: a checkout whose home was removed,
+/// or which was made before the owner scheme, is named here or by nothing at all.
 pub fn list_script(root: &Path) -> String {
     format!(
         "root={root}\n\
@@ -307,10 +440,129 @@ pub fn list_script(root: &Path) -> String {
          \x20 printf 'F %s\\n' \"$f\"\n\
          \x20 tr -d '\\n' < \"$f\"\n\
          \x20 printf '\\n'\n\
-         done\n",
+         done\n\
+         # A root this box could not name is no root: `root=` would glob the far side's `/`.\n\
+         if [ -n \"$root\" ]; then\n\
+         for d in \"$root\"/*/ \"$root\"/*/*/; do\n\
+         \x20 [ -d \"$d\" ] || continue\n\
+         \x20 p=${{d%/}}\n\
+         # The homes, the ledgers, the archive, the mirrors, the merge gate's own caches and the\n\
+         # askpass helpers are not a placement's tree, and none of them is a candidate.\n\
+         \x20 case \"$p\" in \"$root\"/.*|\"$root\"/*.git|\"$root\"/gate/*|\"$root\"/askpass/*) continue ;; esac\n\
+         \x20 name=${{p##*/}}\n\
+         \x20 case \"$name\" in\n\
+         \x20   fanout-?*) printf 'D {work} %s\\n' \"$p\" ;;\n\
+         \x20   *) if [ -e \"$p/.git\" ]; then printf 'D {checkout} %s\\n' \"$p\"; fi ;;\n\
+         \x20 esac\n\
+         done\n\
+         fi\n",
         root = crate::remote::expand_root(&root.display().to_string()),
-        home = crate::remote::HOME_DIR
+        home = crate::remote::HOME_DIR,
+        work = DirShape::Work.word(),
+        checkout = DirShape::Checkout.word(),
     )
+}
+
+/// A directory at a host root that is not an owner home: a fanout call's work dir, or a placement's
+/// checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootDir {
+    pub path: String,
+    pub shape: DirShape,
+}
+
+/// The two things a placement or a fanout leaves at a host root, each reaped by a different rule: a
+/// fanout's work dir is scratch a call made, and a checkout is a branch of somebody's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirShape {
+    Work,
+    Checkout,
+}
+
+impl DirShape {
+    fn word(self) -> &'static str {
+        match self {
+            DirShape::Work => "work",
+            DirShape::Checkout => "checkout",
+        }
+    }
+
+    fn of(word: &str) -> Option<DirShape> {
+        match word {
+            "work" => Some(DirShape::Work),
+            "checkout" => Some(DirShape::Checkout),
+            _ => None,
+        }
+    }
+}
+
+/// The `D <shape> <path>` lines of a listing: what a host root holds besides its homes.
+pub fn parse_dirs(listed: &str) -> Vec<RootDir> {
+    let mut out = Vec::new();
+    for line in listed.lines() {
+        let Some(rest) = line.trim().strip_prefix("D ") else {
+            continue;
+        };
+        let Some((shape, path)) = rest.split_once(' ') else {
+            continue;
+        };
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if let Some(shape) = DirShape::of(shape) {
+            out.push(RootDir {
+                path: path.to_string(),
+                shape,
+            });
+        }
+    }
+    out
+}
+
+/// The name a directory at a host root is known by: a checkout's short id, or `fanout-<call>`. An
+/// orphan's journal line carries this where a recorded dir's carries its owner's id.
+fn label_of(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+}
+
+/// What this box can prove about one owner's checkout on `host`: its branch came home as
+/// `remote/<host>/<short>`, or the checkout is the only copy of that work and stays.
+pub fn owner_checkout(host: &str, owner: &OwnerRow) -> Checkout {
+    let Some(repo) = owner.repo.as_deref() else {
+        return Checkout::Stays(
+            "this owner names no repository on this box to prove its branch in",
+        );
+    };
+    if crate::remote::branch_home(Path::new(repo), host, &owner.id) {
+        Checkout::MayGo
+    } else {
+        Checkout::Stays("its branch is not home here yet, so the checkout is the only copy")
+    }
+}
+
+/// The same question about a checkout named only by its short id, which is all a checkout whose home
+/// is gone leaves to ask with. No row naming it is a checkout this box cannot prove anything about.
+fn checkout_verdict(owners: &[OwnerRow], host: &str, label: &str) -> Checkout {
+    match owners
+        .iter()
+        .find(|o| crate::remote::short_branch_id(&o.id) == label)
+    {
+        Some(owner) => owner_checkout(host, owner),
+        None => Checkout::Stays(
+            "no owner row on this box names that checkout, so its branch cannot be proved home",
+        ),
+    }
+}
+
+/// Is this owner's lease still young enough to be somebody's? The one rule both halves of a host
+/// pass use, so a checkout and the home beside it are never judged by two different clocks.
+fn lease_fresh(owner: &RemoteOwner, now: i64) -> bool {
+    let ttl = owner.idle_ttl_ms.unwrap_or(DEFAULT_IDLE_TTL_MS);
+    now.saturating_sub(owner.lease_ms) < ttl.saturating_add(LEASE_GRACE_MS)
 }
 
 /// The script that ends one stale owner's compute, frees its build output, takes its checkout when
@@ -357,8 +609,12 @@ pub fn reap_script(root: &Path, home: &str, owner: &RemoteOwner, now: i64) -> St
          # 3. the owner home's build output: what a build regenerates, and the bytes that filled\n\
          #    xmg. `owner.json` and everything else in the home stay, so it is still attributable.\n\
          {free}\n\
-         # 4. the checkout, when the bundle above is the copy of it.\n\
+         # 4. the checkout, when the bundle above is the copy of it, and its own build output when\n\
+         #    it stays for work a bundle cannot carry.\n\
          {checkout}\n\
+         # 5. the checkout's own build output, when the tree stayed for work a bundle cannot carry.\n\
+         if [ -n \"$work\" ] && [ -d \"$work\" ]; then\n\
+         {workfree}fi\n\
          if [ -n \"$bundled\" ]; then printf 'SAID swept and bundled, lease %s ms old\\n' \"{age}\"; fi\n",
         root = crate::remote::expand_root(&root.display().to_string()),
         home = crate::remote::quote(home),
@@ -368,22 +624,35 @@ pub fn reap_script(root: &Path, home: &str, owner: &RemoteOwner, now: i64) -> St
         work = crate::remote::quote(&work),
         free = sweep_of("\"$home\""),
         checkout = checkout,
+        workfree = sweep_of("\"$work\""),
         age = now.saturating_sub(owner.lease_ms),
     )
 }
 
 /// One host's own pass. `Err` is a host this box could not ask: the caller marks its holdings
 /// `lost` and removes nothing local for it.
-pub fn host_pass(host: &str, root: &Path, hands: &dyn Hands, now: i64) -> Result<HostPass, String> {
+///
+/// `known` is what this store already records on that host: a recorded dir is its owner's business,
+/// and the orphan half never touches one. `owners` is the store's owner rows, or `None` on a pass
+/// that is one owner's - a checkout's branch can only be proved home against a row, so a one-owner
+/// pass names none and sweeps nothing of nobody's.
+pub fn host_pass(
+    host: &str,
+    root: &Path,
+    hands: &dyn Hands,
+    known: &[String],
+    owners: Option<&[OwnerRow]>,
+    now: i64,
+) -> Result<HostPass, String> {
     let mut pass = HostPass {
         host: host.to_string(),
         ..HostPass::default()
     };
     let listed = hands.host_command(host, &list_script(root))?;
-    for (home, owner) in parse_listing(&listed) {
-        let ttl = owner.idle_ttl_ms.unwrap_or(DEFAULT_IDLE_TTL_MS);
+    let homes = parse_listing(&listed);
+    for (home, owner) in &homes {
         let age = now.saturating_sub(owner.lease_ms);
-        if age < ttl.saturating_add(LEASE_GRACE_MS) {
+        if lease_fresh(owner, now) {
             pass.kept.push(format!(
                 "{}: its lease was renewed {} ago, so the home box is alive and this is its business",
                 owner.owner,
@@ -399,11 +668,131 @@ pub fn host_pass(host: &str, root: &Path, hands: &dyn Hands, now: i64) -> Result
                 owner.owner, owner.box_id
             ));
         }
-        let said = hands.host_command(host, &reap_script(root, &home, &owner, now))?;
+        let said = hands.host_command(host, &reap_script(root, home, owner, now))?;
         absorb(&mut pass, &owner.owner, &said);
         pass.reaped.push(owner.owner.clone());
     }
+    if let Some(owners) = owners {
+        // What this host shares with every session on it is refused by name here too, exactly as
+        // the rows are: a directory nobody owns is still not the machine's cache to lose.
+        let mut refused = known.to_vec();
+        refused.extend(hands.shared_paths(host));
+        let orphans = orphan_dirs(&homes, &listed, &refused, owners, host, now, &mut pass);
+        sweep_orphans(host, root, hands, &orphans, &mut pass);
+    }
     Ok(pass)
+}
+
+/// What a host root holds that no owner home explains, and that nothing here records: a checkout
+/// whose home is gone or whose lease is stale, and a fanout call's work dir with no row. A dir a
+/// home's fresh lease covers is kept with the reason, and so is a checkout this box cannot prove.
+fn orphan_dirs(
+    homes: &[(String, RemoteOwner)],
+    listed: &str,
+    known: &[String],
+    owners: &[OwnerRow],
+    host: &str,
+    now: i64,
+    pass: &mut HostPass,
+) -> Vec<Orphan> {
+    let mut out = Vec::new();
+    for dir in parse_dirs(listed) {
+        let recorded = known
+            .iter()
+            .any(|k| dir.path == *k || dir.path.starts_with(&format!("{k}/")));
+        if recorded {
+            continue;
+        }
+        let label = label_of(&dir.path);
+        match dir.shape {
+            DirShape::Work => out.push(Orphan::Work { path: dir.path }),
+            DirShape::Checkout => {
+                // A home explains a checkout by the tree its stamp NAMES, and by its name: a
+                // placement names the home after the short id, and an older one may not.
+                let home = homes.iter().find(|(h, owner)| {
+                    owner.work.as_deref() == Some(dir.path.as_str())
+                        || label_of(h) == label
+                        || crate::remote::short_branch_id(&owner.owner) == label
+                });
+                let why = match home {
+                    Some((_, owner)) if lease_fresh(owner, now) => {
+                        pass.kept.push(format!(
+                            "{label}: its checkout {} stays, its lease on that host was renewed {} \
+                             ago",
+                            dir.path,
+                            super::human_millis(now.saturating_sub(owner.lease_ms).max(0) as u64)
+                        ));
+                        continue;
+                    }
+                    Some(_) => "its lease on that host is `idle_ttl + 1 h` old",
+                    None => "no owner home on that host names it",
+                };
+                let may_go = checkout_verdict(owners, host, label);
+                if let Checkout::Stays(why) = may_go {
+                    pass.kept.push(format!(
+                        "{label}: the checkout at {} keeps its sources - {why}",
+                        dir.path
+                    ));
+                }
+                out.push(Orphan::Checkout {
+                    path: dir.path,
+                    may_go,
+                    why,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Free what nobody owns on that host, one removal at the disk's own budget, and fold what it
+/// answers into the pass. A host that did not answer is said, never guessed at.
+fn sweep_orphans(
+    host: &str,
+    root: &Path,
+    hands: &dyn Hands,
+    orphans: &[Orphan],
+    pass: &mut HostPass,
+) {
+    if orphans.is_empty() {
+        return;
+    }
+    let said = match hands.host_removal(host, &orphans_script(root, orphans)) {
+        Ok(said) => said,
+        Err(e) => {
+            pass.kept.push(format!(
+                "{host}: the dirs nobody owns could not be swept ({e}), so nothing of them was \
+                 touched"
+            ));
+            return;
+        }
+    };
+    match parse_sweep(&said) {
+        Ok(sweep) => {
+            for (path, bytes) in sweep.freed {
+                // A freed path is a candidate's own dir (a fanout work dir whole) or one of its
+                // build names, so the longest candidate it sits under is the one it belongs to.
+                let owner = orphans
+                    .iter()
+                    .filter(|o| path == o.path() || path.starts_with(&format!("{}/", o.path())))
+                    .max_by_key(|o| o.path().len());
+                let Some(o) = owner else { continue };
+                pass.acts.push(Act {
+                    owner: label_of(o.path()).to_string(),
+                    kind: o.kind(&path).to_string(),
+                    host: Some(host.to_string()),
+                    handle: path.clone(),
+                    act: ReapAct::Remove,
+                    said: o.why().to_string(),
+                    bytes,
+                });
+            }
+            pass.kept.extend(sweep.kept);
+        }
+        Err(pids) => pass.kept.push(format!(
+            "{host}: the dirs nobody owns were left alone: a process was reported there (pid {pids})"
+        )),
+    }
 }
 
 /// One script's answer, folded into the pass: `ACT`, `BUNDLE`, `FREED`, `KEPT` and `SAID` lines,

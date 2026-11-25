@@ -136,7 +136,7 @@ Older backlog:
 | R217 | Session rows: one line each, with a gutter mark, an age, a detail line and paging | Code work | built (af0de414e); left: the counter is a list position, not `session n of N`; `home`/`end` unbound on the picker |
 | R219 | Quick asks: `alt-k` sends a preset's prompt with the place, and the answer comes back as marks | Code work | built (5ee322a69); left: `alt-k k` sets no `ask`, the tint ends with the running turn, presets cannot ship per project |
 | R223 | The daemon's minute sweep runs the reaper's disk half, remote hosts included, once a minute per daemon | Code work | built (3af2084b3); left: measure one disk sweep's cost (wall time, ssh connections, store load) |
-| R228 | Remote hosts keep every placed session's home, jobs ledger and fanout dirs | Code work | built (e30635163); left: the Done-when test against `fake_remote`, dirs written before the ledger have no rows |
+| R228 | Remote hosts keep every placed session's home, jobs ledger and fanout dirs | Code work | built (e30635163 + the orphan pass); left: the Done-when test against `fake_remote` |
 | R227 | /build filled to 100%: every gate and package kept its own 190-300G target dir | Code work | built (f95103baa); left: nothing calls `gc --targets --now` at a landing, close or reap; no gate free-space floor |
 | R280 | Retry jitter, a no-network budget, interruptible store waits, and the provider's refusal kept (plan 1.29, 1.30, R275's item) | Code work | built (dbe4c3b9c, e22f23c16); left: the compaction and reseat ladders do not take the budget |
 | R230 | One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection | Code work | built (ac83835eb); left: raw `connection()`/`connection_of()` writes are unladdered and hold the connection up to 5 s |
@@ -1612,7 +1612,7 @@ Two changes. First, the gate script and the package tooling reuse a target dir (
 
 ## R228 - Remote hosts keep every placed session's home, jobs ledger and fanout dirs
 
-**Status:** mostly built, 2026-11-15 (branch `r228-remote`). left (sweep 2026-11-16): landed e30635163; left: dirs written before it have no rows - a fanout made while the store was unset is unrecorded - old remote worktree copies are kept - the Done-when test against `fake_remote` is not written.
+**Status:** mostly built, 2026-11-15 (branch `r228-remote`). left (sweep 2026-11-16): landed e30635163; left: the Done-when test against `fake_remote` is not written. Built since: 83f7f9358 (a settled owner's build output, and its checkout once the branch is home) and the pass for what no home and no row explains.
 
 Found on 2026-11-14. Under `~/letibot-remote/` on the fleet hosts: `.letibot-home/<id>` had 356 dirs and about 297G on lubuntu1, one of them a 154G tmp; `.letibot-jobs/<id>` ledgers; `fanout-call_*` work dirs, 858 on lubuntu1 and 3131 removed on lubuntu3; and old worktree copies (`wt-r121env` alone was 111G). Nothing removes any of them when a placed session ends. Cleaned by hand the same day: lubuntu1 97% to 74%, lubuntu2 81% to 76%, lubuntu3 74% to 60%.
 
@@ -1625,6 +1625,22 @@ Fix: once an owner's bundle has been fetched home (or there was no work to bundl
 Built: `lifecycle/remote.rs` (`remove_script`, `measure_script`, `removable_shape`, `remote_holdings`), `reap/disks.rs` (`removable`, `remove_remote`, `measure_remote`). Two bugs found on the way: `list_script` quoted a `~/` root, so the host pass listed nothing on a real host, and `reap_script` looked for `.letibot-home/<owner id>` while the placement names it after the short id. Tests in `lifecycle/tests_disks.rs` run the pass against a loopback shell host: a settled owner's four dirs (home with a read-only module cache, two ledgers, a fanout dir) are gone, a held, a closed and a live-process owner keep theirs, and the listing has their sizes. Left: dirs written before this build have no rows (a one-off sweep by `owner.json` and `fanout-*` age would catch them), and the R228 done-when's end-to-end fake_remote placement test is not written.
 
 **Done when:** a test against the fake remote (`crates/tools/tests/support/fake_remote.rs`) places a session, runs a fanout, closes the session, runs the pass past the grace, and finds no home, ledger or fanout dir left, including one that holds a read-only module cache.
+
+### The dirs written before the ledger had rows, 2026-11-25
+
+Two kinds of directory on a host were named by nothing: a checkout whose owner home was gone (removed by hand, or by a build that removed whole homes) or that predated the owner scheme, and a `fanout-<call>` work dir whose `fanout` row was never written or was swept with its owner. The host's own pass walked `.letibot-home` only, so those kept their `target` for ever. On xmg that morning: 22 checkouts, about 650G - `sessions-list-tidy-2/08150654/target` alone 276G, `two-gates/58112581/target` 126G - plus about 250 `fanout-call_*` dirs at the root.
+
+Built: `lifecycle/remote.rs` (`RootDir`/`DirShape` and the root half of `list_script`, `parse_dirs`, `Orphan`, `orphans_script`, `owner_checkout`, `checkout_verdict`, and `host_pass`'s orphan half), `reap/disks.rs` (`orphan_dirs`' inputs: the handles the store records on that host, and the owner rows; the journal line now carries the bytes). The rules, each read on the HOST's clock:
+
+- **Nothing a row records is looked at twice.** A dir a holding row names is its owner's business, and the owner's own rule (above) is the one that reaps it.
+- **No process's cwd inside it.** One `/proc/*/cwd` scan per pass, compared against the dir and its resolved path; `readlink` cannot see another user's process, and an unread cwd is unknown rather than held.
+- **Nothing has written it for `idle_ttl + 1 h`** (`ORPHAN_FLOOR_S`), the newest of the dir and its five build names. A dir whose own mtime cannot be read is kept: not being able to tell is a reason to keep.
+- **A checkout keeps its sources.** `target`, `target-*`, `build`, `tmp`, `.cache` go; the tree goes only when this box can prove the branch is home, from its store row's repository (`remote/<host>/<id>`), its tree clean and no other branch ahead of it. With no row naming the checkout, the tree stays and the pass says why. A `fanout-<call>` dir goes whole - it is where its branches ran, not what they made - and its line carries its own name in place of an owner's, because it has none.
+- The 30 minute budget is unchanged (`REMOVAL_BOUND`): the orphan sweep is one `host_removal` per host, and every removal is journalled with its size.
+
+Tests (`lifecycle/tests_disks.rs`, each fails on the commit before this one): `an_orphan_checkouts_build_output_goes_and_its_sources_stay`, `a_checkout_a_process_stands_in_is_kept`, `a_checkout_inside_a_live_lease_is_kept`, `a_fanout_dir_nobody_records_is_reaped_and_a_live_one_kept`.
+
+Left: a host this box has no holding on at all is never asked (the pass walks the hosts the store records), so a checkout on a machine whose rows are all gone is still named by nothing; the listing names a checkout by the `.git` in it, so a pre-owner-scheme copy without one is not seen.
 
 ## R230 - One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection
 
