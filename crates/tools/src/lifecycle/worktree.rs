@@ -53,6 +53,27 @@ pub fn package_dir(package: &str) -> Result<String, String> {
     Ok(name)
 }
 
+/// Is this workspace a package's worktree - a tree [`make`] cut, rather than a folder somebody
+/// opened a conversation in? Two shapes: `<gc root>/<box>/<owner>/wt/<package>`, and the
+/// `wt-<something>` sibling a second tree of one owner gets. An owner is a session id, so the mark
+/// is a `wt…` directory directly under one. A row written before `session.origin` existed has no
+/// other trace of what it was, and a listing or an archive rule that guesses "the operator's" for
+/// it offers a finished package's brief as a conversation to continue.
+pub fn is_package_worktree(workspace: &str) -> bool {
+    let parts: Vec<&std::ffi::OsStr> = Path::new(workspace)
+        .components()
+        .map(|c| c.as_os_str())
+        .collect();
+    parts.windows(2).any(|w| {
+        let name = w[1].to_string_lossy();
+        match name == "wt" {
+            // `<gc root>/<box>/<owner>/wt/<package>`: the owner is the directory `wt` sits in.
+            true => w[0].to_string_lossy().starts_with("s-"),
+            false => name.starts_with("wt-") && name.len() > 3,
+        }
+    })
+}
+
 /// What making or adopting one left.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {

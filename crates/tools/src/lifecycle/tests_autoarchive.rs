@@ -421,3 +421,55 @@ fn a_review_tree_names_its_row() {
     );
     assert_eq!(autoarchive::review_row_of_tree("/repo"), None);
 }
+
+/// A package whose worktree is gone is put out of sight, with no owner row and no origin: those
+/// are the oldest packages, saved before the column existed. A worktree still on disk is work and
+/// stays, and a gone folder that is no worktree stays too - it may be a conversation somebody
+/// moved off this disk, and hiding that is not a rule's to do.
+#[test]
+fn a_gone_worktree_is_archived_and_a_live_or_plain_folder_is_kept() {
+    let d = Dir::new("worktree-gone");
+    let live = d.0.join("lab/s-1/wt/pkg-live");
+    std::fs::create_dir_all(&live).expect("a live worktree");
+    let store = Store::open_set(&d.0, "aaaaaaaaaaaa").expect("a set");
+    session(&store, "s-live", None, live.to_str().expect("utf-8"));
+    session(
+        &store,
+        "s-gone",
+        None,
+        d.0.join("gone/s-1/wt/pkg-gone").to_str().expect("utf-8"),
+    );
+    session(
+        &store,
+        "s-moved",
+        None,
+        d.0.join("moved-away").to_str().expect("utf-8"),
+    );
+
+    // The backfill's door is the same sweep with no writer: it lists the row first.
+    let dry = autoarchive::sweep(&store, &here(), &autoarchive::no_daemon, 0, LATER, None);
+    assert!(
+        dry.iter()
+            .any(|d| d.id == "s-gone" && !d.archived && d.rule == Settled::WorktreeGone),
+        "a dry run names the row it would hide: {dry:?}"
+    );
+
+    let out = run(&store, &autoarchive::no_daemon, true);
+    assert_eq!(
+        reason_of(&store, "s-gone").as_deref(),
+        Some("worktree gone"),
+        "a package whose tree is gone is not a conversation to reopen: {out:?}"
+    );
+    assert_eq!(
+        reason_of(&store, "s-live"),
+        None,
+        "a worktree still on disk is work: {out:?}"
+    );
+    assert_eq!(
+        reason_of(&store, "s-moved"),
+        None,
+        "a gone folder that is no worktree may be the operator's: {out:?}"
+    );
+    assert_eq!(out.len(), 1, "one row was picked: {out:?}");
+    assert_eq!(out[0].rule, Settled::WorktreeGone);
+}

@@ -31,6 +31,8 @@ pub enum Settled {
     Superseded(String),
     /// A reviewer whose row moved on with no verdict from it and nobody after it.
     ReviewAbandoned,
+    /// A package whose worktree is no longer on this disk: there is nothing left to reopen.
+    WorktreeGone,
 }
 
 impl Settled {
@@ -45,6 +47,7 @@ impl Settled {
             Settled::Abandoned => "abandoned".into(),
             Settled::Superseded(by) => format!("superseded by {by}"),
             Settled::ReviewAbandoned => "review abandoned".into(),
+            Settled::WorktreeGone => "worktree gone".into(),
         }
     }
 }
@@ -137,6 +140,16 @@ fn rule_for(s: &SessionStub, f: &Facts, now_ms: i64) -> Option<(Settled, i64)> {
             None => (Settled::Abandoned, at),
         });
     }
+    // A package whose worktree is gone: nothing on this box can open it again, and no owner row is
+    // needed - an old package predates the origin column and its row, so the tree it was opened in
+    // is the only fact left. A gone folder that is NOT a worktree is never one of these: it may be a
+    // conversation somebody moved off this disk, and hiding that is not a rule's to do. The
+    // disappearance has no timestamp, so the session's own start stands for it.
+    if !Path::new(&s.workspace_root).exists()
+        && super::worktree::is_package_worktree(&s.workspace_root)
+    {
+        return Some((Settled::WorktreeGone, s.created_ms));
+    }
     None
 }
 
@@ -225,10 +238,16 @@ fn reviewer_rule(s: &SessionStub, f: &Facts, now_ms: i64) -> Option<(Settled, i6
 }
 
 /// The operator's own conversations are never archived by a rule: a top-level session nothing
-/// automatic opened.
+/// automatic opened. A row that RECORDED `operator` is theirs whatever its folder is; a row that
+/// recorded nothing is theirs unless it sits in a package's worktree - a package's session from
+/// before the origin column has no other mark, and is not a conversation anybody continues.
 fn operators_own(s: &SessionStub, owner: Option<&OwnerRow>) -> bool {
     let automatic_owner = owner.is_some_and(|o| o.kind != OwnerKind::Session);
-    s.parent_id.is_none() && s.origin.as_deref().is_none_or(|o| o == "operator") && !automatic_owner
+    let theirs = match s.origin.as_deref().filter(|o| !o.is_empty()) {
+        Some(origin) => origin == "operator",
+        None => !super::worktree::is_package_worktree(&s.workspace_root),
+    };
+    s.parent_id.is_none() && theirs && !automatic_owner
 }
 
 /// The project files beside a store's file. The store itself is read too, for its own tables.
