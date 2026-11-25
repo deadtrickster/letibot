@@ -3072,13 +3072,16 @@ impl Store {
     /// canonical path is a syscall per DISTINCT folder, not per row, because a store's rows are
     /// mostly one project's.
     fn fill_name_keys(&self) -> Result<()> {
-        let rows: Vec<(
+        /// `(id, title, workspace_root, workspace_canon, name_slug)`, the five columns the fill
+        /// reads.
+        type Keyed = (
             String,
             Option<String>,
             String,
             Option<String>,
             Option<String>,
-        )> = {
+        );
+        let rows: Vec<Keyed> = {
             let conn = self.conn();
             let mut st = conn.prepare(
                 "SELECT id, title, workspace_root, workspace_canon, name_slug FROM session",

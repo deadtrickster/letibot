@@ -164,7 +164,7 @@ fn a_new_session_named_twice_is_refused_and_names_the_holder() {
     // attaches to it first, which is exactly what opening it means.
     {
         let (mut head, hello, _reader) = HeadClient::attach(
-            &home.join("d.sock"),
+            home.join("d.sock"),
             &first,
             0,
             "tui",

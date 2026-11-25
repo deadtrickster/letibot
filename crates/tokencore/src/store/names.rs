@@ -185,7 +185,7 @@ pub fn meaning_of(rows: &[super::StoredSession], name: &str) -> Meaning {
         .cloned()
         .collect();
     if !prefixes.is_empty() {
-        prefixes.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+        prefixes.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
         return Meaning::Prefixes(prefixes);
     }
     let mut away: Vec<Named> = named
@@ -196,7 +196,7 @@ pub fn meaning_of(rows: &[super::StoredSession], name: &str) -> Meaning {
     if away.is_empty() {
         return Meaning::Nothing;
     }
-    away.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+    away.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
     Meaning::Archived(away)
 }
 
