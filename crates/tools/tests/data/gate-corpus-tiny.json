@@ -128,5 +128,18 @@
     "baseline": "ask — intents [write_file] over []",
     "shape": null,
     "arguments_json": "{\"path\":\"src/lib.rs\",\"old_string\":\"a\",\"new_string\":\"b\"}"
+  },
+  {
+    "request_id": "adj-s-tiny-2-0007",
+    "session_id": "s-tiny-2",
+    "decided_ms": 5700,
+    "tool": "bash",
+    "mode": "writes allowed",
+    "tier": "may_approve",
+    "verdict": "selected",
+    "verdict_by": "gate:mode",
+    "baseline": "ask — intents [read_file write_file] over [temp unbounded] — the meaning was never resolved (1 construct(s); each scope is the widest it could reach)",
+    "shape": "head <args> > <args>",
+    "arguments_json": "{\"command\":\"head -1 src/lib.rs > $(mktemp)\"}"
   }
 ]

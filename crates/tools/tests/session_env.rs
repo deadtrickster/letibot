@@ -87,8 +87,12 @@ fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
         .with_pinned_shell("a test fixture: the trailer is what is being measured")
         .with_session(env);
     let b = Baseline::of_command("cat $LT_DIR/file", &surroundings);
+    // The splice is the claim: a reader's `$VAR` resolves the CALL either way since 2026-11-26, so
+    // `resolved` alone would pass this test without the shell's answer being read at all.
     assert!(
-        b.resolved,
+        b.command
+            .as_ref()
+            .is_some_and(|n| n.source.contains(&format!("{}/file", target.display()))),
         "the value the shell reported did not resolve: {:?}",
         b.findings
     );
@@ -154,9 +158,14 @@ fn an_unset_on_a_later_line_stops_resolving() {
     let sur = Surroundings::from_env(dir.display().to_string())
         .with_pinned_shell("a test fixture")
         .with_session(later);
+    // Asked of the TEXT: since 2026-11-26 a `$VAR` handed to a reader resolves the CALL whether or
+    // not the shell still holds it, and what this test is about is the splice.
     assert!(
-        !Baseline::of_command("cat $LT_GONE/x", &sur).resolved,
-        "a name the shell no longer holds still resolved"
+        Baseline::of_command("cat $LT_GONE/x", &sur)
+            .command
+            .as_ref()
+            .is_some_and(|n| n.source.contains("$LT_GONE")),
+        "a name the shell no longer holds was still written out"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

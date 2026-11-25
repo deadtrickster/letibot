@@ -3071,10 +3071,13 @@ impl Baseline {
             }
         }
         let substituted = fixed.notes;
+        // The constructs this reading resolves although the grammar could not: a substitution whose
+        // inner command only reads, and a `$VAR` in an argument of one. See [`resolved_by_rule`].
+        let resolved = resolved_by_rule(&n, env);
         let mut b = Baseline {
             write_targets: Vec::new(),
             command: None,
-            resolved: n.is_resolved(),
+            resolved: !n.partial && resolved.len() == n.unresolved.len(),
             grant_program: None,
             programs: Vec::new(),
             grant_program_weight: None,
@@ -3160,7 +3163,7 @@ impl Baseline {
                     n.unresolved_report()
                 ),
             };
-        } else if !n.is_resolved() {
+        } else if !b.resolved {
             // Recorded, and it is what a reader gets instead of a refusal: the same report
             // the refusal would carry - byte offsets, the construct, the known prefix -
             // because that is what makes the row auditable.
@@ -3171,6 +3174,22 @@ impl Baseline {
                 n.stages.len(),
                 n.unresolved.len(),
                 n.unresolved_report()
+            ));
+        } else if !resolved.is_empty() {
+            // Read, not spelled out: the run-time value is still unknown - so each word widens
+            // exactly as it did - but what produces it is a command this reading already has.
+            let mut said: Vec<String> = resolved
+                .iter()
+                .filter_map(|at| n.unresolved.get(*at))
+                .map(|u| format!("{} {:?} at {}", u.construct.as_str(), u.text, u.span))
+                .collect();
+            said.sort();
+            b.findings.push(format!(
+                "{} construct(s) the grammar could not spell out are resolved by rule: what \
+                 produces each value is a command in this same reading, and it only reads ({}). \
+                 The value is still unknown, so each word widens as it did",
+                said.len(),
+                said.join(", ")
             ));
         }
 
@@ -3256,6 +3275,12 @@ impl Baseline {
         }
         for u in &n.unresolved {
             if let Some(prefix) = &u.known_prefix {
+                // Only a prefix that IS a path places anything: `TARGET=$CARGO_TARGET_DIR` knows
+                // the word `TARGET=`, which is not a place, and placing it made a read-only
+                // `echo` reach outside the workspace and ask.
+                if !prefix.starts_with('/') && !prefix.starts_with('~') && !prefix.contains('/') {
+                    continue;
+                }
                 let r = env.region_of(prefix);
                 if r.is_secret() {
                     b.note_secret_prefix(prefix, &r);
@@ -5141,6 +5166,107 @@ fn stage_intents(s: &Stage) -> Vec<Intent> {
     v
 }
 
+// Constructs the gate resolves although the grammar cannot
+
+/// How many substitutions deep a command substitution is still read: `$(a $(b $(c)))` is three.
+/// A cap rather than a walk without one, because each level is another command whose meaning is
+/// one construct further from the text.
+const SUBSTITUTION_DEPTH: usize = 3;
+
+/// The constructs this reading resolves although the grammar could not spell their value out.
+///
+/// The value is not what the gate asks: a substitution's inner command is a stage of its own, read
+/// and placed like any other, so what it DOES is in this reading either way. The operator's ruling
+/// (2026-11-26): a substitution whose inner command only reads resolves to that command's class, and
+/// a plain `$VAR` is fine as an argument to a program that only reads. A substitution in command
+/// position, a word in a redirect target, and a word consumed by a writing program stay unresolved -
+/// there the value decides what runs where no stage of this reading shows it.
+///
+/// Every resolved construct still widens its scope exactly as it did: a value nobody can name could
+/// reach anything, and closing that is not this rule's job.
+fn resolved_by_rule(n: &Normalised, env: &Surroundings) -> BTreeSet<usize> {
+    (0..n.unresolved.len())
+        .filter(|at| resolves(n, *at, SUBSTITUTION_DEPTH, env))
+        .collect()
+}
+
+fn resolves(n: &Normalised, at: usize, depth: usize, env: &Surroundings) -> bool {
+    let Some(u) = n.unresolved.get(at) else {
+        return false;
+    };
+    // A word whose known prefix already lands in a secret store is not resolved: the tail is
+    // unknown and every path with that prefix is secret, so the finding that says so has to
+    // survive as an unresolved reading rather than be smoothed over by a read-only neighbour.
+    if let Some(prefix) = &u.known_prefix
+        && env.region_of(prefix).is_secret()
+    {
+        return false;
+    }
+    // A command nobody can name, a redirect's target and an unreadable structure: no stage of this
+    // reading says what runs, so there is nothing to resolve it to.
+    if !matches!(u.decides, Decides::Argument | Decides::Assignment) {
+        return false;
+    }
+    // The program that consumes the value: `rm -rf $(cat x)` is a delete whose target is not in the
+    // text, and resolving it would take away the widening that says so.
+    let consumer = match u.stage.and_then(|i| n.stages.get(i)) {
+        Some(stage) => only_reads(&stage_intents(stage)),
+        None => true,
+    };
+    if !consumer {
+        return false;
+    }
+    match u.construct {
+        shell::Construct::ParameterExpansion { .. } => true,
+        shell::Construct::CommandSubstitutionValue | shell::Construct::ProcessSubstitutionPath => {
+            depth > 0
+                // Every construct inside this one - a substitution in its inner command - has to
+                // be resolved on the same terms, or there is a hole one level down.
+                && n.unresolved
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, m)| *i != at && within(&m.span, &u.span))
+                    .all(|(i, _)| resolves(n, i, depth - 1, env))
+                // And every command inside it has to be one that only reads.
+                && n.stages
+                    .iter()
+                    .filter(|s| within(&s.span, &u.span))
+                    .all(|s| produces_text(&stage_intents(s)))
+        }
+        // Arithmetic, brace expansion, an expanded here-document, `$'…'`, a compound argument and a
+        // parse error are not this rule's: the ruling named three constructs.
+        _ => false,
+    }
+}
+
+/// The program that takes the value: a reader, and nothing else. `bash -c $(cat x)` is NOT this
+/// rule's - the value there is the program text, so what runs is decided by bytes nobody read.
+fn only_reads(intents: &[Intent]) -> bool {
+    !intents.is_empty()
+        && intents
+            .iter()
+            .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile))
+}
+
+/// The command that produces the value: a reader, plus the vehicle whose body this build did not
+/// read - `sed`'s script language is not parsed here, so `sed` is ExecuteCode whatever it is handed,
+/// and `diff <(sed 's/x/y/' a) <(sed 's/x/y/' b)` is one read of two streams. The stage's own intents
+/// travel with the call either way, so nothing about `sed` is hidden by this.
+fn produces_text(intents: &[Intent]) -> bool {
+    !intents.is_empty()
+        && intents
+            .iter()
+            .all(|i| matches!(i, Intent::Inspect | Intent::ReadFile | Intent::ExecuteCode))
+}
+
+/// `inner` is inside `outer` and is not `outer`: a stage's span covers its own arguments, so the
+/// command that consumes a substitution contains it.
+fn within(inner: &shell::Span, outer: &shell::Span) -> bool {
+    inner.start >= outer.start
+        && inner.end <= outer.end
+        && (inner.start, inner.end) != (outer.start, outer.end)
+}
+
 // Which stage names a grant
 
 /// Fold one stage into the choice of the stage that names a grant. `program` is the name as WRITTEN,
@@ -6143,15 +6269,17 @@ mod heredoc_bodies {
 
     #[test]
     fn a_script_files_own_parameters_do_not_make_the_write_unreadable() {
-        // `$1` here is the script's runtime, not this call's; the write is read
-        // completely and the body as far as it goes.
+        // `$1` here is the script's runtime, not this call's, and it is handed to `echo`: since the
+        // 2026-11-26 ruling a value in a reader's argument resolves, so nothing in this write is
+        // left unread and its refusal to say so is gone with the reason for it.
         let x = b("cat > /home/dead/bin/greet.sh <<'EOF'\n#!/bin/sh\necho \"hello $1\"\nEOF");
         assert_eq!(x.verdict, BaselineVerdict::Ask, "{:?}", x.verdict);
+        assert!(x.resolved, "{:?}", x.findings);
         assert!(
-            x.findings
+            !x.findings
                 .iter()
                 .any(|f| f.contains("script's own runtime")),
-            "{:?}",
+            "nothing was left unread, so there is nothing to disclose: {:?}",
             x.findings
         );
         // Text that runs NOW with an expansion in it is as unreadable as `bash -c` with one, and the
@@ -6165,6 +6293,13 @@ mod heredoc_bodies {
             y.findings
         );
         assert!(y.regions.contains(&Region::Unbounded), "{:?}", y.regions);
+        assert!(
+            y.findings
+                .iter()
+                .any(|f| f.contains("script's own runtime")),
+            "a delete's target is still nobody's to resolve: {:?}",
+            y.findings
+        );
     }
 
     #[test]

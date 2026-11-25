@@ -101,7 +101,10 @@ fn what_the_command_says_wins_and_unset_does_not_fall_through() {
     );
     let unset = Baseline::of_command("unset p; cat $p/x", &s);
     assert!(
-        !unset.resolved,
+        unset
+            .command
+            .as_ref()
+            .is_some_and(|n| n.source.contains("$p")),
         "`unset p` fell through to the session's value: {:?}",
         unset.command.as_ref().map(|n| n.source.clone())
     );
@@ -124,10 +127,19 @@ fn a_dead_shell_resolves_nothing_it_reported() {
     s.session
         .observe("p=/home/dead/from-the-shell;")
         .expect("a clean report");
-    assert!(Baseline::of_command("cat $p/x", &s).resolved);
+    assert!(
+        Baseline::of_command("cat $p/x", &s)
+            .command
+            .as_ref()
+            .is_some_and(|n| n.source.contains("/home/dead/from-the-shell")),
+        "the shell's value was not written out"
+    );
     s.session.mark_dead();
     assert!(
-        !Baseline::of_command("cat $p/x", &s).resolved,
+        Baseline::of_command("cat $p/x", &s)
+            .command
+            .as_ref()
+            .is_some_and(|n| n.source.contains("$p")),
         "a dead shell's value still resolved"
     );
     // And the harness's own pair still does: it is not the shell's claim.

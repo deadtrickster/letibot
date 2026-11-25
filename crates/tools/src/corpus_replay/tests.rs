@@ -21,9 +21,9 @@ fn tiny() -> Report {
 #[test]
 fn a_sweep_counts_the_rows_the_tools_and_the_commands() {
     let r = tiny();
-    assert_eq!(r.rows, 10, "ten decisions in the fixture");
+    assert_eq!(r.rows, 11, "eleven decisions in the fixture");
     assert_eq!(r.other_tools, 1, "one `edit` row");
-    assert_eq!(r.bash, 9);
+    assert_eq!(r.bash, 10);
     assert_eq!(r.no_command, 0);
     assert_eq!(r.then_unknown, 1, "the row with no baseline column");
 }
@@ -32,37 +32,55 @@ fn a_sweep_counts_the_rows_the_tools_and_the_commands() {
 #[test]
 fn a_command_the_record_calls_unresolved_and_today_reads_is_counted_as_fixed() {
     let r = tiny();
-    // Four rows say "never resolved": `cat $FILE`, the `cd && export && cargo` chain, the
-    // `$(...)`, and the `tail -5 ...` row, which carries no baseline column at all and is
-    // therefore `then_unknown`. The other six were read then.
+    // Five rows say "never resolved" (`cat $FILE`, the `cd && export && cargo` chain, the `$(...)`
+    // and the redirect target), and the `tail -5 ...` row carries no baseline column at all and is
+    // therefore `then_unknown`. The other five were read then.
     assert_eq!(
         r.then_resolved, 5,
         "two greps, two cargo tests and the oracle row; the \
                                      `edit` is not a bash row and is not counted here"
     );
     assert!(
-        r.fixed >= 1,
-        "the `$PWD`/`export` chain is read now and was not then: {r:?}"
+        r.fixed >= 3,
+        "the values a reader produced are read now and were not then: {r:?}"
     );
     assert_eq!(
         r.broken, 0,
         "nothing this sweep reads less than the record did"
     );
     assert_eq!(r.now_resolved, r.bash - r.unresolved_now);
+    assert_eq!(
+        r.unresolved_now, 1,
+        "the redirect target is the one command the 2026-11-26 ruling leaves unread"
+    );
 }
 
+/// The constructs are the parser's own vocabulary, never a regex over the command text: a report
+/// that invented a name would be a report nobody could act on.
 #[test]
 fn the_construct_that_stays_unresolved_is_named_by_the_parser_not_by_a_regex() {
     let r = tiny();
-    let pe = r
-        .constructs
-        .get("parameter_expansion")
-        .expect("`cat $FILE` is a parameter expansion and nothing else");
-    assert_eq!((pe.appears, pe.alone), (1, 1));
+    assert!(!r.constructs.is_empty(), "the fixture keeps one unread row");
+    // The parser's own names, spelled once here so a name the report invents is a failure.
+    const NAMED: [&str; 10] = [
+        "parameter_expansion",
+        "command_substitution_value",
+        "process_substitution_path",
+        "arithmetic_expansion",
+        "expanded_heredoc",
+        "unread_heredoc",
+        "ansi_c_escapes",
+        "brace_expansion",
+        "compound_argument",
+        "parse_error",
+    ];
+    for (name, c) in &r.constructs {
+        assert!(NAMED.contains(name), "`{name}` is not a construct: {c:?}");
+    }
     let cs = r
         .constructs
         .get("command_substitution_value")
-        .expect("`$(…)` is its own construct");
+        .expect("`$(…)` in a redirect's target is its own construct");
     assert_eq!((cs.appears, cs.alone), (1, 1));
 }
 
@@ -201,8 +219,8 @@ fn the_d16_column_counts_the_cards_a_boundary_would_not_have_raised() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/gate-corpus-tiny.json");
     let u = unasked(&path, &env()).expect("the fixture corpus must measure");
-    assert_eq!(u.rows, 10, "ten decisions in the fixture");
-    assert_eq!(u.commands, 9, "the `edit` row has no command");
+    assert_eq!(u.rows, 11, "eleven decisions in the fixture");
+    assert_eq!(u.commands, 10, "the `edit` row has no command");
     assert_eq!(
         u.cards_writes_allowed, 4,
         "four human answers, all at this point"

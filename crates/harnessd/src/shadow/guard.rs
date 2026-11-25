@@ -103,20 +103,29 @@ fn is_write_tool(tool: &str) -> bool {
     )
 }
 
+/// The key store is the ONE store layer A cannot place: it is not a `secrets::STORES` entry, so a
+/// command naming it needs this screen wherever it sits. This asks that and only that, which is what
+/// a RESOLVED reading gets - its placed operands are layer A's business, and asking every word of
+/// one refuses a project's own `keys/` directory under the home.
+pub fn key_store_pass(command: &str) -> Result<(), String> {
+    if command.contains(".config/letibot/keys") {
+        return Err("it touches ~/.config/letibot/keys".into());
+    }
+    Ok(())
+}
+
 /// `Ok` when no word of a command layer A could NOT read names a secret store, a `keys`
-/// directory or a credential file. A resolved reading screens the OPERANDS it placed; one that did
-/// not resolve has not shown which of its words are places at all, so each word is asked the
-/// question a resolved target is asked. No model is involved and nothing on the ladder can
-/// overrule it, which is what keeps `X=~/.ssh/id_ed25519; cat "$X"` a refusal rather than a
-/// reviewer's allow.
+/// directory or a credential file. A resolved reading screens the OPERANDS it placed ([`key_store_pass`]
+/// is the one store it cannot); one that did not resolve has not shown which of its words are places
+/// at all, so each word is asked the question a resolved target is asked. No model is involved and
+/// nothing on the ladder can overrule it, which is what keeps `X=~/.ssh/id_ed25519; cat "$X"` a
+/// refusal rather than a reviewer's allow.
 ///
 /// Only the DISCLOSURE half of [`read_passes`]: its review list refuses a place a granted READ must
 /// not reach - the session's own data directory among them - and an inspection of that is ordinary
 /// work, not a secret.
 pub fn words_pass(command: &str, call: &Call) -> Result<(), String> {
-    if command.contains(".config/letibot/keys") {
-        return Err("it touches ~/.config/letibot/keys".into());
-    }
+    key_store_pass(command)?;
     for word in words_of(command) {
         // `$HOME` is the home the way `~` is; a variable this build cannot expand would be placed
         // at `/`, which names no store and would read as harmless.

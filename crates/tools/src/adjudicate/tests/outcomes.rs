@@ -279,11 +279,11 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
         "a secret reached a person"
     );
 
-    // A line the parser refused is a line the point decides about, not a read: `$(ls)` has no known
-    // prefix, so the scope widens and the boundary conjunct voids. The model is the one asked, and the
-    // person only when the oracle is unsure.
+    // A line the parser could not finish is a line the point decides about, not a read: a redirect's
+    // target is decided at run time, so the scope widens and the boundary conjunct voids. The model is
+    // the one asked, and the person only when the oracle is unsure.
     let (mut g, asked) = gate();
-    let unresolved = json!({"command": "cd /w && cat $(ls) src/lib.rs"});
+    let unresolved = json!({"command": "cd /w && make > $(mktemp)"});
     let row = g.request_for(&bash(&unresolved));
     assert_eq!(row.class.access, Access::Exec);
     assert!(
@@ -1009,7 +1009,8 @@ fn a_standing_grant_does_not_cover_a_command_whose_meaning_was_never_resolved() 
 #[test]
 fn an_unresolvable_command_reaching_the_gate_is_admitted_at_a_permissive_point() {
     let mut g = permissive_gate();
-    let args = json!({"command": "/bin/cat $FILE"});
+    // A redirect's target: no ruling resolves which file those bytes go to.
+    let args = json!({"command": "/bin/cat a.txt > $(mktemp)"});
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     assert!(!g.log[0].request.resolved);
     assert!(

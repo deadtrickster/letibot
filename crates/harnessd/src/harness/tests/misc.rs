@@ -231,7 +231,9 @@ fn a_placement_that_is_not_this_box_seeds_no_environment() {
             "{placement:?} claims this box's PATH for a shell it does not run"
         );
         assert!(
-            !letibot_tools::intent::Baseline::of_command("cat $LT_BUILD/x", &away).resolved,
+            !letibot_tools::intent::Baseline::of_command("cat $LT_BUILD/x", &away)
+                .command
+                .is_some_and(|n| n.source.contains("/w/target")),
             "{placement:?} resolved a pair through this box's spawn"
         );
     }

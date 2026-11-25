@@ -6,14 +6,17 @@ use super::*;
 /// `Grant::covers` refuses an unresolved action before it looks at coverage, so a session grant
 /// over such a call could never cover anything: the operator would take it, be asked again, and
 /// the audit row would show a standing permission that never fires.
+///
+/// The fixture is a redirect's target, which stays unresolved however read-only the program is: the
+/// value decides WHICH file the bytes go to, and no stage of the reading shows that.
 #[test]
 fn an_unreadable_command_is_never_offered_a_session_grant() {
     let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
-    let args = json!({"command": "cat $X"});
+    let args = json!({"command": "cat a.txt > $(mktemp)"});
     let req = g.request_for(&bash_at(&args, "s#1"));
     assert!(
         !req.resolved,
-        "the premise: `$X` is not in the command text"
+        "the premise: `$(mktemp)` decides a path that is not in the command text"
     );
     assert!(
         !req.options.iter().any(|o| o.id == "allow_session"),
@@ -36,8 +39,30 @@ fn an_unreadable_command_is_never_offered_a_session_grant() {
         note.contains("meaning is not resolved"),
         "the note has to say why: {note}"
     );
-    assert!(note.contains("$X"), "the note has to name the word: {note}");
+    assert!(
+        note.contains("mktemp"),
+        "the note has to name the word: {note}"
+    );
     assert_eq!(note.lines().count(), 1, "the card has one line: {note}");
+}
+
+/// The other side of the same rule, since 2026-11-26: a plain `$VAR` handed to a program that only
+/// reads resolves to that program's class, so the card offers the standing rung. This is the ask
+/// the operator answered by hand, once per session, for every read-only diagnostic they ran.
+#[test]
+fn a_plain_variable_in_a_readers_argument_is_offered_the_session_grant() {
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED);
+    let args = json!({"command": "cat $X"});
+    let req = g.request_for(&bash_at(&args, "s#1"));
+    assert!(req.resolved, "a read of a path the shell names is a read");
+    assert!(
+        req.options.iter().any(|o| o.id == "allow_session"),
+        "a grant taken here WOULD be honoured, so the rung belongs on the ladder: {:?}",
+        req.options
+    );
+    assert_eq!(req.options_note, None, "a complete ladder explains nothing");
 }
 
 /// `admit` looks the selected option up in the ladder it built, so an id that is not there is a
@@ -55,7 +80,7 @@ fn an_allow_session_over_an_unreadable_command_is_not_honoured() {
         }
     }
     let mut g = AdjudicatedGate::new(Box::new(Session)).with_surroundings(pinned());
-    let args = json!({"command": "cat $X"});
+    let args = json!({"command": "cat a.txt > $(mktemp)"});
     let d = g.admit(&bash_at(&args, "s#1"));
     assert!(
         !matches!(d, GateDecision::Admit),
@@ -76,7 +101,10 @@ fn a_session_rung_is_offered_only_where_a_grant_could_be_kept() {
     let mut g = AdjudicatedGate::closed()
         .with_surroundings(pinned())
         .with_mode(crate::mode::Mode::WRITES_ALLOWED);
-    for (command, offered) in [("cat $X", false), ("sed -n 1p /w/a.rs", true)] {
+    for (command, offered) in [
+        ("cat a.txt > $(mktemp)", false),
+        ("sed -n 1p /w/a.rs", true),
+    ] {
         let req = g.request_for(&bash_at(&json!({"command": command}), "s#1"));
         let has = req.options.iter().any(|o| o.id == "allow_session");
         assert_eq!(has, offered, "{command}");

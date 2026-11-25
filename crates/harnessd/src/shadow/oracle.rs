@@ -176,14 +176,22 @@ pub fn stage_of(
         granted: granted.to_vec(),
         temp: super::guard::temp_roots(home),
     };
-    // Before either screen below: a command this build could not read has not shown which of its
-    // words are places, so every one of them is asked the question a resolved target is asked.
-    // This is the screen that keeps an unresolved read of `~/.ssh` or of the key store a
-    // refusal, and it runs at every stage because no stage was promoted knowing that.
-    if !reading.resolved
-        && let Some(cmd) = req.arguments.get("command").and_then(|c| c.as_str())
-    {
-        super::guard::words_pass(cmd, &call)?;
+    // Before either screen below. Two cases ask every word the question a placed operand is asked:
+    // a command this build could not read, which has not shown which of its words are places at all,
+    // and one whose reading already names a secret store, where an unresolved neighbour could be the
+    // word that carries it (`X=~/.ssh/id_ed25519; cat "$X"` places the store on the assignment and
+    // nothing on the use). Every other reading gets the key store alone, which layer A cannot place
+    // in a relative spelling: `cat .config/letibot/keys/x` is a workspace read to it.
+    let names_a_secret = reading
+        .regions
+        .iter()
+        .any(letibot_tools::intent::Region::is_secret);
+    if let Some(cmd) = req.arguments.get("command").and_then(|c| c.as_str()) {
+        if reading.resolved && !names_a_secret {
+            super::guard::key_store_pass(cmd)?;
+        } else {
+            super::guard::words_pass(cmd, &call)?;
+        }
     }
     if stage != Stage::Reads && !always_ask {
         // The lexical screen a shadow allow meets anyway: privilege, a write, a redirect or a

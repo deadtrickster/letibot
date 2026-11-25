@@ -792,14 +792,17 @@ echo "stamp: $(cat "$L/images/.guest-inputs.sha256" 2>/dev/null)"
 printf 'now:   '; ( cd "$L" && find guest -type f -print0 | sort -z | xargs -0 sha256sum ) 2>/dev/null | sha256sum | cut -d' ' -f1"#;
 
 /// An unresolved reading is layer A's best attempt, not a closed door: the intents it did find
-/// place the call at `exec`, and the reviewer is asked about the command itself.
+/// place the call at `exec`, and the reviewer is asked about the command itself. The fixture is a
+/// value that IS the program text - `bash -c` runs whatever those bytes say - which no ruling
+/// resolves.
 #[test]
 fn an_unresolved_inspection_reaches_the_reviewer_at_exec() {
     let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
-    let args = serde_json::json!({ "command": UNRESOLVED_INSPECTION });
+    let command = "bash -c $(cat body.sh)";
+    let args = serde_json::json!({ "command": command });
     assert!(
         matches!(g.admit(&call(&args)), GateDecision::Admit),
-        "reading files, listing, hashing and `git log` under a loop is ordinary work"
+        "a script the session wrote and runs is ordinary work"
     );
     assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer judged it");
     assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
@@ -808,7 +811,7 @@ fn an_unresolved_inspection_reaches_the_reviewer_at_exec() {
     // And the brief carries the text: a model asked about a command no parser read is asked about
     // the command, not about layer A's attempt at it.
     let adj = adjudicator(&all_stages());
-    let d = adj.decide(&crate::guard_via::tests::request_for(UNRESOLVED_INSPECTION));
+    let d = adj.decide(&crate::guard_via::tests::request_for(command));
     assert!(
         matches!(
             d.outcome,
@@ -824,8 +827,43 @@ fn an_unresolved_inspection_reaches_the_reviewer_at_exec() {
     );
     assert!(brief.contains("as written"), "\n{brief}");
     assert!(
-        brief.contains("for f in images/agent-firecode.ext4"),
+        brief.contains("$(cat body.sh)"),
         "the command itself is not in the brief:\n{brief}"
+    );
+}
+
+/// The operator's own card, verbatim, is READ since 2026-11-26: a value a reader produced does not
+/// make a call unreadable, and this one is five of them. It still reaches the reviewer at `exec`
+/// and nobody is asked - what changed is that the reviewer is shown the structure, because there
+/// is a reading and a second meaning of the text is what a raw string invites.
+#[test]
+fn the_operators_inspection_is_read_before_it_is_judged() {
+    let (mut g, person, _, asked) = automode_gate(&all_stages(), ALLOW);
+    let args = serde_json::json!({ "command": UNRESOLVED_INSPECTION });
+    assert!(
+        matches!(g.admit(&call(&args)), GateDecision::Admit),
+        "reading files, listing, hashing and `git log` under a loop is ordinary work"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the reviewer judged it");
+    assert_eq!(*person.0.lock().unwrap(), 0, "nobody was asked");
+    assert_eq!(stage_of_the_audit(&g, &[]), Stage::Exec);
+    let row = g.log.last().expect("the decision is a row");
+    assert!(
+        row.request.resolved,
+        "the inspection is read now: {:?}",
+        row.request.baseline
+    );
+
+    let adj = adjudicator(&all_stages());
+    let _ = adj.decide(&crate::guard_via::tests::request_for(UNRESOLVED_INSPECTION));
+    let brief = adj.last_brief().expect("the reviewer was shown a brief");
+    assert!(
+        !brief.contains("unresolved:"),
+        "the reading resolved, so nothing may claim it did not:\n{brief}"
+    );
+    assert!(
+        !brief.contains("as written"),
+        "the command as written reached the reviewer:\n{brief}"
     );
 }
 

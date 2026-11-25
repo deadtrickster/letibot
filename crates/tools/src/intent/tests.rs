@@ -834,7 +834,9 @@ fn a_shell_baseline_still_reports_the_regions_it_read_itself() {
 /// `reads_only` see a real region rather than a hole, and `resolved` stays `false`.
 #[test]
 fn an_unresolvable_command_is_widened_and_still_says_it_was_never_resolved() {
-    let x = b("cat $FILE");
+    // A redirect's target, which no ruling resolves: the value decides WHICH file the bytes go
+    // to, and no stage of this reading shows that.
+    let x = b("cat a.txt > $(mktemp)");
     assert_eq!(x.verdict, BaselineVerdict::Ask, "{:?}", x.verdict);
     assert!(
         !x.resolved,
@@ -845,16 +847,75 @@ fn an_unresolvable_command_is_widened_and_still_says_it_was_never_resolved() {
         "the scope is the widest it could reach: {:?}",
         x.regions
     );
+    // And the draft is still reported verbatim, as a finding on the row rather than as the
+    // body of a refusal.
+    assert!(
+        x.findings.iter().any(|f| f.contains("mktemp")),
+        "{:?}",
+        x.findings
+    );
+}
+
+/// A construct the ruling resolves is still a value nobody can name: the call's meaning is read,
+/// and the word widens exactly as it did. Resolving it buys the standing grant rung, not a claim
+/// that `$FILE` is inside the workspace.
+#[test]
+fn a_resolved_variable_still_widens_the_scope_it_could_reach() {
+    let x = b("cat $FILE");
+    assert!(x.resolved, "a reader given a shell-named path is a read");
+    assert!(
+        x.regions.contains(&Region::Unbounded),
+        "the scope is the widest it could reach: {:?}",
+        x.regions
+    );
     // Not a read: the file could be anywhere, including outside, so a widened scope is
     // not a way to run a read unasked.
     assert!(!x.reads_only(), "an unknown path is not a read");
-    // And the draft is still reported verbatim, as a finding on the row rather than as the
-    // body of a refusal.
     assert!(
         x.findings.iter().any(|f| f.contains("$FILE")),
         "{:?}",
         x.findings
     );
+}
+
+/// A value a READER produced does not make the call unreadable. All four were put to the operator
+/// as `allow once` and nothing else on 2026-11-26, and each is a read whose only unknown is what a
+/// program that only reads printed.
+#[test]
+fn a_value_a_reader_produced_does_not_make_the_call_unreadable() {
+    for command in [
+        r#"gd=$(git rev-parse --git-dir) && cat "$gd/rebase-merge/done""#,
+        r#"diff <(sed 's/x/y/' a) <(sed 's/x/y/' b)"#,
+        r#"echo "HOME=$HOME"; echo "TARGET=$CARGO_TARGET_DIR""#,
+        r#"rustfmt --check $(git diff --name-only HEAD~3..HEAD | grep '\.rs$')"#,
+    ] {
+        let x = b(command);
+        assert!(x.resolved, "{command} is still unread: {:?}", x.findings);
+    }
+}
+
+/// The other half, and the reason the rule is stated as narrowly as it is: a value that decides
+/// WHAT RUNS or WHERE THE BYTES GO stays unresolved, whatever the program inside it does.
+#[test]
+fn a_value_that_decides_what_runs_or_where_bytes_go_stays_unreadable() {
+    for command in [
+        // The value is a delete's target.
+        r#"rm -rf $(cat list.txt)"#,
+        // The value is a redirect's target.
+        r#"cat a.txt > $(mktemp)"#,
+        // The value is the program itself.
+        r#"$(which rm) -rf /tmp/x"#,
+        r#"$CMD --now"#,
+        // The value is the program TEXT: `bash -c` runs whatever these bytes say.
+        r#"bash -c $(cat script.sh)"#,
+        // The producer reaches a host, so it is not a read of this box's files.
+        r#"cat $(curl -s http://example.test/x)"#,
+        // Nested past the cap: each level is another command further from the text.
+        r#"cat $(cat $(cat $(cat $(cat x))))"#,
+    ] {
+        let x = b(command);
+        assert!(!x.resolved, "{command} was resolved: {:?}", x.findings);
+    }
 }
 
 #[test]
@@ -1739,24 +1800,40 @@ fn a_name_reassigned_from_itself_is_the_whole_word() {
     }
     // And a name overwritten by something this round cannot read is NOT its previous value:
     // hold: the old one is stale the moment the second assignment runs.
-    assert!(!b("X=/a; X=$UNSET; cat $X").resolved);
+    assert_eq!(
+        arg("X=/a; X=$UNSET; cat $X").as_deref(),
+        None,
+        "the stale `/a` was kept through an assignment nobody could read"
+    );
 }
 
 /// `$HOME` and a variable the same command assigned are values; nothing else is. A
 /// substitution's value is not in the text, or nothing assigned it, or bash expands the
 /// argument list before a prefix assignment lands.
+///
+/// Asked of the TEXT, not of `Baseline::resolved`: since 2026-11-26 a `$VAR` handed to a program
+/// that only reads resolves the CALL while its bytes stay unknown, and what this test is about is
+/// the splice - was the value written into the command it hands the grammar.
 #[test]
 fn home_and_an_earlier_assignment_resolve_and_nothing_else_does() {
-    assert!(b("cat $HOME/notes.md").resolved);
+    let spliced = |cmd: &str| -> bool {
+        !b(cmd)
+            .command
+            .as_ref()
+            .map(|n| n.source.clone())
+            .unwrap_or_default()
+            .contains('$')
+    };
+    assert!(spliced("cat $HOME/notes.md"));
     // An assignment that is its own statement sets the variable for what follows it.
-    assert!(b("X=/home/dead/Projects/letibot/f; cat $X").resolved);
+    assert!(spliced("X=/home/dead/Projects/letibot/f; cat $X"));
     // `export X=...` sets the value for later stages too.
-    assert!(b("export X=/home/dead/Projects/letibot/f; cat $X").resolved);
+    assert!(spliced("export X=/home/dead/Projects/letibot/f; cat $X"));
     // A chain needs the round after the one that read its value: `B` is an expansion
     // until `$A` has been written out.
-    assert!(b("A=/home/dead/Projects/letibot; B=$A/f; cat $B").resolved);
+    assert!(spliced("A=/home/dead/Projects/letibot; B=$A/f; cat $B"));
     // `unset` takes the value away again, and a stale binding must not survive it.
-    assert!(!b("X=/home/dead/Projects/letibot/f; unset X; cat $X").resolved);
+    assert!(!spliced("X=/home/dead/Projects/letibot/f; unset X; cat $X"));
 
     for cmd in [
         "cat $(which x)",  // the value is produced by running something
@@ -1765,24 +1842,25 @@ fn home_and_an_earlier_assignment_resolve_and_nothing_else_does() {
         "cat $X; X=/w/f",  // assigned after the use, which is not "earlier"
     ] {
         assert!(
-            !b(cmd).resolved,
-            "{cmd} was resolved, and its meaning is not in the text: {:?}",
+            !spliced(cmd),
+            "{cmd} was spliced, and its meaning is not in the text: {:?}",
             b(cmd).command
         );
     }
     // A value that would be split or globbed is not written back: `X='a b'` is two
     // arguments to the shell's reader of `$X`, and one word is not the command.
-    assert!(!b("X=/w/a; Y=$X b; cat $Y").resolved);
+    assert!(!spliced("X=/w/a; Y=$X b; cat $Y"));
     // A value outside the plain set is not written back either: a quote of ours would be
     // part of the argument, because the splice may land inside double quotes.
-    assert!(b("echo \"p=$PWD\"").resolved);
-    assert!(b("export PATH=/w/bin; cat $PATH").resolved);
-    assert!(!b("export F=-DFOO=1; cat $F").resolved);
+    assert!(spliced("echo \"p=$PWD\""));
+    assert!(spliced("export PATH=/w/bin; cat $PATH"));
+    assert!(!spliced("export F=-DFOO=1; cat $F"));
 }
 
 /// `$(pwd)` is `$PWD`, and nothing else inside a substitution is touched: `$(pwd -P)`,
-/// `$(cd /x && pwd)` and `$(date)` stay unread, and the inner command is still its own
-/// stage.
+/// `$(cd /x && pwd)` and `$(date)` are not written out, and the inner command is still its own
+/// stage. What resolves the CALL is a different question - see [`resolved_by_rule`] - so this asks
+/// the text.
 #[test]
 fn a_substitution_that_is_pwd_resolves_as_the_directory_the_call_runs_in() {
     let x = b("cd /home/dead/Projects/letibot && cat $(pwd)/Cargo.toml");
@@ -1809,8 +1887,11 @@ fn a_substitution_that_is_pwd_resolves_as_the_directory_the_call_runs_in() {
         "cat $(dirname $(pwd))/x",      // the inner command is still a value
     ] {
         assert!(
-            !b(cmd).resolved,
-            "{cmd} was resolved, and its value is not in the text: {:?}",
+            b(cmd)
+                .command
+                .as_ref()
+                .is_some_and(|n| n.source.contains("$(")),
+            "{cmd} was written out, and its value is not in the text: {:?}",
             b(cmd).command
         );
     }
@@ -1818,7 +1899,7 @@ fn a_substitution_that_is_pwd_resolves_as_the_directory_the_call_runs_in() {
 
 /// The shell's own numbers resolve, because a number is not a place: `$?`, `$$`, `$#` and
 /// `$RANDOM` name no directory. The parameters that can be paths, `$@`, `$*`, `$1` and
-/// `$0`, stay unread.
+/// `$0`, are not values either: no round writes an argument list into this text.
 #[test]
 fn the_shells_own_numbers_resolve_because_a_number_is_not_a_place() {
     for cmd in [
@@ -1847,9 +1928,15 @@ fn the_shells_own_numbers_resolve_because_a_number_is_not_a_place() {
             x.findings
         );
     }
-    // The arguments the shell is handed are NOT numbers, and they stay unread.
-    for cmd in ["cat $1", "cat $@", "cat $0", "cat $*"] {
-        assert!(!b(cmd).resolved, "{cmd} was claimed to be readable");
+    // The arguments the shell is handed are NOT numbers, and no round writes them into the text.
+    for cmd in ["cat $1", "cat $@", "cat $0", "cat $*", "cat $p"] {
+        assert!(
+            b(cmd)
+                .command
+                .as_ref()
+                .is_some_and(|n| n.source.contains('$')),
+            "{cmd} was spliced from a value nothing in this text holds"
+        );
     }
 }
 
@@ -1867,13 +1954,22 @@ fn a_transformed_expansion_is_not_the_value_it_transforms() {
         "A=(/w/f); cat ${A[0]}",  // one element of an array
     ] {
         assert!(
-            !b(cmd).resolved,
+            b(cmd)
+                .command
+                .as_ref()
+                .is_some_and(|n| n.source.contains("${")),
             "{cmd} was read as the value of its name: {:?}",
             b(cmd).command
         );
     }
-    // The braced spelling of a value with nothing done to it still resolves.
-    assert!(b("X=/w/f; cat ${X}").resolved);
+    // The braced spelling of a value with nothing done to it is still written out.
+    assert!(
+        !b("X=/w/f; cat ${X}")
+            .command
+            .as_ref()
+            .is_some_and(|n| n.source.contains("${")),
+        "a plain braced value was not spliced"
+    );
 }
 
 /// A body walked once per pass reports one span once per pass, and it is spliced once:

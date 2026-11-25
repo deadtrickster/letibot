@@ -372,7 +372,9 @@ fn an_unresolved_action_is_the_oracles_and_its_verdict_is_followed() {
             "the operator said go ahead",
         ))
     });
-    let req = request("/bin/cat $FILE", trail_saying("go ahead", 0));
+    // A redirect's target: the value decides which file the bytes go to, and no stage of the
+    // reading shows it, so this is the unresolved action these three tests are about.
+    let req = request("/bin/cat a.txt > $(mktemp)", trail_saying("go ahead", 0));
     assert!(!req.resolved, "the premise: layer A could not read it");
     assert!(
         req.adjudicable().is_some(),
@@ -426,7 +428,7 @@ fn the_brief_tells_the_oracle_the_reading_did_not_resolve() {
         *s.lock().unwrap() = b.render();
         OracleAnswer::NotAuthorised { why: "n".into() }
     });
-    let req = request("/bin/cat $FILE", trail_saying("go ahead", 0));
+    let req = request("/bin/cat a.txt > $(mktemp)", trail_saying("go ahead", 0));
     let _ = adj.decide(&req);
     let shown = seen.lock().unwrap().clone();
     assert!(
@@ -456,7 +458,8 @@ fn the_brief_tells_the_oracle_the_reading_did_not_resolve() {
 /// how many constructs it is standing in for.
 #[test]
 fn an_unresolved_brief_carries_the_command_as_written() {
-    let raw = r#"for f in a b; do du -h "$f" $(date) 2>/dev/null; done"#;
+    // A delete whose target nobody can name: the command as written is the only evidence.
+    let raw = r#"rm -rf $(cat list.txt)"#;
     let req = request(raw, trail_saying("have a look", 0));
     assert!(!req.resolved, "the fixture must not resolve");
     let shown = ModelBrief::new(&req, &Baseline::of_command(raw, &env())).render();
