@@ -588,6 +588,11 @@ pub trait SessionSource: Send + Sync {
     /// Make it durable who this session is for. A no-op rather than a refusal, because the answer
     /// is already on the row that created it.
     fn set_origin(&self, _session_id: &str, _origin: SessionOrigin) {}
+    /// Who this session is for, off its own row. `None` for a source that cannot read one, and for
+    /// a row written before the column: the caller's own default stands for both.
+    fn origin_of(&self, _session_id: &str) -> Option<SessionOrigin> {
+        None
+    }
     /// Put a session out of sight, or bring it back, on its row. The default refuses for
     /// [`SessionSource::set_title`]'s reason: a registry with no store has nowhere to write it.
     fn set_archived(
@@ -1718,6 +1723,12 @@ impl Registry {
         source
             .map(|s| s.row_items_in(transcript_id, from, count))
             .unwrap_or_default()
+    }
+
+    /// Who this session is for, as its STORE row says it. Not [`Registry::origin_of`], which is
+    /// what this process knows: the store is the only memory of a session nothing here opened.
+    pub fn stored_origin(&self, session_id: &str) -> Option<SessionOrigin> {
+        self.source()?.origin_of(session_id)
     }
 
     fn source(&self) -> Option<Arc<dyn SessionSource>> {

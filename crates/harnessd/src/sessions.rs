@@ -741,6 +741,19 @@ pub(crate) fn close_report(said: Option<String>, panes: usize) -> Option<String>
     })
 }
 
+/// Who a session is for, at open: the daemon's own word when it has one, else what the row already
+/// says. A reopen is the case this exists for - a launcher started inside a package's worktree has
+/// no `--parent-seat` to repeat it, and the default it would write instead is `operator`.
+fn origin_at_open(
+    implied: Option<letibot_sessionlog::SessionOrigin>,
+    registry: &letibot_sessionlog::registry::Registry,
+    id: &str,
+) -> letibot_sessionlog::SessionOrigin {
+    implied
+        .or_else(|| registry.stored_origin(id))
+        .unwrap_or_else(|| registry.origin_of(id))
+}
+
 impl<'a> Sessions<'a> {
     /// Start with one session, opened eagerly. See the module header for why the
     /// first one is not lazy.
@@ -824,16 +837,20 @@ impl<'a> Sessions<'a> {
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
         // And who this daemon's own first session is for, written now that its row exists
         // (`Harness::open` writes the row and this is the first moment there is one to write on).
-        // Two answers and no others
+        // The daemon's own word, else the row's: see [`origin_at_open`].
         registry.record_origin(
             &id,
-            if sessions.base.one_shot {
-                SessionOrigin::OneShot
-            } else if sessions.base.parent_seat.is_some() {
-                SessionOrigin::Package
-            } else {
-                registry.origin_of(&id)
-            },
+            origin_at_open(
+                if sessions.base.one_shot {
+                    Some(SessionOrigin::OneShot)
+                } else if sessions.base.parent_seat.is_some() {
+                    Some(SessionOrigin::Package)
+                } else {
+                    None
+                },
+                &registry,
+                &id,
+            ),
         );
         sessions.fabric_opened(&id, &harness);
         // The role the daemon's own first session is seated as - read off the harness it just
@@ -2151,22 +2168,27 @@ impl<'a> Sessions<'a> {
                 // And the role it is seated as, which the picker's row shows: a profile's name, or
                 // its seat's.
                 self.registry.set_role(session_id, &role);
-                // And who this session is for - written now that its row exists. Three answers
+                // And who this session is for - written now that its row exists, from the daemon's
+                // word or the row's own: see [`origin_at_open`].
                 self.registry.record_origin(
                     session_id,
-                    if own_session {
-                        SessionOrigin::Queue
-                    } else if role == letibot_sessionlog::SHADOW_SEAT {
-                        // A shadow's record reopened in a head is still the shadow's.
-                        SessionOrigin::Shadow
-                    } else if self.base.one_shot {
-                        SessionOrigin::OneShot
-                    } else if self.base.parent_seat.is_some() {
-                        // A seat's child: grouped with the packages, never in the operator's list.
-                        SessionOrigin::Package
-                    } else {
-                        self.registry.origin_of(session_id)
-                    },
+                    origin_at_open(
+                        if own_session {
+                            Some(SessionOrigin::Queue)
+                        } else if role == letibot_sessionlog::SHADOW_SEAT {
+                            // A shadow's record reopened in a head is still the shadow's.
+                            Some(SessionOrigin::Shadow)
+                        } else if self.base.one_shot {
+                            Some(SessionOrigin::OneShot)
+                        } else if self.base.parent_seat.is_some() {
+                            // A seat's child: grouped with the packages, never in the operator's list.
+                            Some(SessionOrigin::Package)
+                        } else {
+                            None
+                        },
+                        &self.registry,
+                        session_id,
+                    ),
                 );
                 // A RESUMED SESSION ARMS ITS OWN CLOCK, because nothing else will
                 self.rearm_todo_nag(session_id);
@@ -5618,6 +5640,17 @@ impl SessionSource for StoreSessions {
         let _ = g.set_session_origin(session_id, origin.as_str());
     }
 
+    /// Who this session is for, as the row has it. `None` for a row nothing has written yet, which
+    /// is a session this daemon is opening for the first time.
+    fn origin_of(&self, session_id: &str) -> Option<letibot_sessionlog::SessionOrigin> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.origin)
+            .and_then(|o| letibot_sessionlog::SessionOrigin::parse(&o))
+    }
+
     /// Put a session out of sight, or bring it back, on its row. A refusal is returned rather than
     /// swallowed: the head that asked is owed the difference between *archived* and *not there*.
     /// A project's room goes out with its LAST session: a room nobody is in is the room to put away.
@@ -5933,6 +5966,73 @@ mod idle_exit_clock {
 
 #[cfg(test)]
 mod review_pass;
+
+/// The daemon's word and the row's, the two facts [`origin_at_open`] weighs: a package's session
+/// reopened by a launcher must not be relabelled `operator` by the launcher's silence.
+#[cfg(test)]
+mod origin_at_open_tests {
+    use super::origin_at_open;
+    use letibot_sessionlog::SessionOrigin;
+    use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
+    use std::sync::Arc;
+
+    /// A store answering one session's origin and nothing else.
+    struct Rows(Vec<(&'static str, SessionOrigin)>);
+
+    impl SessionSource for Rows {
+        fn list(&self) -> Vec<StoredBrief> {
+            Vec::new()
+        }
+
+        fn origin_of(&self, session_id: &str) -> Option<SessionOrigin> {
+            self.0
+                .iter()
+                .find(|(id, _)| *id == session_id)
+                .map(|(_, origin)| *origin)
+        }
+    }
+
+    #[test]
+    fn a_package_session_reopened_by_the_launcher_stays_its_packages() {
+        let registry = Registry::new();
+        registry.set_source(Arc::new(Rows(vec![("s-pkg", SessionOrigin::Package)])));
+        assert_eq!(
+            origin_at_open(None, &registry, "s-pkg"),
+            SessionOrigin::Package,
+            "a launcher's `--session` writes no parent-seat, and the row is the only memory"
+        );
+    }
+
+    /// A session a head created over the socket has its word in memory before its row exists, and
+    /// that word is still the answer: the row has nothing to say yet.
+    #[test]
+    fn a_row_nothing_wrote_yet_takes_the_daemons_word() {
+        let registry = Registry::new();
+        registry.set_source(Arc::new(Rows(Vec::new())));
+        registry
+            .create_as(
+                "s-new",
+                "",
+                SessionWiring::default(),
+                None,
+                SessionOrigin::Package,
+            )
+            .expect("the entry");
+        assert_eq!(
+            origin_at_open(None, &registry, "s-new"),
+            SessionOrigin::Package
+        );
+        assert_eq!(
+            origin_at_open(None, &registry, "s-nothing"),
+            SessionOrigin::Operator,
+            "a row nobody has written, in a daemon nobody told: the operator's own"
+        );
+        assert_eq!(
+            origin_at_open(Some(SessionOrigin::OneShot), &registry, "s-nothing"),
+            SessionOrigin::OneShot
+        );
+    }
+}
 
 /// Two daemons, one store, one session - the writer claim (`crate::writer`) driven through
 /// `Sessions`, which is the door a daemon comes through.
