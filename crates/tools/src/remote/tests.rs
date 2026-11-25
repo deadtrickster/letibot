@@ -629,6 +629,80 @@ fn a_path_is_under_a_directory_by_its_components() {
     assert!(!super::under("/h", "/h/.cargo"));
 }
 
+/// `stable_paths` is a switch: `true`, `false`, or a refusal that names the key. It moves every
+/// path a session's tools are given, so a value nobody can act on is not read as "on".
+#[test]
+fn hosts_toml_reads_stable_paths_as_a_switch() {
+    let h = Hosts::parse("[host.a]\nhostname = \"a\"\n").expect("it parses");
+    assert!(!h.get("a").expect("a").stable_paths, "absent is off");
+    let h = Hosts::parse("[host.a]\nhostname = \"a\"\nstable_paths = true\n").expect("it parses");
+    assert!(h.get("a").expect("a").stable_paths);
+    let h = Hosts::parse("[host.a]\nstable_paths = false\n").expect("it parses");
+    assert!(!h.get("a").expect("a").stable_paths);
+    let why = Hosts::parse("[host.a]\nstable_paths = yes\n").expect_err("not a switch");
+    assert!(why.contains("stable_paths"), "{why}");
+    assert!(why.contains("true") && why.contains("false"), "{why}");
+}
+
+/// The two spellings of a rebound tree, and the joins a prefix must not fool:
+/// `/run/letibot/workbench` is not under `/run/letibot/work`, so it is not the checkout.
+#[test]
+fn a_stable_tree_is_spelled_two_ways_and_a_prefix_does_not_fool_either() {
+    let s = Stable {
+        work: "/home/dead/letibot-remote/repo/01abcdef".to_string(),
+        target: "/home/dead/letibot-remote/.letibot-home/01abcdef/target".to_string(),
+    };
+    // What a command is given.
+    assert_eq!(s.for_a_command(""), STABLE_WORK);
+    assert_eq!(s.for_a_command("."), STABLE_WORK);
+    assert_eq!(s.for_a_command("src/"), format!("{STABLE_WORK}/src"));
+    assert_eq!(s.for_a_command(STABLE_WORK), STABLE_WORK);
+    // A session that read its own real path out of a note still builds at the fixed name.
+    assert_eq!(s.for_a_command(&s.work), STABLE_WORK);
+    assert_eq!(
+        s.for_a_command(&format!("{}/src/main.rs", s.work)),
+        format!("{STABLE_WORK}/src/main.rs")
+    );
+    assert_eq!(
+        s.for_a_command("/etc/hosts"),
+        "/etc/hosts",
+        "not the tree's"
+    );
+    // What a call that runs outside the view is given.
+    assert_eq!(s.on_the_host(STABLE_WORK), s.work);
+    assert_eq!(
+        s.on_the_host(&format!("{STABLE_WORK}/src/main.rs")),
+        format!("{}/src/main.rs", s.work)
+    );
+    assert_eq!(
+        s.on_the_host(&format!("{STABLE_TARGET}/debug")),
+        format!("{}/debug", s.target)
+    );
+    assert_eq!(s.on_the_host("src"), format!("{}/src", s.work));
+    assert_eq!(s.on_the_host("/etc/hosts"), "/etc/hosts");
+    assert_eq!(
+        s.on_the_host("/run/letibot/workbench/x"),
+        "/run/letibot/workbench/x",
+        "a sibling name is not the mount"
+    );
+    // What a listing answers with, so a row the model is handed can be read back.
+    assert_eq!(
+        s.as_said(&format!("{}/README", s.work)),
+        format!("{STABLE_WORK}/README")
+    );
+    assert_eq!(s.as_said(&s.work), STABLE_WORK);
+    assert_eq!(
+        s.as_said(&format!("{}/debug", s.target)),
+        format!("{STABLE_TARGET}/debug")
+    );
+    assert_eq!(s.as_said("/etc/hosts"), "/etc/hosts");
+    assert_eq!(
+        s.as_said("/home/dead/letibot-remote/repo/01abcdef-2/x"),
+        "/home/dead/letibot-remote/repo/01abcdef-2/x",
+        "a session whose id begins with another's is still its own tree"
+    );
+}
+
 /// A link into the ssh directory is the ssh directory, after every symlink and for a path that
 /// does not exist yet: the rule is about the bytes, not the spelling.
 #[test]

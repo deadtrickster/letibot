@@ -560,9 +560,10 @@ pub fn report(
     }
     for g in &seat.grants {
         let mode = match g {
-            Grant::ReadOnly { .. } => "ro",
-            Grant::ReadWrite { .. } => "rw",
-            Grant::AgentSocket { .. } => "socket",
+            Grant::ReadOnly { .. } => "ro".to_string(),
+            Grant::ReadWrite { .. } => "rw".to_string(),
+            Grant::AgentSocket { .. } => "socket".to_string(),
+            Grant::Stable { at, .. } => format!("rw, also at {}", at.display()),
         };
         out.push(format!("  {mode} {} - {}", g.path().display(), g.why()));
     }

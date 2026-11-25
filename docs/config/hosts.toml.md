@@ -26,6 +26,7 @@ NAME is what --host and `host:NAME` take. Unknown keys and a key stated twice fa
 | `rustc_wrapper` | path | unset | cargo's RUSTC_WRAPPER there, an sccache wrapper; unset means every build compiles cold |
 | `sccache_dir` | path | unset | the cache a confined session's view may write for that wrapper |
 | `cargo_home` | path | unset | that machine's cargo home, shared by every session placed there so one fetch and one compile cache serve them all; unset means each session keeps its own |
+| `stable_paths` | bool | false | mount every session's checkout and build directory at the same fixed names, so two sessions there share a build cache |
 
 ## `[local]`
 

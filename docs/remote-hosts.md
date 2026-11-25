@@ -32,16 +32,18 @@ never_touch = ["etcd", "pgfuzz"]               # names letibot must never signal
 rustc_wrapper = "~/.cargo/bin/sccache-rustc"    # cargo's RUSTC_WRAPPER there: the compile cache
 sccache_dir  = "~/.cache/sccache"               # the cache it writes, bound read-write in the view
 cargo_home   = "~/.cargo"                       # the registry and git db every session there shares
+stable_paths = true                            # one fixed name for every session's tree, for a shared cache
 
 [local]                                        # THIS box, and not a placement
 never_touch = ["etcd", "pgfuzz"]
 ```
 
-Twelve keys, and an unknown one is **refused by name** rather than ignored: a typo places a session on a
+Thirteen keys, and an unknown one is **refused by name** rather than ignored: a typo places a session on a
 machine nobody named, or points ssh at a key nobody meant. `reserve` is a whole number of cores and
 anything else is refused rather than defaulted - a `reserve = "two"` read as zero is a scheduler that
 believes a busy machine is empty. `flags` and `never_touch` use the `path` grammar (quoted strings on one
-line) and are refused when half a list parses.
+line) and are refused when half a list parses. `stable_paths` is `true` or `false` and nothing else;
+[fixed paths](#fixed-paths-so-two-sessions-can-share-a-build-cache-stable_paths) says what it does.
 
 `path` is the one list: directories in front of `PATH` for every command the session runs there - its
 calls, its jobs, and the `git-upload-pack` its branch comes back through. A login shell does not always have
@@ -200,6 +202,55 @@ confines nothing cannot sit at `allow-all`. A confined session's file tools see 
 (`BackendError::Outside`) - the half the ssh-directory refusal cannot reach on a placed session, since that
 rule resolves a path on *this* box. Still not confined: the placement's own ssh traffic, and a `--grant-ro`,
 which is a path on this machine.
+
+### Fixed paths, so two sessions can share a build cache: `stable_paths`
+
+A compiler is handed absolute paths - the source file, `--out-dir`, `-L dependency=`, `--extern
+<target>/lib*.rmeta` - and a build cache keys on them. Every session has its own checkout
+`<root>/<repo>/<short>` and its own build directory, so two sessions compiling the same commit share
+nothing, even with one `CARGO_HOME` and one cache.
+
+`stable_paths = true` fixes that for one host. Every session's view mounts **its own** checkout at
+`/run/letibot/work` and **its own** build directory at `/run/letibot/target`, as well as where they really
+are, and `CARGO_TARGET_DIR` is set to `/run/letibot/target` inside the view. The contents are the session's
+own; only the names are shared, and names are all a cache needs.
+
+Why `/run/letibot/...`: every project view mounts a **fresh tmpfs** at `/run`, before any grant. Nothing of
+that machine is ever beneath it, so neither name can be a directory the host has - a bind there can neither
+shadow the host's tree nor be shadowed by it, and a grant cannot land inside one. `/run` is also where this
+tree already puts the two other fixed names a session sees (`/run/letibot/agent.sock`,
+`/run/letibot/home`).
+
+Measured on xmg (2026-11-25, sccache 0.19, one crate whose only dependency is `serde_json`, the box's
+`sccache` as `RUSTC_WRAPPER`, one cache directory, one server inside each session's view):
+
+| setup | the second session's compile |
+|---|---|
+| today: two checkouts, two build directories | requests 15, **hits 0**, misses 5 |
+| `stable_paths`, build directory emptied first | requests 15, **hits 5**, misses 0 |
+| `stable_paths`, build directory as the first session left it | requests 0 - cargo reuses the artifacts |
+
+What the fixed names do and do not change:
+
+* The session's own tools speak them: the `bash` cwd, `read`, `write`, `grep` and `ls`, and `git`,
+  which at the fixed name reports `/run/letibot/work` as the toplevel and commits there. A listing
+  answers with a path the model can then read. A job's launcher is the one place with two spellings:
+  its `cd` runs on the machine and names the real directory, while its helper's `--chdir` names the
+  fixed one.
+* Everything on this side keeps the real paths: the owner stamp's `work` and `ledger`, the branch that
+  comes home, `holds`, the disk accounting under `<root>/.letibot-home/<short>`, and every file tool's own
+  round trip, which runs outside the view. The build directory is that home's `target`, so nothing that
+  measures or reaps a session's disk learns a new path.
+* **A placement that cannot mount says so, once.** A VM's copy, a session with no exec, and a host whose
+  probe failed all keep their own paths, with one note that what was asked for is not in force.
+* A cache whose **server** runs outside the view cannot write into it: sccache's server writes the dep-info
+  and the outputs, so the server must live in a view that mounts the same names. That happens by itself -
+  a session's first compile starts the server inside its own view - and every session then has its own
+  server over one shared cache directory. A host-wide server started by hand, or one left from another
+  session's view, fails the build with `failed to write dep-info to /run/letibot/target/…: No such file or
+  directory` (measured). This is not a "one server for the box" feature.
+* A view with no network (`Egress::Denied`, which is `--unshare-net`) has its loopback down, so a cache
+  client cannot reach any server: fixed paths alone save nothing there.
 
 ## A VM on that machine: `--host NAME --vm`
 

@@ -427,6 +427,14 @@ pub enum Grant {
     /// [`AGENT_SOCKET`] with `SSH_AUTH_SOCK` pointing at it. The key never enters the mount
     /// namespace, so what crosses is a challenge and a signature.
     AgentSocket { path: PathBuf, why: String },
+    /// One of the session's own paths, mounted at a name of its own as well as where it really is:
+    /// two sessions on one machine then compile at the same absolute paths, which is what a shared
+    /// build cache keys on. Not a disclosure, so [`Boundary::granted`] leaves it out.
+    Stable {
+        path: PathBuf,
+        at: PathBuf,
+        why: String,
+    },
 }
 
 impl Grant {
@@ -434,7 +442,8 @@ impl Grant {
         match self {
             Grant::ReadOnly { path, .. }
             | Grant::ReadWrite { path, .. }
-            | Grant::AgentSocket { path, .. } => path,
+            | Grant::AgentSocket { path, .. }
+            | Grant::Stable { path, .. } => path,
         }
     }
 
@@ -442,7 +451,8 @@ impl Grant {
         match self {
             Grant::ReadOnly { why, .. }
             | Grant::ReadWrite { why, .. }
-            | Grant::AgentSocket { why, .. } => why,
+            | Grant::AgentSocket { why, .. }
+            | Grant::Stable { why, .. } => why,
         }
     }
 
@@ -460,6 +470,11 @@ impl Grant {
             Grant::AgentSocket { path, why } => format!(
                 "{} — agent socket at {AGENT_SOCKET}, usable but NOT readable (the key never enters the view): {why}",
                 path.display()
+            ),
+            Grant::Stable { path, at, why } => format!(
+                "{} — read-write, and mounted at {} as well: {why}",
+                path.display(),
+                at.display()
             ),
         }
     }
@@ -968,11 +983,12 @@ impl ViewSpec {
     }
 
     /// The view without the file grants bound at `path`. The agent socket is not a file grant
-    /// and stays.
+    /// and stays, and so does a stable mount, which is the session's own tree.
     pub fn revoking(mut self, path: &Path) -> ViewSpec {
         let key = crate::view::key(path);
         self.grants.retain(|g| {
-            matches!(g, Grant::AgentSocket { .. }) || crate::view::key(g.path()) != key
+            matches!(g, Grant::AgentSocket { .. } | Grant::Stable { .. })
+                || crate::view::key(g.path()) != key
         });
         self
     }
@@ -988,6 +1004,9 @@ impl ViewSpec {
         let roots = std::iter::once(self.project.as_path()).chain(self.grants.iter().filter_map(
             |g| match g {
                 Grant::ReadWrite { path, .. } => Some(path.as_path()),
+                // A stable mount is the session's own tree under a name of its own: writable, or
+                // a build in it would be refused by the view's own account of itself.
+                Grant::Stable { at, .. } => Some(at.as_path()),
                 _ => None,
             },
         ));
@@ -1012,10 +1031,15 @@ impl ViewSpec {
         if self.wide {
             return Presence::Inside;
         }
-        // The bound roots first, so a project under `/tmp` is Inside, not Replaced.
+        // The bound roots first, so a project under `/tmp` is Inside, not Replaced. A stable
+        // mount is a root as well: `/run` is a fresh tmpfs here, so only the mount puts it there.
         let inside = std::iter::once(self.project.as_path())
             .chain(self.system.iter().map(|p| p.as_path()))
-            .chain(self.grants.iter().map(|g| g.path()));
+            .chain(self.grants.iter().map(|g| g.path()))
+            .chain(self.grants.iter().filter_map(|g| match g {
+                Grant::Stable { at, .. } => Some(at.as_path()),
+                _ => None,
+            }));
         for root in inside {
             if path == root || path.starts_with(root) {
                 return Presence::Inside;
@@ -1074,7 +1098,7 @@ impl ViewSpec {
             .filter_map(|g| match g {
                 Grant::ReadOnly { path, .. } => Some((path.clone(), false)),
                 Grant::ReadWrite { path, .. } => Some((path.clone(), true)),
-                Grant::AgentSocket { .. } => None,
+                Grant::AgentSocket { .. } | Grant::Stable { .. } => None,
             })
             .collect()
     }
@@ -2951,6 +2975,13 @@ fn pieces_of(
                 arg(&mut a, "--bind-try");
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, AGENT_SOCKET);
+            }
+            Grant::Stable { path, at, .. } => {
+                // The same directory a second time, under a name every session on this machine
+                // shares. `-try`, as the rest: bwrap refuses the whole argv over one missing path.
+                arg(&mut a, "--bind-try");
+                arg(&mut a, path.display().to_string());
+                arg(&mut a, at.display().to_string());
             }
         }
     }

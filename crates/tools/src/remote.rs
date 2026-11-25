@@ -67,6 +67,11 @@ pub struct Host {
     /// A session's `$HOME` is private, so without it every one of them fetches the same crates.io
     /// dependency into a path of its own, and sccache hashes that path.
     pub cargo_home: Option<String>,
+    /// Mount every session's checkout and build directory at the same two fixed names inside its
+    /// own view (`stable_paths` in `hosts.toml`), so two sessions' compilers agree on every
+    /// absolute path they are handed and a shared build cache can hit. Off by default: it moves
+    /// every path a session's tools are given, so it is the operator's decision per machine.
+    pub stable_paths: bool,
 }
 
 /// Toolchains through `mise`, which is how the operator's machines are set up. `mise` is not on a
@@ -196,10 +201,11 @@ impl Hosts {
         }
     }
 
-    /// The file's grammar, and its refusals: `[host.NAME]` tables of twelve keys, refused by name
+    /// The file's grammar, and its refusals: `[host.NAME]` tables of thirteen keys, refused by name
     /// when unknown, stated twice, or not one line of quoted strings. Nothing beyond the grammar is
     /// validated here; whether a host may be used is asked when it is used ([`Ssh::connect`]), and
-    /// whether its build wrapper and cargo home are really there is asked when a session is placed.
+    /// whether its build wrapper, cargo home and fixed paths are really there is asked when a
+    /// session is placed.
     pub fn parse(text: &str) -> Result<Hosts, String> {
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut current: Option<String> = None;
@@ -304,6 +310,22 @@ impl Hosts {
             };
             let flags = list("flags")?;
             let never_touch = list("never_touch")?;
+            // `stable_paths` is a switch and nothing else. Refused rather than read as "on" for
+            // anything a shell calls true: it moves every path the session's tools are given, so a
+            // value nobody can spell is a decision nobody made.
+            let stable_paths = match kv.get("stable_paths") {
+                None => false,
+                Some(raw) => match raw.trim().trim_matches('"') {
+                    "true" => true,
+                    "false" => false,
+                    other => {
+                        return Err(format!(
+                            "`host.{name}.stable_paths` is `true` or `false`, and `{other}` is \
+                             neither. Leave the line out for `false`."
+                        ));
+                    }
+                },
+            };
             // `reserve` is a count of cores, so a number and nothing else. Refused rather than
             // defaulted: a `reserve = "two"` read as zero would be a scheduler that believes a busy
             // machine is empty.
@@ -357,6 +379,7 @@ impl Hosts {
                     rustc_wrapper: get("rustc_wrapper").map(str::to_string),
                     sccache_dir: get("sccache_dir").map(str::to_string),
                     cargo_home: get("cargo_home").map(str::to_string),
+                    stable_paths,
                     name,
                 },
             );
@@ -410,7 +433,9 @@ impl Hosts {
              (cargo's `RUSTC_WRAPPER` there, an sccache wrapper) and `sccache_dir` (the cache it \
              writes, bound writable in a confined session's view), `cargo_home` (that machine's \
              cargo home, shared by every session placed there so one fetch and one compile cache \
-             serve them all, and not a session's own data). The machine \
+             serve them all, and not a session's own data) and `stable_paths` (`true` mounts every \
+             session's checkout and build directory at the same two fixed names, so two sessions \
+             on that machine share one build cache). The machine \
              this daemon runs on has a section of its own — `[local]` with `never_touch` — which \
              is what a process record with no host is checked against.",
             hosts_file().display()
@@ -434,6 +459,7 @@ const HOST_KEYS: &[&str] = &[
     "rustc_wrapper",
     "sccache_dir",
     "cargo_home",
+    "stable_paths",
 ];
 
 /// The three keys a placement reads for its builds. Named once: the note that says one was skipped,
@@ -3367,20 +3393,124 @@ fn secrets_from_the_file(line: &str, secrets: Option<Vec<u8>>) -> String {
     )
 }
 
+/// Where a host with `stable_paths` mounts a session's checkout, and the build directory beside it.
+/// Both are under `/run`, which every view makes a fresh tmpfs of its own: nothing of that machine
+/// is ever beneath it, so neither name can be a path the host has, and neither can shadow one. Two
+/// sessions on one host therefore compile at the same absolute paths and a shared cache hits.
+pub const STABLE_WORK: &str = "/run/letibot/work";
+pub const STABLE_TARGET: &str = "/run/letibot/target";
+
+/// The two spellings of one session's tree on a host that rebinds it. Every path this backend hands
+/// a command is the fixed one; every path it hands the machine itself — a read, a write, a listing,
+/// a stat, the ledger, the branch coming home — is the real one. These three methods are the whole
+/// of that translation; nothing else in the tree spells a fixed path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stable {
+    /// The checkout, where the machine really has it.
+    work: String,
+    /// The session's build directory, where the machine really has it.
+    target: String,
+}
+
+impl Stable {
+    /// A path as this session's own commands must spell it: what `bash` gets for a cwd, and what a
+    /// job's launcher is pointed at. A path below the checkout's real name is moved to the fixed
+    /// one, so a session that reads its own real path out of a note still builds at the fixed name.
+    fn for_a_command(&self, path: &str) -> String {
+        let p = path.trim_end_matches('/');
+        if p.is_empty() || p == "." {
+            return STABLE_WORK.to_string();
+        }
+        if let Some(rest) = below(p, &self.work) {
+            return join(STABLE_WORK, rest);
+        }
+        if p.starts_with('/') {
+            return p.to_string();
+        }
+        join(STABLE_WORK, p)
+    }
+
+    /// The same path where the machine really has it: what a call that runs OUTSIDE the view is
+    /// given, because a fixed name means nothing to the host. A path of the session's own that is
+    /// outside both roots is left as it is; `/run` is nobody's but the view's.
+    fn on_the_host(&self, path: &str) -> String {
+        let p = path.trim_end_matches('/');
+        if p.is_empty() || p == "." {
+            return self.work.clone();
+        }
+        if let Some(rest) = below(p, STABLE_WORK) {
+            return join(&self.work, rest);
+        }
+        if let Some(rest) = below(p, STABLE_TARGET) {
+            return join(&self.target, rest);
+        }
+        if p.starts_with('/') {
+            return p.to_string();
+        }
+        join(&self.work, p)
+    }
+
+    /// A path read off the machine, in the spelling this session's tools and the model use: what a
+    /// listing answers, so a row the model can click names a file the model can read.
+    fn as_said(&self, path: &str) -> String {
+        if let Some(rest) = below(path, &self.work) {
+            return join(STABLE_WORK, rest);
+        }
+        if let Some(rest) = below(path, &self.target) {
+            return join(STABLE_TARGET, rest);
+        }
+        path.to_string()
+    }
+}
+
+/// What is below `root`, when it really is below it: `/a/bc` is not under `/a/b`.
+fn below<'a>(path: &'a str, root: &str) -> Option<&'a str> {
+    let rest = path.strip_prefix(root.trim_end_matches('/'))?;
+    (rest.is_empty() || rest.starts_with('/')).then(|| rest.trim_start_matches('/'))
+}
+
+/// `root` and a relative path, with no double slash when there is nothing to add.
+fn join(root: &str, rest: &str) -> String {
+    match rest {
+        "" => root.to_string(),
+        r => format!("{root}/{r}"),
+    }
+}
+
+/// A session's tree on its host: the three paths everything on this side uses, and whether that host
+/// also mounts the checkout and the build directory at [`STABLE_WORK`] and [`STABLE_TARGET`].
+struct Tree<'a> {
+    /// The session's own `$HOME` there, beside its `/tmp` and its build directory.
+    home: &'a str,
+    /// The checkout.
+    worktree: &'a str,
+    /// The bare repository the checkout is a worktree of.
+    mirror: &'a str,
+    /// Whether the view mounts those two at the fixed names as well.
+    stable: bool,
+}
+
+impl Tree<'_> {
+    /// The session's build directory there: `$HOME/target`, so the disk accounting that reads the
+    /// owner's home and the reaper that removes it need to learn nothing new.
+    fn target(&self) -> String {
+        join(self.home, "target")
+    }
+}
+
 /// One session's view on a host, and the boundary measured for it, or the reason there is none. The
 /// view is the policy a local confined session gets, spelled for the far machine: the checkout
 /// writable at its own path, the system roots and toolchain read-only, `$HOME` letibot's own, and the
 /// operator's own grants — which the host answers for, because a `~/` there is not a `~/` here.
 fn confine_a_checkout(
     ssh: &Ssh,
-    home: &str,
-    worktree: &str,
-    mirror: &str,
+    tree: &Tree<'_>,
     egress: &crate::exec::Egress,
     grants: &[crate::exec::boundary::HostGrant],
     notes: &mut Vec<String>,
 ) -> (Option<crate::exec::Bwrap>, Option<String>) {
     use crate::exec::confine::{Grant, HomeView, ViewSpec};
+    let (home, worktree, mirror) = (tree.home, tree.worktree, tree.mirror);
     // The mirror is part of the checkout, as git sees it: the checkout is a `git worktree` of the bare
     // mirror beside it, and every object, ref and index lives there. A view that bound only the
     // checkout hands the session a tree with no repository. Writable, because a commit writes there.
@@ -3399,6 +3529,29 @@ fn confine_a_checkout(
                   repository and the branch, which is the whole deliverable, cannot be committed"
                 .to_string(),
         });
+    // The two fixed names, last so they win over nothing: the checkout is still bound where it
+    // really is, because `git` finds its repository through the worktree's own `gitdir` pointer and
+    // because a session that names the real path must still be answered.
+    let provisional = match tree.stable {
+        false => provisional,
+        true => provisional
+            .granting(Grant::Stable {
+                path: PathBuf::from(worktree),
+                at: PathBuf::from(STABLE_WORK),
+                why:
+                    "the session's own checkout, mounted where every session on this machine sees \
+                      it: two sessions then hand their compiler the same absolute paths, which is \
+                      what a shared build cache keys on"
+                        .to_string(),
+            })
+            .granting(Grant::Stable {
+                path: PathBuf::from(tree.target()),
+                at: PathBuf::from(STABLE_TARGET),
+                why: "the session's own build directory at the same fixed name, for the same \
+                      reason — a target directory is in every argument the compiler is given"
+                    .to_string(),
+            }),
+    };
     let also: Vec<String> = grants.iter().map(|g| g.path.clone()).collect();
     let probe = match ssh.confinement_probe(&provisional, egress, &also) {
         Ok(p) => p,
@@ -3846,6 +3999,10 @@ pub struct SshBackend {
     /// The view, kept beside the confinement so the file tools can ask the same question a command's
     /// view answers - *is this path in here at all* - without cloning a `Boundary` on every call.
     view: Option<crate::exec::ViewSpec>,
+    /// The fixed names this session's commands see its tree by, and the real paths they stand for,
+    /// when this host mounts them: `None` is a session that spells every path the way the machine
+    /// has it, which is every host without `stable_paths`. See [`Stable`].
+    stable: Option<Stable>,
     /// The environment a confined command carries so that the operator's toolchain is what runs:
     /// `RUSTUP_HOME` and `CARGO_HOME` at the read-only grants. Without them a confined `cargo` looks
     /// under the session's own empty `$HOME` and finds no toolchain.
@@ -4258,6 +4415,7 @@ impl SshBackend {
         // Can this machine bound a command, and in what view. Asked once per host per process
         // ([`CONFINE`]), after the checkout exists because the checkout is the writable root of the
         // view. A machine that cannot confine runs unconfined and says so, and must never claim it.
+        let stable = spec.host.stable_paths;
         let mut session_home = None;
         let (confine, unconfined) = if let Some(vm) = &vm {
             // The VM is the boundary, and there is nothing for `bwrap` to bound: the guest holds a
@@ -4294,27 +4452,34 @@ impl SshBackend {
                 ),
                 _ => {
                     let dir = format!("{root}/{HOME_DIR}/{short}");
-                    // The session's home, and its `/tmp` beside it: a confined command's `/tmp` is
-                    // `dir/tmp`, the same lifetime as `dir`, so a file one call wrote is there in
-                    // the next. Neither is removed when the session ends.
+                    let tree = Tree {
+                        home: &dir,
+                        worktree: &worktree,
+                        mirror: &mirror,
+                        stable,
+                    };
+                    // The session's home, its `/tmp` beside it, and its build directory when this
+                    // host rebinds: a confined command's `/tmp` is `dir/tmp`, the same lifetime as
+                    // `dir`, so a file one call wrote is there in the next. Nothing here is removed
+                    // when the session ends. The build directory has to exist BEFORE the view is
+                    // measured: a mount of a path that is not there is a silent absence, and cargo
+                    // would then make it inside the view's own tmpfs, where it is gone again.
+                    let mut dirs = vec![dir.clone(), format!("{dir}/tmp")];
+                    if stable {
+                        dirs.push(tree.target());
+                    }
+                    let made = dirs.iter().map(|d| quote(d)).collect::<Vec<_>>().join(" ");
                     ssh.must(
                         "making the session's own home and its /tmp on that machine",
-                        &format!("mkdir -p {} {}", quote(&dir), quote(&format!("{dir}/tmp"))),
+                        &format!("mkdir -p {made}"),
                     )
                     .map_err(place)?;
                     // The operator's grants, and the ones `hosts.toml` implies for the build
                     // wrapper's own directory, its cache and the shared cargo home.
                     let mut grants = spec.grants.clone();
                     grants.extend(build.grants.iter().cloned());
-                    let measured = confine_a_checkout(
-                        &ssh,
-                        &dir,
-                        &worktree,
-                        &mirror,
-                        &spec.egress,
-                        &grants,
-                        &mut notes,
-                    );
+                    let measured =
+                        confine_a_checkout(&ssh, &tree, &spec.egress, &grants, &mut notes);
                     session_home = Some(dir);
                     measured
                 }
@@ -4339,7 +4504,7 @@ impl SshBackend {
                     .unwrap_or("the session's own directory")
             ));
         }
-        let confined_env = toolchain_env(confine.as_ref());
+        let mut confined_env = toolchain_env(confine.as_ref());
         // A boundary with no network is the second way the wrapper would fail a build rather than
         // speed one up: `--unshare-net` gives the command a namespace whose loopback is its own and
         // down, and a cache client whose server cannot start there exits non-zero instead of
@@ -4356,6 +4521,37 @@ impl SshBackend {
                  compile the tree cold"
             ));
             build_env.retain(|(k, _)| k != "RUSTC_WRAPPER" && k != "SCCACHE_DIR");
+        }
+        // The fixed names are mounts, so only a measured view can hold them. A VM's copy, a session
+        // with no exec, and a host that could not make a namespace all keep their own paths, and the
+        // operator is told once that what they asked for is not in force.
+        let rebound = match (&confine, session_home.as_deref()) {
+            (Some(_), Some(home)) if stable => Some(Stable {
+                work: worktree.clone(),
+                target: format!("{home}/target"),
+            }),
+            _ => None,
+        };
+        if stable && rebound.is_none() {
+            notes.push(format!(
+                "`stable_paths` is set for {host}, and no path can be mounted for this session: {}. \
+                 Everything here is named where it really is, so two sessions on that host share \
+                 no compiled objects",
+                unconfined
+                    .as_deref()
+                    .unwrap_or("this session's commands run in no view to mount it in")
+            ));
+        }
+        if rebound.is_some() {
+            // The build directory at the name every session on this host uses: with it, two
+            // sessions' `--out-dir`, `-L dependency=` and `--extern` arguments are one string.
+            confined_env.push(("CARGO_TARGET_DIR".to_string(), STABLE_TARGET.to_string()));
+            notes.push(format!(
+                "commands on {host} see the checkout at {STABLE_WORK} and build in {STABLE_TARGET}: \
+                 both are mounts in this session's own view, so every path the session's tools and \
+                 its `bash` are given is one of those, and two sessions on that host compile at \
+                 the same absolute paths"
+            ));
         }
         // The perimeter's own pairs, at the door of another machine's shell: a loader variable is
         // refused here whatever wrote it, and what was dropped is said on the notes rather than
@@ -4396,6 +4592,7 @@ impl SshBackend {
                     // settlement this daemon would believe.
                     .with_ledger(ledger.clone())
                     .confined(confine.clone(), confined_env.clone())
+                    .with_stable(rebound.clone())
                     .with_env(env.clone(), env_secrets.clone()),
             ))
         } else {
@@ -4436,6 +4633,7 @@ impl SshBackend {
                 .as_ref()
                 .and_then(crate::exec::Confinement::boundary)
                 .map(|b| b.view.clone()),
+            stable: rebound,
             confine,
             confined_env,
             env,
@@ -4638,18 +4836,51 @@ impl SshBackend {
         &self.notes
     }
 
-    /// Is this path in the view at all: the question a command's own sandbox answers, asked by the
-    /// file tools. `Ok(abs)` when there is no view or the path is inside it, [`BackendError::Outside`]
-    /// when not - which is how the never-write list holds on a path this box cannot resolve.
+    /// Is this path in the view at all: the question a command's own sandbox answers, asked of a
+    /// path the session's own tools spell. `Ok(abs)` when there is no view or the path is inside it,
+    /// [`BackendError::Outside`] when not - which is how the never-write list holds on a path this
+    /// box cannot resolve.
     fn in_view(&self, path: &str) -> Result<String, BackendError> {
-        let abs = self.abs(path);
+        let abs = self.as_the_session_says(path);
         match &self.view {
             Some(v) if v.outside(std::path::Path::new(&abs)) => Err(BackendError::Outside(abs)),
             _ => Ok(abs),
         }
     }
 
-    /// A path relative to the checkout, as the remote shell must spell it.
+    /// The same path where the machine really has it: what a call that runs OUTSIDE the view -
+    /// every read, write, listing and stat - has to be given, because a fixed name means nothing to
+    /// the host. Refused the same way [`Self::in_view`] refuses it.
+    fn on_the_host(&self, path: &str) -> Result<String, BackendError> {
+        let real = self
+            .stable
+            .as_ref()
+            .map_or_else(|| self.as_the_session_says(path), |s| s.on_the_host(path));
+        match &self.view {
+            Some(v) if v.outside(std::path::Path::new(&real)) => Err(BackendError::Outside(real)),
+            _ => Ok(real),
+        }
+    }
+
+    /// A path as this session's own commands must spell it, which is what a `cwd` and a job's
+    /// launcher are handed. On a host that rebinds its tree, that is the fixed name.
+    fn as_the_session_says(&self, path: &str) -> String {
+        match &self.stable {
+            Some(s) => s.for_a_command(path),
+            None => self.abs(path),
+        }
+    }
+
+    /// A path read off the machine, in the spelling the session's tools answer with: a listing's
+    /// rows must name files the model can then read, so a real path comes back fixed.
+    fn as_said(&self, path: &str) -> String {
+        match &self.stable {
+            Some(s) => s.as_said(path),
+            None => path.to_string(),
+        }
+    }
+
+    /// A path relative to the checkout, as the remote shell must spell it when nothing is rebound.
     fn abs(&self, path: &str) -> String {
         let p = path.trim_end_matches('/');
         if p.is_empty() || p == "." {
@@ -5453,7 +5684,7 @@ impl ExecBackend for SshBackend {
             .map(|(k, _)| k.clone())
             .chain(self.env_secrets.iter().map(|(k, _)| k.clone()))
             .collect();
-        let cwd = self.abs(&cmd.cwd);
+        let cwd = self.as_the_session_says(&cmd.cwd);
         // The command's remote process group is recorded as it starts, in this session's own
         // directory there, so a command that has to be abandoned can be ended there. The name
         // carries this process's id and a counter, so two runs cannot overwrite each other's.
@@ -5501,7 +5732,7 @@ impl ExecBackend for SshBackend {
     }
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
-        self.ssh.read_abs(&self.in_view(path)?)
+        self.ssh.read_abs(&self.on_the_host(path)?)
     }
 
     /// One round trip for a page of files, not one per file. The stream is the VM backend's own, with
@@ -5516,7 +5747,7 @@ impl ExecBackend for SshBackend {
         }
         batched_page(
             paths,
-            |p| self.in_view(p),
+            |p| self.on_the_host(p),
             |asked| {
                 let (out, _, exit) = self.ssh.sh_step(
                     &format!("reading {} file(s)", asked.len()),
@@ -5540,7 +5771,7 @@ impl ExecBackend for SshBackend {
                 "this subagent was downgraded to no write; nothing on its host changed",
             ));
         }
-        let abs = self.in_view(path)?;
+        let abs = self.on_the_host(path)?;
         // One road for every write: `Ssh::write_abs` decides between the host's stdin and the
         // guest's command from the placement itself, so a caller cannot pick the wrong one.
         self.ssh.write_abs(&abs, bytes)
@@ -5568,8 +5799,10 @@ impl ExecBackend for SshBackend {
         self.confine.as_ref().map(|_| self.worktree.clone())
     }
 
+    /// The directory the session works in, in the spelling its own tools use: what the gate's card
+    /// and every "is this path inside the session" question is asked about.
     fn workspace_path(&self) -> Option<String> {
-        Some(self.worktree.clone())
+        Some(self.as_the_session_says("."))
     }
 
     /// The machine the tools run on, for the gate's own sentence: a card that said only
@@ -5598,7 +5831,7 @@ impl ExecBackend for SshBackend {
     }
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
-        let q = format!("'{}'", self.in_view(path)?.replace('\'', r#"'\\''"#));
+        let q = format!("'{}'", self.on_the_host(path)?.replace('\'', r#"'\\''"#));
         let (out, _, exit) = self.ssh.sh_step(
             &format!("listing {path}"),
             &format!(
@@ -5629,7 +5862,7 @@ impl ExecBackend for SshBackend {
                 continue;
             };
             entries.push(DirEntry {
-                path: p.to_string(),
+                path: self.as_said(p),
                 name: p.rsplit('/').next().unwrap_or(p).to_string(),
                 is_dir: kind == "d",
                 bytes: size.trim().parse().unwrap_or(0),
@@ -5648,7 +5881,7 @@ impl ExecBackend for SshBackend {
         limit: usize,
         skip: &dyn Fn(&DirEntry) -> bool,
     ) -> Result<(Vec<DirEntry>, bool), BackendError> {
-        let abs = self.in_view(root)?;
+        let abs = self.on_the_host(root)?;
         let q = quote(&abs);
         let (_, _, gate) = self.ssh.sh_step(
             &format!("looking at {root}"),
@@ -5666,16 +5899,22 @@ impl ExecBackend for SshBackend {
             &format!("walking {root}"),
             &format!("{} walk {q}", TREE_WALK),
         )?;
-        Ok(crate::firecode::tree_in_walk_order(
-            listing.as_bytes(),
-            &abs,
-            limit,
-            skip,
-        ))
+        let (entries, capped) =
+            crate::firecode::tree_in_walk_order(listing.as_bytes(), &abs, limit, skip);
+        // The walk answers in the machine's own spelling and the session's tools speak the fixed
+        // one: a row the model is handed has to be a path it can then read.
+        let entries = entries
+            .into_iter()
+            .map(|e| DirEntry {
+                path: self.as_said(&e.path),
+                ..e
+            })
+            .collect();
+        Ok((entries, capped))
     }
 
     fn stat(&self, path: &str) -> Option<DirEntry> {
-        let abs = self.in_view(path).ok()?;
+        let abs = self.on_the_host(path).ok()?;
         let q = quote(&abs);
         let (out, _, exit) = self
             .ssh
@@ -5698,7 +5937,7 @@ impl ExecBackend for SshBackend {
         let mut parts = out.trim_end_matches(['\n', '\r']).splitn(3, '\t');
         let (kind, size, modified) = (parts.next()?, parts.next()?, parts.next()?);
         Some(DirEntry {
-            path: abs.clone(),
+            path: self.as_said(&abs),
             name: abs.rsplit('/').next().unwrap_or(&abs).to_string(),
             is_dir: kind == "d",
             bytes: size.trim().parse().unwrap_or(0),
@@ -5738,7 +5977,7 @@ impl ExecBackend for SshBackend {
              processes — while this session's model, store and gate stay on this machine. {}\n\
              The tree is a checkout of {} at {}, on branch `{}`; what it commits comes back as \
              `{}` when the session ends, and uncommitted edits stay there. A command's stderr \
-             arrives merged into its output (ssh carries one channel). {}",
+             arrives merged into its output (ssh carries one channel). {}{}",
             self.host,
             self.ssh.destination(),
             boundary,
@@ -5751,6 +5990,15 @@ impl ExecBackend for SshBackend {
                  exit status in a directory outside the checkout, and outlives the connection"
             } else {
                 "NO exec (downgraded)"
+            },
+            // Both spellings, because this side reads one and the session's tools use the other.
+            match &self.stable {
+                Some(_) => format!(
+                    " Commands of this session see that tree at {STABLE_WORK} and build in \
+                     {STABLE_TARGET}: this host mounts both at those fixed names in every session's \
+                     view, so two sessions there compile at the same absolute paths."
+                ),
+                None => String::new(),
             }
         )
     }
@@ -5800,6 +6048,9 @@ pub struct RemoteProcesses {
     /// second is a secret's value, which is a file on that machine and never an argv either.
     env: Vec<(String, String)>,
     env_secrets: Vec<(String, String)>,
+    /// The fixed names this session's tree is mounted at, when its host rebinds them: a job's
+    /// launcher `cd`s to the real directory and the helper `--chdir`s to the fixed one.
+    stable: Option<Stable>,
 }
 
 /// One job, as this daemon remembers it. The files are the truth; this is the index.
@@ -5886,7 +6137,16 @@ impl RemoteProcesses {
             confined_env: Vec::new(),
             env: Vec::new(),
             env_secrets: Vec::new(),
+            stable: None,
         }
+    }
+
+    /// The fixed names this session's tree is mounted at, when its host rebinds them. A job's
+    /// launcher `cd`s on the machine and its helper `--chdir`s inside the view, so one cwd is two
+    /// strings; see [`Stable`].
+    fn with_stable(mut self, stable: Option<Stable>) -> RemoteProcesses {
+        self.stable = stable;
+        self
     }
 
     /// The directory a job's files go in, absolute on the remote. The caller owns the decision
@@ -6147,16 +6407,29 @@ impl RemoteProcesses {
         let pid_path = format!("{jobs}/{n}.pid");
         let exit = format!("{jobs}/{n}.exit");
         let script_path = format!("{jobs}/{n}.sh");
-        let cwd = if req.cwd.trim().is_empty() {
+        // One directory, two spellings, because the two halves of a launcher run in different
+        // places: the `cd` below is the OUTER shell, on the machine, and must name the real
+        // directory; the helper's `--chdir` is inside the view and must name the fixed one. A host
+        // that rebinds the tree is the only case where those differ, and it is the case the whole
+        // feature exists for: a background build has to compile at the same paths as the rest.
+        let asked = if req.cwd.trim().is_empty() {
             self.worktree.clone()
         } else if req.cwd.starts_with('/') {
             req.cwd.clone()
         } else {
             format!("{}/{}", self.worktree, req.cwd.trim_end_matches('/'))
         };
+        let cwd = match &self.stable {
+            Some(s) => s.for_a_command(&asked),
+            None => asked,
+        };
+        let host_cwd = match &self.stable {
+            Some(s) => s.on_the_host(&cwd),
+            None => cwd.clone(),
+        };
         let mut launcher = String::from("#!/bin/bash\n");
         launcher.push_str(&format!("echo $$ > {}\n", quote(&pid_path)));
-        launcher.push_str(&format!("cd {} || exit 97\n", quote(&cwd)));
+        launcher.push_str(&format!("cd {} || exit 97\n", quote(&host_cwd)));
         // The perimeter's pairs, then the call's. A confined job's launcher is an OUTER shell that
         // the helper clears, so what has to reach inside also rides the descriptor; a job in a VM
         // has no helper at all, and this file - not an argv - is where its `export`s land.

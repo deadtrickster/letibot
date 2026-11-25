@@ -383,6 +383,12 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
                 "(allow file-read* file-write* (literal \"{}\"))\n",
                 path.display()
             )),
+            // A seatbelt profile is a list of paths, not a mount table, so there is nothing to
+            // rebind: the tree is allowed where it really is. No local view builds one of these.
+            Grant::Stable { path, .. } => s.push_str(&format!(
+                "(allow file-read* file-write* (subpath \"{}\"))\n",
+                path.display()
+            )),
         }
     }
     // A rule, not a path: the profile is written once and a child starts after it.

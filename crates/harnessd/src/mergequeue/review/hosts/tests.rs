@@ -182,6 +182,7 @@ fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
         rustc_wrapper: None,
         sccache_dir: None,
         cargo_home: None,
+        stable_paths: false,
     };
     let spare = host
         .spare_cores(32, "0.5")

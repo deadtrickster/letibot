@@ -96,10 +96,11 @@ impl Tool for HostsTool {
             TOOL,
             "The machines this box may place work on — the operator's `hosts.toml`, read now, so \
              a host added a minute ago is here. No arguments: one line per host (name, \
-             user@hostname, root), whether its key and host key are in place — no connection — and \
-             what the operator said about sharing it: `reserve` (cores held back for the owner), \
-             `flags` (`heavy`, `tmpfs`) and `never_touch` (names letibot must never signal, stop or \
-             remove there). `probe: true`: one bounded connection per host, in parallel, and the \
+             user@hostname, root), whether its key and host key are in place (no connection) and \
+             what the operator said about sharing it: `reserve` (cores held back), \
+             `flags` (`heavy`, `tmpfs`), `never_touch` (names letibot must never signal, stop or \
+             remove) and `stable_paths` (one fixed name per tree: a shared cache). \
+             `probe: true`: one bounded connection per host, in parallel, and the \
              live facts — cores, load, the SPARE cores (`cores − load − reserve`), memory, disk, \
              `git`, the mise version and its pins — or the refusal. `names` narrows either answer. \
              Read-only: nothing is written anywhere. This is how `where: \"host:NAME\"` is chosen.",
@@ -248,11 +249,11 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
                 )
             },
         ));
-        // What the operator said about this machine's sharing - the three keys that are
-        // not about reaching it - and the build cache, which is a fact of the FILE too: no
-        // connection is made, and whether the wrapper is really there is the placement's question.
+        // What the operator said about this machine's sharing - the keys that are not about
+        // reaching it - and the build cache, which is a fact of the FILE too: no connection is
+        // made, and whether the wrapper is really there is the placement's question.
         out.push_str(&format!(
-            "  reserve:  {}\n  flags:    {}\n  never:    {}\n  build:    {}\n",
+            "  reserve:  {}\n  flags:    {}\n  never:    {}\n  paths:    {}\n  build:    {}\n",
             if host.reserve == 0 {
                 "none held back for the owner".to_string()
             } else {
@@ -271,6 +272,19 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
                     "letibot will never signal, stop or remove: {}",
                     host.never_touch.join(", ")
                 )
+            },
+            // The one key about the build rather than the machine: it decides whether two sessions
+            // there can share compiled objects, so a host chosen for a build says it here.
+            if host.stable_paths {
+                format!(
+                    "one fixed name for every session's tree ({} and {}), so two sessions share \
+                     a build cache",
+                    crate::remote::STABLE_WORK,
+                    crate::remote::STABLE_TARGET
+                )
+            } else {
+                "each session at its own paths, so two sessions share no compiled objects"
+                    .to_string()
             },
             match (&host.rustc_wrapper, &host.sccache_dir) {
                 (None, _) =>
@@ -586,6 +600,45 @@ mod tests {
         assert!(
             said.contains("no `rustc_wrapper`: every build there compiles the tree cold"),
             "{said}"
+        );
+        let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
+    }
+
+    /// A host that rebinds its tree says so in the listing, because it is the one key that decides
+    /// whether work placed on it can share compiled objects with another session there.
+    #[test]
+    fn a_host_that_rebinds_says_so_in_the_listing() {
+        let (file, paths) = fixture(
+            "stable",
+            "[host.rebinds]\nhostname = \"a.invalid\"\nstable_paths = true\n\n\
+             [host.plain]\nhostname = \"b.invalid\"\n",
+            &[],
+            &[],
+        );
+        let hosts = Hosts::parse(
+            "[host.rebinds]\nhostname = \"a.invalid\"\nstable_paths = true\n\n\
+             [host.plain]\nhostname = \"b.invalid\"\n",
+        )
+        .expect("it parses");
+        let chosen: Vec<Host> = hosts
+            .names()
+            .iter()
+            .filter_map(|n| hosts.get(n).cloned())
+            .collect();
+        let said = listing(&file, &chosen, &paths);
+        assert_eq!(
+            said.matches("one fixed name for every session's tree")
+                .count(),
+            1,
+            "said of the host that rebinds, and of no other: {said}"
+        );
+        assert!(
+            said.contains(crate::remote::STABLE_WORK),
+            "and it names the path: {said}"
+        );
+        assert!(
+            said.contains("each session at its own paths"),
+            "and the other host is told plainly what it does not do: {said}"
         );
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }

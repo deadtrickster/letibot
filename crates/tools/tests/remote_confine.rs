@@ -1264,3 +1264,244 @@ fn a_remote_command_reading_stdin_gets_its_own_and_not_the_secret() {
         "the bytes fed on stdin are the file's, whole"
     );
 }
+
+/// `stable_paths`: the same directory twice, under a name every session on that machine shares, so
+/// two sessions hand their compiler one set of absolute paths. The real paths stay the real paths.
+#[test]
+fn a_stable_host_mounts_the_checkout_and_its_build_directory_at_the_fixed_names() {
+    let mut rig = Rig::new("stable", FAKE_READBACK, true);
+    rig.host.stable_paths = true;
+    let b = rig.place(Egress::Denied);
+    assert!(b.is_confined(), "the fake host answered the probe");
+
+    let out = b
+        .run(&Command {
+            argv: vec!["pwd".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    assert_eq!(out.exit, 0, "{:?}", String::from_utf8_lossy(&out.stdout));
+    // The fake helper is not a mount namespace, so it cannot `cd` into a name only a real view has:
+    // what it can say is what it was handed, which is the argv below.
+
+    // The real paths: what this side keeps, and what a path is where the machine has it.
+    let real = rig.worktree.clone();
+    assert_eq!(
+        b.worktree_path(),
+        real.display().to_string(),
+        "the placement's own record of the checkout does not move"
+    );
+    let target = real
+        .parent()
+        .and_then(|root| root.parent())
+        .expect("the placement's root")
+        .join(".letibot-home")
+        .join(SHORT)
+        .join("target");
+    assert!(target.is_dir(), "the build directory was made: {target:?}");
+
+    let calls = rig.bwrap_calls();
+    let argv = calls.last().expect("the command's call");
+    for want in [
+        format!("--bind-try {} /run/letibot/work", real.display()),
+        format!("--bind-try {} /run/letibot/target", target.display()),
+        "--setenv CARGO_TARGET_DIR /run/letibot/target".to_string(),
+        "--chdir /run/letibot/work".to_string(),
+        // The checkout is still where it really is as well, because `git` finds its repository
+        // through the worktree's own pointer and a session may still name the real path.
+        format!("--bind {} {}", real.display(), real.display()),
+    ] {
+        assert!(argv.contains(&want), "{want} is not in {argv}");
+    }
+
+    let notes = b.placement_notes().join("\n");
+    assert!(
+        notes.contains("/run/letibot/work") && notes.contains("/run/letibot/target"),
+        "the placement says where the session sees its tree: {notes}"
+    );
+    assert_eq!(
+        b.workspace_path().as_deref(),
+        Some("/run/letibot/work"),
+        "the session's workspace is spelled the way its own tools are"
+    );
+}
+
+/// The other half of the switch: without it nothing is mounted and no path is translated, which is
+/// every host until the operator names one.
+#[test]
+fn without_stable_paths_the_view_keeps_the_checkouts_own_names() {
+    let mut rig = Rig::new("nostable", FAKE_READBACK, true);
+    assert!(!rig.host.stable_paths, "off unless the file says otherwise");
+    let b = rig.place(Egress::Denied);
+
+    let out = b
+        .run(&Command {
+            argv: vec!["pwd".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        b.worktree_path(),
+        "a command starts at the checkout itself"
+    );
+
+    let calls = rig.bwrap_calls();
+    let argv = calls
+        .last()
+        .expect("the command's call")
+        .replace(&rig.worktree.display().to_string(), "<wt>");
+    assert!(
+        !argv.contains("/run/letibot/work"),
+        "nothing is mounted at the fixed name: {argv}"
+    );
+    assert!(
+        !argv.contains("CARGO_TARGET_DIR"),
+        "the build directory is cargo's own, inside the checkout: {argv}"
+    );
+    assert_eq!(
+        b.workspace_path().as_deref(),
+        Some(b.worktree_path()),
+        "the session's workspace is the real checkout"
+    );
+    assert!(
+        !b.placement_notes().join("\n").contains("stable_paths"),
+        "there is nothing to report about a key this host does not set"
+    );
+}
+
+/// The model's paths are the fixed ones and the machine's are not: a read, a write, a listing and a
+/// stat all translate, and what comes back is spelled the way the model must name it next.
+#[test]
+fn a_fixed_path_is_read_written_and_listed_where_the_machine_has_it() {
+    let mut rig = Rig::new("stabletrans", FAKE_READBACK, true);
+    rig.host.stable_paths = true;
+    let b = rig.place(Egress::Denied);
+
+    // A write under the fixed name lands on the machine, at the file it names.
+    b.write("/run/letibot/work/written-by-the-model", b"hello")
+        .expect("the write lands");
+    assert_eq!(
+        std::fs::read(rig.worktree.join("written-by-the-model")).expect("the real file"),
+        b"hello",
+        "the write went to the checkout the placement owns, not to a `/run` on that machine"
+    );
+    // And it reads back under both spellings, because both name the same file.
+    assert_eq!(
+        b.read("/run/letibot/work/written-by-the-model")
+            .expect("the fixed spelling"),
+        b"hello"
+    );
+    assert_eq!(
+        b.read(&format!("{}/written-by-the-model", b.worktree_path()))
+            .expect("the real spelling"),
+        b"hello"
+    );
+
+    // A listing answers in the fixed spelling, so a row the model is handed can be read back.
+    let rows = b.list(".").expect("the checkout lists");
+    let names: Vec<&str> = rows.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        names.contains(&"/run/letibot/work/README"),
+        "the rows are spelled where the session is: {names:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|e| e.path.starts_with("/run/letibot/work/")),
+        "every row is: {names:?}"
+    );
+    let stat = b
+        .stat("/run/letibot/work/README")
+        .expect("the file is there");
+    assert_eq!(stat.path, "/run/letibot/work/README");
+
+    // A job's cwd is the fixed name too, which is what the launcher's `cd` is built from.
+    assert_eq!(b.workdir("src").expect("a cwd"), "/run/letibot/work/src");
+    assert_eq!(b.workdir("").expect("the checkout"), "/run/letibot/work");
+}
+
+/// A job's launcher `cd`s to the fixed name and the helper `--chdir`s there, so a build a session
+/// starts in the background compiles at the same paths as the one it runs itself.
+#[test]
+fn a_jobs_launcher_starts_at_the_fixed_name() {
+    let mut rig = Rig::new("stablejob", FAKE_READBACK, true);
+    rig.host.stable_paths = true;
+    let b = rig.place(Egress::Denied);
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id: JobId = host
+        .spawn(&SpawnRequest {
+            command: "sleep 60".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("the job starts");
+    let n = id.0.trim_start_matches('j').to_string();
+    let launcher = std::fs::read_to_string(rig.jobs.join(format!("{n}.sh"))).expect("the launcher");
+    // The two halves name the directory differently on purpose: the `cd` is the machine's own
+    // shell, and the `--chdir` is inside the view. A launcher whose `cd` named the fixed path would
+    // die at `exit 97`, because no host has one.
+    assert!(
+        launcher.contains(&format!("cd {} || exit 97", rig.worktree.display())),
+        "the launcher starts where the machine has the tree: {launcher}"
+    );
+    assert!(
+        launcher.contains("--chdir /run/letibot/work"),
+        "and the helper starts where the session does: {launcher}"
+    );
+    assert!(
+        launcher.contains("--setenv CARGO_TARGET_DIR /run/letibot/target"),
+        "a background build writes to the shared build directory: {launcher}"
+    );
+    let _ = host.kill_job_as(&id, "the test asking");
+}
+
+/// An unconfined placement cannot mount anything, so the operator is told once that what they asked
+/// for is not in force - and the session runs exactly as it did before the key existed.
+#[test]
+fn a_host_that_cannot_confine_says_stable_paths_is_not_in_force() {
+    // No `bwrap` on the fake host: the probe answers "none", which is a host that cannot confine.
+    let mut rig = Rig::new("stableunconf", FAKE_READBACK, false);
+    rig.host.stable_paths = true;
+    let b = rig.place(Egress::Denied);
+    assert!(!b.is_confined(), "nothing measured a boundary");
+    let notes = b.placement_notes().join("\n");
+    assert!(
+        notes.contains("`stable_paths` is set for"),
+        "the one note about the key: {notes}"
+    );
+    assert_eq!(
+        notes.matches("`stable_paths` is set for").count(),
+        1,
+        "said once, not per call: {notes}"
+    );
+    assert_eq!(
+        b.workspace_path().as_deref(),
+        Some(b.worktree_path()),
+        "the session keeps the paths the machine has"
+    );
+    // And a command runs where it always did, with no build directory variable in sight.
+    let out = b
+        .run(&Command {
+            argv: vec!["pwd".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    assert_eq!(out.exit, 0, "{:?}", String::from_utf8_lossy(&out.stdout));
+    // The probe's own refusal quotes the view it was asked to measure, so a fixed path may appear
+    // in that diagnosis. What must not appear is a CLAIM: the placement says the fixed names are in
+    // force only where it measured them.
+    assert!(
+        !notes.contains("see the checkout at"),
+        "the placement does not claim a view it did not measure: {notes}"
+    );
+}
