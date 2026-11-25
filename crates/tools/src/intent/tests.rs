@@ -1128,6 +1128,67 @@ fn a_first_contact_with_a_host_asks_and_a_second_does_not() {
     assert_eq!(second.tier, Tier::MayApprove, "{:?}", second.tier);
 }
 
+/// A file name that ends at a colon is a file name to a program that cannot reach a machine.
+/// Both commands are the ones the operator was shown an always-ask card for on 2026-11-26: the
+/// `-v` pattern was read as the host `mcp.rs`, and a read-only grep reached the operator.
+#[test]
+fn a_read_only_grep_whose_pattern_ends_at_a_colon_is_not_a_first_contact() {
+    for command in [
+        r#"grep -rn "\"mcp\"" crates/*/src --include=*.rs | grep -v "mcp.rs:" | head -20"#,
+        r#"grep -rn "Surface::ALL" crates/tui/src crates/tui/tests | grep -v "bindings.rs:" | head -20"#,
+    ] {
+        let x = b(command);
+        assert!(
+            !x.intents.contains(&Intent::Network),
+            "{command}: a grep reaches no host: {:?}",
+            x.intents
+        );
+        assert!(
+            !x.regions.iter().any(|r| matches!(r, Region::Remote(_))),
+            "{command}: {:?}",
+            x.regions
+        );
+        assert_eq!(x.tier, Tier::Auto, "{command}: {:?}", x.tier);
+    }
+    // What the rule is keyed on is the PROGRAM, and it stays a host for one that reaches a
+    // machine: `scp host:` sends to that host's home directory.
+    let send = b("/usr/bin/scp report.txt lab2x1.example:");
+    assert!(
+        send.regions
+            .iter()
+            .any(|r| matches!(r, Region::Remote(h) if h == "lab2x1.example")),
+        "{:?}",
+        send.regions
+    );
+    match send.tier {
+        Tier::AlwaysAsk { .. } => {}
+        t => panic!("a call that leaves the box asks: {t:?}"),
+    }
+    // And a real write is still a write, whatever the pattern spells.
+    let writes = b(r#"grep -rn x src > /tmp/out.txt"#);
+    assert!(
+        writes.intents.contains(&Intent::WriteFile),
+        "{:?}",
+        writes.intents
+    );
+    let in_place = b(r#"sed -i "s/x/y/" a.rs"#);
+    assert!(
+        in_place.intents.contains(&Intent::WriteFile),
+        "{:?}",
+        in_place.intents
+    );
+}
+
+#[test]
+fn only_a_program_that_reaches_a_machine_reads_a_bare_colon_as_one() {
+    assert!(!names_a_remote("mcp.rs:", false));
+    assert!(names_a_remote("mcp.rs:", true));
+    assert!(names_a_remote("mcp.rs:src", false));
+    assert!(names_a_remote("host.example:/x", false));
+    assert!(!names_a_remote("registry.rs:244", false));
+    assert!(names_a_remote("https://example.com/x", false));
+}
+
 #[test]
 fn a_read_inside_the_boundary_is_auto_and_nothing_is_consulted() {
     // Clause 4, as an outcome class rather than as a special case in the runtime.

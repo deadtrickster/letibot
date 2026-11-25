@@ -2277,7 +2277,14 @@ impl Surroundings {
     /// Place a path. Lexical, and stated as such: a symlink out of the workspace is
     /// `HostBackend::resolve`'s job, and it canonicalises.
     pub fn region_of(&self, path: &str) -> Region {
-        if looks_remote(path) {
+        self.region_of_word(path, true)
+    }
+
+    /// [`Surroundings::region_of`] for one OPERAND, which a program that cannot reach another
+    /// machine is not allowed to place as one: `grep -v "mcp.rs:"` names a file, and reading that
+    /// as the host `mcp.rs` put a read-only read on the always-ask list.
+    pub fn region_of_word(&self, path: &str, may_name_a_host: bool) -> Region {
+        if may_name_a_host && looks_remote(path) {
             let host = remote_host(path);
             // The fact this guards is bytes LEAVING THE BOX, and a loopback address is
             // the box: `curl http://127.0.0.1:8080/health` is a local service, not a
@@ -2682,6 +2689,21 @@ fn looks_remote(s: &str) -> bool {
         // session, and it read as a host called `registry.rs`. A tail starting with a
         // digit is a line number - unless the head is an address, where it is a port.
         && !(tail.starts_with(|c: char| c.is_ascii_digit()) && !is_ipv4(head) && !head.contains('@'))
+}
+
+/// [`looks_remote`] as an OPERAND of one program. `scp host:` sends to the home directory and
+/// `rsync x host:` reads it, so an empty tail is a machine to a program that can reach one - and
+/// a file name to a program that cannot: `grep -v "mcp.rs:"` names no host, and reading it as
+/// `mcp.rs` fired `network_egress_to_an_unseen_host` at a read-only grep.
+fn names_a_remote(text: &str, reaches_network: bool) -> bool {
+    if !looks_remote(text) {
+        return false;
+    }
+    // A URL's tail is its own path, so `://` is never the empty one.
+    reaches_network
+        || text
+            .split_once(':')
+            .is_none_or(|(_, tail)| !tail.is_empty())
 }
 
 /// `127.0.0.0/8`, `::1`, `localhost` - with or without a port.
@@ -3946,14 +3968,17 @@ impl Baseline {
                 }
                 // A relative path is relative to where the command runs: `cwd`/`text`. A host is not a
                 // path, and `nc 192.0.2.10 4444` must keep its bare address for the network arm.
-                let joinable = !looks_remote(text) && !is_ipv4(text);
+                // Whether a `host:` spelling IS one is the program's own fact - see
+                // [`names_a_remote`].
+                let reaches = self.intents.contains(&Intent::Network);
+                let joinable = !names_a_remote(text, reaches) && !is_ipv4(text);
                 let placed = match (&self.cwd, text.starts_with('/') || text.starts_with('~')) {
                     (Some(cwd), false) if joinable => {
                         format!("{}/{text}", cwd.trim_end_matches('/'))
                     }
                     _ => text.to_string(),
                 };
-                let mut region = env.region_of(&placed);
+                let mut region = env.region_of_word(&placed, reaches);
                 // `nc 192.0.2.10 4444`, `ping 192.0.2.10`: a bare address is a
                 // host when the program reaches the network. (`host:port` and
                 // URLs are placed by `region_of` for any program.)
