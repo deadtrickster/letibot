@@ -78,8 +78,11 @@ struct Client {
 }
 
 impl Client {
-    fn connect(spec: &ServerSpec) -> Result<(Client, Vec<McpToolSpec>), String> {
-        let wire = wire::open(spec)?;
+    fn connect(
+        spec: &ServerSpec,
+        spawn: &dyn letibot_tools::exec::Spawn,
+    ) -> Result<(Client, Vec<McpToolSpec>), String> {
+        let wire = wire::open(spec, spawn)?;
         let mut client = Client {
             wire,
             next_id: 1,
@@ -289,6 +292,8 @@ struct Info {
 
 struct Entry {
     spec: ServerSpec,
+    /// How this server's process is started: the session's boundary, or [`letibot_tools::exec::Literal`].
+    spawn: Arc<dyn letibot_tools::exec::Spawn>,
     /// Behind its own lock so a listing never waits on a call in flight.
     tools: RwLock<Vec<McpToolSpec>>,
     link: Mutex<Link>,
@@ -298,8 +303,8 @@ struct Entry {
 }
 
 impl Entry {
-    fn open(spec: &ServerSpec) -> Entry {
-        let e = Entry::refused(spec, None);
+    fn open(spec: &ServerSpec, spawn: Arc<dyn letibot_tools::exec::Spawn>) -> Entry {
+        let e = Entry::refused(spec, spawn, None);
         {
             let mut link = lock(&e.link);
             let _ = e.connect(&mut link);
@@ -307,9 +312,14 @@ impl Entry {
         e
     }
 
-    fn refused(spec: &ServerSpec, why: Option<String>) -> Entry {
+    fn refused(
+        spec: &ServerSpec,
+        spawn: Arc<dyn letibot_tools::exec::Spawn>,
+        why: Option<String>,
+    ) -> Entry {
         Entry {
             spec: spec.clone(),
+            spawn,
             tools: RwLock::new(Vec::new()),
             // A failure already known is a down entry like any other, so the next call is the
             // one that retries it rather than a `/mcp` verb.
@@ -336,7 +346,7 @@ impl Entry {
     /// Start the server on `link`, which holds no client.
     fn connect(&self, link: &mut Link) -> Result<(), String> {
         let binary = binary_stamp(&self.spec);
-        match Client::connect(&self.spec) {
+        match Client::connect(&self.spec, &*self.spawn) {
             Ok((client, tools)) => {
                 self.adopt(link, client, tools, binary);
                 Ok(())
@@ -417,7 +427,7 @@ impl Entry {
                 )));
             }
             let binary = binary_stamp(&self.spec);
-            match Client::connect(&self.spec) {
+            match Client::connect(&self.spec, &*self.spawn) {
                 Ok((client, tools)) => self.adopt(link, client, tools, binary),
                 Err(e) => {
                     let failed = failed + 1;
@@ -568,10 +578,19 @@ impl std::fmt::Display for Change {
     }
 }
 
+/// What one server is, for sharing: the spec and the boundary it runs in. Two sessions whose
+/// keys differ get two processes, because one started under one view is the wrong process for the
+/// other; two that agree share one, which is what makes this a pool.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Key {
+    spec: ServerSpec,
+    sandbox: String,
+}
+
 /// The servers a daemon runs, shared by every catalogue whose spec names the same process.
 #[derive(Default)]
 pub struct Pool {
-    live: Mutex<HashMap<ServerSpec, Arc<Entry>>>,
+    live: Mutex<HashMap<Key, Arc<Entry>>>,
 }
 
 impl Pool {
@@ -581,32 +600,58 @@ impl Pool {
 
     /// The entry for each spec, held once more, and whether this call started it. Missing
     /// ones start in parallel, each waited for up to its own timeout.
-    fn take(&self, specs: &[ServerSpec]) -> Vec<(Arc<Entry>, bool)> {
+    fn take(
+        &self,
+        specs: &[ServerSpec],
+        spawn: &Arc<dyn letibot_tools::exec::Spawn>,
+    ) -> Vec<(Arc<Entry>, bool)> {
+        let keys: Vec<Key> = specs
+            .iter()
+            .map(|spec| Key {
+                spec: spec.clone(),
+                sandbox: spawn.key(),
+            })
+            .collect();
         let mut live = lock(&self.live);
-        let missing: Vec<&ServerSpec> = specs.iter().filter(|s| !live.contains_key(*s)).collect();
+        let missing: Vec<&Key> = keys.iter().filter(|k| !live.contains_key(*k)).collect();
         let started: Vec<Entry> = std::thread::scope(|s| {
             let handles: Vec<_> = missing
                 .iter()
-                .map(|spec| (*spec, s.spawn(move || Entry::open(spec))))
+                .map(|key| {
+                    let spawn = spawn.clone();
+                    (
+                        key.spec.clone(),
+                        s.spawn(move || Entry::open(&key.spec, spawn)),
+                    )
+                })
                 .collect();
             handles
                 .into_iter()
                 .map(|(spec, h)| {
                     h.join().unwrap_or_else(|_| {
-                        Entry::refused(spec, Some("the start thread panicked".into()))
+                        Entry::refused(
+                            &spec,
+                            spawn.clone(),
+                            Some("the start thread panicked".into()),
+                        )
                     })
                 })
                 .collect()
         });
         for e in started {
-            live.insert(e.spec.clone(), Arc::new(e));
+            live.insert(
+                Key {
+                    spec: e.spec.clone(),
+                    sandbox: e.spawn.key(),
+                },
+                Arc::new(e),
+            );
         }
-        specs
-            .iter()
-            .map(|s| {
-                let e = live[s].clone();
+        keys.iter()
+            .map(|k| {
+                let e = live[k].clone();
                 e.users.fetch_add(1, Ordering::SeqCst);
-                (e, missing.contains(&s))
+                (e, missing.contains(&k))
             })
             .collect()
     }
@@ -622,7 +667,17 @@ impl Pool {
         specs: &[ServerSpec],
         bad: Vec<Failure>,
     ) -> (Catalog, Vec<Failure>) {
-        let taken = self.take(specs);
+        self.catalog_with(Arc::new(letibot_tools::exec::Literal), specs, bad)
+    }
+
+    /// [`Pool::catalog`] with the boundary each server's process is started in.
+    pub fn catalog_with(
+        self: &Arc<Self>,
+        spawn: Arc<dyn letibot_tools::exec::Spawn>,
+        specs: &[ServerSpec],
+        bad: Vec<Failure>,
+    ) -> (Catalog, Vec<Failure>) {
+        let taken = self.take(specs, &spawn);
         let failed = taken
             .iter()
             .filter(|(_, started)| *started)
@@ -635,6 +690,7 @@ impl Pool {
             .collect();
         let catalog = Catalog {
             pool: self.clone(),
+            spawn,
             entries: RwLock::new(taken.into_iter().map(|(e, _)| e).collect()),
             bad: RwLock::new(bad),
         };
@@ -646,6 +702,8 @@ impl Pool {
 /// hold it see the new set.
 pub struct Catalog {
     pool: Arc<Pool>,
+    /// The boundary every server of this catalogue's is started in.
+    spawn: Arc<dyn letibot_tools::exec::Spawn>,
     entries: RwLock<Vec<Arc<Entry>>>,
     /// Tables refused before any start, such as one naming no transport.
     bad: RwLock<Vec<Failure>>,
@@ -668,6 +726,12 @@ impl Catalog {
     /// Start every server at once and wait for each up to its own timeout, in a pool of its own.
     pub fn start(specs: &[ServerSpec]) -> Catalog {
         Pool::new().catalog(specs, Vec::new()).0
+    }
+
+    /// [`Catalog::start`] with the boundary each server's process is started in: the session that
+    /// owns them hands its own, so a server runs where that session's commands run.
+    pub fn start_with(specs: &[ServerSpec], spawn: Arc<dyn letibot_tools::exec::Spawn>) -> Catalog {
+        Pool::new().catalog_with(spawn, specs, Vec::new()).0
     }
 
     /// Add servers refused before any start, such as a table naming no transport.
@@ -730,7 +794,7 @@ impl Catalog {
             .filter(|s| by_name(&s.name).is_none_or(|e| e.spec != **s))
             .cloned()
             .collect();
-        let mut taken = self.pool.take(&fresh).into_iter();
+        let mut taken = self.pool.take(&fresh, &self.spawn).into_iter();
         let mut changes = Vec::new();
         let mut next = Vec::new();
         for spec in specs {

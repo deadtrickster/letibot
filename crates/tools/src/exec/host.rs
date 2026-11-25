@@ -1638,6 +1638,25 @@ impl HostProcesses {
         self.confine.read().expect("confinement").describe()
     }
 
+    /// The spawner this session's own stdio MCP servers start through, so a server runs inside the
+    /// boundary its commands run inside. Weak, and read at each launch: a daemon-wide pool holds
+    /// servers across sessions, so a strong handle here would outlive the session that owns it.
+    pub fn spawner(self: &Arc<Self>) -> Arc<dyn super::spawn::Spawn> {
+        Arc::new(super::spawn::Bound {
+            host: Arc::downgrade(self),
+        })
+    }
+
+    /// One stdio server launched into this session's boundary as it stands now.
+    pub fn sandboxed(&self, want: &super::spawn::Want<'_>) -> Result<super::spawn::Launch, String> {
+        super::spawn::confined(&**self.confine.read().expect("confinement"), want)
+    }
+
+    /// This session's boundary as one string, for a caller sharing processes across sessions.
+    pub fn sandbox_key(&self) -> String {
+        super::spawn::boundary_key(&**self.confine.read().expect("confinement"))
+    }
+
     pub fn with_capture_bytes(mut self, bytes: usize) -> Self {
         self.capture_bytes = bytes;
         self

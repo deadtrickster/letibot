@@ -453,10 +453,25 @@ struct Placed {
     /// or a boundary was asked for and failed. Not the same as `!confined`, which a file-tool-only
     /// backend also is.
     whole_host: bool,
+    /// Where a stdio MCP server's process is started: this session's boundary, or none. `None` for
+    /// a placement whose commands are not on this box, which starts its servers the daemon's way.
+    mcp_spawn: Option<Arc<dyn letibot_tools::exec::Spawn>>,
 }
 
 /// Where a point came from when no row named one.
 const FLAG_SOURCE: &str = "daemon flag / default";
+
+/// What [`Harness::place_the_tools`] hands back before it is destructured: the boxed backend, its
+/// description and writability, its monitors, the roots the operator granted, and where a stdio MCP
+/// server of this session's is started.
+type PlacedBackend = (
+    Box<dyn letibot_tools::backend::ExecBackend>,
+    String,
+    bool,
+    Option<Arc<Monitors>>,
+    letibot_tools::view::GrantedRoots,
+    Option<Arc<dyn letibot_tools::exec::Spawn>>,
+);
 
 /// A session's point from its rows, for a parent that is not open here: its own row, held under its
 /// own parent's, else its project's row, else `base`. The chain stops at a depth no spawn reaches.
@@ -1360,13 +1375,7 @@ impl Harness {
         }
         // One boxed backend from here on, whichever substrate: the host one built
         // above, or a firecode VM booted on a copy of the tree `Config::vm_copy_source` names.
-        let (backend, backend_described, backend_writable, monitors, granted_roots): (
-            Box<dyn letibot_tools::backend::ExecBackend>,
-            String,
-            bool,
-            Option<Arc<Monitors>>,
-            letibot_tools::view::GrantedRoots,
-        ) = if local_vm {
+        let placed: PlacedBackend = if local_vm {
             // The tree the VM is booted on, and it is NOT always the workspace: `vm_copy_source`
             // is the one spelling of the decision, so a session seated above its repositories does
             // not push the whole folder through `copy_tree`.
@@ -1457,6 +1466,9 @@ impl Harness {
                 writable,
                 monitors,
                 letibot_tools::view::GrantedRoots::default(),
+                // Nor is the guest's: it is another machine, and a server started here would run
+                // on this box without the boundary the session's commands have.
+                None,
             )
         } else if let Some(host) = &remote {
             // The ssh placement: the repository's HEAD goes over as a bundle, the session works in
@@ -1537,6 +1549,9 @@ impl Harness {
                 writable,
                 None,
                 letibot_tools::view::GrantedRoots::default(),
+                // A server started here would run on THIS box, outside the boundary its session
+                // holds on that one, so the client starts it the daemon's way as it always has.
+                None,
             )
         } else {
             let described = backend.describe();
@@ -1688,8 +1703,24 @@ impl Harness {
                 }
                 None => letibot_tools::view::GrantedRoots::default(),
             };
-            (Box::new(backend), described, writable, monitors, granted)
+            let spawn = backend.host_processes().map(|h| h.spawner());
+            (
+                Box::new(backend),
+                described,
+                writable,
+                monitors,
+                granted,
+                spawn,
+            )
         };
+        let (
+            backend,
+            backend_described,
+            backend_writable,
+            monitors,
+            granted_roots,
+            mcp_spawn,
+        ) = placed;
 
         // `backend_confined`, asked of the backend that was actually built: a VM is a boundary by
         // construction, and a host or ssh backend is one only where a confinement was measured. A
@@ -1705,6 +1736,7 @@ impl Harness {
             surroundings,
             confined: backend_confined,
             whole_host,
+            mcp_spawn,
         })
     }
 
@@ -2326,6 +2358,7 @@ impl Harness {
             surroundings,
             confined: backend_confined,
             whole_host: backend_whole_host,
+            mcp_spawn,
         } = Self::place_the_tools(&mut cfg, &hub, &session_registry)?;
         // The owner's home on that machine is a holding of this owner, on that host: the row this
         // box marks `lost` when the host stops answering, and the one the plan shows. The host's
@@ -2399,8 +2432,10 @@ impl Harness {
         }
         // MCP servers from the user file, and a checkout's `.mcp.json` only where the user file
         // trusts it; a project leticode.toml's `[mcp]` is named and not started.
-        // Attached even when empty, so a `/mcp reload` that adds a server reaches the doors.
-        let (mcp, mcp_warnings) = crate::mcp::Live::open(&cfg);
+        // Attached even when empty, so a `/mcp reload` that adds a server reaches the doors. A
+        // stdio server starts through this session's boundary, where it has one.
+        let mcp_spawn = mcp_spawn.unwrap_or_else(|| Arc::new(letibot_tools::exec::Literal));
+        let (mcp, mcp_warnings) = crate::mcp::Live::open_with(&cfg, mcp_spawn);
         for line in mcp_warnings {
             hub.warn("mcp_server", line);
         }

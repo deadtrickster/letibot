@@ -26,6 +26,7 @@ pub mod scope;
 pub mod seat;
 pub mod seatbelt;
 pub mod shell;
+pub mod spawn;
 pub mod store;
 pub mod suite;
 pub mod term;
@@ -62,6 +63,7 @@ pub use scope::{
     task_delegation,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
+pub use spawn::{Bound, Confined, Launch, Literal, Spawn, Want};
 pub use term::{TermConfig, TermError, TermSession, TermSink};
 pub use terminal::{Class, Refusal, wants_the_terminal};
 

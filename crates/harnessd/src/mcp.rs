@@ -302,10 +302,20 @@ impl Live {
     /// read's, a table refused before any start, and the start failures of servers this open
     /// started.
     pub fn open(cfg: &Config) -> (Live, Vec<String>) {
+        Self::open_with(cfg, Arc::new(letibot_tools::exec::Literal))
+    }
+
+    /// [`Live::open`] with the boundary each stdio server is started in. The session hands its
+    /// own, so a server it names runs where its commands run; a session with no boundary hands
+    /// [`letibot_tools::exec::Literal`], whose servers run as the daemon's own children do.
+    pub fn open_with(
+        cfg: &Config,
+        spawn: Arc<dyn letibot_tools::exec::Spawn>,
+    ) -> (Live, Vec<String>) {
         let (tables, warnings, pin_offer) = servers(cfg);
         let (specs, bad) = specs(&tables);
         let refused = refused_lines(&bad);
-        let (catalog, failed) = pool().catalog(&specs, bad);
+        let (catalog, failed) = pool().catalog_with(spawn, &specs, bad);
         let mut said = warnings.clone();
         said.extend(refused);
         said.extend(failure_lines(&failed));
@@ -800,7 +810,7 @@ mod tests {
         let pid = pid_of(&live, "lsup");
         let src = file.display().to_string();
         assert!(
-            text.contains(&format!("lsup · running · 10 tools · pid {pid} · {src}")),
+            text.contains(&format!("lsup · running · 11 tools · pid {pid} · {src}")),
             "{text}"
         );
         assert!(

@@ -42,7 +42,10 @@ pub(crate) trait Wire: Send {
 /// The one notification acted on: the server's tool list changed, so it is listed again.
 pub(crate) const TOOLS_CHANGED: &str = "notifications/tools/list_changed";
 
-pub(crate) fn open(spec: &ServerSpec) -> Result<Box<dyn Wire>, String> {
+pub(crate) fn open(
+    spec: &ServerSpec,
+    spawn: &dyn letibot_tools::exec::Spawn,
+) -> Result<Box<dyn Wire>, String> {
     match &spec.transport {
         Transport::Stdio {
             command,
@@ -50,10 +53,13 @@ pub(crate) fn open(spec: &ServerSpec) -> Result<Box<dyn Wire>, String> {
             env,
             cwd,
         } => Ok(Box::new(StdioWire::spawn(
-            command,
-            args,
-            env,
-            cwd.as_deref(),
+            &letibot_tools::exec::Want {
+                command,
+                args,
+                env,
+                cwd: cwd.as_deref(),
+            },
+            spawn,
         )?)),
         Transport::Http { url, headers } => {
             Ok(Box::new(HttpWire::new(url, headers, spec.timeout)?))
@@ -153,16 +159,22 @@ struct StdioWire {
 
 impl StdioWire {
     fn spawn(
-        command: &str,
-        args: &[String],
-        env: &std::collections::BTreeMap<String, String>,
-        cwd: Option<&std::path::Path>,
+        want: &letibot_tools::exec::Want<'_>,
+        spawn: &dyn letibot_tools::exec::Spawn,
     ) -> Result<StdioWire, String> {
-        let mut cmd = Command::new(command);
-        // Its own group, so the drop's `killpg` reaches what an `npx` wrapper forked.
+        let launch = spawn.launch(want)?;
+        let Some(program) = launch.argv.first() else {
+            return Err(format!(
+                "`{}` was launched with no program to run",
+                want.command
+            ));
+        };
+        let mut cmd = Command::new(program);
+        // Its own group, so the drop's `killpg` reaches what an `npx` wrapper forked - and, under
+        // a boundary, the helper's whole tree.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        if let Some(dir) = cwd {
+        if let Some(dir) = &launch.cwd {
             cmd.current_dir(dir);
         }
         // Cleared, then stated: the daemon's env carries provider keys. The kept names say where
@@ -173,14 +185,32 @@ impl StdioWire {
                 cmd.env(name, v);
             }
         }
+        // A pair a boundary sealed rides the descriptor its argv names, so no argv carries a value
+        // `ps` would read. The pipe is dropped only after the child has it.
+        #[cfg(target_os = "linux")]
+        let sealed = letibot_tools::exec::confine::hand_secrets(&mut cmd, &launch.secrets)
+            .map_err(|e| format!("`{}` could not be handed its secrets: {e}", want.command))?;
+        // Without one there is no way to hand a sealed value over, and starting the server with the
+        // value missing is the silent failure this refuses.
+        #[cfg(not(target_os = "linux"))]
+        if !launch.secrets.is_empty() {
+            return Err(format!(
+                "`{}` runs under a boundary that seals {} environment value(s), and this platform \
+                 has no descriptor to hand one over",
+                want.command,
+                launch.secrets.len()
+            ));
+        }
         let mut child = cmd
-            .args(args)
-            .envs(env)
+            .args(&launch.argv[1..])
+            .envs(launch.env)
             .stdin(Piped::piped())
             .stdout(Piped::piped())
             .stderr(Piped::piped())
             .spawn()
-            .map_err(|e| format!("`{command}` did not start: {e}"))?;
+            .map_err(|e| format!("`{}` did not start: {e}", want.command))?;
+        #[cfg(target_os = "linux")]
+        drop(sealed);
         let stdin = child.stdin.take().ok_or("no stdin pipe")?;
         let stdout = child.stdout.take().ok_or("no stdout pipe")?;
         let mut err = child.stderr.take().ok_or("no stderr pipe")?;

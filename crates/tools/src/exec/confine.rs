@@ -1857,6 +1857,11 @@ pub struct ConfinePlan<'a> {
 pub enum Session {
     Detached,
     Kept,
+    /// A process its client holds outright for its whole life: the pipes, the group, the kill. It
+    /// keeps the detached session and loses `--die-with-parent`, whose parent is the THREAD that
+    /// forked it — a client starts its server from a worker thread that ends as soon as the start
+    /// returns, and that SIGKILLs a server which is alive and answering.
+    Owned,
 }
 
 /// One element of a command line, kept typed until it is joined: a local spawn is an argv and
@@ -1988,6 +1993,17 @@ pub trait Confinement: Send + Sync {
         _env: EnvSource,
     ) -> Result<Vec<Piece>, ExecError> {
         Ok(self.wrap(plan)?.into_iter().map(Piece::Literal).collect())
+    }
+
+    /// [`Confinement::wrap`] for a command already resolved to a host path, so a boundary can bind
+    /// the program it is about to exec: a server installed outside the view is refused by the kernel
+    /// as `ENOENT`, which reads as "the file does not exist". The default adds nothing.
+    fn wrap_program(
+        &self,
+        plan: &ConfinePlan<'_>,
+        _program: Option<&Path>,
+    ) -> Result<Vec<String>, ExecError> {
+        self.wrap(plan)
     }
 
     /// Whether the operator's own `!` line runs outside this boundary. It is their console, with
@@ -2435,6 +2451,7 @@ pub fn probe_script(view: &ViewSpec, egress: &Egress, also: &[String]) -> String
         Session::Detached,
         EnvSource::Remote,
         false,
+        None,
     );
     s.push_str(&join(&pieces));
     s.push_str(&format!(" /bin/sh -c {}\n", crate::remote::quote(READBACK)));
@@ -2643,6 +2660,23 @@ impl Confinement for Bwrap {
         self.wrap_with(plan, Session::Detached)
     }
 
+    fn wrap_program(
+        &self,
+        plan: &ConfinePlan<'_>,
+        program: Option<&Path>,
+    ) -> Result<Vec<String>, ExecError> {
+        self.check(plan)?;
+        Ok(build_argv_with_program(
+            &self.helper,
+            &self.boundary.view,
+            &self.boundary.egress,
+            plan,
+            // A launch whose program is known is a stdio server, and the client owns it.
+            Session::Owned,
+            program,
+        ))
+    }
+
     fn wrap_terminal(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
         self.wrap_with(plan, Session::Kept)
     }
@@ -2736,6 +2770,8 @@ impl Bwrap {
             session,
             EnvSource::Remote,
             secrets,
+            // The program runs on THAT machine: a bind here would be this box's path.
+            None,
         ))
     }
 
@@ -2805,6 +2841,7 @@ fn build_argv(
         Session::Detached,
         EnvSource::Process,
         false,
+        None,
     )
     .into_iter()
     .map(|p| match p {
@@ -2825,6 +2862,18 @@ pub(crate) fn build_argv_with(
     plan: &ConfinePlan<'_>,
     session: Session,
 ) -> Vec<String> {
+    build_argv_with_program(helper, view, egress, plan, session, None)
+}
+
+/// [`build_argv_with`] for a launch whose program is known: see [`Confinement::wrap_program`].
+fn build_argv_with_program(
+    helper: &Path,
+    view: &ViewSpec,
+    egress: &Egress,
+    plan: &ConfinePlan<'_>,
+    session: Session,
+    program: Option<&Path>,
+) -> Vec<String> {
     pieces_of(
         Piece::literal(helper.display().to_string()),
         view,
@@ -2833,6 +2882,7 @@ pub(crate) fn build_argv_with(
         session,
         EnvSource::Process,
         false,
+        program,
     )
     .into_iter()
     .map(|p| match p {
@@ -2847,6 +2897,7 @@ pub(crate) fn build_argv_with(
 /// it `"$(command -v bwrap)"`, which is not known here until that script has run. `secrets` says a
 /// `--setenv` payload arrives on [`SECRET_FD`] whatever these pairs are called, which is what a
 /// value a file or a command gave needs: its provenance is the secret, not its name.
+#[allow(clippy::too_many_arguments)] // one argv: every argument here decides a mount in it
 fn pieces_of(
     helper: Piece,
     view: &ViewSpec,
@@ -2855,6 +2906,7 @@ fn pieces_of(
     session: Session,
     env: EnvSource,
     secrets: bool,
+    program: Option<&Path>,
 ) -> Vec<Piece> {
     let mut a: Vec<Piece> = vec![helper];
     fn arg(a: &mut Vec<Piece>, s: impl Into<String>) {
@@ -2875,12 +2927,15 @@ fn pieces_of(
     arg(&mut a, "--disable-userns");
     arg(&mut a, "--assert-userns-disabled");
     // If the harness dies, this dies: a third mechanism on top of the cgroup and the join
-    // script, and it is free.
-    arg(&mut a, "--die-with-parent");
+    // script, and it is free. `PR_SET_PDEATHSIG` names a THREAD, which for a process its client
+    // owns is one that ends at once: see [`Session::Owned`].
+    if session != Session::Owned {
+        arg(&mut a, "--die-with-parent");
+    }
     // No controlling terminal, so `TIOCSTI` cannot push characters back into the operator's
     // shell. Kept off for a pane, whose pty is its own, and for a remote command, whose
     // process group an interrupt has to be able to kill: see [`Session`].
-    if session == Session::Detached {
+    if session != Session::Kept {
         arg(&mut a, "--new-session");
     }
 
@@ -2994,6 +3049,17 @@ fn pieces_of(
             arg(&mut a, p.display().to_string());
             arg(&mut a, p.display().to_string());
         }
+    }
+    // And the program this launch execs, when the view holds nothing at its path: a stdio server
+    // installed outside the project (`/opt`, a build tree) is otherwise `ENOENT` inside, which
+    // reads as "no such file" about a file that is right there on the host.
+    if !view.wide
+        && let Some(p) = program
+        && view.outside(p)
+    {
+        arg(&mut a, "--ro-bind-try");
+        arg(&mut a, p.display().to_string());
+        arg(&mut a, p.display().to_string());
     }
 
     // The seat's fence, after the mounts it has to win over. A store the view does not reach, or that

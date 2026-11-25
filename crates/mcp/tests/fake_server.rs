@@ -86,7 +86,7 @@ fn tools_are_listed_searched_and_called() {
     assert_eq!(
         tools,
         [
-            "echo", "big", "fail", "crash", "grow", "pwd", "slow", "env", "spawn", "pid"
+            "echo", "big", "fail", "crash", "grow", "pwd", "write", "slow", "env", "spawn", "pid"
         ]
     );
     let mut h = harness(Arc::new(cat), allow_all_mcp());

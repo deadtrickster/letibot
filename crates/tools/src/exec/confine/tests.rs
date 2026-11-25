@@ -1285,6 +1285,90 @@ fn a_program_outside(view: &ViewSpec) -> (String, PathBuf) {
     }
 }
 
+/// A launch under a boundary binds the program it is about to exec when the view holds nothing at
+/// its path: a stdio server installed outside the project (a build tree, `/opt`) is otherwise
+/// `ENOENT` inside, which reads as "no such file" about a file that is right there on the host.
+#[test]
+fn a_launch_binds_the_program_the_view_does_not_hold() {
+    let project = std::env::temp_dir().join(format!("confine-program-{}", std::process::id()));
+    std::fs::create_dir_all(&project).expect("a project directory");
+    let view = ViewSpec {
+        system: Vec::new(),
+        ..ViewSpec::project_only(&project)
+    };
+    let boundary = Boundary {
+        view: view.clone(),
+        ..boundary_with(vec![])
+    };
+    let b = Bwrap {
+        helper: PathBuf::from("/usr/bin/bwrap"),
+        boundary,
+    };
+    let plan = ConfinePlan {
+        cwd: &project,
+        env: &[],
+    };
+    let (_, program) = a_program_outside(&view);
+
+    let argv = b.wrap_program(&plan, Some(&program)).expect("an argv");
+    let at = argv
+        .iter()
+        .position(|a| a == &program.display().to_string())
+        .unwrap_or_else(|| panic!("the program is not in the argv: {argv:?}"));
+    assert_eq!(
+        argv[at - 1],
+        "--ro-bind-try",
+        "the program is bound read-only: {argv:?}"
+    );
+
+    // And the wrap every OTHER command goes through binds nothing: a job's argv is not a program
+    // the boundary starts, so it must not grow a mount of its own.
+    let plain = b.wrap(&plan).expect("an argv");
+    assert!(
+        !plain.contains(&program.display().to_string()),
+        "a plain wrap names no program: {plain:?}"
+    );
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+/// A launch whose program is known is a process its CLIENT owns, so its argv may not ask the
+/// helper to die with the parent: `PR_SET_PDEATHSIG` names the thread that forked, and a client
+/// starts its server from one that ends as soon as the start returns.
+#[test]
+fn a_launch_its_client_owns_does_not_die_with_the_thread_that_started_it() {
+    let project = std::env::temp_dir().join(format!("confine-owned-{}", std::process::id()));
+    std::fs::create_dir_all(&project).expect("a project directory");
+    let boundary = Boundary {
+        view: ViewSpec::project_only(&project),
+        ..boundary_with(vec![])
+    };
+    let b = Bwrap {
+        helper: PathBuf::from("/usr/bin/bwrap"),
+        boundary,
+    };
+    let plan = ConfinePlan {
+        cwd: &project,
+        env: &[],
+    };
+
+    let launch = b.wrap_program(&plan, None).expect("an argv");
+    assert!(
+        !launch.iter().any(|a| a == "--die-with-parent"),
+        "a client owns its server, not the thread that forked it: {launch:?}"
+    );
+    // Everything else about the boundary is the same argv: the session, the namespaces, the view.
+    assert!(launch.iter().any(|a| a == "--new-session"), "{launch:?}");
+    assert!(launch.iter().any(|a| a == "--unshare-pid"), "{launch:?}");
+
+    // A job still asks for it: its thread is the daemon's, and the flag is a third mechanism.
+    let job = b.wrap(&plan).expect("an argv");
+    assert!(
+        job.iter().any(|a| a == "--die-with-parent"),
+        "a job dies with the harness: {job:?}"
+    );
+    let _ = std::fs::remove_dir_all(&project);
+}
+
 /// The first hit for `name` on this process's `PATH`, resolved the way the note resolves it.
 fn on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;

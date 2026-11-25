@@ -2,9 +2,10 @@
 //! `--die-at-start` exits before answering, `--once FILE` only when FILE exists, `--endless`
 //! writes 64 MiB with no newline and then waits, and `--cancel-log FILE` appends the request id of
 //! every `notifications/cancelled` it is told. Tools: `echo`, `big`, `slow` (answers after a
-//! pause), `fail` (`isError`), `crash` (exits mid-call), `pwd`, `grow`, which adds `extra` and
-//! sends `notifications/tools/list_changed`, `env` (one variable's value, empty when unset),
-//! `spawn`, which starts a `sleep` grandchild and says its pid, and `pid` (this server's pid).
+//! pause), `fail` (`isError`), `crash` (exits mid-call), `pwd`, `write` (a file at `path`, or why
+//! it could not), `grow`, which adds `extra` and sends `notifications/tools/list_changed`, `env`
+//! (one variable's value, empty when unset), `spawn`, which starts a `sleep` grandchild and says
+//! its pid, and `pid` (this server's pid).
 
 use std::io::{BufRead, Write};
 
@@ -92,6 +93,9 @@ pub fn serve(args: &[String]) {
                  "inputSchema": {"type": "object"}},
                 {"name": "pwd", "description": "Say the working directory.",
                  "inputSchema": {"type": "object"}},
+                {"name": "write", "description": "Write `text` to `path`.",
+                 "inputSchema": {"type": "object", "properties": {"path": {"type": "string"},
+                  "text": {"type": "string"}}}},
                 {"name": "slow", "description": "Answer after a pause.",
                  "inputSchema": {"type": "object", "properties": {"ms": {"type": "integer"}}}},
                 {"name": "env", "description": "Say one environment variable.",
@@ -128,6 +132,17 @@ pub fn serve(args: &[String]) {
                     }
                     Some("extra") => text("extra ran"),
                     Some("pwd") => text(&std::env::current_dir().unwrap().display().to_string()),
+                    Some("write") => {
+                        let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+                        let body = args.get("text").and_then(Value::as_str).unwrap_or("");
+                        match std::fs::write(path, body) {
+                            Ok(()) => text("wrote"),
+                            // Verbatim: a boundary's refusal is the path's absence, so the answer
+                            // names what the kernel said rather than a guess about it.
+                            Err(e) => json!({"content": [{"type": "text", "text": e.to_string()}],
+                                            "isError": true}),
+                        }
+                    }
                     Some("slow") => {
                         let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(500);
                         std::thread::sleep(std::time::Duration::from_millis(ms));
