@@ -53,8 +53,9 @@ pub use reap::{
     close_due, notice_at, pass, pass_halves,
 };
 pub use remote::{
-    Bundle, HostPass, LeaseKeeper, LeaseRenewer, RENEW_MS, RemoteLeases, RemoteOwner,
-    collect_bundle, host_pass, remote_holdings, remote_holdings_lines, renew_script,
+    Bundle, Checkout, HostPass, LeaseKeeper, LeaseRenewer, REGENERABLE, RENEW_MS, RemoteLeases,
+    RemoteOwner, collect_bundle, freed_kind, host_pass, is_shared, parse_sweep, regenerable,
+    remote_holdings, remote_holdings_lines, renew_script, shared_paths, sweep_script,
 };
 pub use systemd::{NoManager, Systemd, UnitManager, UnitTable};
 pub use worktree::{

@@ -480,13 +480,61 @@ sessions fetching at once queue and one of them does the fetch. Nothing here has
   The last rule is the owner homes: every session there has its `$HOME` to itself, so a cargo home inside one
   is nobody's shared cache - and it would be counted and cleaned as that session's own data, which is the
   next rule.
-* **It is never a session's own data.** The host's reaper removes two directories from an owner's home, `tmp`
-  and `.cache`; nothing else in it is a cache it touches, and `lifecycle::remote::removable_shape` refuses any
-  path that is not an owner home, a jobs ledger or a fanout dir - a shared `~/.cargo` is none of those, and the
-  placement writes no holding row for it. So the disk plan does not count it and the reaper cannot remove it.
+* **It is never a session's own data.** An owner's home is swept of what a build regenerates - `target`,
+  `target-<pkg>`, `build`, `tmp`, `.cache` - and nothing else in it is touched (`owner.json` stays, which is
+  what keeps the leftovers attributable). `lifecycle::remote::removable_shape` refuses any path that is not an
+  owner home, a jobs ledger or a fanout dir, and `remote::is_shared` refuses the three paths this file declares
+  by name: `cargo_home`, `sccache_dir` and the wrapper's own directory. A shared `~/.cargo` is none of the
+  shapes, and the placement writes no holding row for it, so the disk plan does not count it and no pass can
+  remove it.
 * **It survives a boundary with no network**, unlike the wrapper: a registry already fetched is exactly what
   a session with no egress needs, and reading it wants no socket. Only `RUSTC_WRAPPER` and `SCCACHE_DIR` are
   withheld there.
+
+## What a placement leaves behind, and when it goes
+
+A placement's bytes are in three places on that machine: the **owner home** `<root>/.letibot-home/<short>/`
+(its `$HOME`, its `/tmp`, its build directory), the **jobs ledger** `<root>/.letibot-jobs/<short>/`, and the
+**checkout** `<root>/<repo>/<short>/`. The mirror `<root>/<repo>.git` is shared by every session on the
+repository and is never removed.
+
+**What a build regenerates goes, and nothing else does.** `target`, `target-<pkg>` (the operator's own
+`CARGO_TARGET_DIR=$HOME/target-<pkg>`), `build`, `tmp` and `.cache` inside the home are
+`lifecycle::remote::REGENERABLE`: the whole 985G three stopped sessions held on xmg on 2026-11-25 was those
+names and nothing else. `owner.json` stays, so whatever is left in a home is still attributable to an owner,
+and a name a pass does not recognise is never touched.
+
+It goes at two moments, and the second is the one that catches a settle that never arrived:
+
+* **The settle** - a close, or a `leticollect` for a session stopped without one: after its branch comes
+  home, the same pass frees the build output. A close gives it five minutes; a target too large for that is
+  finished by the next reaper pass, which has thirty. The daemon's last act fetches the branch only: a
+  shutdown must not spend minutes removing a tree.
+* **The host's own pass**, when the lease is `idle_ttl + 1 h` old - the home box stopped renewing it, because
+  it is gone, asleep, or never learnt the session ended. That pass also bundles the checkout's work into
+  `<root>/.letibot-archive/<owner>.bundle`, which the home box fetches into
+  `refs/letibot/archive/<owner>/remote/` on its next pass, and it frees the checkout only when that bundle was
+  written.
+
+**The checkout's rule is the branch, not the tree alone.** It is removed only when all three hold, and each is
+checked on that machine, by looking:
+
+1. a bundle of it was written in this pass, or `<root>`'s branch is home here as `remote/<host>/<id>`;
+2. `git status --porcelain` in it is empty - an untracked file is not in a bundle, so `clean` means clean;
+3. every other branch of it has no commit the placement's branch (`remote/<short>`) lacks - the same question
+   `Home::strays` asks before it fetches them home.
+
+Then, and only then: `git worktree prune` in the mirror and the mirror's `remote/<short>` is deleted, because a
+re-placement of the same session creates the checkout and the branch afresh from a new bundle. Any doubt keeps
+the tree and says which of the three failed: **a merged and clean checkout is still kept while its branch is
+not home**, and uncommitted work is never traded for bytes. That is why the checkout is not needed for
+`letibot gc --restore` - what restore reads is `refs/letibot/archive/<owner>/…` in *this* box's repository.
+
+**What the operator sees.** The plan (`letibot gc`) lists a settled owner's remote holdings with the size the
+last pass measured and a verdict naming the machine, so the 985G is in somebody's list before anything is
+removed; a live owner's rows are kept whatever their size. `letibot gc --now` prints one line per freed
+path (`s-… target on xmg remove — a build regenerates it, and its branch is home (549G)`), and the pass's
+summary counts it in `freed`. The journal keeps every one of them.
 
 ## The supervisor, and work across hosts
 
@@ -802,8 +850,9 @@ closed - and host to host is relayed through this box so both ends get the same 
   file and a merged result set would grow from. `hosts {probe}` reports the spare cores (`cores − load −
   reserve`) they would place by; nothing places by them yet.
 * **No subnet lease.** A docker network's address pool is not something this build reads or reserves.
-* **No teardown for anything but docker**, and **no `remote_sync` verb**: the branch comes back when the
-  session ends (`ExecBackend::close`).
+* **No `remote_sync` verb**: the branch comes back when the session ends (`ExecBackend::close`), and what
+  that close frees on the machine is the build's output plus - when the branch is home and the tree is
+  clean - the checkout (see *What a placement leaves behind, and when it goes*).
 * **`MaxSessions` is not raised, and letibot does not read it.** The client bound is 8, safe for the default of
   10; an `sshd` below that still refuses, and the refusal is a retried transport failure. A per-daemon master
   means each short-lived process dials its own connection: at 50-70 ms each and with `ControlPersist=120`, that

@@ -2307,8 +2307,9 @@ impl Ssh {
         self.sh_once_within(step, script, self.bound)
     }
 
-    /// [`Ssh::sh_once`] with a bound of its own: a status poll is shorter than a write.
-    fn sh_once_within(
+    /// [`Ssh::sh_once`] with a bound of its own: a status poll is shorter than a write, and a
+    /// removal is longer than either - the reaper asks for one on the disk's clock.
+    pub(crate) fn sh_once_within(
         &self,
         step: &str,
         script: &str,
@@ -4135,8 +4136,12 @@ pub struct SshBackend {
     /// The guest this session's commands run in, when it was placed in one: `close` brings it down and
     /// collects its work, and `describe` says so.
     vm: Option<RemoteVm>,
-    /// What [`ExecBackend::close`] found when it brought the branch back, said once.
-    brought_back: Mutex<Option<String>>,
+    /// The session this placement was made for: its owner id in the store, and the name its home
+    /// and ledger on the host are the short id of.
+    owner: String,
+    /// What [`ExecBackend::close`] found when it brought the branch back, said once, and whether
+    /// the branch is here after it: the checkout on the host may go only when it is.
+    brought_back: Mutex<Option<(String, bool)>>,
     /// What the sweep ended on the host, said once: `None` before it has run, `Some("")` when it
     /// found nothing. A second close reports what the first found rather than a machine it has
     /// already emptied.
@@ -4578,10 +4583,11 @@ impl SshBackend {
                     };
                     // The session's home, its `/tmp` beside it, and its build directory when this
                     // host rebinds: a confined command's `/tmp` is `dir/tmp`, the same lifetime as
-                    // `dir`, so a file one call wrote is there in the next. Nothing here is removed
-                    // when the session ends. The build directory has to exist BEFORE the view is
-                    // measured: a mount of a path that is not there is a silent absence, and cargo
-                    // would then make it inside the view's own tmpfs, where it is gone again.
+                    // `dir`, so a file one call wrote is there in the next. What the settle frees
+                    // inside it is the build's output and nothing else (`sweep_script`). The build
+                    // directory has to exist BEFORE the view is measured: a mount of a path that is
+                    // not there is a silent absence, and cargo would then make it inside the view's
+                    // own tmpfs, where it is gone again.
                     let mut dirs = vec![dir.clone(), format!("{dir}/tmp")];
                     if stable {
                         dirs.push(tree.target());
@@ -4767,6 +4773,7 @@ impl SshBackend {
             env_secrets,
             unconfined,
             vm,
+            owner: spec.name.clone(),
             brought_back: Mutex::new(None),
             swept: Mutex::new(None),
             cache_server,
@@ -4857,6 +4864,16 @@ impl SshBackend {
             said.push(self.collect_from_guest(&plain, vm));
         }
         said.push(self.bring_back());
+        // The branch is home (or it is not, and the checkout is the only copy): either way the
+        // owner home's `target`/`build` are bytes nobody needs, and this is the door that knows it.
+        let home = self.brought_home().unwrap_or(false);
+        said.extend(free_the_build(
+            &self.ssh,
+            &self.owner,
+            &crate::remote::owner_home(&self.root, &self.owner),
+            &self.ledger,
+            home,
+        ));
         // The sweep has run and the branch is home: nothing of this session is left to find. A second
         // close of the same session (two doors, one `settle`) reports what the first did.
         forget_placement(&self.ssh);
@@ -5044,7 +5061,7 @@ impl SshBackend {
     /// Bring the branch back, and say what came with it. Idempotent and safe to call twice: the
     /// second call reports what the first found.
     fn bring_back(&self) -> String {
-        if let Some(said) = self
+        if let Some((said, _)) = self
             .brought_back
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -5052,11 +5069,22 @@ impl SshBackend {
         {
             return said;
         }
-        let said = self
+        let fetched = self
             .home
             .fetch(&self.ssh, &format!("the session on {} ended", self.host));
-        *self.brought_back.lock().unwrap_or_else(|e| e.into_inner()) = Some(said.clone());
-        said
+        *self.brought_back.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((fetched.said.clone(), fetched.home));
+        fetched.said
+    }
+
+    /// Is the branch in this box's repository after [`SshBackend::bring_back`]? `None` before it
+    /// ran, which is a placement whose close has not reached its fetch.
+    fn brought_home(&self) -> Option<bool> {
+        self.brought_back
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(_, home)| *home)
     }
 
     /// The fetch home the daemon's last act needs, or `None` for a guest placement: its commits are
@@ -5067,11 +5095,84 @@ impl SshBackend {
     }
 }
 
+/// What a fetch home came to: the sentence a reader is given, and whether the branch is in this
+/// box's repository now - the one fact that lets the checkout on the host go.
+struct Fetched {
+    said: String,
+    home: bool,
+}
+
+/// How long a close gives the sweep of a host's build output. A close is somebody's stop and must
+/// end; a target too big for this is freed by the reaper's own pass, which has thirty minutes
+/// (`crate::lifecycle::reap::REMOVAL_BOUND`) and runs on the disk turn.
+const FREE_AT_CLOSE: Duration = Duration::from_secs(300);
+
+/// What a settled placement frees on its host: the owner home's regenerable output, and the
+/// checkout once the branch is home. A branch that did not come home keeps its tree - the checkout
+/// is then the only copy of that work - and every line here is said, so a close reads what was
+/// freed and what stayed.
+fn free_the_build(
+    ssh: &Ssh,
+    owner: &str,
+    home: &str,
+    ledger: &str,
+    branch_home: bool,
+) -> Vec<String> {
+    let checkout = if branch_home {
+        crate::lifecycle::Checkout::MayGo
+    } else {
+        crate::lifecycle::Checkout::Stays("its branch is not home yet, so it is the only copy")
+    };
+    let script = crate::lifecycle::sweep_script(owner, home, &[ledger.to_string()], Some(checkout));
+    match ssh.sh_step_within(
+        "freeing this session's build output",
+        &script,
+        FREE_AT_CLOSE,
+    ) {
+        Ok((said, _, 0)) => match crate::lifecycle::parse_sweep(&said) {
+            Ok(sweep) => {
+                let mut out = Vec::new();
+                if !sweep.freed.is_empty() {
+                    out.push(format!(
+                        "freed {} of build output on {} ({})",
+                        crate::lifecycle::human_bytes(sweep.bytes()),
+                        ssh.host.name,
+                        sweep
+                            .freed
+                            .iter()
+                            .map(|(p, _)| p.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                out.extend(sweep.kept);
+                out
+            }
+            Err(pids) => vec![format!(
+                "nothing was freed on {}: a process of this session (pid {pids}) still runs there",
+                ssh.host.name
+            )],
+        },
+        Ok((_, stderr, code)) => vec![format!(
+            "the build output on {} was NOT freed (the sweep exited {code}: {})",
+            ssh.host.name,
+            String::from_utf8_lossy(&stderr)
+                .lines()
+                .next()
+                .unwrap_or("no answer")
+        )],
+        Err(e) => vec![format!(
+            "the build output on {} was NOT freed: {e}",
+            ssh.host.name
+        )],
+    }
+}
+
 impl Home {
     /// One placement's branch, fetched into the local repository, and the sentence that says what
     /// arrived. `opening` is the caller's own account of why the fetch ran: a close, the daemon's
     /// last act, or a collect asked for after the daemon that made the placement was gone.
-    fn fetch(&self, ssh: &Ssh, opening: &str) -> String {
+    fn fetch(&self, ssh: &Ssh, opening: &str) -> Fetched {
         let fetched = ssh.fetch_back(&self.local_repo, &self.url, &self.refspec);
         let mut said = match fetched {
             Ok(FetchEnded::Ran(out)) if out.status.success() => {
@@ -5163,7 +5264,18 @@ impl Home {
         said.push_str(&format!(". The checkout is still at {}", self.worktree));
         said.push_str(&self.strays(ssh));
         ssh.exit_master();
-        said
+        // One rule for both doors: the ref being here is the fact, whatever the fetch said.
+        let home = git(
+            &self.local_repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{}", self.back_branch),
+            ],
+        )
+        .is_ok();
+        Fetched { said, home }
     }
 
     /// The commits the placement made on branches other than the collected one, named and brought
@@ -5305,6 +5417,14 @@ pub fn back_branch_for(host: &str, session: &str) -> String {
     format!("remote/{host}/{}", short_branch_id(session))
 }
 
+/// Is a placement's branch home in `repo`? The ref being there is the one proof that the work is
+/// here, and it is what lets the checkout on that host go: the branch is the work, and nothing else
+/// in a placement says so.
+pub fn branch_home(repo: &Path, host: &str, session: &str) -> bool {
+    let branch = format!("refs/heads/{}", back_branch_for(host, session));
+    git(repo, &["rev-parse", "--verify", "--quiet", &branch]).is_ok()
+}
+
 /// What a collect needs, and nothing a daemon holds: the host, the local repository the branch comes
 /// home to, and the session id whose checkout and branch the placement was named by. A placement is
 /// the daemon's and dies with it, so these are what a stopped session can still be collected from.
@@ -5374,12 +5494,23 @@ pub fn collect(spec: &CollectSpec) -> Result<String, BackendError> {
         local_repo,
         url: format!("{}:{source}", ssh.destination()),
         refspec: format!("+{branch}:refs/heads/{back_branch}"),
-        worktree,
+        worktree: worktree.clone(),
         branch,
         back_branch,
         base,
     };
-    Ok(home.fetch(&ssh, &format!("the session on {host} was collected")))
+    let fetched = home.fetch(&ssh, &format!("the session on {host} was collected"));
+    // A stopped session's build output is bytes nobody needs once its branch is here, and this is
+    // the door a session stopped without a close reaches.
+    let mut said = vec![fetched.said];
+    said.extend(free_the_build(
+        &ssh,
+        &spec.session,
+        &owner_home(&root, &spec.session),
+        &owner_ledger(&root, &spec.session),
+        fetched.home,
+    ));
+    Ok(said.join("; "))
 }
 
 /// The owner home a placement makes on a host: `<root>/.letibot-home/<short>`. The short id is the
@@ -5559,7 +5690,7 @@ static GUESTS: std::sync::LazyLock<Mutex<Vec<(Ssh, RemoteVm)>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// One placement as the last act reads it: the connection, and what its branch needs to come home.
-/// A guest's is `None` - see [`SshBackend::home_for_the_last_act`].
+/// A guest's `home` is `None` - see [`SshBackend::home_for_the_last_act`].
 struct Placement {
     ssh: Ssh,
     home: Option<Home>,
@@ -5630,7 +5761,9 @@ pub fn placements_down() -> Vec<String> {
         }
         if let Some(home) = &placement.home {
             let opening = format!("the session on {} ended", placement.ssh.host.name);
-            said.push(home.fetch(&placement.ssh, &opening));
+            // The branch only. The bytes on that host are the reaper's pass to free: a last act
+            // that is a shutdown must not spend five minutes removing a target.
+            said.push(home.fetch(&placement.ssh, &opening).said);
         }
     }
     said

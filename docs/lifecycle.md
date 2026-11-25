@@ -764,7 +764,8 @@ the kill and what survived").
 | target dir in the owner root | cache | cargo | close | remove | none |
 | shared target (`target-landing*`, queue targets) | cache | queue | quota | owner is the queue; removed whole when over quota or unused for 3 days, under the build lock `rrun-runner` already takes | none |
 | tmp, confined home | cache | tools | close | remove | none |
-| remote owner root (`.letibot-home/<sid>` and build dirs) | cache + work | `remote.rs` | close for cache; settle for the tree | after the branch is home or bundled (d.8) | bundle on that host, or fetched ref |
+| remote owner root (`.letibot-home/<sid>`): `target`, `target-<pkg>`, `build`, `tmp`, `.cache` | cache | `remote.rs`, the operator's own `CARGO_TARGET_DIR=$HOME/target-<pkg>` | close for the build output; settle/reap for a lease | swept at the settle (the close, or a `leticollect`) and by the host's own pass once the lease is `idle_ttl + 1 h` old: `du -sk`, `rm -rf`, checked absent, one `FREED <size> <path>` line each. `owner.json` and everything else in the home stay | none - a build regenerates it. 2026-11-25: three stopped sessions on xmg held 985G here |
+| remote checkout (`<root>/<repo>/<short>`) | work | `place` | the branch is home here, and the tree is clean | removed with the sweep above when `refs/heads/remote/<host>/<id>` exists locally, `git status --porcelain` is empty, and every other branch of the checkout has no commit the placement's branch lacks; `git worktree prune` and the mirror's `remote/<short>` go with it. Any doubt keeps it, said | the branch at `remote/<host>/<id>`, or the bundle |
 | remote jobs ledger (`.letibot-jobs/<short>`, `.letibot-jobs/fanout-<call>`) and fanout work dir (`fanout-<call>`) | cache | placement, `fanout` (recorded through the process book) | owner settled, or its lease reaped there with any bundle home | the home box's remote pass: refused while a process carries the owner's mark or a ledger pid runs, or the owner is held or has an open job; `chmod -R u+w` then `rm -rf`, checked absent | none |
 | firecode run dir | record | firecode | owner settled, VM down, copy-out not pending | `firecode gc --run <id>` (a new, small firecode verb); until it exists, move to `runs-archive/<yyyy-mm>/` | console log, result, verdict kept in the archive |
 | firecode state layers of a per-owner project | cache | firecode | owner settled | firecode's own removal for that project slug; if firecode has no verb for one slug, this is a firecode row to file | none |
@@ -772,12 +773,18 @@ the kill and what survived").
 | session rows | record | store | settle | `set_archived` with the reason (R184) | never deleted |
 | systemd units | record | launcher | - | `--collect` already; `reset-failed` for `letibot-*` only | - |
 
-Two rules worth stating once:
+Rules worth stating once:
 
 - **Compute is reaped at close without a grace period**, except the VM's copy-out wait. A
   closed owner being resumable is what makes that safe.
-- **Nothing of class `work` is removed unless its `archive` column was written in the same
-  pass and the archive was read back.** A failed archive is `stuck`, not a delete.
+- **A branch being home is not the same as a tree being clean**, and neither is the same as
+  finished. `remote/<host>/<id>` in this box's repository is what makes the remote *branch* the
+  work, so its checkout may go; one uncommitted file, one ref the branch does not have, or a
+  bundle that could not be written keeps the tree, and the pass says which. A merged and clean
+  checkout is still kept while its branch is not here.
+- **The three shared paths on a host are never removed**, whatever a row says: `cargo_home`,
+  `sccache_dir` and the directory `rustc_wrapper` lives in (d.3, `hosts.toml`). A reaped cargo
+  home is every session on that machine's registry.
 
 #### Jobs across a restart
 
@@ -970,7 +977,11 @@ first and never runs from a daemon's pass.
   `holds: vm fccode3 (6.1G rss), 14 procs (2.3G), wt pk/r193 (+2 branches), target 38G, 1 container · idle 12m, closes in 18m`.
 - **`letibot gc`**: the plan. Grouped by owner, one line per holding: what, size, verdict,
   when. Totals per class and per disk. A section "unrecorded" and a section "looks like
-  ours, not provably" with the adopt command. A section "stuck".
+  ours, not provably" with the adopt command. A section "stuck". A remote holding is planned
+  with the size the last pass measured, and a settled owner's says who frees it:
+  `home ~/letibot-remote/.letibot-home/… 549G reap now — its owner is settled: when this box's
+  pass reaches xmg it frees that host's build output and its ledgers, and keeps its owner.json`.
+  A live owner's is kept, whatever its size.
 - **`letibot gc --now [OWNER]`**: act. `--settle OWNER` skips the grace. `--adopt`,
   `--restore`, `--drop-archive`, `--unrecorded`, `--docker-report` as above.
 - **`letibot hold OWNER [--for D]` / `letibot release OWNER`**.
@@ -995,6 +1006,7 @@ first and never runs from a daemon's pass.
 | Two reapers | `flock` per box, compare-and-set per holding. |
 | Pid reuse | Never signal a bare pid. Cgroup first; else `(pid, identity)` as the supervisor does; firecracker's `--id` rechecked (`held.rs:246-256`). |
 | Remote host unreachable | Holdings there become `lost` (the word `process` already uses) and are retried. Not built: no host-local reaper runs there (decision 12), so a partitioned host keeps its holdings until the home box reaches it again. |
+| A remote owner's lease expired and its settle never reached the host | The host's own pass frees its build output (`target*`, `build`, `tmp`, `.cache`), writes a bundle of its work into `<root>/.letibot-archive/<owner>.bundle`, and takes the checkout only when that bundle was written and the tree is clean. The home box's next pass fetches the bundle into `refs/letibot/archive/<owner>/remote/` and removes it; a home box that never comes back leaves the bundle, which is the copy. |
 | Remote host has no letibot reaper installed | `letibot gc` on the home box says so per host ("no reaper on lubuntu2: holdings there are reaped only while it is reachable"). No host setup installs a reaper yet. |
 | The systemd user manager refuses scopes (R191) | Owners are created `unbounded` and say so. The sweep reports unit-table fill. It does not restart the manager. |
 | The reaper would reap itself | Skipped by rule 6. A package cannot run `gc --now` on its ancestors. |

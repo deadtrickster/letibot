@@ -30,6 +30,21 @@ pub trait Hands: Send + Sync {
     fn lock_held(&self, target: &Path) -> Result<bool, String>;
     /// One command on `host`, one round trip.
     fn host_command(&self, host: &str, script: &str) -> Result<String, String>;
+    /// One command on `host` that is a REMOVAL: its length is the disk's and not a step's, so it is
+    /// given a budget of its own. The default is [`Hands::host_command`], which is what a fixture
+    /// standing in for a host is.
+    fn host_removal(&self, host: &str, script: &str) -> Result<String, String> {
+        self.host_command(host, script)
+    }
+    /// The paths on `host` that are the MACHINE's and never a session's: `cargo_home`,
+    /// `sccache_dir` and the wrapper's own directory, as `hosts.toml` declares them. A pass never
+    /// removes one, and a host nobody declared has none.
+    fn shared_paths(&self, host: &str) -> Vec<String> {
+        crate::remote::Hosts::load()
+            .get(host)
+            .map(crate::lifecycle::remote::shared_paths)
+            .unwrap_or_default()
+    }
     /// A file's bytes from `host`, for the one thing that must come home whole: a bundle.
     fn host_read(&self, host: &str, path: &str) -> Result<Vec<u8>, String>;
     /// One request to this box's docker engine, when it has one. The default is a box with none:
@@ -606,6 +621,9 @@ pub(super) fn remote_hosts(
     }
     for (host, rows) in by_host {
         let root = remote::root_of(&rows).unwrap_or_default();
+        // What this host shares with every session on it: `cargo_home`, `sccache_dir` and the
+        // wrapper's own directory. A row naming one is refused by name, never by shape alone.
+        let shared = ops.hands.shared_paths(&host);
         match remote::host_pass(&host, &root, &*ops.hands, now) {
             Ok(pass) => {
                 absorb(store, &pass, now, report)?;
@@ -666,6 +684,19 @@ pub(super) fn remote_hosts(
                     .collect();
                 let mut left = Vec::new();
                 for (owner, mine) in by_owner(rows) {
+                    if let Some(named) = mine.iter().find(|r| remote::is_shared(&r.handle, &shared))
+                    {
+                        let why = format!(
+                            "{} is this host's shared path (`hosts.toml`), and every session there \
+                             uses it: a pass never removes one",
+                            named.handle
+                        );
+                        report
+                            .kept
+                            .push(format!("{owner} on {host}: its dirs stay, {why}"));
+                        left.extend(mine.into_iter().map(|r| (r, why.clone())));
+                        continue;
+                    }
                     let verdict = removable(store, &owner, &pass, &pending, now)?;
                     match verdict {
                         Ok(why) => {
@@ -712,6 +743,11 @@ pub(super) fn remote_hosts(
 /// How often a host's recorded dirs are sized for `letibot holds`: `du` over a 150G home is not a
 /// once-a-minute cost. A row never measured is sized on the next pass regardless.
 pub const MEASURE_EVERY_MS: i64 = 30 * 60 * 1000;
+
+/// How long one removal on a host may take. A `target` of half a terabyte is millions of files, and
+/// `du -sk` plus `rm -rf` over them is minutes: a step's 20 s would kill the client half way and
+/// leave the rest to the next pass, which is why a removal is asked for on a budget of its own.
+pub const REMOVAL_BOUND: std::time::Duration = std::time::Duration::from_secs(1800);
 
 fn by_owner(rows: Vec<HoldingRow>) -> BTreeMap<String, Vec<HoldingRow>> {
     let mut out: BTreeMap<String, Vec<HoldingRow>> = BTreeMap::new();
@@ -772,26 +808,66 @@ fn remove_remote(
         .filter(|r| r.kind == crate::lifecycle::REMOTE_JOBS)
         .map(|r| r.handle.clone())
         .collect();
-    let paths: Vec<String> = rows.iter().map(|r| r.handle.clone()).collect();
+    // The owner's own home on that host is SWEPT, not removed: its bytes are a build's `target`
+    // and `build/`, and `owner.json` stays so whatever is left is still attributable to an owner.
+    // Everything else the owner recorded there goes whole.
+    let (homes, rest): (Vec<HoldingRow>, Vec<HoldingRow>) = rows
+        .into_iter()
+        .partition(|r| r.kind == crate::lifecycle::REMOTE_HOME);
+    let mut left = Vec::new();
+    if let Some(home) = homes.first().map(|r| r.handle.clone()) {
+        match sweep_home(store, ops, host, &owner, &home, &ledgers, now, report)? {
+            Sweeped::Done => {
+                for row in homes {
+                    journal(
+                        store,
+                        ops,
+                        &owner,
+                        &row,
+                        ReapAct::Remove,
+                        &format!("removed from {host}: {why}"),
+                        now,
+                    )?;
+                    store.put_holding(&HoldingRow {
+                        state: HoldingState::Gone,
+                        why: Some(format!(
+                            "its build output is gone and its owner.json stays: {why}"
+                        )),
+                        checked_ms: Some(now),
+                        ..row
+                    })?;
+                }
+            }
+            // The host refused the whole owner: nothing of it is removed, the ledger included.
+            Sweeped::Refused(kept) => {
+                left.extend(homes.into_iter().map(|r| (r, kept.clone())));
+                left.extend(rest.into_iter().map(|r| (r, kept.clone())));
+                return Ok(left);
+            }
+        }
+    }
+    if rest.is_empty() {
+        return Ok(left);
+    }
+    let paths: Vec<String> = rest.iter().map(|r| r.handle.clone()).collect();
     let said = match ops
         .hands
-        .host_command(host, &remote::remove_script(&owner, &ledgers, &paths))
+        .host_removal(host, &remote::remove_script(&owner, &ledgers, &paths))
         .map(|s| remote::parse_paths(&s))
     {
         Ok(Ok(said)) => said,
         Ok(Err(pids)) => {
             let why = format!("a process of it still runs there (pid {pids})");
             report.kept.push(format!("{owner} on {host}: {why}"));
-            return Ok(rows.into_iter().map(|r| (r, why.clone())).collect());
+            return Ok(rest.into_iter().map(|r| (r, why.clone())).collect());
         }
         Err(e) => {
             let why = format!("{host} did not answer the removal: {e}");
             report.kept.push(format!("{owner} on {host}: {why}"));
-            return Ok(rows.into_iter().map(|r| (r, why.clone())).collect());
+            return Ok(rest.into_iter().map(|r| (r, why.clone())).collect());
         }
     };
-    let mut left = Vec::new();
-    for (i, row) in rows.into_iter().enumerate() {
+    for (i, row) in rest.into_iter().enumerate() {
         match said.get(&i) {
             Some(remote::PathSaid::Gone { bytes }) => {
                 let line = format!("removed from {host}: {why}");
@@ -822,6 +898,96 @@ fn remove_remote(
         }
     }
     Ok(left)
+}
+
+/// What one sweep came to.
+enum Sweeped {
+    /// Its build output is gone. The checkout went too when its branch was home and its tree held
+    /// nothing the branch does not - a `KEPT` line says when it did not.
+    Done,
+    /// Nothing of that owner was touched: a process of it runs there, or the host did not answer.
+    Refused(String),
+}
+
+/// Free one settled owner's build output inside its home on `host`, and its checkout when this box
+/// can prove the branch is home. A refusal of one half is a refusal of the whole owner: a process
+/// carrying its mark means the place is still in use, and a host that did not answer is not a host
+/// to guess about.
+#[allow(clippy::too_many_arguments)]
+fn sweep_home(
+    store: &Store,
+    ops: &Ops,
+    host: &str,
+    owner: &str,
+    home: &str,
+    ledgers: &[String],
+    now: i64,
+    report: &mut Pass,
+) -> StoreResult<Sweeped> {
+    let checkout = match store.owner(owner)? {
+        Some(row) => checkout_state(host, &row),
+        None => remote::Checkout::Stays("no owner row here says whose branch to look for"),
+    };
+    let script = remote::sweep_script(owner, home, ledgers, Some(checkout));
+    let said = match ops.hands.host_removal(host, &script) {
+        Ok(said) => said,
+        Err(e) => {
+            let why = format!("{host} did not answer the sweep: {e}");
+            report.kept.push(format!("{owner} on {host}: {why}"));
+            return Ok(Sweeped::Refused(why));
+        }
+    };
+    match remote::parse_sweep(&said) {
+        Ok(sweep) => {
+            for (path, bytes) in sweep.freed {
+                let kind = remote::freed_kind(&path).to_string();
+                let why = "a build regenerates it, and its branch is home";
+                report.acts.push(Act {
+                    owner: owner.to_string(),
+                    kind: kind.clone(),
+                    host: Some(host.to_string()),
+                    handle: path.clone(),
+                    act: ReapAct::Remove,
+                    said: why.to_string(),
+                    bytes,
+                });
+                journal_path(
+                    store,
+                    ops,
+                    owner,
+                    &kind,
+                    Some(host),
+                    &path,
+                    &format!("{why} ({})", human_bytes(bytes)),
+                    now,
+                )?;
+            }
+            for line in sweep.kept {
+                report.kept.push(format!("{owner} on {host}: {line}"));
+            }
+            Ok(Sweeped::Done)
+        }
+        Err(pids) => {
+            let why = format!("a process of it still runs there (pid {pids})");
+            report.kept.push(format!("{owner} on {host}: {why}"));
+            Ok(Sweeped::Refused(why))
+        }
+    }
+}
+
+/// What a settled owner's checkout on `host` may do, as this box can prove it: its branch is home
+/// here, or the checkout is the only copy of that work and stays.
+fn checkout_state(host: &str, owner: &OwnerRow) -> remote::Checkout {
+    let Some(repo) = owner.repo.as_deref() else {
+        return remote::Checkout::Stays(
+            "this owner names no repository here to prove its branch in",
+        );
+    };
+    if crate::remote::branch_home(Path::new(repo), host, &owner.id) {
+        remote::Checkout::MayGo
+    } else {
+        remote::Checkout::Stays("its branch is not home here yet, so the checkout is the only copy")
+    }
 }
 
 /// Size what stays on `host` for `letibot holds`, when due or never measured. A path the host no
@@ -896,6 +1062,32 @@ fn absorb(store: &Store, pass: &HostPass, now: i64, report: &mut Pass) -> StoreR
         ));
     }
     Ok(())
+}
+
+/// One journal line for a fact the store has no row of its own for: a build directory a sweep freed
+/// inside an owner's home, or its checkout. A removal nobody can read back afterwards is one nobody
+/// can argue with, so these go through the journal like every other act.
+#[allow(clippy::too_many_arguments)]
+fn journal_path(
+    store: &Store,
+    ops: &Ops,
+    owner: &str,
+    kind: &str,
+    host: Option<&str>,
+    handle: &str,
+    said: &str,
+    now: i64,
+) -> StoreResult<()> {
+    store.put_reap_event(&ReapEvent {
+        at_ms: now,
+        owner_id: owner.to_string(),
+        kind: Some(kind.to_string()),
+        host: host.map(str::to_string),
+        handle: Some(handle.to_string()),
+        act: ReapAct::Remove.word().into(),
+        said: said.to_string(),
+        by: ops.by.clone(),
+    })
 }
 
 fn act(owner: &OwnerRow, row: &HoldingRow, what: ReapAct, said: &str) -> Act {
@@ -1070,6 +1262,24 @@ impl Hands for BoxHands {
             Ok((said, _, 0)) => Ok(said),
             Ok((said, stderr, code)) => Err(format!(
                 "the pass exited {code}: {}",
+                String::from_utf8_lossy(&stderr)
+                    .lines()
+                    .next()
+                    .or_else(|| said.lines().next())
+                    .unwrap_or("no answer")
+            )),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// A removal gets [`REMOVAL_BOUND`] and not a step's 20 s: a `target` of half a terabyte is
+    /// millions of files, and a client killed half way leaves the rest for the next pass.
+    fn host_removal(&self, host: &str, script: &str) -> Result<String, String> {
+        let ssh = self.connection(host)?;
+        match ssh.sh_once_within("the reaper's removal", script, REMOVAL_BOUND) {
+            Ok((said, _, 0)) => Ok(said),
+            Ok((said, stderr, code)) => Err(format!(
+                "the removal exited {code}: {}",
                 String::from_utf8_lossy(&stderr)
                     .lines()
                     .next()

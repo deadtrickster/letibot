@@ -99,6 +99,9 @@ struct StubHands {
     calls: Mutex<Vec<Vec<String>>>,
     /// `None`: a host that answers. `Some(why)`: a host this box cannot ask.
     unreachable: Mutex<Option<String>>,
+    /// What this fixture's host shares with every session on it - a test's value, never
+    /// `hosts.toml`, because a fixture that read the operator's file would test their machine.
+    shared: Mutex<Vec<String>>,
 }
 
 impl StubHands {
@@ -108,6 +111,7 @@ impl StubHands {
             firecode: Box::new(firecode),
             calls: Mutex::new(Vec::new()),
             unreachable: Mutex::new(None),
+            shared: Mutex::new(Vec::new()),
         }
     }
 }
@@ -120,6 +124,10 @@ impl Hands for StubHands {
 
     fn lock_held(&self, target: &Path) -> Result<bool, String> {
         self.real.lock_held(target)
+    }
+
+    fn shared_paths(&self, _host: &str) -> Vec<String> {
+        self.shared.lock().unwrap().clone()
     }
 
     fn host_command(&self, _host: &str, script: &str) -> Result<String, String> {
@@ -477,6 +485,8 @@ fn a_stale_remote_lease_is_swept_bundled_and_fetched_home() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join(OWNER_JSON), owner.line()).unwrap();
     f.file("host/.letibot-home/s-4/tmp/worker.tmp", 4096);
+    f.file("host/.letibot-home/s-4/target/debug/blob", 8192);
+    f.file("host/.letibot-home/s-4/build/rano-src/x.c", 2048);
 
     let store = f.store();
     let mut row = OwnerRow::live(
@@ -517,7 +527,24 @@ fn a_stale_remote_lease_is_swept_bundled_and_fetched_home() {
         !home.join("tmp").exists(),
         "the stale owner's caches are gone from that host"
     );
-    assert!(work.exists(), "and its tree is NOT removed");
+    assert!(
+        !home.join("target").exists() && !home.join("build").exists(),
+        "and so is the build output its lease stopped needing: the 549G xmg lost"
+    );
+    assert!(
+        home.join(OWNER_JSON).exists(),
+        "the stamp stays, so whatever is left is still attributable"
+    );
+    assert!(
+        work.exists(),
+        "its tree stays: it is not on the branch a placement would have called home, so \
+         nothing here proves the bundle is every commit in it"
+    );
+    assert!(
+        report.kept.join("\n").contains("is not only on"),
+        "and the pass says why it stayed: {:#?}",
+        report.kept
+    );
     let bundle = root.join(".letibot-archive/s-4.bundle");
     assert!(!bundle.exists(), "the bundle came home and was removed");
     let heads = git(
@@ -544,6 +571,84 @@ fn a_stale_remote_lease_is_swept_bundled_and_fetched_home() {
         .find(|r| r.host.as_deref() == Some("lubuntu2"))
         .expect("its row");
     assert_eq!(row.state, HoldingState::Gone, "the host's pass touched it");
+}
+
+/// An owner whose lease ran out with no settle reaching the host: the host's own pass frees its
+/// build output, writes a bundle of its work, and takes the checkout because the bundle is now
+/// that work's copy. The store row says `live` throughout - nobody ever closed it.
+#[test]
+fn a_stale_lease_takes_a_clean_checkout_once_the_bundle_holds_it() {
+    let f = Fixture::new("remote-stale-tree");
+    let mut places = f.places();
+    places.box_id = "lab2x1".into();
+    let root = f.at("host");
+    let checkout = host_checkout(&f, "s-16");
+    let home = remote::owner_root(&root, "s-16");
+    std::fs::create_dir_all(&home).unwrap();
+    let stamp = remote::RemoteOwner {
+        owner: "s-16".into(),
+        box_id: "lab2x1".into(),
+        kind: "session".into(),
+        created_ms: now_ms() - 7_200_000,
+        lease_ms: now_ms() - 7_200_000,
+        idle_ttl_ms: Some(super::PACKAGE_IDLE_TTL_MS),
+        work: Some(checkout.display().to_string()),
+        ledger: Some("host/.letibot-jobs/s-16".to_string()),
+    };
+    std::fs::write(home.join(OWNER_JSON), stamp.line()).unwrap();
+    f.file("host/.letibot-home/s-16/target/debug/blob", 8192);
+
+    // The home box's copy of the work, so the bundle has somewhere to come home to.
+    let repo = f.at("repo");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    f.file("repo/a.txt", 16);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let store = f.store();
+    store
+        .put_owner(&OwnerRow::live(
+            "s-16",
+            OwnerKind::Session,
+            Some(repo.display().to_string()),
+            now_ms() - 7_200_000,
+        ))
+        .unwrap();
+    store
+        .put_holding(
+            &HoldingRow::new(
+                "s-16",
+                REMOTE_HOME,
+                HoldingClass::Cache,
+                home.display().to_string(),
+                "owner.json there names the owner",
+                now_ms(),
+            )
+            .on_host(Some("lubuntu2".into())),
+        )
+        .unwrap();
+
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+
+    assert!(
+        !checkout.exists(),
+        "the bundle held every commit in it, so the tree went: {:#?}",
+        report.kept
+    );
+    assert!(!home.join("target").exists(), "{:#?}", report.acts);
+    assert!(home.join(OWNER_JSON).exists(), "the stamp stays");
+    assert!(
+        report
+            .acts
+            .iter()
+            .any(|a| a.kind == "checkout" && a.bytes > 0),
+        "the pass says what the tree was worth: {:#?}",
+        report.acts
+    );
+    assert!(
+        !root.join(".letibot-archive/s-16.bundle").exists(),
+        "and its bundle came home"
+    );
 }
 
 /// **Done when** a pass with the remote unreachable marks its holdings `lost`, removes nothing local
@@ -854,12 +959,15 @@ fn holding(store: &Store, owner: &str, kind: &str) -> Option<HoldingRow> {
         .find(|r| r.kind == kind)
 }
 
-/// A placed session's home (with a read-only Go module cache in it), its ledger, and a fanout
-/// call's work dir and ledger, all recorded on one host, under one owner in `state`.
+/// A placed session's home (with a read-only Go module cache and a build's output in it), its
+/// ledger, and a fanout call's work dir and ledger, all recorded on one host, under one owner in
+/// `state`. The checkout is a `git` tree on the branch a placement names it by, so a pass can tell
+/// whether its work is elsewhere.
 fn remote_fixture(f: &Fixture, store: &Store, id: &str, state: OwnerState) -> Vec<PathBuf> {
     let root = f.at("host");
     let home = remote::owner_root(&root, id);
     std::fs::create_dir_all(&home).unwrap();
+    let checkout = host_checkout(f, id);
     let stamp = remote::RemoteOwner {
         owner: id.into(),
         box_id: "lab2x1".into(),
@@ -867,14 +975,23 @@ fn remote_fixture(f: &Fixture, store: &Store, id: &str, state: OwnerState) -> Ve
         created_ms: now_ms(),
         lease_ms: now_ms(),
         idle_ttl_ms: Some(super::PACKAGE_IDLE_TTL_MS),
-        work: None,
-        ledger: None,
+        work: Some(checkout.display().to_string()),
+        ledger: Some(format!("host/.letibot-jobs/{id}")),
     };
     std::fs::write(home.join(OWNER_JSON), stamp.line()).unwrap();
     let module = f.file(
         &format!("host/.letibot-home/{id}/go/pkg/mod/x@v1/x.go"),
         2048,
     );
+    // What a build leaves in a session's own `$HOME`, and what filled xmg's disk: `target` (also
+    // the `stable_paths` build dir), the operator's `target-<package>`, `build` and `tmp`.
+    f.file(&format!("host/.letibot-home/{id}/target/debug/blob"), 8192);
+    f.file(
+        &format!("host/.letibot-home/{id}/target-pkg/debug/blob"),
+        4096,
+    );
+    f.file(&format!("host/.letibot-home/{id}/build/rano.tgz"), 2048);
+    f.file(&format!("host/.letibot-home/{id}/tmp/worker.tmp"), 1024);
     let ledger = f.at(&format!("host/.letibot-jobs/{id}"));
     let fanout = f.at(&format!("host/fanout-call_{id}"));
     f.file(&format!("host/fanout-call_{id}/out.log"), 4096);
@@ -911,6 +1028,71 @@ fn remote_fixture(f: &Fixture, store: &Store, id: &str, state: OwnerState) -> Ve
     paths
 }
 
+/// The host's checkout for one owner, made the way `place` makes it: a bare mirror holding the
+/// session's branch, and a `git worktree` of that mirror on `remote/<short>` at
+/// `<root>/<repo>/<short>`. A pass then reads it, and prunes the mirror, as it reads a real one.
+fn host_checkout(f: &Fixture, id: &str) -> PathBuf {
+    let short = crate::remote::short_branch_id(id);
+    let branch = format!("remote/{short}");
+    let mirror = host_mirror(f);
+    if !mirror.join("HEAD").exists() {
+        let seed = f.at("host/seed");
+        git(&seed, &["init", "-q", "-b", "main"]);
+        f.file("host/seed/a.txt", 16);
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-q", "-m", "a session's work"]);
+        git(
+            &f.at("host"),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &seed.display().to_string(),
+                &mirror.display().to_string(),
+            ],
+        );
+    }
+    let at = host_checkout_path(f, id);
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    git(
+        &mirror,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &branch,
+            &at.display().to_string(),
+            "main",
+        ],
+    );
+    at
+}
+
+/// The mirror that checkout is a worktree of: the one a real placement shares.
+fn host_mirror(f: &Fixture) -> PathBuf {
+    f.0.join("host/repo.git")
+}
+
+/// Where that checkout sits, without making it.
+fn host_checkout_path(f: &Fixture, id: &str) -> PathBuf {
+    f.0.join("host/repo")
+        .join(crate::remote::short_branch_id(id))
+}
+
+/// `remote/<host>/<short>` in the fixture's own repository: what says the branch is home.
+fn branch_home_in(f: &Fixture, id: &str) {
+    let repo = f.at("repo");
+    if !repo.join(".git").exists() {
+        git(&repo, &["init", "-q", "-b", "main"]);
+        f.file("repo/a.txt", 16);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "one"]);
+    }
+    let branch = crate::remote::back_branch_for("lubuntu2", id);
+    git(&repo, &["branch", "-f", &branch]);
+}
+
 fn remote_rows(store: &Store, id: &str) -> Vec<HoldingRow> {
     store
         .holdings_of(id)
@@ -920,18 +1102,47 @@ fn remote_rows(store: &Store, id: &str) -> Vec<HoldingRow> {
         .collect()
 }
 
-/// **Done when** a settled owner's home, ledgers and fanout dirs on a host are gone after one pass,
-/// a read-only module cache included, and its rows say so.
+/// **Done when** a settled owner's build output on a host is gone after one pass, its `owner.json`
+/// and a read-only module cache's siblings are still there, its ledger and fanout dirs are gone,
+/// and its checkout went because its branch is home here.
 #[test]
-fn a_settled_owners_remote_dirs_are_removed() {
+fn a_settled_owners_remote_build_output_is_freed_and_its_stamp_kept() {
     let f = Fixture::new("remote-settled");
     let places = f.places();
     let store = f.store();
     let paths = remote_fixture(&f, &store, "s-8", OwnerState::Settled);
+    branch_home_in(&f, "s-8");
+    let home = paths[0].clone();
+    let checkout = host_checkout_path(&f, "s-8");
     let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
     let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
 
-    for p in &paths {
+    for at in ["target", "target-pkg", "build", "tmp"] {
+        assert!(
+            !home.join(at).exists(),
+            "{} is still in the settled owner's home",
+            home.join(at).display()
+        );
+    }
+    assert!(
+        home.join(OWNER_JSON).exists(),
+        "the stamp stays: it is what keeps whatever is left attributable to an owner"
+    );
+    assert!(
+        !checkout.exists(),
+        "the checkout went with its branch home and its tree clean"
+    );
+    // And the mirror holds neither a worktree of a directory that is gone nor a branch a second
+    // placement of the same session would collide with.
+    let mirror = host_mirror(&f);
+    let refs = git(&mirror, &["for-each-ref", "--format=%(refname)"]);
+    assert!(
+        !refs.contains("remote/"),
+        "the placement's branch went with the checkout: {refs}"
+    );
+    let worktrees = git(&mirror, &["worktree", "list"]);
+    assert_eq!(worktrees.lines().count(), 1, "{worktrees}");
+    for p in &paths[1..] {
         assert!(!p.exists(), "{} is still on the host", p.display());
     }
     let rows = remote_rows(&store, "s-8");
@@ -946,13 +1157,52 @@ fn a_settled_owners_remote_dirs_are_removed() {
         .filter(|a| a.owner == "s-8" && a.act == letibot_tokencore::store::ReapAct::Remove)
         .map(|a| a.bytes)
         .sum();
-    assert!(freed >= 4096, "{:#?}", report.acts);
+    assert!(freed >= 8192 + 4096 + 2048 + 1024, "{:#?}", report.acts);
+    let kinds: Vec<&str> = report
+        .acts
+        .iter()
+        .filter(|a| a.owner == "s-8")
+        .map(|a| a.kind.as_str())
+        .collect();
+    for want in ["target", "build", "tmp", "checkout"] {
+        assert!(kinds.contains(&want), "no `{want}` act: {kinds:?}");
+    }
     assert!(
         remote::remote_holdings(&store, "lab2x1")
             .unwrap()
             .is_empty(),
         "nothing left to list"
     );
+}
+
+/// A checkout with an uncommitted change is the only copy of that work, so it stays and the pass
+/// says which file: a clean branch is not the same as a clean tree.
+#[test]
+fn a_checkout_with_uncommitted_work_stays_and_says_so() {
+    let f = Fixture::new("remote-dirty");
+    let places = f.places();
+    let store = f.store();
+    let paths = remote_fixture(&f, &store, "s-12", OwnerState::Settled);
+    branch_home_in(&f, "s-12");
+    let checkout = host_checkout_path(&f, "s-12");
+    f.file(
+        &format!(
+            "host/repo/{}/notes.txt",
+            crate::remote::short_branch_id("s-12")
+        ),
+        32,
+    );
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+
+    assert!(checkout.exists(), "the only copy of that work stays");
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains("holds uncommitted work") && kept.contains("notes.txt"),
+        "{kept}"
+    );
+    // And the build output went anyway: it is not work.
+    assert!(!paths[0].join("target").exists(), "{:#?}", report.acts);
 }
 
 /// A held owner, a closed one and one with a live process there keep every dir, and `holds` lists
@@ -982,6 +1232,15 @@ fn held_live_and_unsettled_owners_keep_their_remote_dirs() {
     for p in held.iter().chain(&closed).chain(&live) {
         assert!(p.exists(), "{} was removed", p.display());
     }
+    // Not only the directories: a live owner's build output is the whole point of leaving it alone.
+    assert!(
+        held[0].join("target").exists(),
+        "a held owner's target stays"
+    );
+    assert!(
+        closed[0].join("target").exists(),
+        "a closed owner's target waits for the settle"
+    );
     let kept = report.kept.join("\n");
     assert!(
         kept.contains("s-9 on lubuntu2: its dirs stay, the operator holds it"),
@@ -1023,7 +1282,58 @@ fn held_live_and_unsettled_owners_keep_their_remote_dirs() {
         .status();
 }
 
-/// The removal refuses a handle that is not one of the three shapes, so a bad row cannot aim
+/// The host's shared paths are never removed, however a row spells them: `cargo_home` is the
+/// registry every session on that machine fetches into, and a reaped one is everybody's cold build.
+#[test]
+fn a_shared_cargo_home_on_a_host_is_never_removed() {
+    let f = Fixture::new("remote-shared");
+    let places = f.places();
+    let store = f.store();
+    let cargo = f.at("host/cargo-home");
+    f.file("host/cargo-home/registry/blob.crate", 4096);
+    let cache = f.at("host/sccache");
+    f.file("host/sccache/entry", 4096);
+    let owner = f.owner(&f.places(), "s-13", OwnerState::Settled);
+    store.put_owner(&owner).unwrap();
+    for (kind, at) in [(REMOTE_HOME, &cargo), (REMOTE_FANOUT, &cache)] {
+        store
+            .put_holding(
+                &HoldingRow::new(
+                    "s-13",
+                    kind,
+                    HoldingClass::Cache,
+                    at.display().to_string(),
+                    "a row that should never have been written",
+                    now_ms(),
+                )
+                .on_host(Some("lubuntu2".into())),
+            )
+            .unwrap();
+    }
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    *hands.shared.lock().unwrap() = vec![
+        cargo.display().to_string(),
+        cache.display().to_string(),
+        "/usr/local/bin".into(),
+    ];
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+
+    assert!(cargo.exists(), "the shared cargo home was removed");
+    assert!(cache.exists(), "the shared cache dir was removed");
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains("is this host's shared path"),
+        "a shared path is refused by name: {kept}"
+    );
+    assert!(
+        remote_rows(&store, "s-13")
+            .iter()
+            .all(|r| r.state != HoldingState::Gone),
+        "and its rows stay, so nothing counts them as freed"
+    );
+}
+
+/// `removable_shape` refuses a handle that is not one of the three shapes, so a bad row cannot aim
 /// `rm -rf` at a host's root or home.
 #[test]
 fn only_homes_ledgers_and_fanout_dirs_are_removable() {
@@ -1053,7 +1363,7 @@ fn a_shared_cargo_home_is_never_a_sessions_own_data() {
         "and one INSIDE the owner homes is, which is why `cargo_home` there is refused at the \
          placement: the home would be counted and removed as one session's data"
     );
-    // What a reaper does to a session's own home: `tmp` and `.cache`, and nothing else in it.
+    // What a reaper does to a session's own home: what a build regenerates, and nothing else.
     let owner = remote::RemoteOwner {
         owner: "s-1".into(),
         box_id: "lab2x1".into(),
@@ -1068,6 +1378,52 @@ fn a_shared_cargo_home_is_never_a_sessions_own_data() {
     assert!(
         !script.contains(".cargo") && !script.contains("registry"),
         "a reaper that named a cargo home would be reaping the one every session shares:\n{script}"
+    );
+}
+
+/// `letibot gc` names a settled owner's remote build output as planned, with the size the last pass
+/// measured, before anything is asked of that host: a plan that kept every remote row silent is the
+/// list xmg's 985G was missing from. A live owner's stays kept.
+#[test]
+fn the_plan_names_a_settled_owners_remote_build_output_as_planned() {
+    let f = Fixture::new("plan-remote");
+    let places = f.places();
+    let store = f.store();
+    remote_fixture(&f, &store, "s-14", OwnerState::Settled);
+    remote_fixture(&f, &store, "s-15", OwnerState::Live);
+    // What a pass that could not reach the host yet has: a measured size and a live row.
+    for id in ["s-14", "s-15"] {
+        for row in remote_rows(&store, id) {
+            store
+                .put_holding(&HoldingRow {
+                    bytes: Some(8192),
+                    ..row
+                })
+                .unwrap();
+        }
+    }
+
+    let plan = plan(&store, &places, None, now_ms()).expect("a plan");
+    let line = plan.render();
+    // Printed so `--nocapture` shows what a person reading `letibot gc` would see.
+    println!("{line}");
+    assert!(
+        line.contains("frees that host's build output") && line.contains("keeps its owner.json"),
+        "{line}"
+    );
+    let settled = plan.owners.iter().find(|o| o.id == "s-14").expect("s-14");
+    assert!(
+        settled.holds.iter().all(|h| h.verdict.reaps()),
+        "a settled owner's remote rows are planned: {:#?}",
+        settled.holds
+    );
+    let (n, bytes) = plan.would_reap();
+    assert!(n >= 4 && bytes >= 8192, "{n} holding(s), {bytes} bytes");
+    let live = plan.owners.iter().find(|o| o.id == "s-15").expect("s-15");
+    assert!(
+        live.holds.iter().all(|h| !h.verdict.reaps()),
+        "and a live owner's are not: {:#?}",
+        live.holds
     );
 }
 

@@ -744,7 +744,13 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
                     class: row.class,
                     host: row.host.clone(),
                     handle: row.handle.clone(),
-                    state: HoldingState::Gone,
+                    // The walk sees this box. A row on another machine is not "not found" - it is
+                    // nobody's look, so the row's own state is the only witness there is.
+                    state: if row.host.as_deref().is_some_and(|h| h != places.box_id) {
+                        row.state
+                    } else {
+                        HoldingState::Gone
+                    },
                     stamp: row.stamp.clone(),
                     bytes: row.bytes,
                     archive: row.archive.clone(),
@@ -858,13 +864,6 @@ pub fn judge(
             owner = owner.id,
         ));
     }
-    if let Some(host) = &h.host
-        && host != &places.box_id
-    {
-        return Verdict::Keep(format!(
-            "it is on `{host}`: that host's own pass reads it (G4), and this box cannot see it"
-        ));
-    }
     if owner.held(now_ms) {
         return Verdict::Keep(match owner.held_until_ms {
             Some(0) => "the operator holds this owner for ever".to_string(),
@@ -874,6 +873,23 @@ pub fn judge(
             ),
             None => "the operator holds this owner".to_string(),
         });
+    }
+    if let Some(host) = &h.host
+        && host != &places.box_id
+    {
+        // These bytes are on a machine this box can only reach over ssh, and the one that removes
+        // them is the host's own pass or this box's, in the disk turn. A settled owner's build
+        // output is the bytes xmg ran out of, so the plan names them instead of keeping them.
+        return match owner.state {
+            OwnerState::Settled | OwnerState::Swept => Verdict::Now(format!(
+                "its owner is `{}`: when this box's pass reaches `{host}` it frees that host's \
+                 build output and its ledgers, and keeps its owner.json",
+                owner.state.word()
+            )),
+            _ => Verdict::Keep(format!(
+                "it is on `{host}`: that host's own pass reads it (G4), and this box cannot see it"
+            )),
+        };
     }
     match owner.state {
         OwnerState::Live => Verdict::Keep(format!(
