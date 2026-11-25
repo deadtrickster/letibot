@@ -3846,6 +3846,12 @@ fn build_cache(ssh: &Ssh, host: &Host, notes: &mut Vec<String>) -> BuildCache {
     build
 }
 
+/// The cap a per-session cache server keeps the shared dir under; a perimeter's `[boundary] env`
+/// entry wins over it.
+const SESSION_SCCACHE_SIZE: &str = "150G";
+/// Seconds an idle per-session server lives, in case the close never reaches it.
+const SESSION_SCCACHE_IDLE: &str = "600";
+
 /// What a session whose view mounts the fixed names must be told about the cache. The client becomes
 /// the `sccache` program itself, on a port of this session's own, because the SERVER is what writes
 /// the objects and the dep-info files: a server outside the view would write `/run/letibot/...` on a
@@ -3879,6 +3885,16 @@ fn a_server_of_its_own(
     }
     env.retain(|(k, _)| k != "SCCACHE_SERVER_PORT");
     env.push(("SCCACHE_SERVER_PORT".to_string(), port.to_string()));
+    // A server trims the shared dir to its own cap at start-up, and sccache's default is 10 GiB, so
+    // every session names the host's size. The idle exit backs up the close's `--stop-server`.
+    for (key, value) in [
+        ("SCCACHE_CACHE_SIZE", SESSION_SCCACHE_SIZE),
+        ("SCCACHE_IDLE_TIMEOUT", SESSION_SCCACHE_IDLE),
+    ] {
+        if !env.iter().any(|(k, _)| k == key) {
+            env.push((key.to_string(), value.to_string()));
+        }
+    }
     notes.push(format!(
         "builds on {host} go through `{program}` with a cache server of this session's own on port \
          {port}: the server writes the objects and the dep-info files, so it has to run inside this \

@@ -696,6 +696,12 @@ fn a_rebinding_host_points_the_client_at_a_server_of_the_sessions_own() {
         pairs.get("SCCACHE_SERVER_PORT").map(String::as_str),
         Some(server.port.to_string().as_str())
     );
+    assert_eq!(
+        pairs.get("SCCACHE_CACHE_SIZE").map(String::as_str),
+        Some("150G"),
+        "a server with sccache's 10 GiB default would trim the shared dir at start-up"
+    );
+    assert!(pairs.contains_key("SCCACHE_IDLE_TIMEOUT"));
     let said = notes.join("\n");
     assert!(
         said.contains(&server.port.to_string()) && said.contains("inside this session's view"),
