@@ -308,8 +308,12 @@ fn refusal(
     holds: &Holds,
     here: &Here,
     live: LiveFn<'_>,
+    rule: &Settled,
 ) -> Option<String> {
-    if operators_own(s, owner) {
+    // A gone package worktree has nothing left to reopen, and the rule proved it is one by the
+    // folder alone - so the owner's mark is not a shield there. The operator's ruling: a package
+    // session an older build saved as `operator` is hidden with the rest, and hiding is undoable.
+    if !matches!(rule, Settled::WorktreeGone) && operators_own(s, owner) {
         return Some("the operator's own session".into());
     }
     let mine = match live(&s.id) {
@@ -437,7 +441,7 @@ fn decide(
     let held = holds(store, &others);
     let mut out = Vec::new();
     for (s, rule, at_ms) in picked {
-        let refused = refusal(store, s, f.owners.get(&s.id), &held, here, live);
+        let refused = refusal(store, s, f.owners.get(&s.id), &held, here, live, &rule);
         let archived = match (&refused, act) {
             (None, Some(act)) => act(&s.id, &rule.reason()).is_ok(),
             _ => false,

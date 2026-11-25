@@ -78,7 +78,8 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
                    the sessions whose work is over (a reviewer's verdict delivered or superseded,
                    a one-shot ended, a subagent's result collected, a package landed or
                    abandoned), each with its reason; with `--now`, archive them. Never the
-                   operator's own sessions, and never one a writer, a job or an ask holds. Archive
+                   operator's own sessions, and never one a writer, a job or an ask holds - but a
+                   package's worktree that is gone is archived whatever its row says. Archive
                    only hides: `letibot --session ID` resumes one
 
   example:

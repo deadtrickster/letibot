@@ -422,6 +422,78 @@ fn a_review_tree_names_its_row() {
     assert_eq!(autoarchive::review_row_of_tree("/repo"), None);
 }
 
+/// A top-level row as an older build saved a package's: `origin=operator`, because nothing then
+/// had a package to write, and the seat `leticode` the launcher starts a terminal session with.
+fn package_row_of_an_older_build(store: &Store, id: &str, workspace: &str) {
+    store
+        .put_session(&SessionRecord {
+            id: id.into(),
+            title: None,
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: workspace.into(),
+            owner: "tester".into(),
+            role: Some("leticode".into()),
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .expect("a session row");
+    store
+        .set_session_origin(id, "operator")
+        .expect("the origin");
+}
+
+/// The 218 rows the Mac's backfill kept said `the operator's own session` because a package
+/// session was saved as `origin=operator`. The folder is the whole fact once it is gone, so the
+/// rule archives it whatever the row says about who started it.
+#[test]
+fn an_operator_origin_row_in_a_gone_package_worktree_is_archived() {
+    let d = Dir::new("operator-worktree-gone");
+    let store = Store::open_set(&d.0, "aaaaaaaaaaaa").expect("a set");
+    package_row_of_an_older_build(
+        &store,
+        "s-cc-pkg",
+        d.0.join("Projects/letibot/wt-rh8").to_str().expect("utf-8"),
+    );
+    let out = run(&store, &autoarchive::no_daemon, true);
+    assert_eq!(out.len(), 1, "one row was picked: {out:?}");
+    assert_eq!(out[0].rule, Settled::WorktreeGone);
+    assert_eq!(
+        out[0].refused, None,
+        "the owner's mark held it back: {out:?}"
+    );
+    assert_eq!(
+        reason_of(&store, "s-cc-pkg").as_deref(),
+        Some("worktree gone")
+    );
+}
+
+/// The other half, and the guard on the change: a folder that is no worktree is a conversation
+/// somebody may have moved off this disk, so a rule does not reach it at all - and it is the
+/// settle door's too, since a settled owner row is what a conversation of the operator's can carry.
+#[test]
+fn an_operator_origin_row_in_a_gone_plain_folder_is_kept() {
+    let d = Dir::new("operator-plain-gone");
+    let store = Store::open_set(&d.0, "aaaaaaaaaaaa").expect("a set");
+    session(
+        &store,
+        "s-me",
+        None,
+        d.0.join("Projects/letibot/gone").to_str().expect("utf-8"),
+    );
+    store.set_session_origin("s-me", "operator").unwrap();
+    let mut o = OwnerRow::live("s-me", OwnerKind::Session, None, 1);
+    o.state = OwnerState::Settled;
+    o.settled_ms = Some(2);
+    store.put_owner(&o).expect("the owner");
+    let out = run(&store, &autoarchive::no_daemon, true);
+    assert!(
+        out.is_empty(),
+        "a gone folder that is no worktree is not a rule's to hide: {out:?}"
+    );
+    assert_eq!(reason_of(&store, "s-me"), None);
+}
+
 /// A package whose worktree is gone is put out of sight, with no owner row and no origin: those
 /// are the oldest packages, saved before the column existed. A worktree still on disk is work and
 /// stays, and a gone folder that is no worktree stays too - it may be a conversation somebody
