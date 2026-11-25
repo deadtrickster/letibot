@@ -100,6 +100,46 @@ fn bounded_line(r: &mut impl BufRead) -> Result<Option<String>, String> {
 /// Bytes of a server's stderr kept for the report when it dies.
 const STDERR_TAIL: usize = 2048;
 
+/// The next SSE event's `data`, its `data:` lines joined with a newline. A line and a whole event
+/// are each capped at [`MAX_LINE_BYTES`]: a reader that buffers whatever arrives lets one server
+/// OOM the daemon and every session in it. `Ok(None)` is the stream ending.
+fn next_event(r: &mut impl BufRead, data: &mut String) -> Result<Option<String>, WireError> {
+    loop {
+        let Some(line) = bounded_line(r).map_err(WireError::Other)? else {
+            // A stream may end on its last event without the blank line.
+            if data.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(std::mem::take(data)));
+        };
+        if let Some(d) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(d.strip_prefix(' ').unwrap_or(d));
+            if data.len() > MAX_LINE_BYTES {
+                return Err(WireError::Other(format!(
+                    "an event of more than {MAX_LINE_BYTES} bytes"
+                )));
+            }
+        } else if line.is_empty() && !data.is_empty() {
+            return Ok(Some(std::mem::take(data)));
+        }
+    }
+}
+
+/// The answer to a request a server sent us: `ping` is served, and every other method is refused
+/// by code, because a server left waiting on a client that cannot serve it hangs its own call.
+fn answer_to(req: &Value) -> Value {
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    if req.get("method").and_then(Value::as_str) == Some("ping") {
+        json!({"jsonrpc": "2.0", "id": id, "result": {}})
+    } else {
+        json!({"jsonrpc": "2.0", "id": id,
+               "error": {"code": -32601, "message": "this client offers no such method"}})
+    }
+}
+
 struct StdioWire {
     child: Child,
     stdin: ChildStdin,
@@ -233,13 +273,7 @@ impl StdioWire {
 
     /// Answer a request the server sent us. `ping` is the only one this client serves.
     fn answer(&mut self, req: &Value) -> Result<(), WireError> {
-        let id = req.get("id").cloned().unwrap_or(Value::Null);
-        let reply = if req.get("method").and_then(Value::as_str) == Some("ping") {
-            json!({"jsonrpc": "2.0", "id": id, "result": {}})
-        } else {
-            json!({"jsonrpc": "2.0", "id": id,
-                   "error": {"code": -32601, "message": "this client offers no such method"}})
-        };
+        let reply = answer_to(req);
         self.write(&reply)
     }
 
@@ -316,12 +350,23 @@ impl Drop for StdioWire {
     }
 }
 
+/// How long the GET stream's socket may stay silent before its reader gives up: it lives as long as
+/// the session, so a request's deadline would end it after the first quiet minute.
+const STREAM_LIFETIME: Duration = Duration::from_secs(3600);
+
 struct HttpWire {
     url: String,
     agent: ureq::Agent,
+    /// The GET stream's own agent. Its socket is held for the session's life, so it must not be a
+    /// pooled one a POST is waiting to borrow.
+    stream_agent: ureq::Agent,
     headers: Vec<(String, String)>,
     session: Option<String>,
     notices: Vec<String>,
+    /// The stream is legal only after `initialize`.
+    ready: bool,
+    /// The methods the GET stream's reader has seen. Dropping this ends the reader.
+    stream: Option<Receiver<String>>,
 }
 
 impl HttpWire {
@@ -333,21 +378,37 @@ impl HttpWire {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(format!("`{url}` is not an http:// or https:// URL"));
         }
-        let agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(timeout))
-            .build()
-            .into();
         Ok(HttpWire {
             url: url.to_string(),
-            agent,
+            agent: wire_agent(timeout),
+            stream_agent: wire_agent(STREAM_LIFETIME),
             headers: headers
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             session: None,
             notices: Vec::new(),
+            ready: false,
+            stream: None,
         })
+    }
+
+    /// Open the GET stream, once per wire: a server's own notices and requests arrive on it. It is
+    /// opened on its own thread, because a server that accepts the socket and says nothing must not
+    /// hold up a call - and it is not reopened, so a server that refuses it (405) is asked once.
+    fn open_stream(&mut self) {
+        if !self.ready || self.stream.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let (agent, url, headers, session) = (
+            self.stream_agent.clone(),
+            self.url.clone(),
+            self.headers.clone(),
+            self.session.clone(),
+        );
+        std::thread::spawn(move || stream_reader(agent, url, headers, session, tx));
+        self.stream = Some(rx);
     }
 
     fn post(&mut self, msg: &Value) -> Result<ureq::http::Response<ureq::Body>, WireError> {
@@ -394,12 +455,116 @@ impl HttpWire {
         {
             self.session = Some(s.to_string());
         }
+        // Nothing a server says is addressed to it before `initialize`, so the GET stream waits.
+        if msg.get("method").and_then(Value::as_str) == Some("initialize") {
+            self.ready = true;
+        }
         Ok(res)
+    }
+}
+
+/// The agent both halves of the wire use. `http_status_as_error(false)` so a 4xx is read and named.
+fn wire_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
+}
+
+/// The GET stream's own thread: a notice reaches `take_notices`, and a server's request is answered
+/// with a POST from here, because the stream carries no channel back and nobody else is reading it.
+/// A server that answers it 405, or not at all, offers no stream - which the spec allows.
+fn stream_reader(
+    agent: ureq::Agent,
+    url: String,
+    headers: Vec<(String, String)>,
+    session: Option<String>,
+    notices: std::sync::mpsc::Sender<String>,
+) {
+    let mut req = agent
+        .get(&url)
+        .header("Accept", "text/event-stream")
+        .header("MCP-Protocol-Version", crate::PROTOCOL_VERSION);
+    if let Some(s) = &session {
+        req = req.header("Mcp-Session-Id", s);
+    }
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    let Ok(res) = req.call() else {
+        return;
+    };
+    let sse = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|c| c.contains("text/event-stream"));
+    if !(200..300).contains(&res.status().as_u16()) || !sse {
+        return;
+    }
+    let mut body = res.into_body();
+    let mut stream = BufReader::new(body.as_reader());
+    let mut data = String::new();
+    loop {
+        let Ok(Some(event)) = next_event(&mut stream, &mut data) else {
+            // The server ended the stream, or sent past the caps: either way there is nothing left
+            // to read, and a stream is optional, so the calls go on without it.
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&event) else {
+            continue;
+        };
+        // One event may be a batch, which is the one shape a server may use for either.
+        let messages = match v {
+            Value::Array(items) => items,
+            other => vec![other],
+        };
+        for m in &messages {
+            let Some(method) = m.get("method").and_then(Value::as_str) else {
+                continue;
+            };
+            if m.get("id").is_some() {
+                post_reply(&agent, &url, &headers, session.as_deref(), &answer_to(m));
+            } else if notices.send(method.to_string()).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// A server's request is answered by a POST: the stream has no channel for it, and the server's own
+/// call waits until the answer arrives.
+fn post_reply(
+    agent: &ureq::Agent,
+    url: &str,
+    headers: &[(String, String)],
+    session: Option<&str>,
+    reply: &Value,
+) {
+    let mut req = agent
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("MCP-Protocol-Version", crate::PROTOCOL_VERSION);
+    if let Some(s) = session {
+        req = req.header("Mcp-Session-Id", s);
+    }
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    if let Ok(res) = req.send(reply.to_string()) {
+        let _ = res
+            .into_body()
+            .with_config()
+            .limit(MAX_LINE_BYTES as u64)
+            .read_to_string();
     }
 }
 
 impl Wire for HttpWire {
     fn request(&mut self, id: u64, msg: &Value, timeout: Duration) -> Result<Value, WireError> {
+        self.open_stream();
         let res = self.post(msg).map_err(|e| match e {
             WireError::Timeout(_) => WireError::Timeout(timeout),
             e => e,
@@ -423,23 +588,7 @@ impl Wire for HttpWire {
         }
         let mut data = String::new();
         let mut stream = BufReader::new(body.as_reader());
-        while let Some(line) = bounded_line(&mut stream).map_err(WireError::Other)? {
-            if let Some(d) = line.strip_prefix("data:") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(d.strip_prefix(' ').unwrap_or(d));
-                if data.len() > MAX_LINE_BYTES {
-                    return Err(WireError::Other(format!(
-                        "an event of more than {MAX_LINE_BYTES} bytes"
-                    )));
-                }
-                continue;
-            }
-            if !line.is_empty() || data.is_empty() {
-                continue;
-            }
-            let event = std::mem::take(&mut data);
+        while let Some(event) = next_event(&mut stream, &mut data)? {
             let Ok(v) = serde_json::from_str::<Value>(&event) else {
                 continue;
             };
@@ -460,24 +609,67 @@ impl Wire for HttpWire {
                 return Ok(v);
             }
         }
-        // A stream may end on its last event without the blank line.
-        if let Ok(v) = serde_json::from_str::<Value>(&data)
-            && v.get("id").and_then(Value::as_u64) == Some(id)
-        {
-            return Ok(v);
-        }
         Err(WireError::Other(format!(
             "the stream ended without an answer to {id}"
         )))
     }
 
     fn notify(&mut self, msg: &Value) -> Result<(), WireError> {
+        self.open_stream();
         let res = self.post(msg)?;
         let _ = res.into_body().read_to_string();
         Ok(())
     }
 
     fn take_notices(&mut self) -> Vec<String> {
+        self.open_stream();
+        if let Some(rx) = &self.stream {
+            while let Ok(m) = rx.try_recv() {
+                self.notices.push(m);
+            }
+        }
         std::mem::take(&mut self.notices)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn next(r: &mut impl BufRead) -> Result<Option<String>, WireError> {
+        let mut data = String::new();
+        next_event(r, &mut data)
+    }
+
+    #[test]
+    fn an_event_joins_its_data_lines_and_the_last_one_needs_no_blank_line() {
+        let mut r = BufReader::new("data: a\ndata: b\n\ndata: c\n".as_bytes());
+        assert_eq!(next(&mut r).unwrap().as_deref(), Some("a\nb"));
+        // A stream may end on its last event without the blank line.
+        assert_eq!(next(&mut r).unwrap().as_deref(), Some("c"));
+        assert_eq!(next(&mut r).unwrap(), None);
+    }
+
+    /// I65's two caps, on the one reader both streams use: a line nobody ended, and an event built
+    /// out of short lines. Either would let one server grow the daemon past its memory.
+    #[test]
+    fn a_line_and_a_whole_event_are_capped() {
+        let big = format!("data: x{}", "y".repeat(MAX_LINE_BYTES + 1));
+        let err = next(&mut BufReader::new(big.as_bytes())).unwrap_err();
+        assert!(format!("{err}").contains("no newline"), "{err}");
+
+        let line = format!("data: {}\n", "z".repeat(1 << 20));
+        let many = line.repeat(9);
+        let err = next(&mut BufReader::new(many.as_bytes())).unwrap_err();
+        assert!(format!("{err}").contains("more than"), "{err}");
+    }
+
+    #[test]
+    fn a_ping_is_answered_and_every_other_method_is_refused_by_code() {
+        let ping = answer_to(&json!({"jsonrpc": "2.0", "id": 7, "method": "ping"}));
+        assert_eq!(ping, json!({"jsonrpc": "2.0", "id": 7, "result": {}}));
+        let other = answer_to(&json!({"jsonrpc": "2.0", "id": "srv-2", "method": "x/y"}));
+        assert_eq!(other["error"]["code"], json!(-32601));
+        assert_eq!(other["id"], json!("srv-2"));
     }
 }

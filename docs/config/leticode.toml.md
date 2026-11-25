@@ -134,7 +134,7 @@ One MCP server per NAME (letters, digits, `-`, `_`, no `__`), stdio by `command`
 | `command` | string | none | user only | program to run as a stdio server; set this or url |
 | `args` | list of strings | [] | user only | its arguments |
 | `env` | table of strings | {} | user only | variables added to its environment |
-| `url` | string | none | user only | http:// or https:// endpoint of a streamable HTTP server; set this or command |
+| `url` | string | none | user only | http:// or https:// endpoint of a streamable HTTP server; set this or command. Its optional GET stream carries the server's own notices and requests, and a 405 there is a server with no stream, not a broken one |
 | `headers` | table of strings | {} | user only | headers sent with every HTTP request |
 | `timeout_seconds` | int >= 1 | 60 | user only | deadline for start, listing and each call |
 | `enabled` | bool | true | user only | false keeps the table and starts nothing |
