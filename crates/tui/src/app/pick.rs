@@ -266,6 +266,15 @@ impl App {
         if subject == Pick::Repo {
             return self.repo_rows.clone();
         }
+        // The fork card's rows are the conversation's turns: a label a person reads, and the id the
+        // head keeps beside it (`take_fork_row` picks by position, so the two cannot drift).
+        if subject == Pick::Fork {
+            return self
+                .fork_rows
+                .iter()
+                .map(|r| (r.label.clone(), String::new()))
+                .collect();
+        }
         if !subject.values().is_empty() {
             return subject
                 .values()
@@ -306,6 +315,8 @@ impl App {
                     "unified".into()
                 }
             }
+            // Not a setting: no row is "in force", and a mark on one would read as one.
+            Some(Pick::Fork) => String::new(),
             _ => {
                 let Some(r) = self.pick_row() else {
                     return String::new();
@@ -387,6 +398,9 @@ impl App {
                 }
                 None
             }
+            // The fork card's row is a place in the conversation, not a value: it is taken by
+            // POSITION (`take_fork_row`), and a name that matched two turns would fork at neither.
+            Some(Pick::Fork) => self.take_fork_row(),
             None => None,
         }
     }
@@ -417,6 +431,9 @@ impl App {
                 let (_, takes) = self.model_rows();
                 takes.iter().position(|t| t.name() == now).unwrap_or(0)
             }
+            // The newest turn is the row a person usually wants, so the card opens at the foot of
+            // the list; the cursor still moves, and nothing is taken until Enter.
+            Some(Pick::Fork) => self.fork_rows.len().saturating_sub(1),
             _ => self
                 .pick_values()
                 .iter()
@@ -516,6 +533,9 @@ pub enum Pick {
     /// Which repository the header follows, in a workspace of several. Opened by a click on the
     /// git field or `/repo`; this head's own setting, and not kept across a restart.
     Repo,
+    /// The message to fork this conversation at, chosen from its operator turns. Not a setting: the
+    /// rows are the conversation's and taking one sends `/fork`, which is the daemon's verb.
+    Fork,
 }
 
 impl Pick {
@@ -527,6 +547,7 @@ impl Pick {
             Pick::Verbosity => "how much reaches the transcript",
             Pick::Diff => "how a diff is drawn",
             Pick::Repo => "which repository the header follows",
+            Pick::Fork => "the message to fork this conversation at",
         }
     }
 
@@ -538,6 +559,7 @@ impl Pick {
             Pick::Mode => Some("mode"),
             Pick::Model => Some("model"),
             Pick::Verbosity | Pick::Diff | Pick::Repo => None,
+            Pick::Fork => None,
         }
     }
 
@@ -550,6 +572,7 @@ impl Pick {
             Pick::Verbosity => "the verbosity",
             Pick::Diff => "the diff layout",
             Pick::Repo => "the repository the header follows",
+            Pick::Fork => "the fork",
         }
     }
 
@@ -567,6 +590,8 @@ impl Pick {
             Pick::Diff => DIFF_VALUES,
             // The workspace's own repositories, read when the card opens (`App::pick_values`).
             Pick::Repo => &[],
+            // The conversation's own turns, off the rows this head holds - `App::fork_rows`.
+            Pick::Fork => &[],
         }
     }
 
@@ -598,6 +623,10 @@ impl Pick {
             Pick::Repo => &[
                 "this head's header only — the session works wherever it works; following picks \
                  the repository of its newest edit or command.",
+            ],
+            Pick::Fork => &[
+                "a new session holds this conversation up to the end of that message's exchange; \
+                 this one is unchanged",
             ],
         }
     }

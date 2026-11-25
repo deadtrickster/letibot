@@ -685,6 +685,11 @@ impl App {
                 self.seed_pick();
                 None
             }
+            // `/fork` alone opens the card over the conversation's turns. `/fork N` is the daemon's
+            // and falls through to it: a number is still a way to fork when the card is in the way.
+            _ if verb_arg(cmd, "fork").is_some_and(|a| a.trim().is_empty()) => {
+                self.open_fork_card()
+            }
             _ if verb_arg(cmd, "diff").is_some() => {
                 let rest = verb_arg(cmd, "diff").unwrap_or("").trim().to_string();
                 if rest.is_empty() {

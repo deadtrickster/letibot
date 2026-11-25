@@ -600,6 +600,11 @@ impl App {
                     self.say("this daemon does not send the mode list; use `/mode NAME`");
                     return ControlFlow::Break(None);
                 }
+                // The fork card's rows are places in the conversation, so Enter takes the row the
+                // cursor is on rather than the label under it: two turns can read alike.
+                if subject == Pick::Fork {
+                    return ControlFlow::Break(self.take_fork_row());
+                }
                 let name = choices[self.mode_sel.min(n - 1)].clone();
                 return ControlFlow::Break(self.take_pick(name));
             }

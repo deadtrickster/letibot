@@ -300,7 +300,25 @@ fn every_verb_the_dispatcher_acts_on_is_offered_by_tab() {
         acted.len()
     );
 
-    let offered: Vec<&str> = SLASH_COMMANDS.iter().map(|(n, _)| *n).collect();
+    // Tab offers this head's verbs and the daemon's, so a verb the head ACTS ON is offered as
+    // long as either list has it: `/fork` is the daemon's verb with a card in front of it, and the
+    // daemon names it on the settings row (`App::daemon_verbs`).
+    let mut hinted = app();
+    hinted.apply(ServerFrame::Settings {
+        rows: vec![letibot_sessionlog::protocol::SettingRow {
+            key: letibot_sessionlog::protocol::DAEMON_VERBS_KEY.into(),
+            // The daemon's own list, as it publishes it (`harnessd/src/slash.rs::VERBS`), which is
+            // what `App::daemon_verbs` reads and what Tab therefore offers.
+            value: "auto-compact,boundary,clear,default-model,effort,flowy,fork,gate,job,listen,login,mcp,models,monitor,nag,note,permissions,prune,queue,shadow,supervise,tools".into(),
+            source: "default".into(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        }],
+    });
+    let daemon = hinted.daemon_verbs();
+    let mut offered: Vec<&str> = SLASH_COMMANDS.iter().map(|(n, _)| *n).collect();
+    offered.extend(daemon.iter().map(String::as_str));
     let mut missing: Vec<&String> = acted
         .iter()
         .filter(|v| {

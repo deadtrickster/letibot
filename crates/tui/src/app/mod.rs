@@ -681,6 +681,10 @@ pub struct App {
     /// openers each clearing the other three is a hand-kept invariant, and `Option` makes it
     /// structural. One renderer for all of them, because a second copy of a list drifts.
     pub(crate) pick: Option<Pick>,
+    /// The rows the fork card offers: the conversation's operator turns, each with the id the daemon
+    /// resolves a fork at. Kept beside the card because a row's LABEL is words a person reads and the
+    /// id is what the fork is taken at - one cannot be parsed out of the other.
+    pub(crate) fork_rows: Vec<fork_card::ForkRow>,
     /// `allow-all`, held one keystroke short of sent: it admits the always-ask list, so it asks
     /// rather than refuses. Asked on every `allow-all`, a VM included where the daemon ignores the
     /// answer, because deciding otherwise would mean knowing whether the session is confined.
@@ -1567,6 +1571,7 @@ impl App {
             theme_problems: Vec::new(),
             lang: crate::i18n::Lang::En,
             pick: None,
+            fork_rows: Vec::new(),
             mode_confirm: None,
             mode_asked: None,
             mode_confirm_at: 0,
@@ -1931,6 +1936,7 @@ mod editor;
 mod events;
 mod feedback;
 pub(crate) mod filter;
+pub(crate) mod fork_card;
 mod ghlinks;
 mod hits;
 pub(crate) mod keyhints;
