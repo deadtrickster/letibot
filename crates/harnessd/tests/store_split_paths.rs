@@ -120,14 +120,19 @@ fn has_table(path: &std::path::Path, table: &str) -> bool {
 }
 
 /// `harnessd --store DIR --list-sessions`, as the launcher runs it: the real binary, so the
-/// answer a person gets is what this asserts.
-fn listing(fixture: &Fixture) -> std::process::Output {
-    letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
-        .arg("--store")
+/// answer a person gets is what this asserts. `all` is the census form, which draws the sessions
+/// a conversation nothing was ever said in keeps out of the plain listing.
+fn listing(fixture: &Fixture, all: bool) -> std::process::Output {
+    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"));
+    cmd.arg("--store")
         .arg(&fixture.data)
         .arg("--workspace")
         .arg(&fixture.workspace)
-        .arg("--list-sessions")
+        .arg("--list-sessions");
+    if all {
+        cmd.arg("--all");
+    }
+    cmd
         // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
         .env("XDG_RUNTIME_DIR", &fixture.dir)
         .output()
@@ -182,10 +187,11 @@ fn a_daemon_writes_the_index_and_the_history_to_two_files() {
         "shared.db holds no history and no decisions: a project file is where both are written"
     );
 
-    // The listing, with the history renamed out of the way: the index is what it reads.
+    // The listing, with the history renamed out of the way: the index is what it reads. The census
+    // form, because this session was opened and never spoken in, so the pick list leaves it out.
     let moved = project.with_extension("db.away");
     std::fs::rename(&project, &moved).expect("the project file is renamed away");
-    let out = listing(&fixture);
+    let out = listing(&fixture, true);
     let listed = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -208,7 +214,7 @@ fn a_directory_that_still_holds_sessions_db_is_refused_with_the_migrations_name(
     let fixture = Fixture::new();
     // The pre-split store, with nothing in it: the shape of a box nobody has migrated yet.
     Store::open(&fixture.data.join("sessions.db")).expect("a single-file store");
-    let out = listing(&fixture);
+    let out = listing(&fixture, false);
     assert!(
         !out.status.success(),
         "a daemon started on an un-split store"

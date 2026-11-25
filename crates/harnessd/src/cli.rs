@@ -3203,14 +3203,7 @@ fn run_query(
                 // a truncation would break every reader for a fact a reader can compute. The width,
                 // the caps and the folder blocks below are the SCREEN's, and none of them reach here.
                 for s in all.iter().filter(|s| is_conversation(s)) {
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}",
-                        s.id,
-                        s.title.clone().unwrap_or_default(),
-                        s.workspace_root,
-                        s.items,
-                        s.last_activity_ms
-                    );
+                    println!("{}", tsv_line(s));
                 }
                 return Ok(0);
             }
@@ -3270,6 +3263,19 @@ const MIN_LISTING_COLS: usize = 40;
 /// it, so that one gets the longer list.
 const HERE_SHOWN: usize = 20;
 const FOLDER_SHOWN: usize = 10;
+
+/// One session in the TSV form: the five fields a script cuts. A data format and not a screen, so
+/// the listing's own rules - the empty-row filter above all - never reach it.
+fn tsv_line(s: &StoredSession) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        s.id,
+        s.title.clone().unwrap_or_default(),
+        s.workspace_root,
+        s.items,
+        s.last_activity_ms
+    )
+}
 
 /// One row on ONE line: the name, its rows, how long ago it moved, and the short id `--session`
 /// takes. An untitled session leads with its id already, so its id is not printed a second time.
@@ -3389,6 +3395,8 @@ struct Blocks<'a> {
     mine: Vec<&'a StoredSession>,
     mine_more: usize,
     others: Vec<Folder<'a>>,
+    /// Conversations hidden because nothing was ever said in them - counted, never dropped silently.
+    empty: usize,
 }
 
 /// The plain listing, as the lines it prints: the header, this folder's conversations, then one
@@ -3425,6 +3433,9 @@ fn plain_lines(
             out.push(list_line(s, "", wid, now));
         }
         more_line(&mut out, f.more);
+    }
+    if blocks.empty > 0 {
+        out.push(format!("    +{} with no rows (--all)", blocks.empty));
     }
     out
 }
@@ -3496,6 +3507,11 @@ fn conversation_blocks<'a>(all: &'a [StoredSession], here: &std::path::Path) -> 
         .iter()
         .filter(|s| is_conversation(s) && is_operators(s))
         .collect();
+    // A session nothing was ever said in is not a conversation a person can pick, and a row of
+    // zeros in the list is the noise the list exists to be rid of. `--all` is the census and draws
+    // them; the count of what was held back is owed to the reader, and `plain_lines` says it.
+    let empty = rows.iter().filter(|s| s.items == 0).count();
+    let rows: Vec<&StoredSession> = rows.into_iter().filter(|s| s.items > 0).collect();
     let mut mine: Vec<&StoredSession> = rows
         .iter()
         .copied()
@@ -3529,6 +3545,7 @@ fn conversation_blocks<'a>(all: &'a [StoredSession], here: &std::path::Path) -> 
         mine,
         mine_more,
         others,
+        empty,
     }
 }
 

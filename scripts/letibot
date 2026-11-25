@@ -598,7 +598,8 @@ EOF
 letibot session list
   The conversations you can reopen: this folder's first - its own workspace, then the
   worktrees below it - then one block per other folder, newest first in each, with a
-  row count on every line. `--sessions` is its old spelling.
+  row count on every line. A session nothing was ever said in is not listed; `--all`
+  draws those too. `--sessions` is its old spelling.
 
   --all           every session there is, grouped by what it is: yours, then subagents,
                   the review queue, packages and one-shots - the census, not the pick list

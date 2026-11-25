@@ -1251,6 +1251,52 @@ fn a_plain_listing_is_this_folders_conversations_then_one_block_per_other_folder
     );
 }
 
+/// A session nothing was ever said in is not a conversation a person picks from. The plain listing
+/// leaves it out and says how many it left; `--all` is the census and draws it; and `--tsv` - the
+/// data format a script cuts - still prints its line, because that format does not change.
+#[test]
+fn a_session_with_no_rows_is_hidden_from_the_listing_and_kept_in_the_tsv() {
+    let (store, _d) = store_with(&[]);
+    session_row(&store, "s-said", "/p/here", Some("said"), None, None);
+    rows_for(&store, "s-said", 2, 0);
+    session_row(&store, "s-silent", "/p/here", Some("silent"), None, None);
+    let all = store.list_sessions().expect("listing");
+
+    let lines = plain_lines(&all, std::path::Path::new("/p/here"), 120, 0);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("said") && !l.contains("silent")),
+        "the conversation is drawn: {lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("silent")),
+        "a row of zeros is not a row a person can pick: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|l| l == "    +1 with no rows (--all)"),
+        "what was held back is counted, not dropped silently: {lines:#?}"
+    );
+    // `--all` is the census, and a census that hid a row would be a lie about the store.
+    let census = census_lines(&all, 120, 0);
+    assert!(
+        census.iter().any(|l| l.contains("silent")),
+        "--all draws the empty session: {census:#?}"
+    );
+    // The tsv form is five fields per conversation and no screen rule reaches it.
+    let tsv: Vec<String> = all
+        .iter()
+        .filter(|s| is_conversation(s))
+        .map(tsv_line)
+        .collect();
+    assert_eq!(tsv.len(), 2, "a script sees every conversation: {tsv:?}");
+    assert!(
+        tsv.iter()
+            .any(|l| l.starts_with("s-silent\tsilent\t/p/here\t0\t")),
+        "the empty one keeps its line, its count and its place: {tsv:?}"
+    );
+}
+
 /// A row's name is cut to what fits the terminal, and the column is measured over the rows a
 /// listing PRINTS. Measured over the whole store it was the longest brief on the box: 350-column
 /// rows that wrapped to three lines each.
@@ -1259,7 +1305,9 @@ fn a_long_name_is_cut_to_the_terminal_and_never_widens_the_column() {
     let (store, _d) = store_with(&[]);
     let long = "a conversation about ".repeat(40);
     session_row(&store, "s-long", "/p/here", Some(&long), None, None);
+    let at = rows_for(&store, "s-long", 1, 0);
     session_row(&store, "s-short", "/p/here", Some("short"), None, None);
+    rows_for(&store, "s-short", 1, at);
     let all = store.list_sessions().expect("listing");
 
     let lines = plain_lines(&all, std::path::Path::new("/p/here"), 140, 0);

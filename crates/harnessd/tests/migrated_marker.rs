@@ -42,6 +42,27 @@ fn store_with_a_moved_session(path: &std::path::Path) -> Store {
         store
             .put_transcript(&format!("{id}#t0"), id, &prefix_id)
             .expect("a transcript");
+        // One row said, because a session with none is not a conversation the listing offers - a
+        // moved session is one somebody was talking in, which is why it was worth moving.
+        store
+            .append_item(
+                &format!("{id}#t0"),
+                0,
+                &letibot_transcript::TranscriptItem::User {
+                    speaker: Default::default(),
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: "move me".into(),
+                    }],
+                },
+                &letibot_tokencore::ledger::LedgerRow {
+                    item_id: format!("{id}#t0.0"),
+                    tok_offset: 3,
+                    tok_len: 3,
+                    h_k: [0u8; 32],
+                },
+                &[7, 8, 9],
+            )
+            .expect("a row");
         if let Some(host) = on {
             store.set_lives_on(id, Some(host)).expect("the marker");
         }
