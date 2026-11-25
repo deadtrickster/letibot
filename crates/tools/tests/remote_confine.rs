@@ -1468,8 +1468,8 @@ fn a_jobs_launcher_starts_at_the_fixed_name() {
 /// for is not in force - and the session runs exactly as it did before the key existed.
 #[test]
 fn a_host_that_cannot_confine_says_stable_paths_is_not_in_force() {
-    // No `bwrap` on the fake host: the probe answers "none", which is a host that cannot confine.
-    let mut rig = Rig::new("stableunconf", FAKE_READBACK, false);
+    // A shim that enters no namespace: a missing `bwrap` would find the machine's own on PATH.
+    let mut rig = Rig::new("stableunconf", SAME_INODES, true);
     rig.host.stable_paths = true;
     let b = rig.place(Egress::Denied);
     assert!(!b.is_confined(), "nothing measured a boundary");
