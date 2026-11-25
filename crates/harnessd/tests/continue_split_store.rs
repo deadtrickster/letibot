@@ -13,6 +13,9 @@ use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
 struct Fixture {
     dir: PathBuf,
     data: PathBuf,
+    /// The data home the query resolves when `--store` is not what it is reading: a scratch, so
+    /// nothing a test spawns can fall back to the operator's own data directory.
+    xdg: PathBuf,
     a: String,
     b: String,
 }
@@ -25,12 +28,15 @@ impl Fixture {
             std::env::temp_dir().join(format!("letibot-continue-split-{}-{n}", std::process::id()));
         let data = dir.join("data");
         std::fs::create_dir_all(&data).expect("the data directory");
+        let xdg = dir.join("xdg-data");
+        std::fs::create_dir_all(&xdg).expect("the data home");
         let (a, b) = (dir.join("ws-a"), dir.join("ws-b"));
         std::fs::create_dir_all(&a).expect("the first folder");
         std::fs::create_dir_all(&b).expect("the second folder");
         Fixture {
             dir,
             data,
+            xdg,
             a: a.display().to_string(),
             b: b.display().to_string(),
         }
@@ -52,6 +58,9 @@ fn harnessd(fixture: &Fixture, args: &[&str]) -> std::process::Output {
         cmd.arg(a);
     }
     cmd.env("XDG_RUNTIME_DIR", &fixture.dir)
+        // The data home too: `--store` names the store, and nothing else may be resolved from the
+        // operator's data directory by a process under test.
+        .env("XDG_DATA_HOME", &fixture.xdg)
         .output()
         .expect("the query ran")
 }

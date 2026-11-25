@@ -50,6 +50,7 @@ impl Fixture {
         let data = dir.join("data");
         std::fs::create_dir_all(&workspace).expect("the folder the daemon serves");
         std::fs::create_dir_all(&data).expect("the data directory");
+        std::fs::create_dir_all(dir.join("xdg-data")).expect("the data home");
         Fixture {
             dir,
             workspace,
@@ -135,6 +136,9 @@ fn listing(fixture: &Fixture, all: bool) -> std::process::Output {
     cmd
         // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
         .env("XDG_RUNTIME_DIR", &fixture.dir)
+        // Nor its data directory: `--store` names the store, and a process under test gets the
+        // rest of the data directory from nowhere but here.
+        .env("XDG_DATA_HOME", fixture.dir.join("xdg-data"))
         .output()
         .expect("the listing ran")
 }
@@ -271,6 +275,7 @@ fn the_legacy_file_inside_a_split_directory_is_refused_by_name() {
         .arg(&fixture.workspace)
         .arg("--list-sessions")
         .env("XDG_RUNTIME_DIR", &fixture.dir)
+        .env("XDG_DATA_HOME", fixture.dir.join("xdg-data"))
         .output()
         .expect("the query ran");
     assert!(

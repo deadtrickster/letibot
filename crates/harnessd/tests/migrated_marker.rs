@@ -86,6 +86,9 @@ fn the_listing_names_the_host_a_moved_session_lives_on() {
         .arg("--list-sessions")
         // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
         .env("XDG_RUNTIME_DIR", &dir)
+        // Nor its data directory: `--store` names the store, and the rest of the data directory
+        // this process may read must be this test's too.
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
         .output()
         .expect("the listing ran");
     let listed = String::from_utf8_lossy(&out.stdout);

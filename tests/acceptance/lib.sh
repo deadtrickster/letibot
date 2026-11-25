@@ -70,7 +70,8 @@ mkdir -p "$CONFIG"
 start() {
   [ -x "$TUI" ] || { echo "acceptance: no binary at $TUI (cargo build -p letibot-tui)"; exit 2; }
   local cmd
-  cmd="cd $(printf '%q' "$WORK") && HOME=$(printf '%q' "$WORK/home") XDG_CONFIG_HOME=$(printf '%q' "$CONFIG") exec $(printf '%q' "$TUI")"
+  mkdir -p "$WORK/data"
+  cmd="cd $(printf '%q' "$WORK") && HOME=$(printf '%q' "$WORK/home") XDG_DATA_HOME=$(printf '%q' "$WORK/data") XDG_CONFIG_HOME=$(printf '%q' "$CONFIG") exec $(printf '%q' "$TUI")"
   for a in "$@"; do cmd="$cmd $(printf '%q' "$a")"; done
   _t new-session -d -s acc -x "$COLS" -y "$ROWS" "$cmd"
 }
@@ -90,14 +91,16 @@ fake_model() {
     "$(cat "$WORK/model.port")" >"$CONFIG/letibot/providers.toml"
 }
 
-# session_env CMD... -- CMD with the run's environment and nothing else: its HOME, its
-# runtime dir, the repository's launcher scripts first on PATH, and firecode's directory
-# when there is one. The daemon this starts is the run's alone.
+# session_env CMD... -- CMD with the run's environment and nothing else: its HOME, its data
+# directory, its runtime dir, the repository's launcher scripts first on PATH, and firecode's
+# directory when there is one. The daemon this starts is the run's alone, and the guard makes
+# it say so: a launcher that fell back to the operator's store would refuse rather than write.
 session_env() {
   local path="$ROOT/scripts:/usr/bin:/bin:/usr/sbin:/sbin"
   command -v firecode >/dev/null 2>&1 && path="$(dirname "$(command -v firecode)"):$path"
-  mkdir -p "$WORK/run"
-  env -i PATH="$path" HOME="$WORK/home" XDG_CONFIG_HOME="$CONFIG" XDG_RUNTIME_DIR="$WORK/run" \
+  mkdir -p "$WORK/run" "$WORK/data"
+  env -i PATH="$path" HOME="$WORK/home" XDG_DATA_HOME="$WORK/data" XDG_CONFIG_HOME="$CONFIG" \
+    XDG_RUNTIME_DIR="$WORK/run" LETIBOT_REFUSE_DEFAULT_STORE=1 \
     TERM=xterm-256color USER="$(id -un)" LOGNAME="$(id -un)" LETIBOT_LOG="$WORK/harnessd.log" "$@"
 }
 

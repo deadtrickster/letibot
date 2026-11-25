@@ -96,7 +96,7 @@ for d in /usr/sbin /sbin; do [ -d "$d" ] && RUN_PATH="$RUN_PATH:$d"; done
 # launcher's `room_paths` both honour `LETIBOT_ROOM_SOCKET`, so every case here shares one room —
 # which is also what a real box has — and nothing touches the operator's data directory.
 ROOM_SOCK="$T/room/room.sock"
-mkdir -p "$T/room"
+mkdir -p "$T/room" "$T/xdgdata"
 # run NAME PROVIDERS_TOML [ARGS...] -- the launcher's combined output for one case.
 run() {
   local toml="$1"
@@ -104,7 +104,7 @@ run() {
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
   (cd "${RUN_WS:-$T/ws}" && env -i PATH="${RUN_PATH_EXTRA:-}$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
-    XDG_DATA_HOME="${RUN_XDG_DATA_HOME:-}" XDG_CONFIG_HOME="${RUN_XDG_CONFIG_HOME:-}" \
+    XDG_DATA_HOME="${RUN_XDG_DATA_HOME:-$T/xdgdata}" XDG_CONFIG_HOME="${RUN_XDG_CONFIG_HOME:-}" \
     LETIBOT_PROVIDERS="${RUN_LETIBOT_PROVIDERS:-}" \
     LETIBOT_ROOM_SOCKET="${ROOM_SOCK_OVERRIDE-$ROOM_SOCK}" ROOM_ARGV="$T/room-argv.log" \
     LETIBOT_SCOPE_RUNTIME_MAX="${LETIBOT_SCOPE_RUNTIME_MAX:-}" \

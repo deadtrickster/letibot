@@ -44,6 +44,7 @@ impl Fixture {
         let _ = std::fs::remove_dir_all(&dir);
         let data = dir.join("data");
         std::fs::create_dir_all(&data).expect("the data directory");
+        std::fs::create_dir_all(dir.join("xdg-data")).expect("the data home");
         Fixture { dir, data }
     }
 
@@ -141,6 +142,9 @@ fn listing(fixture: &Fixture) -> String {
         .arg("--all")
         // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
         .env("XDG_RUNTIME_DIR", &fixture.dir)
+        // Nor its data directory: `--store` names the store, and nothing else this process reads
+        // may come from a place the operator's own runs write.
+        .env("XDG_DATA_HOME", fixture.dir.join("xdg-data"))
         .output()
         .expect("the listing ran");
     assert!(
