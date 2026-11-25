@@ -5855,6 +5855,7 @@ mod endpoint_retry {
             crate::harness::open::provider_notes(&hub),
             d,
             None,
+            None,
         );
         assert!(built.is_ok(), "{:?}", built.err());
         cfg.provider_timeout = Some(std::time::Duration::from_secs(30));
@@ -5883,6 +5884,7 @@ mod endpoint_retry {
                 first_byte: std::time::Duration::from_secs(60),
                 answer: std::time::Duration::from_secs(600),
             },
+            None,
             None,
         )
         .expect("a gemini provider");

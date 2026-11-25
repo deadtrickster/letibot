@@ -602,6 +602,7 @@ impl Harness {
                     provider_notes(&self.hub),
                     self.cfg.deadlines_for(Some(&pc)),
                     self.cfg.effort.as_deref(),
+                    Some(crate::harness::open::provider_refusals(&self.cfg)),
                 )
                 .map_err(HarnessError::Setup)?;
                 let mut line = format!(
@@ -810,6 +811,7 @@ impl Harness {
             provider_notes(&self.hub),
             self.cfg.deadlines_for(Some(&pc)),
             Some(&word),
+            Some(crate::harness::open::provider_refusals(&self.cfg)),
         ) {
             Ok(p) => p,
             Err(why) => return refuse(why),

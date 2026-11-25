@@ -109,6 +109,8 @@ pub struct GeminiProvider {
     notes: Option<Notes>,
     /// The thought signatures this session's requests must hand back. See the module doc.
     signatures: Mutex<Signatures>,
+    /// Where a refusal's whole answer is kept; see [`crate::refusals::RefusalLog`].
+    refusals: Option<crate::refusals::RefusalLog>,
 }
 
 /// The thought signatures one session has been given, by the part that carried them.
@@ -200,7 +202,15 @@ impl GeminiProvider {
             sampling: json!({}),
             notes: None,
             signatures: Mutex::new(Signatures::default()),
+            refusals: None,
         }
+    }
+
+    /// Install where a refusal is recorded: the same sink every client takes, because a protocol
+    /// with no record is a protocol whose refusals are diagnosed by guesswork.
+    pub fn with_refusal_log(mut self, sink: crate::refusals::RefusalLog) -> Self {
+        self.refusals = Some(sink);
+        self
     }
 
     fn agent(first_byte: Duration, answer: Duration) -> ureq::Agent {
@@ -390,6 +400,8 @@ impl GeminiProvider {
             .send(payload.as_bytes())
             .map_err(|e| BackendError::unreachable(e.to_string(), io_kind(&e)))?;
         let status = resp.status().as_u16();
+        // Every header the answer carried, read before the body consumes the response.
+        let headers = crate::refusals::headers_of(resp.headers());
         let header_retry = resp
             .headers()
             .get("retry-after")
@@ -401,10 +413,23 @@ impl GeminiProvider {
                 .read_to_string()
                 .unwrap_or_else(|e| format!("(unreadable body: {e})"));
             let (message, retry_after) = refusal_said(header_retry, &text);
-            // What was SENT, when what was sent was refused: the shape and never the content, so
-            // the next unexplained refusal is read off this record rather than guessed at from
-            // documentation.
-            eprintln!("  refused request shape:\n{}", shape(&body, payload.len()));
+            // The refusal as the wire gave it, kept before the projection above loses it: the
+            // message a caller reads names no field, and the body is where a field is named.
+            let what_was_sent = shape(&body, payload.len());
+            let (kept, body_bytes) = crate::refusals::body_of(text);
+            crate::refusals::record(
+                self.refusals.as_ref(),
+                &crate::refusals::Refusal {
+                    provider: self.preset.name.to_string(),
+                    model: self.model.clone(),
+                    status,
+                    headers,
+                    body: kept,
+                    body_bytes,
+                    request_bytes: payload.len(),
+                    shape: Some(what_was_sent),
+                },
+            );
             return Err(BackendError::Refused {
                 status,
                 body: message,

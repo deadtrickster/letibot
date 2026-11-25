@@ -4063,6 +4063,7 @@ impl Harness {
                 provider_notes(&hub),
                 cfg.deadlines_for(Some(pc)),
                 cfg.effort.as_deref(),
+                Some(provider_refusals(&cfg)),
             ) {
                 Ok(p) => Some(scoped_provider(
                     p,
@@ -4906,13 +4907,15 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
 
 /// A provider backend from its config; a missing key is refused naming variable and file. The
 /// one place a protocol is chosen: the preset names the wire, and every client takes the same
-/// switches. `notes` keeps the provider below the session log; `effort` is `--effort`.
+/// switches. `notes` keeps the provider below the session log; `effort` is `--effort`, and
+/// `refusals` is where a refused answer is kept whole.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     profiles: Option<&std::path::Path>,
     notes: letibot_provider::openai::Notes,
     deadlines: crate::leticode_config::Deadlines,
     effort: Option<&str>,
+    refusals: Option<letibot_provider::refusals::RefusalLog>,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::registry::lookup(&pc.name, profiles)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), profiles)
@@ -4927,7 +4930,10 @@ pub fn build_provider(
                 .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
             p.sampling = sampling;
-            Ok(Box::new(p))
+            Ok(Box::new(match refusals {
+                Some(sink) => p.with_refusal_log(sink),
+                None => p,
+            }))
         }
         letibot_provider::Protocol::AnthropicMessages => {
             let mut p =
@@ -4938,7 +4944,10 @@ pub fn build_provider(
                     .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
             p.sampling = sampling;
-            Ok(Box::new(p))
+            Ok(Box::new(match refusals {
+                Some(sink) => p.with_refusal_log(sink),
+                None => p,
+            }))
         }
         letibot_provider::Protocol::Responses => {
             let mut p =
@@ -4949,7 +4958,10 @@ pub fn build_provider(
                     .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
             p.sampling = sampling;
-            Ok(Box::new(p))
+            Ok(Box::new(match refusals {
+                Some(sink) => p.with_refusal_log(sink),
+                None => p,
+            }))
         }
         letibot_provider::Protocol::GenAi => {
             let mut p =
@@ -4960,9 +4972,20 @@ pub fn build_provider(
                     .with_effort(effort);
             p.thinking = pc.thinking;
             p.sampling = sampling;
-            Ok(Box::new(p))
+            Ok(Box::new(match refusals {
+                Some(sink) => p.with_refusal_log(sink),
+                None => p,
+            }))
         }
     }
+}
+
+/// Where a refusal's whole answer goes: the session's own log, one JSON line each. The body and
+/// the ANSWER's headers, never the request's - that one carries the key.
+pub(crate) fn provider_refusals(
+    cfg: &crate::config::Config,
+) -> letibot_provider::refusals::RefusalLog {
+    crate::model_refusals::log_at(&cfg.daemon_logs(), &cfg.session_id)
 }
 
 /// A provider as ONE session's backend: its requests are assembled under that session's marks, so

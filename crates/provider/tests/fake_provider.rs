@@ -20,10 +20,25 @@ fn fake(script: &'static str, status: u16) -> Fake {
     fake_answering(move |_| (status, script.to_string()))
 }
 
+/// A fake that answers every request the same way, with the headers a refusal carries: the record
+/// keeps them, so the fixture has to be able to send one that is worth keeping.
+fn fake_refusing(status: u16, headers: &'static str, body: &'static str) -> Fake {
+    fake_with_headers(move |_| (status, body.to_string()), headers)
+}
+
 /// A fake that decides per REQUEST: the body it was sent is the argument and the answer is what
 /// the real provider would say to it. The learn-on-refusal test needs this shape, because the
 /// whole question is whether the second request differs from the first.
 fn fake_answering(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> Fake {
+    fake_with_headers(answer, "Content-Type: text/event-stream\r\n")
+}
+
+/// The same, with the answer's own headers: a refusal's record keeps them, so this is how a test
+/// asks whether it did.
+fn fake_with_headers(
+    answer: impl Fn(&str) -> (u16, String) + Send + 'static,
+    headers: &'static str,
+) -> Fake {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -64,7 +79,7 @@ fn fake_answering(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> Fa
             seen2.lock().unwrap().push((auth, body));
             let _ = write!(
                 conn,
-                "HTTP/1.1 {status} X\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{script}",
+                "HTTP/1.1 {status} X\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{script}",
                 script.len()
             );
             let _ = conn.flush();
@@ -238,6 +253,113 @@ fn a_refusal_carries_the_providers_own_message() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// A refusal is recorded WHOLE - the status, the answer's own headers and every byte of the body -
+/// because the message a person reads is the thing that loses the diagnosis: GLM's `1210` says
+/// "Invalid API parameter" and no field, and the field is only ever in the body it came with.
+#[test]
+fn a_refusal_is_recorded_whole_with_the_answers_headers() {
+    const SAID: &str = "{\"error\":{\"code\":\"1210\",\"message\":\"Invalid API parameter\"}}";
+    let f = fake_refusing(
+        400,
+        "Content-Type: application/json\r\nX-Request-Id: req_8123\r\nx-zhipu-trace: t-9\r\n",
+        SAID,
+    );
+    let seen: Arc<Mutex<Vec<letibot_provider::refusals::Refusal>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let p =
+        provider(&f.url).with_refusal_log(Arc::new(move |r| sink.lock().unwrap().push(r.clone())));
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Text {
+            text: "hello".into(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "be terse",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
+    assert!(
+        matches!(err, BackendError::Refused { status: 400, .. }),
+        "{err:?}"
+    );
+    let records = seen.lock().unwrap();
+    assert_eq!(records.len(), 1, "one record per refused request");
+    let r = &records[0];
+    assert_eq!(r.status, 400);
+    assert_eq!(r.provider, "deepseek");
+    assert_eq!(r.body, SAID, "the body is kept byte for byte");
+    assert_eq!(r.body_bytes, SAID.len());
+    assert!(
+        r.request_bytes > SAID.len(),
+        "the request's own size is kept"
+    );
+    let header = |name: &str| {
+        r.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    assert_eq!(header("x-request-id"), Some("req_8123"));
+    assert_eq!(header("x-zhipu-trace"), Some("t-9"));
+    assert_eq!(header("content-type"), Some("application/json"));
+    // The request's key is the one header that must never reach a log.
+    assert!(
+        r.headers.iter().all(|(_, v)| !v.contains("sk-test")),
+        "the request's key is not the answer's: {:?}",
+        r.headers
+    );
+    // The shape says what was sent without saying what was in it.
+    let shape = r.shape.as_deref().unwrap_or_default();
+    assert!(shape.contains("2 message(s)"), "{shape}");
+    assert!(shape.contains("system"), "{shape}");
+    assert!(
+        !shape.contains("hello"),
+        "the shape is never the content: {shape}"
+    );
+}
+
+/// A body past the record's cap is cut and the record says how long it was, so a truncated copy is
+/// never read as the whole answer.
+#[test]
+fn a_refusal_body_past_the_cap_is_cut_and_says_how_long_it_was() {
+    // Over the cap, and valid JSON-shaped prose so nothing else about the fixture is a variable.
+    let long = format!(
+        "{{\"error\":{{\"message\":\"{}\"}}}}",
+        "x".repeat(letibot_provider::refusals::MAX_BODY)
+    );
+    let leaked: &'static str = Box::leak(long.into_boxed_str());
+    let f = fake_refusing(400, "Content-Type: application/json\r\n", leaked);
+    let seen: Arc<Mutex<Vec<letibot_provider::refusals::Refusal>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let p =
+        provider(&f.url).with_refusal_log(Arc::new(move |r| sink.lock().unwrap().push(r.clone())));
+    let items = vec![];
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+        thinking: None,
+        json: false,
+    };
+    let _ = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
+    let records = seen.lock().unwrap();
+    let r = &records[0];
+    assert_eq!(r.body_bytes, leaked.len(), "how long the answer was");
+    assert!(r.body.len() <= letibot_provider::refusals::MAX_BODY);
+    assert!(r.body.len() < r.body_bytes, "the record says it was cut");
+    assert_eq!(r.to_json()["body_truncated"], true);
 }
 
 /// The provider's own code survives the projection to its message: taking only the message threw

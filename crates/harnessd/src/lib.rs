@@ -83,6 +83,7 @@ pub mod mcp;
 pub mod memory_high;
 pub mod memwatch;
 pub mod mergequeue;
+pub mod model_refusals;
 pub mod modes;
 pub mod nag_pause;
 pub mod note_accept;

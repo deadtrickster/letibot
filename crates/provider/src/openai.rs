@@ -50,6 +50,9 @@ pub struct OpenAiProvider {
     /// What the clamp changed, said through `notes` on the first request and never again.
     effort_note: Option<String>,
     effort_said: std::sync::atomic::AtomicBool,
+    /// Where a refusal's whole answer - status, headers, every byte of the body - is kept: the
+    /// session's log, one crate up. `None` keeps it on stderr only, which is what a fixture wants.
+    refusals: Option<crate::refusals::RefusalLog>,
 }
 
 /// Where a provider says something a person has to read. `Arc<dyn Fn>` because the
@@ -83,7 +86,15 @@ impl OpenAiProvider {
             effort: None,
             effort_note: None,
             effort_said: std::sync::atomic::AtomicBool::new(false),
+            refusals: None,
         }
+    }
+
+    /// Install where a refusal is recorded: the daemon appends it to the session's own log, and a
+    /// refusal nobody can read the answer to is a limit nobody can find.
+    pub fn with_refusal_log(mut self, sink: crate::refusals::RefusalLog) -> Self {
+        self.refusals = Some(sink);
+        self
     }
 
     /// The HTTP agent, with the two numbers that decide when a provider that has said nothing is a
@@ -594,13 +605,15 @@ impl OpenAiProvider {
             }
         };
         let status = resp.status().as_u16();
-        // The provider's own `Retry-After`, read before the body consumes the response: seconds, and
-        // the only form of *when may I come back* a caller may sleep on.
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok());
+        // Every header the answer carried, read before the body consumes the response: the
+        // provider's own `Retry-After` is one of them, and a refusal's record keeps them all.
+        let headers = crate::refusals::headers_of(resp.headers());
+        // The provider's own `Retry-After`, the only form of *when may I come back* a caller may
+        // sleep on: seconds, and nothing to parse in a prose answer.
+        let retry_after = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+            .and_then(|(_, v)| v.trim().parse::<u64>().ok());
         if !(200..300).contains(&status) {
             let text = resp
                 .into_body()
@@ -635,10 +648,24 @@ impl OpenAiProvider {
                 Some(note) => format!("{message} — {note}"),
                 None => message,
             };
-            // What was SENT, when what was sent was refused: the shape of it and never the
-            // content, so the next unexplained refusal is read off this record rather than guessed
-            // at from documentation.
-            eprintln!("  refused request shape:\n{}", shape(&body, payload.len()));
+            // The refusal as the wire gave it, kept before the projection above loses it: a
+            // provider's code names no field, so the body is the only thing that says which
+            // parameter was objected to. What was SENT goes as its shape, never as its content.
+            let what_was_sent = shape(&body, payload.len());
+            let (kept, body_bytes) = crate::refusals::body_of(text);
+            crate::refusals::record(
+                self.refusals.as_ref(),
+                &crate::refusals::Refusal {
+                    provider: self.preset.name.to_string(),
+                    model: self.model.clone(),
+                    status,
+                    headers,
+                    body: kept,
+                    body_bytes,
+                    request_bytes: payload.len(),
+                    shape: Some(what_was_sent),
+                },
+            );
             return Err(BackendError::Refused {
                 status,
                 body: message,

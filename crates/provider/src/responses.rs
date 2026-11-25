@@ -62,6 +62,8 @@ pub struct ResponsesProvider {
     notes: Option<Notes>,
     /// The reasoning items this client issued and must carry back; see the module docs.
     issued: std::sync::Mutex<Vec<Issued>>,
+    /// Where a refusal's whole answer is kept; see [`crate::refusals::RefusalLog`].
+    refusals: Option<crate::refusals::RefusalLog>,
 }
 
 /// Where a provider says something a person has to read. The same closure shape the
@@ -88,7 +90,15 @@ impl ResponsesProvider {
             sampling: json!({}),
             notes: None,
             issued: std::sync::Mutex::new(Vec::new()),
+            refusals: None,
         }
+    }
+
+    /// Install where a refusal is recorded: the same sink every client takes, because a protocol
+    /// with no record is a protocol whose refusals are diagnosed by guesswork.
+    pub fn with_refusal_log(mut self, sink: crate::refusals::RefusalLog) -> Self {
+        self.refusals = Some(sink);
+        self
     }
 
     /// The HTTP agent, with the two numbers that decide when a door that has said nothing
@@ -1330,6 +1340,8 @@ impl ResponsesProvider {
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok());
+        // Every header the answer carried, read before the body consumes the response.
+        let headers = crate::refusals::headers_of(resp.headers());
         if !(200..300).contains(&status) {
             let text = resp
                 .into_body()
@@ -1350,7 +1362,23 @@ impl ResponsesProvider {
                 Some(code) if !message.contains(code) => format!("{message} ({code})"),
                 _ => message,
             };
-            eprintln!("  refused request shape:\n{}", shape(&body, payload.len()));
+            // The refusal as the wire gave it, kept before the projection above loses it: the
+            // message a caller reads names no field, and the body is where a field is named.
+            let what_was_sent = shape(&body, payload.len());
+            let (kept, body_bytes) = crate::refusals::body_of(text);
+            crate::refusals::record(
+                self.refusals.as_ref(),
+                &crate::refusals::Refusal {
+                    provider: self.preset.name.to_string(),
+                    model: self.model.clone(),
+                    status,
+                    headers,
+                    body: kept,
+                    body_bytes,
+                    request_bytes: payload.len(),
+                    shape: Some(what_was_sent),
+                },
+            );
             return Err(BackendError::Refused {
                 status,
                 body: message,

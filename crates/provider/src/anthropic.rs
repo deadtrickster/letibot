@@ -71,6 +71,8 @@ pub struct AnthropicProvider {
     effort: Option<crate::effort::Effort>,
     effort_note: Option<String>,
     effort_said: std::sync::atomic::AtomicBool,
+    /// Where a refusal's whole answer is kept; see [`crate::refusals::RefusalLog`].
+    refusals: Option<crate::refusals::RefusalLog>,
 }
 
 impl AnthropicProvider {
@@ -94,7 +96,15 @@ impl AnthropicProvider {
             effort: None,
             effort_note: None,
             effort_said: std::sync::atomic::AtomicBool::new(false),
+            refusals: None,
         }
+    }
+
+    /// Install where a refusal is recorded: the same sink every client takes, because a protocol
+    /// with no record is a protocol whose refusals are diagnosed by guesswork.
+    pub fn with_refusal_log(mut self, sink: crate::refusals::RefusalLog) -> Self {
+        self.refusals = Some(sink);
+        self
     }
 
     /// The operator's `--effort`, clamped to the levels this door takes
@@ -303,6 +313,8 @@ impl AnthropicProvider {
             }
         };
         let status = resp.status().as_u16();
+        // Every header the answer carried, read before the body consumes the response.
+        let headers = crate::refusals::headers_of(resp.headers());
         // The provider's own `Retry-After`, the only form of *when may I come back* a caller may
         // sleep on (<https://platform.claude.com/docs/en/api/rate-limits>), read before the body
         // consumes the response.
@@ -327,6 +339,22 @@ impl AnthropicProvider {
             if let Some(note) = crate::kimi::explain_a_403(&self.preset.compat, status) {
                 body = format!("{body} - {note}");
             }
+            // The refusal as the wire gave it, kept before the projection above loses it: the
+            // message a caller reads names no field, and the body is where a field is named.
+            let (kept, body_bytes) = crate::refusals::body_of(text);
+            crate::refusals::record(
+                self.refusals.as_ref(),
+                &crate::refusals::Refusal {
+                    provider: self.preset.name.to_string(),
+                    model: self.model.clone(),
+                    status,
+                    headers,
+                    body: kept,
+                    body_bytes,
+                    request_bytes: payload.len(),
+                    shape: None,
+                },
+            );
             return Err(BackendError::Refused {
                 status,
                 body,
