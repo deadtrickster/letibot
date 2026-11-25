@@ -64,7 +64,10 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
   --targets      the `target-*` dirs under /build (or `--build DIR`): size, last use and the
                  processes working in them. Unused ones are stale, or with `[gc] targets_cap` the
                  unused ones oldest first until the total is under the cap. With `--now`, the
-                 stale ones are removed; a dir in use never is.
+                 stale ones are removed; a dir in use never is. A target that stays is also swept
+                 inside: cargo keeps one artifact dir per unit and build configuration under
+                 `<profile>/build/<package>/<hash>` and removes none of them, so the newest two of
+                 each unit are kept and the rest of the ones an hour old or more go.
 
   --settle OWNER   settle an owner's work NOW, without waiting out the grace
   --restore OWNER  put an owner's archived branches back; with `--worktree`, also a tree at the

@@ -39,6 +39,7 @@ mod tests_disks;
 mod tests_docker;
 #[cfg(test)]
 mod tests_work;
+pub mod units;
 pub mod work;
 mod worktree;
 pub use archive::{Kept, fetch_bundle, keep, namespace};

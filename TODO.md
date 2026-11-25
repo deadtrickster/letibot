@@ -263,6 +263,7 @@ Older backlog:
 | R386 | Session names: one rule for every path, and the file enforces it | Code work | built; left: a package's title arriving over the bridge is refused rather than dashed (the frame's rule), and a build older than 62 leaves a row with no name key until the next open repairs it |
 | R387 | Conversation search in the head: `ctrl-f` over the open conversation, and over the project's sessions | Code work | built; left: a hit inside a folded run is counted and its own window is opened, the run's fold is not; the sessions scope pages one page of hits |
 | R388 | Three gate asks that should never have reached the operator: the checkout's own paths, a read-only grep, and a value a reader produced | Code work | built (see the section); left: a read naming the real path is still `host_other`, `bash_segments` still refuses a line with a substitution |
+| R389 | A shared target dir reached 1.4 TB: cargo's per-unit artifact dirs were never pruned | Code work | built (`build-out-leak`); left: nothing runs the sweep on a schedule, `KEEP` is not a `[gc]` key |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3198,6 +3199,90 @@ on a doubling wait, given up on aloud, with a Claude Code `/rename` outranking a
 wire's eyes, so a clash there is refused rather than dashed; dashing it at the caller needs a
 "derived" mark on the frame. And a build older than 62 writes a row with no name key, which the next
 open repairs - the index cannot see that row until then.
+## R389 - A shared target dir reached 1.4 TB: cargo keeps one artifact dir per unit per build configuration, and nothing removed them
+
+**Status:** built 2026-11-25 on `build-out-leak`. Severity: high (a day's builds filled a disk).
+
+**What was seen.** `/build/target-gnj` on lab2x1 grew to 1.4 T in one day, nearly all of it under
+`debug/build/<crate>/<hash>/`, about 1,600 hash dirs in each crate dir: `letibot-harnessd` 768 G
+(about 470 M per dir), `letibot-bridge` 300 G, `letibot-tools` 95 G, `letibot-sessionlog` 77 G,
+`letibot` 59 G, `letibot-tui` 46 G. Those six are the crates with the most test targets, which is
+the first hint: the dirs are *units*, and a crate's test targets are most of them.
+
+**The shape is cargo's, not ours, and it is the pinned toolchain's.**
+`debug/build/<package>/<hash>/{out,run,fingerprint}` is cargo 1.100's per-unit artifact layout:
+`out/` holds that unit's own output - a linked test binary included - and `fingerprint/` names the
+unit (`test-integration-test-sessions`, `lib-letibot_sessionlog`). `rust-toolchain.toml` pins
+1.100.0; cargo 1.98, this box's default and what any build outside the tree uses, still writes the
+flat `debug/build/<package>-<hash>/out`. So the layout follows the tree's pin, and the leak is that
+nothing in the tree ever looked inside `debug/build/`: `letibot gc --targets` removed whole
+`target-*` dirs, the gate cache removed whole placements, and cargo itself never removes a hash
+whose configuration it stopped building in.
+
+**Measured here** (this seat, `letibot-sessionlog`, 32 test targets, one target dir):
+
+| run | dirs under `debug/build/letibot-sessionlog` | size |
+| --- | --- | --- |
+| `cargo test --no-run` | 46 | 19 G |
+| the same command again | 46 | 19 G |
+| `--features local` | 46 | 19 G |
+| `CARGO_PROFILE_TEST_DEBUG=0` | 91 | 20 G |
+
+A repeated identical build is free; one *new configuration* of one crate is +45 dirs and up to 19 G.
+135 harnessd test targets at ~470 M is 63 G per configuration, so a day of a dozen configurations
+is the operator's 768 G. `RUSTFLAGS`, a `CARGO_PROFILE_*` override, `clippy` beside `test` and the
+toolchain each make a configuration of their own (each measured on a probe crate).
+
+**Measured after** (the same directory, the third configuration built, then one sweep):
+
+| | unit dirs | size |
+| --- | --- | --- |
+| `letibot-sessionlog`, three configurations | 139 | 39 G |
+| after `prune`, `KEEP` 2 and the grace waived | 91 | 20 G |
+| the whole target dir | 1,519 dirs / 57 G | 939 dirs / 35 G |
+
+580 dirs removed, 24.4 GB freed. A second sweep straight after took a further 2.0 GB, which is one
+build in the oldest configuration relinking what the first removed - the price of keeping two. A
+pass with the real one-hour grace, minutes after a build, removed nothing.
+
+**Fix.** `crates/tools/src/lifecycle/units.rs`: `prune(target, KEEP, GRACE, now)` removes every
+`<profile>/build/<package>/<hash>` past the newest `KEEP` (2) **of its unit** - the unit read from
+the dir's own `fingerprint/` names - and touches nothing written in the last `GRACE` (1 h). Three
+things keep it safe beside a build:
+- it takes cargo's own `flock` on `<profile>/.cargo-lock` before entering that profile, so a running
+  build and a removal cannot overlap and a build waits rather than starts under one;
+- `.letibot-units.lock` in the target makes a second pass answer `busy`, and one left by a dead
+  pass is taken over after 30 minutes;
+- a name that is not sixteen hex characters (cargo 1.98's `<package>-<hash>`) and a dir whose unit
+  cannot be read are never touched.
+
+`letibot gc --targets --now` runs it over every target dir that stays.
+
+**Why per unit and not per package.** Keeping the newest 2 of *the package* would delete 44 of the
+46 dirs a single build of `letibot-sessionlog` just made - one per test target - and relink every
+test binary on the next run.
+
+**Proof.**
+- `crates/tools/src/lifecycle/units.rs`, 8 tests: three configurations of one unit leave the newest
+  two; one dir of each of twenty units is never touched; a dir seconds old is never removed; a held
+  lock stops the pass and its release does not; a dead lock is taken over; cargo 1.98's flat layout
+  is left alone; an unreadable unit is kept; both profiles are pruned.
+- `crates/tools/tests/unit_dirs.rs` drives the real `cargo` (pinned by copying the tree's
+  `rust-toolchain.toml` into the probe): three configurations of one probe crate are 3 dirs of
+  `lib-unitprobe`, one prune leaves 2, a second pass has nothing to do.
+- `crates/letibot/src/targets.rs`, `a_target_dir_that_stays_is_swept_inside`: `letibot gc --targets
+  --now` keeps a target dir under a cap and removes the oldest of its three configurations.
+
+**The red proof.** With `prune` made a no-op (a mutation, reverted before the commit) 5 of the 8
+unit tests red, the integration test reds, and `targets::a_target_dir_that_stays_is_swept_inside`
+reds. The three that stay green are the ones that assert nothing is removed, which is the shape of
+mutation this rule needs.
+
+**Left.** Nothing calls it on a schedule: the box owner runs `letibot gc --targets --now`, or keeps
+the dir under `[gc] targets_cap` - which is the case where the sweep matters, because an uncapped
+pass removes the whole dir instead. A daemon-side pass over each owner's build dirs would make it
+automatic. `KEEP` is a constant rather than a `[gc]` key: 2 is what lets the gate's configuration
+and a session's alternate for free, and a box that builds one way could keep 1.
 
 ## R384 - A dm to a peer in another project goes through only with the operator's consent
 

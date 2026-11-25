@@ -6,6 +6,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use letibot_tools::lifecycle::units;
+
 /// One target dir as the scan found it.
 #[derive(Debug, Clone)]
 pub struct TargetDir {
@@ -233,12 +235,33 @@ pub fn gc(build_dir: &Path, proc_root: &Path, cap: Option<u64>, act: bool, json:
             "state": state,
         }));
     }
+    // A dir that stays is the one that grows: cargo keeps a whole copy of each unit's output per
+    // build variant under `<target>/<profile>/build/<package>/<hash>` and removes none of them.
+    let mut units_freed = 0u64;
+    let mut units = Vec::new();
+    if act {
+        for d in &dirs {
+            // A target that stays is the one that grows. The sweep does not refuse a dir a build
+            // is in: it takes cargo's own lock on the profile first, so a running build and a
+            // removal cannot overlap.
+            if !d.path.is_dir() {
+                continue;
+            }
+            let done = units::prune(&d.path, units::KEEP, units::GRACE, SystemTime::now());
+            units_freed += done.bytes;
+            if let Some(line) = done.line() {
+                units.push(format!("{}: {line}", d.path.display()));
+            }
+        }
+    }
     if json {
         return serde_json::json!({
             "build_dir": build_dir,
             "total": total,
             "cap": cap,
             "freed": freed,
+            "units_freed": units_freed,
+            "units": units,
             "dirs": rows,
         })
         .to_string()
@@ -253,7 +276,14 @@ pub fn gc(build_dir: &Path, proc_root: &Path, cap: Option<u64>, act: bool, json:
     };
     text += &format!("total {}, {cap_line}\n", human(total));
     if act {
-        text += &format!("freed {}\n", human(freed));
+        for line in &units {
+            text += &format!("  {line}\n");
+        }
+        text += &format!(
+            "freed {}, of it {} in old unit dirs\n",
+            human(freed),
+            human(units_freed)
+        );
     } else if picks.iter().any(|p| *p) {
         // Cheap to say: the shared sccache holds the dependencies a removed dir had compiled.
         text += "this is a plan: `letibot gc --targets --now` removes the stale ones; sccache makes \
@@ -377,6 +407,55 @@ mod tests {
         assert!(cwd_user.exists() && fd_user.exists(), "{out}");
         assert!(!old.exists() && !newer.exists(), "{out}");
         assert!(out.contains("freed"), "{out}");
+    }
+
+    #[test]
+    fn a_target_dir_that_stays_is_swept_inside() {
+        let fx = Fx::new("units");
+        let t = fx.target("target-units", 8, 2);
+        // Three build configurations of one test target, as cargo leaves them: one dir each, and
+        // the configuration that stopped being built is still there.
+        let mut units = Vec::new();
+        for i in 0..3u64 {
+            let u = t
+                .join("debug/build/letibot-harnessd")
+                .join(format!("{:016x}", i + 1));
+            let fp = u.join("fingerprint");
+            std::fs::create_dir_all(&fp).unwrap();
+            std::fs::create_dir_all(u.join("out")).unwrap();
+            std::fs::write(fp.join("test-integration-test-sessions.json"), b"{}").unwrap();
+            std::fs::write(u.join("out/sessions"), vec![1u8; 4096]).unwrap();
+            let at = SystemTime::now() - Duration::from_secs(86400 * (3 - i));
+            // The `fingerprint/` files too: cargo rewrites them with the unit, and the newest of
+            // them is what the pass judges.
+            for p in [
+                u.join("out/sessions"),
+                u.join("out"),
+                fp.join("test-integration-test-sessions.json"),
+                fp.clone(),
+                u.clone(),
+            ] {
+                std::fs::File::open(&p).unwrap().set_modified(at).unwrap();
+            }
+            units.push(u);
+        }
+        // A cap nothing exceeds, so the target dir itself stays and the sweep inside it is what
+        // this test is measuring.
+        let out = gc(
+            &fx.0.join("build"),
+            &fx.0.join("proc"),
+            Some(u64::MAX),
+            true,
+            false,
+        );
+        assert!(t.exists(), "the target dir stays: {out}");
+        assert!(out.contains("unit dirs: removed 1"), "{out}");
+        assert!(
+            out.contains("of it") && out.contains("in old unit dirs"),
+            "{out}"
+        );
+        assert!(!units[0].exists(), "the oldest configuration goes: {out}");
+        assert!(units[1].exists() && units[2].exists(), "{out}");
     }
 
     #[test]
