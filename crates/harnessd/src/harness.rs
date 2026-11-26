@@ -517,6 +517,9 @@ pub struct Harness {
     /// The park a usage limit put this session in: the turn it stopped is owed again at
     /// `until_ms`, by the daemon's own clock. See `harness::limit`.
     limit_park: Option<limit::LimitPark>,
+    /// Turns the provider refused in a row, and when the last one was. The plan-check backs off
+    /// on it, since every check is a turn the provider will refuse too. A landed round clears it.
+    refused_run: (u32, Option<std::time::Instant>),
     /// The models this session has been told are limited, and when each lifts - the fact a fallback
     /// list is filtered by, so a switch never lands on a model that is limited too.
     limited: limit::Limited,

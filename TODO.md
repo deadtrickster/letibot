@@ -267,7 +267,7 @@ Older backlog:
 | R390 | A GLM refusal said `1210` and named no parameter: the body was never kept | Code work | built (5aa1855b9..6ff147276); left: the other three protocols' converters read no picture budget |
 | R391 | A parked plan was nagged as stuck, and a seat's operator question was not a card | Code work | built (4dbbb7d52, 34cf6888c, 09f9113d5); left: a seat's board written between the answer and its adopt re-asks, and a wait on a seat's BOARD is still refused |
 | R392 | A restart woke a finished session at every restart, and the monitor's notice about an old action was always the last row | Code work | built (see the section); left: a notice-only wake is not an owed turn, the monitor's digest still starts at the last operator prompt, a model's finding is keyed by its evidence line |
-| R393 | The todo check fired every 30 minutes into a session the provider was refusing, twenty calls that could not land | Code work | filed |
+| R393 | The todo check fired every 30 minutes into a session the provider was refusing, twenty calls that could not land | Code work | done |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3576,7 +3576,7 @@ restarts over the rows above, no turn spent, one monitor row, no placeholder.
 
 ## R393 - The todo check kept firing into a session the provider refused
 
-**Status:** filed, 2026-11-26.
+**Status:** done, 2026-11-26. A turn the provider refuses holds the plan-check (`refused_hold`, `harness/nags.rs`): 1h after the last refusal, doubling to 8h; the check due at its end is the probe, and a landed round clears it. Test: `tests/limits.rs` `a_refused_turn_holds_the_plan_check_until_a_round_lands`.
 
 **What happened.** On the Mac, the leticode-website session's calls were refused by GLM with 1210 (intermittent on GLM's side: 9 failures, one good nag at 03:50 with two turns, then 11 more failures; 57 stored screens, all valid PNG, message order valid, so not the image count). The seat's todo check still fired every 30 minutes and each firing started a turn the provider refused: twenty dead calls, reported by the Mac seat (dm #2364).
 

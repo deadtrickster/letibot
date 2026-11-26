@@ -3167,6 +3167,18 @@ impl Harness {
                 // The ladder is spent, and what comes next is the limit rule's to say: the rule is
                 // that a provider which named its reset never costs a session its turn.
                 self.record_refusal(&e);
+                if !letibot_http::retry::Policy::standard()
+                    .class(&e)
+                    .retryable()
+                {
+                    let n = self.refused_run.0 + 1;
+                    self.refused_run = (n, Some(std::time::Instant::now()));
+                    eprintln!(
+                        "  {} · plan-check held {}h: the provider refused {n} turn(s) in a row",
+                        self.cfg.session_id,
+                        super::nags::refused_backoff(n).as_secs() / 3600,
+                    );
+                }
                 let e = self.with_the_plans_reset(e);
                 let here = self.model_name();
                 match self.after_the_ladder(&e, &mut tried_fallbacks) {

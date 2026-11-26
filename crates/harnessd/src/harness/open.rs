@@ -4261,6 +4261,7 @@ impl Harness {
             recall_map: Vec::new(),
             // No limit until the provider puts a time on one, and nothing limited to filter by.
             limit_park: None,
+            refused_run: (0, None),
             limited: Default::default(),
             limit_return: None,
             limit_probing: Default::default(),

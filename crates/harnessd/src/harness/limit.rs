@@ -176,6 +176,7 @@ impl Harness {
     /// A round answered. If it was a park's early re-try, the limit cleared before its reset: the
     /// model is no longer limited, and the session's log says when.
     pub(crate) fn a_round_answered(&mut self) {
+        self.refused_run = (0, None);
         let was_refused = std::mem::take(&mut self.limit_probing.refused) > 0;
         // The limit is over: the next one is a new episode and draws its own offset.
         self.limit_probing.jitter = None;

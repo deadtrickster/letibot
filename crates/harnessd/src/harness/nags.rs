@@ -644,6 +644,9 @@ impl Harness {
         if self.limit_park.is_some() {
             return NagHold::Parked;
         }
+        if let Some(until) = refused_hold(self.refused_run, std::time::Instant::now()) {
+            return NagHold::Paused { until: Some(until) };
+        }
         match self.cfg.nags_paused {
             None => NagHold::Running,
             Some(NagPause::UntilResumed) => NagHold::Paused { until: None },
@@ -816,6 +819,27 @@ impl Harness {
 /// landing that answers it is the merge row that names that review. So both spellings are read, and
 /// the merge row - which is where `landed`, `failed`, `withdrawn` and the sha live - is what comes
 /// back.
+/// When the plan-check may next run after the provider refused `run.0` turns in a row: an hour
+/// after the last, doubling, at most eight. `None` once that has passed, so the check due then
+/// runs as the probe; a hold left in the past would re-arm the clock at a deadline already spent.
+pub(crate) fn refused_hold(
+    run: (u32, Option<std::time::Instant>),
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    let (n, Some(at)) = run else {
+        return None;
+    };
+    if n == 0 {
+        return None;
+    }
+    let until = at + refused_backoff(n);
+    (until > now).then_some(until)
+}
+
+pub(crate) fn refused_backoff(n: u32) -> Duration {
+    Duration::from_secs((1u64 << n.saturating_sub(1).min(3)) * 3600)
+}
+
 fn merge_row_of(
     store: &letibot_tokencore::Store,
     id: &str,

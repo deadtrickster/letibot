@@ -61,6 +61,8 @@ enum Act {
     RefuseBare,
     /// A `429` whose body is this prose and nothing else.
     RefuseWith(&'static str),
+    /// A `400` refusal that names no limit: GLM's `1210`, which no retry and no park answers.
+    BadRequest,
     /// One text answer, all at once.
     Answer,
 }
@@ -124,6 +126,17 @@ fn model(script: &'static [Act]) -> Model {
                     ),
                     body.to_string(),
                 ),
+                Act::BadRequest => {
+                    let body = "{\"error\":{\"code\":\"1210\",\"message\":\"Invalid API parameter\"}}";
+                    (
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ),
+                        body.to_string(),
+                    )
+                }
                 Act::Answer => (
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
                         .to_string(),
@@ -2114,5 +2127,66 @@ fn a_limit_hooks_new_session_forks_the_conversation_and_continues_the_turn_there
     assert!(
         sent.contains(PROMPT),
         "the request carried the conversation: {sent}"
+    );
+}
+
+/// A provider refusing every turn holds the plan-check off: each check would be one more refused
+/// turn. The hold lifts with the first round that lands.
+#[test]
+fn a_refused_turn_holds_the_plan_check_until_a_round_lands() {
+    let _alone = alone();
+    let scratch = scratch_home("refused");
+    let glm = model(&[Act::BadRequest, Act::BadRequest, Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    // The byte vocabulary: this is about the provider's answer, so no model file is needed.
+    let mut cfg = config(
+        &scratch,
+        std::path::Path::new("/nonexistent"),
+        "refused",
+        ("glm", "glm-5.3"),
+        Vec::new(),
+    );
+    cfg.vocab_gguf = None;
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, _hub, id) = open(&parts, cfg);
+    assert_eq!(
+        sessions.harness_of(&id).expect("open").nag_hold(),
+        NagHold::Running
+    );
+
+    let before = std::time::Instant::now();
+    sessions
+        .submit_operator(&id, PROMPT)
+        .expect_err("a 400 is not an answer");
+    let NagHold::Paused { until: Some(first) } = sessions.harness_of(&id).expect("open").nag_hold()
+    else {
+        panic!("a refused turn holds the plan-check");
+    };
+    let hour = Duration::from_secs(3600);
+    assert!(first >= before + hour && first <= std::time::Instant::now() + hour);
+
+    sessions
+        .submit_operator(&id, PROMPT)
+        .expect_err("a second 400");
+    let NagHold::Paused {
+        until: Some(second),
+    } = sessions.harness_of(&id).expect("open").nag_hold()
+    else {
+        panic!("still held");
+    };
+    assert!(
+        second >= first + hour,
+        "the hold doubles: {first:?} -> {second:?}"
+    );
+
+    sessions
+        .submit_operator(&id, PROMPT)
+        .expect("the third call lands");
+    assert_eq!(
+        sessions.harness_of(&id).expect("open").nag_hold(),
+        NagHold::Running,
+        "a landed round lifts the hold"
     );
 }
