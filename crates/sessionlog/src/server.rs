@@ -2757,12 +2757,13 @@ fn seat_in(
                         break;
                     }
                 }
-                // Not sent below the frame's own version, which the head cannot decode, nor when
-                // empty: a head that asked for nothing keeps a stream of events alone.
+                // Not sent below the frame's own version, which the head cannot decode, nor to a
+                // head that asked for nothing. A head that asked waits for the answer, so an empty
+                // `accepted` is sent too: it is how "none of those" is said.
                 let accepted = crate::protocol::accepted_features(&caps.features);
                 if out.is_ok()
                     && head_protocol >= crate::protocol::QUEUE_PROMPT_SINCE
-                    && !accepted.is_empty()
+                    && !caps.features.is_empty()
                 {
                     out = w.write(&ServerFrame::Features { accepted });
                 }
