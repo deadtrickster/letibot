@@ -265,6 +265,7 @@ Older backlog:
 | R388 | Three gate asks that should never have reached the operator: the checkout's own paths, a read-only grep, and a value a reader produced | Code work | built (see the section); left: a read naming the real path is still `host_other`, `bash_segments` still refuses a line with a substitution |
 | R389 | A shared target dir reached 1.4 TB: cargo's per-unit artifact dirs were never pruned | Code work | built (`build-out-leak`); left: nothing runs the sweep on a schedule, `KEEP` is not a `[gc]` key |
 | R390 | A GLM refusal said `1210` and named no parameter: the body was never kept | Code work | built (5aa1855b9..6ff147276); left: the other three protocols' converters read no picture budget |
+| R391 | A parked plan was nagged as stuck, and a seat's operator question was not a card | Code work | built (4dbbb7d52, 34cf6888c, 09f9113d5); left: a seat's board written between the answer and its adopt re-asks, and a wait on a seat's BOARD is still refused |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3298,6 +3299,51 @@ the dir under `[gc] targets_cap` - which is the case where the sweep matters, be
 pass removes the whole dir instead. A daemon-side pass over each owner's build dirs would make it
 automatic. `KEEP` is a constant rather than a `[gc]` key: 2 is what lets the gate's configuration
 and a session's alternate for free, and a box that builds one way could keep 1.
+## R391 - A parked plan was nagged as stuck, and a seat's operator question was not a card
+
+**Status:** built, 2026-11-26 (4dbbb7d52, 34cf6888c, 09f9113d5). left: see below.
+
+**What happened.** The operator told a Claude Code seat (`cc@stroppy-io`) to drain its background jobs
+and hand the lab1 hosts to another project, and its open rows were to stay open until they said so.
+The seat put an `operator` wait on the root row and the other rows waited on that row. The next
+`[todo check]` said *"NOTHING can start — unblock one of these rather than starting something new"*,
+and for the operator's own row it said *"try to work the question out yourself: if you find the
+answer, take the wait off ... and say in your reply what you decided"* - the model was invited to
+answer a person's question. And there was no card anywhere: `docs/seat-todo.md` said in as many
+words that a seat's question has none.
+
+**Built.**
+- `parked_on_the_operator` (`crates/tools/src/builtins/todo.rs`) - every open row waits on the
+  operator, directly or through rows that wait on rows that do. Read over the BOARD, so a row the
+  check is silent about still counts. A parked plan says one line, `[todo check] parked: waiting on
+  the operator's answer to "<question>"`, ONCE, and the clock arms nothing after it
+  (`TodoNagClock::rearm`): the answer wakes the session. A free row, or a chain ending at a job, a
+  child, a peer or another board, keeps today's check. Both nags go through `unfinished_plan`, so a
+  session and a bridge seat cannot disagree.
+- The operator's sentence in `blocked_line` says whose answer it is and names no act of the model's.
+- `crate::seat_asks` - a seat's open `operator` row as a question card on the daemon's main session,
+  typed into the pending asks, the shape `queue_asks` posts for a queue session's board. The answer
+  settles the seat's stored board; `Seat::adopt_answers` takes it onto the in-memory row and pushes
+  the note a waiting `todo-wait` reports, which wakes the seat. `Sessions::relay_seat_asks` keeps
+  its own tick while a seat waits.
+
+**Tests.** `crates/tools/src/builtins/todo/tests/operator.rs`:
+`a_plan_parked_on_the_operator_says_parked_and_never_that_nothing_can_start`,
+`a_parked_plan_is_said_once_and_not_again_on_the_ladder`,
+`no_check_sentence_asks_the_model_to_answer_the_operators_question`. `crates/bridge/src/seat.rs`:
+`a_seat_parked_on_the_operator_is_told_parked_and_not_that_nothing_can_start`,
+`an_answer_written_in_a_head_is_adopted_from_the_store_once`.
+`crates/harnessd/src/seat_asks/tests.rs`:
+`a_seats_operator_question_is_a_card_on_the_head_and_its_answer_frees_the_row`,
+`a_question_the_seat_takes_back_is_withdrawn_from_the_head`.
+`crates/bridge/tests/seat_todo.rs`:
+`a_row_waiting_on_the_operator_is_said_parked_once_and_not_again_until_the_answer_lands`.
+
+**Left.** A seat that writes its board between the daemon's answer and `adopt_answers` writes the
+old `operator` edge back, and the question is re-asked once the 90 s grace is over; a parked seat is
+not writing at that moment, which is why it has not been seen. A wait on a seat's BOARD is still
+refused (`docs/cross-project-todo.md`), which is a different edge from this one. `/nag pause` still
+has no seat spelling.
 
 ## R384 - A dm to a peer in another project goes through only with the operator's consent
 
