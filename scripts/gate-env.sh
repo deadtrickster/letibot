@@ -51,7 +51,7 @@ fi
 # 2026-11-19. TMUX itself is dropped with the rest of the environment (`env -i`), so a step
 # cannot believe it is inside a session either.
 set -- HOME="$S/home" XDG_DATA_HOME="$S/data" XDG_STATE_HOME="$S/state" XDG_RUNTIME_DIR="$S/run" \
-  LETIBOT_GATE_LOCK="$S/gate.lock" TMUX_TMPDIR="$S/run" \
+  LETIBOT_GATE_LOCK="$S/gate.lock" TMUX_TMPDIR="$S/run" LETIBOT_REAL_HOME="$real" \
   CARGO_HOME="${CARGO_HOME:-$real/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$real/.rustup}" "$@"
 # The read-only apparatus the tests measure against, by the variables they read: the caller's
 # value, else the box's file under the real HOME, and only when it is there.
@@ -66,10 +66,10 @@ for a in \
 done
 # Kept from the caller by name: the gate's own refusals file and, above, the apparatus paths, the
 # two facts that say what the run is compared against (`LETIBOT_GATE_BASE`, and the file of changed
-# paths `LETIBOT_GATE_CHANGED` names), and nothing else of LETIBOT_*. No keys, sockets,
-# XDG_CONFIG_HOME or XDG_CACHE_HOME.
+# paths `LETIBOT_GATE_CHANGED` names), and the two llama.cpp variables a LOCAL build is pointed
+# with. Nothing else of LETIBOT_*. No keys, sockets, XDG_CONFIG_HOME or XDG_CACHE_HOME.
 for n in PATH USER LOGNAME LANG LC_ALL TZ TMPDIR CARGO_TARGET_DIR CARGO_BUILD_JOBS LETIBOT_APPARATUS_REFUSALS \
-  LETIBOT_GATE_BASE LETIBOT_GATE_CHANGED; do
+  LETIBOT_GATE_BASE LETIBOT_GATE_CHANGED LETIBOT_LLAMA_DIR LETIBOT_LLAMA_LIB; do
   eval "has=\${$n+x}"
   # shellcheck disable=SC2154 # assigned by the eval above
   if [ -n "$has" ]; then

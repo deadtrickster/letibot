@@ -11,6 +11,9 @@ fn main() {
     // The search reads `HOME`, so a checkout that moves with the home it is under has to
     // be able to re-run this script.
     println!("cargo:rerun-if-env-changed=HOME");
+    println!("cargo:rerun-if-env-changed=LETIBOT_REAL_HOME");
+    println!("cargo:rerun-if-env-changed=CARGO_HOME");
+    println!("cargo:rerun-if-env-changed=RUSTUP_HOME");
 
     let dir = locate_checkout();
     let lib = locate_lib(&dir);

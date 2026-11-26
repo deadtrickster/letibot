@@ -203,6 +203,9 @@ QUICK=1 sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main   # th
 - Name both llama.cpp variables on anything that builds a LOCAL build: `LETIBOT_LLAMA_DIR` and
   `LETIBOT_LLAMA_LIB`. Each `build.rs` bakes the llama.cpp it found into an rpath that cargo does not
   track, so a worktree keeps linking the first one. A run of vocabulary failures is usually this.
+  The gate's HOME is a scratch with no checkout: `gate-env.sh` sets `LETIBOT_REAL_HOME` to the real
+  one and keeps both variables by name, and the build also looks under the home above `CARGO_HOME`
+  and `RUSTUP_HOME`, so a box with the conventional checkout needs no variable.
 - `scripts/clippy-gate.sh`, not `cargo clippy`. Cargo's fingerprint ignores the arguments after
   `--`, so a unit built by plain clippy is fresh for `-D warnings` and nothing is linted.
 - `LETIBOT_REQUIRE_APPARATUS=1` turns a test that skips itself (no vocabulary GGUF, no delegated

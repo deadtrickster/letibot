@@ -24,6 +24,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_LIB");
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_DIR");
     println!("cargo:rerun-if-env-changed=HOME");
+    println!("cargo:rerun-if-env-changed=LETIBOT_REAL_HOME");
+    println!("cargo:rerun-if-env-changed=CARGO_HOME");
+    println!("cargo:rerun-if-env-changed=RUSTUP_HOME");
     let lib = llama_lib_dir();
     println!("cargo:rustc-link-search=native={}", lib.display());
     // dyld has no `$ORIGIN`; `@loader_path` is the same idea in its spelling.
