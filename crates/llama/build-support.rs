@@ -14,19 +14,31 @@ const LLAMA_LIB_SUBDIRS: [&str; 2] = ["build-glm/bin", "build/bin"];
 const LLAMA_LIBRARIES: [&str; 3] = ["libllama.so", "libllama.dylib", "libllama.a"];
 
 /// The checkouts this box may have, in the order they are tried: the variable, then the
-/// conventional checkout under this home, then the box's own path. The last two are the
-/// same directory on the Linux box, so its answer is unchanged by the extra candidate.
+/// conventional checkout under this home, under the home above CARGO_HOME and RUSTUP_HOME (a
+/// gate's HOME is a scratch with no checkout, but its CARGO_HOME is the real home's), then the
+/// box's own path.
 #[allow(dead_code)] // each includer uses a subset of this file
 fn llama_checkout_candidates() -> Vec<std::path::PathBuf> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut add = |dir: std::path::PathBuf| {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
     if let Some(dir) = std::env::var_os("LETIBOT_LLAMA_DIR") {
-        dirs.push(std::path::PathBuf::from(dir));
+        add(std::path::PathBuf::from(dir));
     }
     if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(std::path::PathBuf::from(home).join("Projects/llama.cpp"));
+        add(std::path::PathBuf::from(home).join("Projects/llama.cpp"));
     }
-    dirs.push(std::path::PathBuf::from(DEFAULT_LLAMA_DIR));
-    dirs.dedup();
+    for name in ["CARGO_HOME", "RUSTUP_HOME"] {
+        if let Some(home) = std::env::var_os(name) {
+            let mut home = std::path::PathBuf::from(home);
+            home.pop();
+            add(home.join("Projects/llama.cpp"));
+        }
+    }
+    add(std::path::PathBuf::from(DEFAULT_LLAMA_DIR));
     dirs
 }
 

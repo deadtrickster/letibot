@@ -39,7 +39,8 @@ cannot start.
 
 Where the library is found, in order: `LETIBOT_LLAMA_LIB` (honoured as given even when it holds
 nothing, because it is an instruction and not a hint), then the checkout named by
-`LETIBOT_LLAMA_DIR`, then `$HOME/Projects/llama.cpp`, then the box's own
+`LETIBOT_LLAMA_DIR`, then `$HOME/Projects/llama.cpp`, then `Projects/llama.cpp` in the home above
+`CARGO_HOME` and `RUSTUP_HOME` (a gate runs under a scratch `HOME`), then the box's own
 `/home/dead/Projects/llama.cpp`. Under a checkout, `build-glm/bin` then `build/bin`. A
 differently located llama.cpp therefore needs no variable at all, which is why no crate carries
 the path as its own constant.
