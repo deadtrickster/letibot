@@ -389,6 +389,16 @@ impl Daemon {
                         // so `plugin_tick` starts the gate (which runs `cargo`) on a thread and returns
                         sessions.plugin_tick();
                     }
+                    // And a seat's question to the person, onto this daemon's main session: a
+                    // Claude Code seat has no head of its own, and its board is written by another
+                    // process, so this step is outside the per-session ones above and keeps its own
+                    // clock while a seat waits (`Sessions::relay_seat_asks`).
+                    let pass = std::time::Instant::now();
+                    let asked = sessions.relay_seat_asks();
+                    crate::instruments::worker_pass("seat-ask", pass, asked);
+                    if asked > 0 {
+                        eprintln!("  seat asks -> {asked} card(s) on the main session");
+                    }
                     // And the reviews this daemon's sessions host, read from the store: the
                     // durable half of the queue's ring, due on its own clock rather than on this
                     // pass's, because this arm is also entered for a nag or a sweep.
