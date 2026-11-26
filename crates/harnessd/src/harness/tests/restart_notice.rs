@@ -750,6 +750,127 @@ fn a_recently_active_session_owing_nothing_gets_the_row_and_no_turn() {
     assert_eq!(asked.count(), 0, "a generation was spent on nothing");
 }
 
+/// The rano session: a turn that deleted a branch and answered, then the monitor's notice about
+/// that deletion, filed after the turn it read. The notice is not a turn in flight, so the restart
+/// keeps its row and spends no generation - which is what it did at three restarts running.
+#[test]
+fn a_monitor_notice_filed_after_the_answer_is_not_owed_at_restart() {
+    let dir = Scratch::new("restart-monitor-notice");
+    let id = "s-restart-monitor-notice";
+    let (h, _) = a_restart_with(&dir, id, 5 * 3_600_000, |_| {}, "");
+    stage_last_rows(
+        &dir,
+        id,
+        &[
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "clean up the stale branches".into(),
+                }],
+            },
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call-branch".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"git branch -D stale"}"#.into(),
+                }],
+                truncated: false,
+            },
+            TranscriptItem::ToolResult {
+                call_id: "call-branch".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "Deleted branch stale".into(),
+                edits: Vec::new(),
+                origin: None,
+                media: None,
+                ran_ms: None,
+                decision: None,
+            },
+            TranscriptItem::Assistant {
+                text: "Deleted the stale branch.".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+            TranscriptItem::Notice {
+                kind: letibot_transcript::NoticeKind::Monitor,
+                text: "[monitor] beyond the ask: deleted a branch: git branch -D stale".into(),
+                facts: None,
+            },
+        ],
+    );
+    drop(h);
+    let mut h = reopened(&dir, id);
+    let asked = Asked::default();
+    h.provider = Some(Box::new(Answers {
+        text: "carried on",
+        asked: asked.clone(),
+    }));
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(text.ends_with(". Nothing was running."), "{text}");
+    assert!(!text.contains("a turn was in flight"), "{text}");
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
+    assert!(
+        h.wake().expect("the wake runs").is_none(),
+        "a turn was spent"
+    );
+    assert_eq!(asked.count(), 0, "the restart spent a generation");
+    assert!(h.hub.activity().is_quiet(), "{:?}", h.hub.activity());
+}
+
+/// The door the notice must not close: a call with no result IS a turn in flight. The fixture is
+/// the one above with its answer taken away.
+#[test]
+fn a_call_with_no_result_is_still_owed_at_restart() {
+    let dir = Scratch::new("restart-unanswered-call");
+    let id = "s-restart-unanswered-call";
+    let (h, _) = a_restart_with(&dir, id, 5 * 3_600_000, |_| {}, "");
+    stage_last_rows(
+        &dir,
+        id,
+        &[
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "clean up the stale branches".into(),
+                }],
+            },
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call-branch".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"git branch -D stale"}"#.into(),
+                }],
+                truncated: false,
+            },
+            TranscriptItem::Notice {
+                kind: letibot_transcript::NoticeKind::Monitor,
+                text: "[monitor] beyond the ask: emptied tests/stale.rs (-2 lines)".into(),
+                facts: None,
+            },
+        ],
+    );
+    drop(h);
+    let mut h = reopened(&dir, id);
+    let asked = Asked::default();
+    h.provider = Some(Box::new(Answers {
+        text: "carried on",
+        asked: asked.clone(),
+    }));
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(
+        text.contains("a turn was in flight when the rows stopped"),
+        "{text}"
+    );
+    assert!(
+        h.wake().expect("the wake runs").is_some(),
+        "the unfinished call is owed a turn"
+    );
+    assert_eq!(asked.count(), 1, "one generation, for the work it owes");
+}
+
 /// A session that owes work spends ONE turn, and the sentence it opens with names the work by
 /// the row's own words. A model reading *2 todo rows* has to go and look; a model reading what it
 /// wrote on the board does not, and the turn after it has nothing left to say.

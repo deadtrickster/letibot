@@ -1149,8 +1149,7 @@ impl Harness {
             // What this session still owes decides the door its sentence takes: nothing owed keeps the row, since
             // a generation spent on a sentence is still spent; anything owed makes the sentence the content of the
             // turn the work already costs.
-            let owed = self
-                .owed_after_a_restart(row.as_ref().and_then(|s| s.last_item.as_ref()), settlements);
+            let owed = self.owed_after_a_restart(settlements);
             return self.say_nothing_was_running(&store, back_ms, owed);
         }
 
@@ -1522,28 +1521,17 @@ impl Harness {
     /// What this session still owes, as `restart::Owed`, each with the row's own words. The board is
     /// read twice on purpose: `due` is the wake's predicate, `plan` every row still owed. Postponed or
     /// cancelled rows are the operator's act.
-    fn owed_after_a_restart(
-        &self,
-        last: Option<&TranscriptItem>,
-        settlements: usize,
-    ) -> crate::restart::Owed {
+    fn owed_after_a_restart(&self, settlements: usize) -> crate::restart::Owed {
         use crate::restart::Rows;
         let board = self.todos.snapshot();
         let children = self.child_sessions();
         let jobs = self.running_jobs(&board);
         crate::restart::Owed {
-            // The store's row is what the daemon wrote last. A display-only row says nothing about
-            // the turn, so the transcript is read back past it.
-            // A park restored with the session owes its turn at its own instant, not now.
-            mid_turn: self.limit_park.is_none()
-                && match last {
-                    Some(i)
-                        if crate::restart::display_only(i) || crate::restart::a_parks_resume(i) =>
-                    {
-                        crate::restart::mid_turn(self.items())
-                    }
-                    last => crate::restart::mid_turn(last.map(std::slice::from_ref).unwrap_or(&[])),
-                },
+            // The whole transcript, not the store's `last_item`: whether a turn is open is a state
+            // its rows carry, and a notice filed after a finished turn is the row that used to
+            // make one look unfinished. A park restored with the session owes its turn at its own
+            // instant, not now.
+            mid_turn: self.limit_park.is_none() && crate::restart::mid_turn(self.items()),
             settlements,
             due: Rows::of(
                 self.due_todo_rows()

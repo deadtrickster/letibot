@@ -553,24 +553,54 @@ fn down_span(stop: &Stopped, back_ms: u64) -> String {
     }
 }
 
-/// Whether a session's rows stop mid-turn: an `Assistant` with no call is finished, a harness row
-/// is not a turn, any other row never got its answer. Display-only rows and a park's resume
-/// notice are read past, since they are filed after the answer or reopen the turn before it.
+/// Whether a session's rows stop mid-turn, read as a turn's own state rather than as its last row:
+/// a turn is open from the row that starts it until the answer that ends it, and rows filed
+/// between turns say nothing about it.
+///
+/// A prompt or a peer's line starts a turn; an `Assistant` with no call ends it; anything the
+/// model produced or was handed inside one - a call, its result, a thought - leaves it open. A
+/// `Notice`, a `System` boundary and a `User` row in this session's own voice are deliveries and
+/// boundaries: they change nothing, because one filed after a finished turn is exactly the shape
+/// that used to wake a session at every restart for work it had already done.
 pub fn mid_turn(items: &[TranscriptItem]) -> bool {
-    for item in items.iter().rev() {
-        if display_only(item) || a_parks_resume(item) {
+    let mut open = false;
+    for item in items {
+        // Display-only rows never reach the model, so no reader of the turn can see them either.
+        if display_only(item) {
             continue;
         }
-        return match item {
+        open = match item {
+            TranscriptItem::User { speaker, .. } => match speaker {
+                Speaker::Operator | Speaker::Peer { .. } => true,
+                // A park's notice re-opens the turn it was refused in; the Esc that ends the park
+                // closes it. Every other harness row is said between turns.
+                Speaker::Agent if a_parks_resume(item) => true,
+                Speaker::Agent if ends_a_park(item) => false,
+                Speaker::Agent => open,
+            },
             TranscriptItem::Assistant { tool_calls, .. } => !tool_calls.is_empty(),
-            TranscriptItem::User {
-                speaker: Speaker::Agent,
-                ..
-            } => false,
-            _ => true,
+            TranscriptItem::ToolResult { .. } | TranscriptItem::Reasoning { .. } => true,
+            TranscriptItem::Notice { .. } | TranscriptItem::System { .. } => open,
+            TranscriptItem::Offer { .. } | TranscriptItem::SegmentMark { .. } => open,
         };
     }
-    false
+    open
+}
+
+/// Whether a row is the harness's own sentence ending the turn a park left parked - the operator's
+/// Esc, which is a turn's end and not a row to read past.
+fn ends_a_park(item: &TranscriptItem) -> bool {
+    let TranscriptItem::User {
+        speaker: Speaker::Agent,
+        parts,
+    } = item
+    else {
+        return false;
+    };
+    parts.iter().any(|p| {
+        matches!(p, letibot_transcript::UserPart::Text { text }
+            if text.starts_with(PARK_INTERRUPTED))
+    })
 }
 
 /// How the harness's row ending a parked turn on Esc begins. Every other `[limit]` row re-opens
@@ -1496,6 +1526,84 @@ mod tests {
         };
         assert!(super::mid_turn(&[call, offer.clone()]));
         assert!(!super::mid_turn(&[offer]));
+    }
+
+    /// The rano sequence: a turn that deleted a branch, its answer, and then the monitor's notice
+    /// about that deletion. The notice is filed after the turn and is not a turn still going, or a
+    /// restart wakes the session for work it had already finished.
+    #[test]
+    fn a_monitor_notice_filed_after_the_answer_is_not_a_turn_in_flight() {
+        use letibot_transcript::{NoticeKind, Speaker, ToolOutcome, TranscriptItem, UserPart};
+        let prompt = TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![UserPart::Text {
+                text: "clean up the stale branches".into(),
+            }],
+        };
+        let call = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "call-b".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"git branch -D stale"}"#.into(),
+            }],
+            truncated: false,
+        };
+        let result = TranscriptItem::ToolResult {
+            call_id: "call-b".into(),
+            name: "bash".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "Deleted branch stale".into(),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+            ran_ms: None,
+            decision: None,
+        };
+        let answer = TranscriptItem::Assistant {
+            text: "Deleted the stale branch.".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        };
+        let notice = TranscriptItem::Notice {
+            kind: NoticeKind::Monitor,
+            text: "[monitor] beyond the ask: deleted a branch: git branch -D stale".into(),
+            facts: None,
+        };
+        // The call and its result leave the turn open; the answer closes it; the notice says
+        // nothing about it.
+        assert!(super::mid_turn(&[prompt.clone(), call.clone()]));
+        assert!(super::mid_turn(&[
+            prompt.clone(),
+            call.clone(),
+            result.clone()
+        ]));
+        assert!(!super::mid_turn(&[
+            prompt.clone(),
+            call,
+            result,
+            answer.clone()
+        ]));
+        assert!(!super::mid_turn(&[prompt, answer.clone(), notice.clone()]));
+        // A notice inside a turn does not end it, and a system boundary after one is not a turn.
+        assert!(super::mid_turn(&[
+            answer.clone(),
+            TranscriptItem::User {
+                speaker: Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "and the tags".into()
+                }],
+            },
+            notice.clone(),
+        ]));
+        assert!(!super::mid_turn(&[
+            answer,
+            notice,
+            TranscriptItem::System {
+                text: "forked from s-1".into(),
+                origin: letibot_transcript::SystemOrigin::Update,
+            },
+        ]));
     }
 
     /// A GitHub watch is recorded with its own default life, so a restart inside it re-arms it.
