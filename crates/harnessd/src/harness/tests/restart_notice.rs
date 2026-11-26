@@ -871,6 +871,75 @@ fn a_call_with_no_result_is_still_owed_at_restart() {
     assert_eq!(asked.count(), 1, "one generation, for the work it owes");
 }
 
+/// The turn a restart wakes ends quietly when the model answers the way `QUIET_END` asked. A model
+/// that writes the placeholder instead of nothing is answered the same way: no row, no turn's
+/// worth of transcript for the operator to read, and the session idle.
+#[test]
+fn a_restart_answered_with_a_no_reply_placeholder_leaves_no_row() {
+    let dir = Scratch::new("restart-no-reply");
+    let id = "s-restart-no-reply";
+    let (mut h, asked) = a_restart_with(
+        &dir,
+        id,
+        5 * 3_600_000,
+        |store| {
+            store
+                .put_todos(
+                    id,
+                    &[a_row(
+                        "finish the migration and report",
+                        TodoStatus::Pending,
+                    )],
+                )
+                .expect("the earlier daemon's board");
+        },
+        "*(no reply)*",
+    );
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(text.contains(crate::restart::QUIET_END), "{text}");
+    let reply = h.wake().expect("the wake runs").expect("a turn ran");
+    assert_eq!(asked.count(), 1, "one model call");
+    assert_eq!(reply.text, "", "the placeholder is not an answer");
+    let spoke = h.items().iter().any(|i| match i {
+        TranscriptItem::Assistant { text, .. } => text.contains("no reply"),
+        _ => false,
+    });
+    assert!(!spoke, "a row was left to read: {:?}", h.items());
+    let stored: i64 = Store::open(&dir.store())
+        .expect("the store")
+        .connection_of("transcript_item")
+        .query_row(
+            "SELECT COUNT(*) FROM transcript_item WHERE item_json LIKE '%no reply%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the rows are countable");
+    assert_eq!(stored, 0, "the store kept the placeholder row");
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
+    h.publish_activity();
+    assert!(
+        h.hub.activity().is_quiet(),
+        "the head is left with a state to draw: {:?}",
+        h.hub.activity()
+    );
+}
+
+/// The same words on a turn nobody allowed to end quietly are the answer they look like: the
+/// suppression belongs to the restart's sentence, not to the text.
+#[test]
+fn a_placeholder_from_an_operators_own_turn_is_kept() {
+    let dir = Scratch::new("restart-no-reply-asked");
+    let id = "s-restart-no-reply-asked";
+    let (mut h, _) = a_restart_with(&dir, id, 5 * 3_600_000, |_| {}, "*(no reply)*");
+    h.submit_operator("say nothing at all")
+        .expect("a turn runs");
+    let kept = h.items().iter().any(|i| match i {
+        TranscriptItem::Assistant { text, .. } => text.contains("no reply"),
+        _ => false,
+    });
+    assert!(kept, "the answer is the turn's: {:?}", h.items());
+}
+
 /// A session that owes work spends ONE turn, and the sentence it opens with names the work by
 /// the row's own words. A model reading *2 todo rows* has to go and look; a model reading what it
 /// wrote on the board does not, and the turn after it has nothing left to say.
@@ -912,6 +981,104 @@ fn a_restart_that_owes_work_spends_one_turn_that_names_it() {
     // And the next pass has nothing left: the restart was one turn, not one per wake.
     assert!(h.wake().expect("the wake runs").is_none(), "a second turn");
     assert_eq!(asked.count(), 1, "the restart was said twice");
+}
+
+/// The rano sequence as one fixture (`s-1794057745451974498`, 2026-11-25/26): a turn that deleted
+/// a branch and answered, the monitor's notice about it filed after that turn, and three restarts
+/// in a row. Each restart keeps its row and spends no generation, no monitor row is filed again,
+/// and the placeholder the model used to write into an empty turn is nowhere in the transcript.
+#[test]
+fn the_rano_restart_loop_does_not_repeat() {
+    let dir = Scratch::new("restart-rano-loop");
+    let id = "s-restart-rano-loop";
+    let (h, _) = a_restart_with(&dir, id, 5 * 3_600_000, |_| {}, "*(no reply)*");
+    let notice = "[monitor] beyond the ask: deleted a branch: git branch -D stale";
+    stage_last_rows(
+        &dir,
+        id,
+        &[
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "clean up the stale branches".into(),
+                }],
+            },
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call-branch".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"git branch -D stale"}"#.into(),
+                }],
+                truncated: false,
+            },
+            TranscriptItem::ToolResult {
+                call_id: "call-branch".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "Deleted branch stale".into(),
+                edits: Vec::new(),
+                origin: None,
+                media: None,
+                ran_ms: None,
+                decision: None,
+            },
+            TranscriptItem::Assistant {
+                text: "Deleted the stale branch.".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+            TranscriptItem::Notice {
+                kind: letibot_transcript::NoticeKind::Monitor,
+                text: notice.into(),
+                facts: None,
+            },
+        ],
+    );
+    age_session(&Store::open(&dir.store()).unwrap(), id, 5 * 3_600_000);
+    drop(h);
+    let mut h = reopened(&dir, id);
+    for restart in 1..=3 {
+        let asked = Asked::default();
+        h.provider = Some(Box::new(Answers {
+            text: "*(no reply)*",
+            asked: asked.clone(),
+        }));
+        // The first restart is said; the two after it find the same row already unanswered and say
+        // nothing new - what matters is that neither is a turn.
+        if let Some(said) = h.restore_after_restart() {
+            assert!(
+                !said.contains("a turn was in flight"),
+                "restart {restart} owed a turn: {said}"
+            );
+        }
+        assert!(
+            h.wake().expect("the wake runs").is_none(),
+            "restart {restart} spent a turn"
+        );
+        assert_eq!(asked.count(), 0, "restart {restart} asked the model");
+        h.publish_activity();
+        assert!(
+            h.hub.activity().is_quiet(),
+            "restart {restart} left the head working: {:?}",
+            h.hub.activity()
+        );
+        drop(h);
+        h = reopened(&dir, id);
+    }
+    let rows = h
+        .items()
+        .iter()
+        .filter(
+            |i| matches!(i, TranscriptItem::Notice { text, .. } if text.starts_with("[monitor]")),
+        )
+        .count();
+    assert_eq!(rows, 1, "the monitor's finding was filed again");
+    let replied = h.items().iter().any(|i| match i {
+        TranscriptItem::Assistant { text, .. } => text.contains("no reply"),
+        _ => false,
+    });
+    assert!(!replied, "a placeholder row was stored: {:?}", h.items());
 }
 
 /// The quiet end leaves nothing to read and nothing to wait on: a turn finding the work done

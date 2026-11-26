@@ -714,6 +714,9 @@ impl Harness {
         }
         // The stop may have begun while this wake was taking: then everything taken goes back below.
         let mut opened = false;
+        // A restart's sentence ends in `QUIET_END`, which asks for an empty reply when there is
+        // nothing left to do. An answer that says nothing is that reply and is not stored as a row.
+        self.engine.quiet_end = !restart_taken.is_empty();
         let out = if self.session_registry.is_stopping() {
             eprintln!(
                 "  {} · the daemon is stopping: this wake opens no turn, and what it carried stays owed",
@@ -745,6 +748,7 @@ impl Harness {
                 })
             }))
         };
+        self.engine.quiet_end = false;
         if let Some(out) = &out
             && opened
             && !room_seqs.is_empty()

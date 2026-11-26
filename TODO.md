@@ -266,6 +266,7 @@ Older backlog:
 | R389 | A shared target dir reached 1.4 TB: cargo's per-unit artifact dirs were never pruned | Code work | built (`build-out-leak`); left: nothing runs the sweep on a schedule, `KEEP` is not a `[gc]` key |
 | R390 | A GLM refusal said `1210` and named no parameter: the body was never kept | Code work | built (5aa1855b9..6ff147276); left: the other three protocols' converters read no picture budget |
 | R391 | A parked plan was nagged as stuck, and a seat's operator question was not a card | Code work | built (4dbbb7d52, 34cf6888c, 09f9113d5); left: a seat's board written between the answer and its adopt re-asks, and a wait on a seat's BOARD is still refused |
+| R392 | A restart woke a finished session at every restart, and the monitor's notice about an old action was always the last row | Code work | built (see the section); left: a notice-only wake is not an owed turn, the monitor's digest still starts at the last operator prompt, a model's finding is keyed by its evidence line |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3518,6 +3519,59 @@ did. `Surroundings` has one workspace, so an alias is not a `Region::Workspace`.
 has `/run/letibot/work` bound to another tree would key the fixed name there. `bash_segments` still
 refuses any line with a substitution, so a preapproved `rustfmt --check*` rule does not admit
 `rustfmt --check $(…)` - the durable rung there is untouched by this row.
+
+## R392 - A restart woke a finished session, and the monitor's notice was always last
+
+**Status:** built, 2026-11-26, one commit per fix (`b77c7d565`, `c309e2ca3`, and the third with this
+row). Left: a turn whose only row is a `Notice` - a monitor firing that wakes a session - is no
+longer read as in flight either, so a daemon that dies while answering a firing leaves its notice in
+the transcript and no owed turn to wake for it; the monitor's digest still starts at the last
+operator or peer prompt, so a turn that follows only a restart wake re-reads the whole conversation
+since that prompt (the dedupe keeps the row away, not the read); and the model's half of a finding
+is keyed by its evidence line, so a model that spells the same action differently - a reordered
+command, a different form of the same path - is told as a new one.
+
+**What happened.** The rano session `s-1794057745451974498` was woken at every restart with "a turn
+was in flight when the rows stopped" and answered nothing, three restarts running (rows 3360-3394,
+2026-11-25/26). The loop: `restart::mid_turn` read the last row that reaches the model, and a
+monitor notice after a finished turn is one; the restart spent a turn; the model answered empty; and
+at that turn's end the monitor re-read the same old action and filed the same notice, which was last
+again. A branch deleted long ago was, every restart, a turn nobody asked for.
+
+**1. "In flight" is a turn's state, not a row.** `restart::mid_turn` now reads the transcript as a
+state machine: a prompt or a peer's line opens a turn, an `Assistant` with no call closes it, a call,
+its result or a thought inside one leaves it open, and a `Notice`, a `System` boundary and a `User`
+row in the session's own voice change nothing. A park's notice still re-opens the turn it was
+refused in and the Esc that ends a park closes it. The restart reads the whole transcript for this
+rather than the store's `last_item`.
+
+**2. A finding is told once.** `overreach::Finding::key` is its kind and the evidence a reader
+checks it against, normalised; `overreach::row_of` reports the keys of every finding its row speaks
+for, named or counted. The harness files only findings whose key this session has not been told, and
+records each in `queue_told` under `monitor:<session>:` after the row lands - so a later turn end, an
+empty turn and a turn a restart wakes all find it told, and a restart does not re-arm it. A row the
+store refused leaves the finding untold and is retried.
+
+**3. An empty answer to a restart is the quiet end, and not a row.** `QUIET_END` asks for an empty
+reply; a model that writes `*(no reply)*` instead was leaving that row in the transcript, where the
+model met it in every later prompt and the head drew it. `transcript::says_nothing` decides what an
+answer that says nothing is (no words, or a bracketed `no reply`/`no response`/`empty reply`
+placeholder); `TurnEngine::quiet_end` is set by the door that opened the turn, and the engine writes
+no `Assistant` row for such an answer. The head already drew nothing for an empty assistant row
+(`ui/transcript/assistant.rs` gives it no lines, `window.rs` skips a row that renders nothing), so
+what changes is the transcript.
+
+**Proving tests.** `restart::tests::a_monitor_notice_filed_after_the_answer_is_not_a_turn_in_flight`;
+`restart_notice::a_monitor_notice_filed_after_the_answer_is_not_owed_at_restart` (fails on the base
+commit with "a turn was in flight"); `restart_notice::a_call_with_no_result_is_still_owed_at_restart`
+and `a_placeholder_from_an_operators_own_turn_is_kept` (the controls, green on both);
+`monitor_once::a_monitor_finding_is_filed_once_across_turn_ends_and_a_restart` (fails on the base
+commit at the second turn end) and `a_different_action_is_told_after_the_first_one`;
+`restart_notice::a_restart_answered_with_a_no_reply_placeholder_leaves_no_row` (fails on the base
+commit with `left: "*(no reply)*"`) and `a_quiet_end_leaves_no_drawn_row_and_an_idle_session` (the
+empty reply, kept); `transcript::tests::a_no_reply_placeholder_says_nothing_and_prose_does_not`;
+and `restart_notice::the_rano_restart_loop_does_not_repeat`, the sequence as one fixture: three
+restarts over the rows above, no turn spent, one monitor row, no placeholder.
 
 ## R383 - A VCS command drew as nine hand edits
 

@@ -242,6 +242,30 @@ pub enum TranscriptItem {
     },
 }
 
+/// Whether an answer says nothing a reader should see: no words at all, or the placeholder a model
+/// writes when it means the empty reply it was asked for (`*(no reply)*`, `(no reply)`,
+/// `[no reply]`). The harness asks this of a turn that ENDS on an empty reply being allowed
+/// (`restart::QUIET_END`), so a row saying "no reply" is not left in the conversation where the
+/// model and the operator both read it afterwards.
+pub fn says_nothing(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    // One line, because a placeholder is a word and not prose: a paragraph that happens to open
+    // with "no reply" is an answer.
+    if text.lines().count() > 1 {
+        return false;
+    }
+    let bare: String = text
+        .trim_matches(|c: char| !c.is_alphanumeric() && !c.is_whitespace())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    matches!(bare.as_str(), "no reply" | "no response" | "empty reply")
+}
+
 impl TranscriptItem {
     /// Whether this row is sent to the model, decided on the type so no renderer can drift from
     /// the store. `Offer` and `SegmentMark` never reach a request. Every arm is spelled, so a new
@@ -547,6 +571,27 @@ pub enum UserPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The empty reply a restart's sentence asks for, and the placeholder a model writes when it
+    /// means one. A paragraph that opens with the words is an answer.
+    #[test]
+    fn a_no_reply_placeholder_says_nothing_and_prose_does_not() {
+        for nothing in [
+            "",
+            "  \n\t",
+            "*(no reply)*",
+            "(no reply)",
+            "[No reply]",
+            "no reply.",
+            "No response",
+            "empty reply",
+        ] {
+            assert!(says_nothing(nothing), "{nothing:?} says nothing");
+        }
+        for answer in ["No reply was needed for either.", "no reply\nand then some"] {
+            assert!(!says_nothing(answer), "{answer:?} is an answer");
+        }
+    }
 
     /// Two minted ids differ, and neither is a positional name: a `call_0` in every turn is one id
     /// for a whole session, which is what a reader correlating a call with its result cannot use.

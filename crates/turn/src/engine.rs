@@ -223,6 +223,10 @@ pub struct TurnEngine {
     /// `Some(false)` runs the next rounds without thinking, on both paths; `None` is the
     /// backend's own setting. Set per turn by whoever runs the rounds.
     pub thinking: Option<bool>,
+    /// The turn was opened by a sentence that allows an empty reply (a restart's), so an answer
+    /// that says nothing IS that reply and is not made a row: a row nobody would read is still a
+    /// row the model meets in its next prompt and the head draws as a "no reply" line.
+    pub quiet_end: bool,
 }
 
 impl TurnEngine {
@@ -295,6 +299,8 @@ impl TurnEngine {
             suppress_reasoning: false,
             thinking: None,
             turn_began_ms: None,
+            // A talkative turn unless the door that opens it says otherwise; see the field.
+            quiet_end: false,
         })
     }
 
@@ -1471,11 +1477,19 @@ impl TurnEngine {
                 });
             }
         }
-        produced.push(TranscriptItem::Assistant {
-            text: done.text.clone(),
-            tool_calls: done.tool_calls.clone(),
-            truncated: matches!(verdict, LengthVerdict::TruncatedText),
-        });
+        // A turn the harness opened by allowing an empty reply: an answer that says nothing IS
+        // that reply, so no row is written for it. It renders as nothing either way - what changes
+        // is that the model does not meet a "no reply" line in every prompt after it.
+        let silent = self.quiet_end
+            && done.tool_calls.is_empty()
+            && letibot_transcript::says_nothing(&done.text);
+        if !silent {
+            produced.push(TranscriptItem::Assistant {
+                text: done.text.clone(),
+                tool_calls: done.tool_calls.clone(),
+                truncated: matches!(verdict, LengthVerdict::TruncatedText),
+            });
+        }
         // The operator's words are input, not output, and `absorb` already took them
         // out of the source; this exit commits no steering, so they go back rather
         // than being appended.
