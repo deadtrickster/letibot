@@ -1384,11 +1384,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // is refused here, before the socket binds, and the holder is named. Every other title is
     // derived, and the store dashes it on the way in (see `Store::put_session`).
     if !cfg.title.trim().is_empty() {
-        registry.name_ok(
-            &cfg.session_id,
-            &cfg.workspace.display().to_string(),
-            &title,
-        )?;
+        registry
+            .name_ok(
+                &cfg.session_id,
+                &cfg.workspace.display().to_string(),
+                &title,
+            )
+            .map_err(|e| name_taken_way_out(&e, &title))?;
     }
     // Who this session's parent is, by the tree's one rule - the caller's `--parent` when it
     // has one, else its own stored row. `Harness::open` asks the same function, so the registry's
@@ -3826,6 +3828,16 @@ fn resumed_line(r: &crate::harness::ResumeReport, counted: Option<(u64, String)>
 }
 
 /// Word wrap. Twelve lines rather than a dependency, for one banner.
+/// A startup refused over a taken name says how to get on: the holder is one `--session` away.
+fn name_taken_way_out(refusal: &str, title: &str) -> String {
+    if !refusal.contains("is taken in this folder") {
+        return refusal.to_string();
+    }
+    format!(
+        "{refusal}\n  reopen it:        letibot --session {title:?}\n  or a new name:    letibot --new \"{title} 2\""
+    )
+}
+
 fn wrap(s: &str, width: usize) -> Vec<String> {
     let width = width.max(24);
     let mut out = Vec::new();

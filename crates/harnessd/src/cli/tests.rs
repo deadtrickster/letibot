@@ -2223,3 +2223,18 @@ fn a_one_shot_passes_only_with_no_job_open() {
         "a job still open is the more specific fact, and it names the way back"
     );
 }
+
+/// A taken name is refused with the two ways on; any other refusal is passed through as it was.
+#[test]
+fn a_taken_name_names_the_way_out() {
+    let said = super::name_taken_way_out(
+        "the name \"site\" is taken in this folder by s-1 \"site\"",
+        "site",
+    );
+    assert!(said.contains("letibot --session \"site\""), "{said}");
+    assert!(said.contains("letibot --new \"site 2\""), "{said}");
+    assert_eq!(
+        super::name_taken_way_out("some other refusal", "site"),
+        "some other refusal"
+    );
+}

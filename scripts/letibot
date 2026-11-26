@@ -3340,6 +3340,8 @@ if ! live; then
   STARTED=1
   rundir
   scope_ask_here
+  # Where this start's lines begin, so a refusal is read from them and not from the last daemon's.
+  LOG_FROM=$(($(wc -c <"$LOG" 2>/dev/null || echo 0) + 1))
   detach letibot-harnessd "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
     ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
     --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
@@ -3388,6 +3390,14 @@ if ! live; then
   fi
   live || {
     # Stopped, so a daemon still starting does not come up later with nobody attached.
+    if ! kill -0 "$DPID" 2>/dev/null; then
+      # It exited, so its last `harnessd:` line and what is indented under it is the refusal.
+      refusal=$(tail -c "+$LOG_FROM" "$LOG" 2>/dev/null | awk '/^harnessd: /{b=$0; next} /^  /{if (b != "") b=b "\n" $0; next} {b=""} END{print b}')
+      if [ -n "$refusal" ]; then
+        printf 'letibot: %s\n' "${refusal#harnessd: }" >&2
+        exit 1
+      fi
+    fi
     kill "$DPID" 2>/dev/null || true
     echo "letibot: daemon did not come up; last lines of $LOG:" >&2
     tail -15 "$LOG" >&2
