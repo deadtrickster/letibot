@@ -343,6 +343,9 @@ pub struct Harness {
     /// the person's and it stares at them from their own head. Compared by text, so a different
     /// sentence is told again, and cleared by the fork that re-seats.
     stale_told: Option<String>,
+    /// The monitor findings this session has been told, by [`Finding::key`] - the actions it has
+    /// already met. Read beside the store's own record, which is what survives a restart.
+    monitor_told: std::collections::BTreeSet<String>,
     /// The prompt an automatic reseat last failed onto, by fingerprint: the same target is not
     /// tried again before every turn, only a prompt that moved since.
     auto_reseat_refused: Option<String>,

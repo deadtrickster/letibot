@@ -11,6 +11,10 @@ type Registered = (
     Option<std::path::PathBuf>,
 );
 
+/// The prefix a told monitor finding's key carries in the store's `queue_told`: one table for the
+/// whole box, so each key names the session it belongs to.
+const MONITOR_TOLD: &str = "monitor:";
+
 impl Harness {
     /// This session's shadow as the annotator of the cards relayed to it, when its permission job
     /// is on. Read through the cell, so a shadow opened later is the one asked.
@@ -449,6 +453,74 @@ impl Harness {
         self.persist()
     }
 
+    /// The one row for the findings nobody has been told yet, and no row at all when every one of
+    /// them is about an action this session already met. The monitor re-reads every row since the
+    /// last operator prompt at each turn end, so a turn that did nothing finds the same action
+    /// again: told once, it is not told again at a later turn end or at a turn a restart wakes.
+    fn file_monitor_findings(
+        &mut self,
+        found: &[crate::shadow::overreach::Finding],
+        recorder: &dyn crate::shadow::record::Recorder,
+    ) {
+        let fresh: Vec<crate::shadow::overreach::Finding> = found
+            .iter()
+            .filter(|f| !self.finding_told(&f.key()))
+            .cloned()
+            .collect();
+        let Some((row, keys)) = crate::shadow::overreach::row_of(&fresh) else {
+            return;
+        };
+        let TranscriptItem::Notice { text, .. } = &row else {
+            return;
+        };
+        let text = text.clone();
+        recorder.row("turn_end · monitor · a finding", &text);
+        if let Err(e) = self.append_notice_row(&text) {
+            // Nobody was told, so nothing is recorded as told: the next turn end finds it fresh.
+            self.warn(
+                "monitor_row_not_stored",
+                format!(
+                    "the monitor's finding was found but the store refused the row: {e}. \
+                     It stays in the session's ledger; the next store write carries it."
+                ),
+            );
+            return;
+        }
+        for key in keys {
+            self.note_finding_told(&key);
+        }
+    }
+
+    /// Whether this finding's action has been told already: in this harness's own record, or in the
+    /// store - which is what carries the answer across a restart.
+    fn finding_told(&self, key: &str) -> bool {
+        if self.monitor_told.contains(key) {
+            return true;
+        }
+        let Some(store) = &self.store else {
+            return false;
+        };
+        store
+            .told(&format!("{MONITOR_TOLD}{}:{key}", self.cfg.session_id))
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Record a finding as told, in the store first: a restart that re-reads the same rows must not
+    /// re-arm what the session has already read.
+    fn note_finding_told(&mut self, key: &str) {
+        self.monitor_told.insert(key.to_string());
+        let store = match &self.store {
+            Some(store) => store,
+            None => return,
+        };
+        let _ = store.tell_once(
+            &format!("{MONITOR_TOLD}{}:{key}", self.cfg.session_id),
+            letibot_sessionlog::event::now_ms(),
+        );
+    }
+
     /// The verdicts that arrived since the last wake, acted on: the notices a wake says, and the
     /// display rows (a proposed note) appended now.
     pub(crate) fn shadow_notices(&mut self) -> Vec<String> {
@@ -486,7 +558,7 @@ impl Harness {
             // What the turn did beyond the ask: the rule's findings, which stand whatever the model
             // answered, and then the model's. One row, and no turn: a finding is told, not put to
             // anybody - the operator reads it in the head and the model meets it in its context.
-            let beyond = self.cfg.shadow.turn_monitor().and_then(|_| {
+            if self.cfg.shadow.turn_monitor().is_some() {
                 let mut found = monitor
                     .as_ref()
                     .map(|m| m.found.clone())
@@ -497,19 +569,7 @@ impl Harness {
                 {
                     found.extend(overreach.iter().cloned());
                 }
-                crate::shadow::overreach::row(&found)
-            });
-            if let Some(TranscriptItem::Notice { text, .. }) = &beyond {
-                recorder.row("turn_end · monitor · a finding", text);
-                if let Err(e) = self.append_notice_row(text) {
-                    self.warn(
-                        "monitor_row_not_stored",
-                        format!(
-                            "the monitor's finding was found but the store refused the row: {e}. \
-                             It stays in the session's ledger; the next store write carries it."
-                        ),
-                    );
-                }
+                self.file_monitor_findings(&found, recorder.as_ref());
             }
             if let crate::shadow::runner::Outcome::Verdict(
                 crate::shadow::verdict::Verdict::TurnEnd {

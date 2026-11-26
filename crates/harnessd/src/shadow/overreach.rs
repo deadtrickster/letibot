@@ -90,6 +90,25 @@ pub struct Finding {
     pub kind: Kind,
 }
 
+impl Finding {
+    /// What this finding is ABOUT, so the same action cannot be told twice: its kind, and the
+    /// evidence a reader checks it against - the call's own words for a rule's finding, the line of
+    /// the digest for the model's. The turn monitor re-reads every row since the last operator
+    /// prompt at each turn end, so a restart's empty turns find the same action again; the key is
+    /// what recognises it.
+    pub fn key(&self) -> String {
+        format!("{}:{}", self.kind.as_str(), normalise(&self.evidence))
+    }
+}
+
+/// `git branch -D x` and `- Git  branch -D  x.` are one action: case, spacing and the digest's
+/// own markers are not what was done.
+fn normalise(s: &str) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = flat.trim().trim_start_matches("- ").trim_end_matches('.');
+    flat.to_ascii_lowercase()
+}
+
 /// The turn the monitor reads, and what a rule already proves about it.
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
@@ -579,6 +598,12 @@ fn removed_test(toks: &[&str]) -> Option<String> {
 /// The one row a set of findings makes, or `None` when there is nothing to say. Deterministic
 /// findings come first: they are facts, and a model's finding about the same file adds nothing.
 pub fn row(found: &[Finding]) -> Option<TranscriptItem> {
+    row_of(found).map(|(row, _)| row)
+}
+
+/// [`row`], and the [`Finding::key`] of every finding it spoke for - the ones it names AND the ones
+/// it only counts - so the caller can record them as told and never say them a second time.
+pub fn row_of(found: &[Finding]) -> Option<(TranscriptItem, Vec<String>)> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut kept: Vec<&Finding> = Vec::new();
     for f in found {
@@ -603,11 +628,15 @@ pub fn row(found: &[Finding]) -> Option<TranscriptItem> {
     if kept.len() > NAMED {
         text.push_str(&format!(", and {} more", kept.len() - NAMED));
     }
-    Some(TranscriptItem::Notice {
-        kind: NoticeKind::Monitor,
-        text,
-        facts: None,
-    })
+    let keys = kept.iter().map(|f| f.key()).collect();
+    Some((
+        TranscriptItem::Notice {
+            kind: NoticeKind::Monitor,
+            text,
+            facts: None,
+        },
+        keys,
+    ))
 }
 
 /// Whether a proposed note only says again what the last answer said. The share of the note's own

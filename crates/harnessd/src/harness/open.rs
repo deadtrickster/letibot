@@ -4187,6 +4187,7 @@ impl Harness {
             operator_added_at: None,
             nag_next: None,
             stale_told: None,
+            monitor_told: Default::default(),
             auto_reseat_refused: None,
             unsealed_fork: None,
             meter: Default::default(),
