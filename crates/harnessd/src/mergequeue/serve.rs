@@ -135,6 +135,12 @@ pub trait QueueDoor: Send + Sync {
         let _ = session_id;
         false
     }
+    /// The live root sessions of `repository`'s project - who is told about a row whose own session
+    /// is gone. A door with no sessions has none.
+    fn repository_roots(&self, repository: &str) -> Vec<String> {
+        let _ = repository;
+        Vec::new()
+    }
     /// Whether this door has sessions to be asked about at all. A door that does not never reads
     /// as *the child is gone*: [`Self::session_live`]'s default `false` is the right answer to *is
     /// this tree in use* and the wrong one to *has the child that was working on this row died*.

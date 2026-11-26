@@ -148,6 +148,8 @@ pub(crate) struct Door {
     /// Run with every event after it is recorded: the only code that runs between two attempts of
     /// a retrying worker, so it is where a test makes the world change while it waits.
     pub(crate) hook: Mutex<Option<EventHook>>,
+    /// What [`QueueDoor::repository_roots`] answers: the project's live root sessions.
+    pub(crate) roots: Mutex<Vec<String>>,
 }
 
 impl QueueDoor for Door {
@@ -196,6 +198,9 @@ impl QueueDoor for Door {
     }
     fn session_live(&self, session_id: &str) -> bool {
         self.live.lock().unwrap().iter().any(|s| s == session_id)
+    }
+    fn repository_roots(&self, _repository: &str) -> Vec<String> {
+        self.roots.lock().unwrap().clone()
     }
     /// This door has a list of live sessions, so a reviewer absent from it is a reviewer gone.
     fn sees_sessions(&self) -> bool {
@@ -7591,5 +7596,54 @@ fn a_commit_no_landing_made_parks_main_with_no_revert() {
         w.store().merge_row(&m).unwrap().unwrap().state,
         MergeState::Landed,
         "and the landing is untouched"
+    );
+}
+
+/// A person's `/queue rm` of a review row is no verdict, so the gate's wake never says it: the
+/// row's owner is told once, and a live owner is the only one told.
+#[test]
+fn a_removed_review_row_tells_its_live_owner_once() {
+    let w = World::new("rm-tells-owner");
+    let (wt, base, head) = branch(&w.repo, "told", "told.txt");
+    w.enqueue("told", &wt, &base, &head);
+    *w.door.live.lock().unwrap() = vec!["s-told".into(), "s-main".into(), "s-mover".into()];
+    *w.door.roots.lock().unwrap() = vec!["s-main".into()];
+    let said =
+        crate::mergequeue::verbs::remove_told(&w.store(), "told", "s-mover", &|_| {}, &*w.door)
+            .expect("a waiting review row can be removed");
+    assert!(said.contains("told `s-told`"), "{said}");
+    let told = w.door.told.lock().unwrap().clone();
+    assert_eq!(told.len(), 1, "{told:#?}");
+    assert_eq!(told[0].0, "s-told");
+    assert!(
+        told[0].1.contains("withdrawn by the operator"),
+        "{}",
+        told[0].1
+    );
+    // Once: the row is withdrawn now, so a second rm is refused and tells nobody.
+    assert!(
+        crate::mergequeue::verbs::remove_told(&w.store(), "told", "s-mover", &|_| {}, &*w.door)
+            .is_err()
+    );
+    assert_eq!(w.door.told.lock().unwrap().len(), 1);
+}
+
+/// The owner that put the row up is gone: the project's live main session is told instead, and
+/// the mover is not told what they just did.
+#[test]
+fn a_removed_review_row_whose_owner_is_gone_tells_the_project() {
+    let w = World::new("rm-owner-gone");
+    let (wt, base, head) = branch(&w.repo, "gone", "gone.txt");
+    w.enqueue("gone", &wt, &base, &head);
+    *w.door.live.lock().unwrap() = vec!["s-main".into(), "s-mover".into()];
+    *w.door.roots.lock().unwrap() = vec!["s-main".into(), "s-mover".into()];
+    let said =
+        crate::mergequeue::verbs::remove_told(&w.store(), "gone", "s-mover", &|_| {}, &*w.door)
+            .expect("a waiting review row can be removed");
+    let told = w.door.told.lock().unwrap().clone();
+    assert_eq!(
+        told.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(),
+        vec!["s-main"],
+        "{said}"
     );
 }

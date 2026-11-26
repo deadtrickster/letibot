@@ -141,9 +141,19 @@ impl Harness {
         repository: Option<&str>,
     ) -> Result<String, String> {
         let me = self.hub.session_id();
+        let door = self
+            .cfg
+            .store_at()
+            .map(|at| crate::mergequeue::RegistryDoor {
+                registry: self.session_registry.clone(),
+                store_path: at.path("merge_queue"),
+            });
         self.queue_verb("remove anything from", |s, ev| {
             crate::mergequeue::verbs::in_scope(s, entry_id, repository)?;
-            crate::mergequeue::verbs::remove(s, entry_id, &me, ev)
+            match &door {
+                Some(door) => crate::mergequeue::verbs::remove_told(s, entry_id, &me, ev, door),
+                None => crate::mergequeue::verbs::remove(s, entry_id, &me, ev),
+            }
         })
     }
 

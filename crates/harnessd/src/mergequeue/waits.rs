@@ -4,7 +4,7 @@
 //! session however often a pass re-reads the health, and a session that asks again (`restart`)
 //! is woken again by the next one.
 
-use letibot_tokencore::store::{MergeState, ReviewState, Store, StoreError};
+use letibot_tokencore::store::{MergeState, ReviewRow, ReviewState, Store, StoreError};
 
 use super::gate::now_ms;
 
@@ -125,6 +125,44 @@ pub fn merge_verdict(to: MergeState) -> bool {
             | MergeState::Conflict
             | MergeState::Blocked
             | MergeState::Moved
+    )
+}
+
+/// Who a person's withdrawal of a review row is told, once: the live sessions that waited on it,
+/// and the root session that put it up - or, when that root is gone, the project's live roots.
+/// The mover is never told what they just did.
+pub fn withdrawn_recipients(
+    waiters: &[String],
+    owner_root: &str,
+    mover: Option<&str>,
+    project_roots: &[String],
+    live: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |s: &str| {
+        if !s.is_empty() && Some(s) != mover && live(s) && !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+    };
+    for w in waiters {
+        add(w);
+    }
+    if !owner_root.is_empty() && live(owner_root) {
+        add(owner_root);
+    } else {
+        for r in project_roots {
+            add(r);
+        }
+    }
+    out
+}
+
+/// The one row a withdrawn review row's owner is told.
+pub fn withdrawn_notice(r: &ReviewRow, actor: &str) -> String {
+    format!(
+        "[queue] review row `{}` (`{}`) was withdrawn by the {actor}: nothing will review or land \
+         it. The branch and its worktree stay",
+        r.id, r.branch
     )
 }
 

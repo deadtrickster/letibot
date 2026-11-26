@@ -607,6 +607,60 @@ pub fn remove(
     remove_by(store, id, &by(session), events)
 }
 
+/// [`remove`], and the row's owner told: a person's withdrawal is no verdict, so the gate's wake
+/// never says it, and the session that put the row up would otherwise wait on it for ever.
+pub fn remove_told(
+    store: &Store,
+    id: &str,
+    session: &str,
+    events: &dyn Fn(SessionEvent),
+    door: &dyn super::serve::QueueDoor,
+) -> Result<String, String> {
+    let row = match find(store, id) {
+        Ok(Found::Review(r)) => Some(r),
+        _ => None,
+    };
+    let said = remove(store, id, session, events)?;
+    let Some(r) = row else {
+        return Ok(said);
+    };
+    Ok(match tell_withdrawn(store, door, &r, &by(session)) {
+        Some(told) => format!("{said}; {told}"),
+        None => said,
+    })
+}
+
+/// Tell [`waits::withdrawn_recipients`] that `r` is withdrawn. `None` when there was nobody.
+pub fn tell_withdrawn(
+    store: &Store,
+    door: &dyn super::serve::QueueDoor,
+    r: &ReviewRow,
+    who: &str,
+) -> Option<String> {
+    let waiters =
+        waits::take(store, &r.repository, &Waiting::Row(r.id.clone())).unwrap_or_default();
+    let owner = super::root_session(store, &r.session_id);
+    let roots = door.repository_roots(&r.repository);
+    let to = waits::withdrawn_recipients(&waiters, &owner, waits::session_of(who), &roots, |s| {
+        door.session_live(s)
+    });
+    if to.is_empty() {
+        return None;
+    }
+    let text = waits::withdrawn_notice(r, actor(who));
+    let mut told: Vec<String> = Vec::new();
+    for s in &to {
+        match door.deliver_session(s, &text) {
+            Ok(_) => told.push(format!("`{s}`")),
+            Err(e) => eprintln!(
+                "  merge queue: `{s}` was not told `{}` is withdrawn: {e}",
+                r.id
+            ),
+        }
+    }
+    (!told.is_empty()).then(|| format!("told {}", told.join(", ")))
+}
+
 /// [`remove`], with the mover named whole.
 pub fn remove_by(
     store: &Store,

@@ -497,6 +497,13 @@ impl serve::QueueDoor for RegistryDoor {
         session_is_live(&self.registry, session_id)
     }
 
+    fn repository_roots(&self, repository: &str) -> Vec<String> {
+        match Store::open(&self.store_path) {
+            Ok(store) => self.roots_of(&store, repository),
+            Err(_) => Vec::new(),
+        }
+    }
+
     fn sees_sessions(&self) -> bool {
         true
     }
