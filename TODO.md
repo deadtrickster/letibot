@@ -268,6 +268,8 @@ Older backlog:
 | R391 | A parked plan was nagged as stuck, and a seat's operator question was not a card | Code work | built (4dbbb7d52, 34cf6888c, 09f9113d5); left: a seat's board written between the answer and its adopt re-asks, and a wait on a seat's BOARD is still refused |
 | R392 | A restart woke a finished session at every restart, and the monitor's notice about an old action was always the last row | Code work | built (see the section); left: a notice-only wake is not an owed turn, the monitor's digest still starts at the last operator prompt, a model's finding is keyed by its evidence line |
 | R393 | The todo check fired every 30 minutes into a session the provider was refusing, twenty calls that could not land | Code work | done |
+| R394 | A seat cannot ask to be woken by room messages nobody addressed to it: watches by pattern, regex or meaning | Code work | filed |
+| R395 | ssh fails in the wide seat's view, and a channel seat's waiter cannot widen | Code work | filed |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | built (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | built (99166493d); left: firecode's package image: wasm32 target, a warmed cargo cache, shfmt and shellcheck, guest memory in the brief |
 | R201 | Nothing letibot starts is ever torn down | Code work | built (fc69503a0); left: G6 unjoined (`docker::seat_env` has no caller), G5 memory, compute reservations, G3's `--adopt` run (operator) |
@@ -3581,6 +3583,34 @@ restarts over the rows above, no turn spent, one monitor row, no placeholder.
 **What happened.** On the Mac, the leticode-website session's calls were refused by GLM with 1210 (intermittent on GLM's side: 9 failures, one good nag at 03:50 with two turns, then 11 more failures; 57 stored screens, all valid PNG, message order valid, so not the image count). The seat's todo check still fired every 30 minutes and each firing started a turn the provider refused: twenty dead calls, reported by the Mac seat (dm #2364).
 
 **What to build.** The check reads the session's last calls before it fires. While they fail with a provider refusal it backs off (doubling, capped) or holds until a call lands, and says once that it is holding and why. A landed call resets it. Test: a session whose last N calls were refused gets no check turn; one good call and the next due check fires.
+
+## R394 - Room watches: a seat asks to be woken by messages nobody addressed to it
+
+**Status:** filed, 2026-11-28 (operator's direction).
+
+**What happened.** The serenedb session posted three retriage lines to `host` with no `to` and no mention (#3010, #3013, #3014). The seat driving it, `cc@serenedb-review`, waits on `to_me`, so none of them woke it; it found #3010 only when the operator said so. It then tried to watch every message naming serenedb or stroppy with `room-wait --attention all | grep`, which saw nothing for 30 minutes (R395). stroppy-conformity wanted the same: every message about serenedb, addressed or not. Attention today is three fixed words (`to_me`, `mentions`, `all`); a seat cannot say what else it cares about.
+
+**What to build.** A watch is a seat's standing rule, kept by the room, that adds matching messages to that seat's attention:
+
+- `room_watch` tool for cc seats and letibot sessions alike: `add {name, match, rooms?, authors?, kinds?, until?}`, `list`, `remove {name}`. `match` is a substring, a regex, or `{like: "<text>", threshold}` for meaning, scored against the embeddings the box already keeps (`embeddings.db`).
+- The room evaluates watches when a message is said, so the channel, `room-wait` and `room_inbox` all deliver a watched message the same way as a direct one, through the seat's one cursor. The delivered header names the watch (`watch: serenedb`) so the reader knows why it woke.
+- Bounds: a cap on watches per seat, a regex size and run-time limit, a default expiry (the session's life, or `until`), and a per-watch rate limit that folds a burst into one wake with a count. The author's own messages never match its watches.
+- `room_roster` and the seat's pane show its watches, so a person can see who is listening for what.
+- A session's unaddressed post also counts as addressed to the seats driving it (the ones that started it or gave it work by dm) - the default watch nobody has to write.
+
+Tests: a regex watch wakes on an unaddressed message and not on a non-matching one; a channel seat gets it through the channel; an expired watch is gone; a burst of ten matches is one wake; a meaning watch above threshold wakes and below does not.
+
+## R395 - ssh fails in the wide seat's view, and a channel seat's waiter cannot widen
+
+**Status:** filed, 2026-11-28.
+
+**1. ssh in the wide view.** The wide seat (automode's default) runs in a user namespace, so every root-owned file shows as uid 65534. `/etc/ssh/ssh_config` includes `/etc/ssh/ssh_config.d/*.conf`, and OpenSSH 10 refuses an included file not owned by root or the user: `Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf`, so every ssh from such a session fails. Every fleet box has that systemd drop-in (OpenSSH 10.2/10.5). Reproduced with `bwrap --unshare-user --ro-bind / / ssh -G host`; a `--tmpfs /etc/ssh/ssh_config.d` over it parses clean. The narrow view does not bind `/etc/ssh` and is unaffected. The serenedb session worked around it with `-F /dev/null -o StrictHostKeyChecking=no`, which drops host-key checking. Fix: in the wide view, cover the drop-in directory with a user-owned copy (or empty when it holds only systemd's proxy drop-in, which matters only for `.host`/vsock/machine names). Test: ssh -G parses in the wide view.
+
+**2. A channel seat's waiter ignores `--attention`.** `rooms::wait_marked` (`crates/bridge/src/rooms.rs:2917`) returns at once, empty, when the channel is live, whatever attention was asked. `room-wait --attention all` in a channel seat therefore never waits, and a monitor looping on it spins every 2 s and sees nothing. Step aside only for the attention the channel already delivers (`to_me`).
+
+**3. The plugin starts its waiter beside a live channel.** `claude-plugin/.claude-plugin/plugin.json` declares the room-waiter monitor `when: always`; each run exits on the channel check and the `while :` loop restarts it, a `letibot-mcp` start every ~2 s for the session's life. The loop should stop (or sleep long) when the waiter says the channel delivers.
+
+**4. One mark per seat across attentions.** `wait_mark_path` keys the mark by handle only, so a `to_me` waiter that delivers #N makes an `all` waiter skip every unaddressed row below N. Key the mark by handle and attention. (R394's server-side watches make this moot for watches.)
 
 ## R383 - A VCS command drew as nine hand edits
 
